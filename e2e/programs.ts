@@ -5692,9 +5692,9 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchCard(orchSuccPrompt).length === 0
       && !!orchSuccBody.lineage?.lineageId
       && orchSuccPrompt.includes(orchSuccBody.lineage.lineageId)
-      // the record is the ONE channel: the brief points at it and copies neither the intent nor a
-      // single obligation into the prompt
-      && !orchSuccPrompt.includes(orchIntent),
+      // the brief shows the intent itself, indented (Bauleitung 2026-10-17: „[Zitat entfernt]“;
+      // this check pinned the opposite — the intent kept out of the prompt — until then)
+      && orchSuccPrompt.includes(`hat sie dir aufgeschrieben:\n  ${orchIntent}\n`),
     `screen=${orchSuccScreen} ${orchSuccRes.status} slot=${orchSuccSlot} `
       + `roleCard=${JSON.stringify(orchSuccBody.roleCard ?? null)} lineage=${JSON.stringify(orchSuccBody.lineage ?? null)} `
       + `missing=[${orchCard(orchSuccPrompt).join(", ")}] head=${orchSuccPrompt.slice(0, 120)}`);

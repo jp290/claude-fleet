@@ -6,7 +6,8 @@
 // Funktionen dort, wo eine Besetzung geht und die nächste im selben Slot kommt (respawnInPlace für die
 // generische und die Program-Schiene beider Türen, restartLaneSession für die Lane), und dort, wo die
 // Owner-Tür ihre Vorschau liest (ownerSucceedPreview).
-import { keepCacheTextOk, type HandoverSetting } from "./types";
+import { basename } from "node:path";
+import { keepCacheTextOk, type HandoverSetting, type LineageAutoTarget, type LineageObligationRef, type LineageWatchTarget } from "./types";
 
 export interface Occupation { slot: number; openedAt: number }
 
@@ -70,6 +71,124 @@ export function successorSentence(p: SucceedPreviewFacts): string {
   if (!p.standingHandover) notes.push("eine Übergabe hat die Session nicht geschrieben");
   if (!read) notes.push("das Transkript kann Fleet nicht lesen");
   return `Die Nachfolgerin bekommt ${got}${notes.length ? `; ${notes.join(", ")}` : ""}.`;
+}
+
+// DIE WACHEN UND WIEDERHOLUNGEN LAUFEN WEITER (Mangel 100; Owner 17.10.: „[Zitat entfernt]“
+// 
+// ). Aus dem Ziel, das der Linien-Record je Pflicht trägt, wird der Body der Tür, durch
+// die die Vorgängerin sie selbst angelegt hat (server.ts#createWatchForSlot, #createAutoForSlot): dieselben Prüfungen,
+// und ein schon erledigtes Ziel feuert dort sofort. Ein Ereignis und ein Bericht bleiben Lese-Pflichten (null).
+// `laneNow`: wer jetzt in einem Slot sitzt — eine Lane-Wache gilt nur derselben Lane, nicht der nächsten im Slot.
+export type RearmStep =
+  | { door: "watch"; body: Record<string, unknown> }
+  | { door: "auto"; body: Record<string, unknown>; perpetual: boolean }
+  | { skip: string };
+export type LaneNow = (slot: number) => { cwd: string; branch: string } | null;
+const isWatchTarget = (t: LineageWatchTarget | LineageAutoTarget): t is LineageWatchTarget => "kind" in t;
+export const REARM_SPENT = "schon abgelaufen";
+export function rearmStepOf(o: LineageObligationRef, now: number, laneNow: LaneNow): RearmStep | null {
+  if ((o.kind !== "watch" && o.kind !== "auto") || o.rearmed !== undefined || o.notRearmed !== undefined) return null;
+  const t = o.target;
+  if (!t) return { skip: "ihr Ziel ist nicht überliefert" };
+  if (isWatchTarget(t)) {
+    const arm = { ...(t.idleSec !== undefined ? { idleSec: t.idleSec } : {}), ...(t.delivery ? { delivery: t.delivery } : {}) };
+    if (t.kind === "audit") return { door: "watch", body: { kind: "audit", repo: t.repo, mainAfter: t.mainAfter, ...arm } };
+    if (t.kind === "deploy") return { door: "watch", body: { kind: "deploy", deployId: t.deployId, ...arm } };
+    if (t.kind === "job") return { door: "watch", body: { kind: "job", target: t.jobId, ...arm } };
+    const lane = laneNow(t.target);
+    if (!lane || lane.cwd !== t.targetCwd || lane.branch !== t.targetBranch)
+      return { skip: "die Lane läuft dort nicht mehr" };
+    return { door: "watch", body: { kind: t.kind, target: t.target, ...arm } };
+  }
+  if (t.runsLeft <= 0) return { skip: REARM_SPENT };
+  if (t.enabled === false) return { skip: "sie war angehalten" };
+  const inSec = t.nextAt === undefined ? null : Math.max(1, Math.ceil((t.nextAt - now) / 1000));
+  if (t.everySec === null) {
+    if (inSec === null) return { skip: "ihr Zeitpunkt ist nicht überliefert" };
+    return { door: "auto", body: { text: t.text, everySec: null, idleSec: t.idleSec, inSec }, perpetual: false };
+  }
+  const perpetual = t.perpetual === true;
+  return { door: "auto", perpetual, body: { text: t.text, everySec: t.everySec, idleSec: t.idleSec,
+    ...(perpetual ? { perpetual: true } : { runs: t.runsLeft }), ...(inSec !== null ? { inSec } : {}) } };
+}
+
+// DER BRIEF SAGT ES IN WORTEN (Mangel 95): was wieder scharf wird, mit Ziel; was nicht, mit Grund; was offen blieb;
+// und was die Vorgängerin vorhatte: ihre Absicht steht selbst im Brief (Bauleitung 17.10.: „[Zitat entfernt]“
+// ; höchstens LINEAGE_INTENT_MAX Zeichen, der Loader lässt keine längere zu), je Zeile eingerückt, damit
+// keine ihrer Zeilen wie ein Schritt „1. …“ aussieht. Gebaut, solange die Vorgängerin noch steht
+// (server.ts#succeedGeneric), aus denselben Schritten, die das Binden danach ausführt. Eine abgelaufene Erinnerung
+// ist keine Pflicht mehr und steht nicht im Brief, nur im Record.
+export interface HandoverFacts {
+  obligations: readonly LineageObligationRef[];
+  intent: string | null;
+  pointer: string | null;
+  carry: boolean;
+  now: number;
+  laneNow: LaneNow;
+}
+const BRIEF_LIST_MAX = 10;
+const durationText = (sec: number): string => {
+  if (sec < 60) return `${sec} s`;
+  const min = Math.round(sec / 60);
+  return min < 120 ? `${min} min` : `${Math.round(min / 60)} h`;
+};
+const autoPreview = (text: string): string => {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > 80 ? `${one.slice(0, 80)}…` : one;
+};
+function obligationLabel(o: LineageObligationRef, now: number): string {
+  const t = o.target;
+  if (!t) return o.kind === "watch" ? `Wache ${o.id}` : `Wiederholung ${o.id}`;
+  if (isWatchTarget(t)) {
+    if (t.kind === "audit") return `Wache: Audit von main ${t.mainAfter.slice(0, 8)} in ${basename(t.repo)}`;
+    if (t.kind === "deploy") return `Wache: Deploy ${t.deployId}`;
+    if (t.kind === "job") return `Wache: Helfer-Auftrag ${t.jobId}`;
+    return t.kind === "merge" ? `Wache: Merge der Lane ${t.targetBranch} in Slot ${t.target}`
+      : `Wache: Lane ${t.targetBranch} in Slot ${t.target} ist fertig`;
+  }
+  const text = `„${autoPreview(t.text)}“`;
+  if (t.everySec === null) {
+    const left = t.nextAt === undefined ? null : Math.ceil((t.nextAt - now) / 1000);
+    return `Erinnerung${left === null ? "" : left > 0 ? ` in ${durationText(left)}` : ", jetzt fällig"}: ${text}`;
+  }
+  return `Wiederholung alle ${durationText(t.everySec)}, ${t.perpetual ? "ohne Ende" : `noch ${t.runsLeft} Mal`}: ${text}`;
+}
+const listed = (rows: string[]): string[] => rows.length <= BRIEF_LIST_MAX ? rows
+  : [...rows.slice(0, BRIEF_LIST_MAX), `- … und ${rows.length - BRIEF_LIST_MAX} weitere (GET /api/self, lineage.record)`];
+const countText = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+export function handoverLines(f: HandoverFacts): string[] {
+  const armed: string[] = [];
+  const lost: string[] = [];
+  for (const o of f.obligations) {
+    const step = rearmStepOf(o, f.now, f.laneNow);
+    if (!step) continue;
+    if (!("skip" in step)) armed.push(`- ${obligationLabel(o, f.now)}`);
+    else if (step.skip !== REARM_SPENT) lost.push(`- ${obligationLabel(o, f.now)} — ${step.skip}`);
+  }
+  const events = f.obligations.filter((o) => o.kind === "inbox").length;
+  const reports = f.obligations.filter((o) => o.kind === "report").length;
+  const open = [events ? countText(events, "Ereignis", "Ereignisse") : "", reports ? countText(reports, "Bericht", "Berichte") : ""]
+    .filter(Boolean).join(" und ");
+  return [
+    ...(armed.length ? ["Fleet stellt für dich wieder scharf:", ...listed(armed)]
+      : lost.length ? [] : ["Laufende Wachen oder Wiederholungen hatte sie keine."]),
+    ...(lost.length ? ["Nicht wieder scharf:", ...listed(lost)] : []),
+    ...(open ? [events + reports === 1 ? `Ungelesen geblieben ist ${open} an sie; die Kennung steht in GET /api/self, lineage.record.`
+      : `Ungelesen geblieben sind ${open} an sie; die Kennungen stehen in GET /api/self, lineage.record.`] : []),
+    ...(f.intent ? ["Was sie vorhatte und was als Nächstes kommt, hat sie dir aufgeschrieben:", ...f.intent.split("\n").map((l) => `  ${l}`)]
+      : [f.pointer ? `Was sie vorhatte und was als Nächstes kommt, steht in ${f.pointer}.`
+      : f.carry ? "Was sie als Erstes täte, steht am Ende dieses Briefs."
+      : "Deine Vorgängerin hat nicht aufgeschrieben, was sie vorhatte und was als Nächstes zu tun ist."]),
+  ];
+}
+export function successionBriefText(steps: readonly string[], carry: string | null, f: HandoverFacts): string {
+  return [
+    "[fleet succession] Die Vorgängerin ist auf diesem Slot beendet; du übernimmst ihre Arbeit.",
+    ...handoverLines(f),
+    "Beginne exakt in dieser Reihenfolge:",
+    ...steps,
+    ...(carry ? ["", "Das Erste, was deine Vorgängerin als Nächstes täte:", carry] : []),
+  ].join("\n");
 }
 
 // AGENT, MODELL UND EFFORT DER NEUEN SESSION (K16 Runde C, Owner 16.10. 21:1x: „[Zitat entfernt]“

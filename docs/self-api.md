@@ -533,8 +533,9 @@ nicht auf die generische Nachfolge umlenken. Nur beim Game-Maker verweigert ein 
 Handoff mit 409, und die Vorgängerin bleibt stehen.
 
 **Die Schritte des Gründungsbriefs gehören dem Repo der Nachfolgerin (`server.ts#successionInitSteps`, seit
-2026-09-14).** Die Kopfzeile nennt immer den Linien-Record samt Pflichten-Zahl, darunter „Beginne exakt in
-dieser Reihenfolge:“. Liegt im cwd eine getrackte, nicht leere `.fleet/init.md`, stehen deren Zeilen dort
+2026-09-14).** Die Kopfzeilen sagen in Worten (seit 2026-10-17, `server/succession.ts#handoverLines`), welche
+Wachen und Wiederholungen Fleet gleich wieder scharf stellt, welche nicht und warum, was ungelesen blieb und ob
+die Vorgängerin aufgeschrieben hat, was sie vorhatte; darunter „Beginne exakt in dieser Reihenfolge:“. Liegt im cwd eine getrackte, nicht leere `.fleet/init.md`, stehen deren Zeilen dort
 wörtlich; über 2 000 Zeichen wird abgeschnitten, und eine Zeile nennt Deckel und volle Länge. Eine
 ungetrackte oder leere Datei gilt als fehlend. Fehlt sie, gibt es einen neutralen Einstieg: `lineage.record`,
 dann der oberste Abschnitt von `HANDOFF.md`, dann `README.md` bzw. `AGENTS.md`, beides „falls vorhanden“.
@@ -552,19 +553,21 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
 - `from` / `to` als `{slot, openedAt}` — die zwei Belegungen, nicht die Slotnummern;
 - `obligations[]` — **IDs, und bei Watch und Auto ein typisiertes Ziel**: `{kind: watch|auto|inbox|report, id, owedBy: "slot N@openedAt", reArm}`.
   Gemessen wird, was mit der Vorgängerin stirbt: armierte Watches und Autos, unquittierte FleetEvents
-  (`inbox`), unentschiedene an sie adressierte Reports. Nichts wird neu armiert; `reArm` nennt die Tür
+  (`inbox`), unentschiedene an sie adressierte Reports. Seit 2026-10-17 (Mangel 100) setzt Fleet jede Watch
+  und jedes Auto mit Ziel bei der Nachfolgerin neu, durch dieselbe Tür und nach ihrem Gründungsbrief
+  (`server.ts#rearmLineObligations`); danach trägt die Pflicht `rearmed: <neue ID>` oder `notRearmed: <Grund>`.
+  Ereignisse und Reports bleiben Lese-Pflichten. `reArm` nennt die Tür
   (`null`, wo keine Nachfolger-Tür existiert). Der Loader ist geschlossen: ein Obligation-Objekt mit einem
   unbekannten Feld (etwa einem kopierten Text) macht den ganzen Record unlesbar — ein Body passt strukturell
   nicht hinein;
 - **eine Watch nennt zusätzlich ihr Ziel** (seit 2026-09-15, `server/types.ts#LineageWatchTarget`), weil
   `server.ts#dropWatchesFor` die Watch-Zeile mit der Vorgängerin löscht und die ID danach auf nichts
-  zeigt: `target` ist `{kind: lane|merge, target, targetCwd, targetBranch}` oder
-  `{kind: audit, repo, mainAfter}` — dieselben Identitätsfelder, die `server.ts#captureProgramHandover`
-  im `detail` bewahrt. Daraus baut die Nachfolgerin den `POST /api/self/watch`-Body selbst
-  (`{kind, target}` bzw. `{kind, repo, mainAfter}`); `targetCwd`/`targetBranch` sagen ihr, ob Slot
-  `target` noch dieselbe Lane ist. `idleSec` und `delivery` reisen NICHT mit: der neu gebaute Body nimmt
-  die Defaults der Tür. `target: null` = eine Watch-Art ohne typisiertes Ziel hier (`deploy`, `job`,
-  `transition` — deren `awaiting` ist Prosa). Ein Record ohne `target` (vor 2026-09-15 geschrieben)
+  zeigt: `target` ist `{kind: lane|merge, target, targetCwd, targetBranch}`, `{kind: audit, repo, mainAfter}`,
+  seit 2026-10-17 auch `{kind: deploy, deployId}` und `{kind: job, jobId}` — dieselben Identitätsfelder, die
+  `server.ts#captureProgramHandover` im `detail` bewahrt —, seit demselben Tag mit `idleSec` und `delivery`
+  (beide oder keins; ohne sie nimmt der Body die Defaults der Tür). Daraus baut Fleet den
+  `POST /api/self/watch`-Body; `targetCwd`/`targetBranch` sagen, ob Slot `target` noch dieselbe Lane ist
+  (sonst `notRearmed`). `target: null` = eine Watch-Art ohne typisiertes Ziel. Ein Record ohne `target` (vor 2026-09-15 geschrieben)
   bleibt lesbar und wird so ausgeliefert, wie er steht; fehlend heißt dort NICHT `null`. Der Loader
   prüft das Ziel feldgenau: genau diese Schlüssel je Art, Slotnummer, absoluter Pfad ohne Steuerzeichen,
   Branch nach `git check-ref-format`, `mainAfter` als volle Objekt-ID; `target` an einer Nicht-Watch,
@@ -572,7 +575,9 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   Objekt-ID), macht den Record unlesbar. Geprüft wird die Form, nicht die Bedeutung: ein Pfad darf
   Leerzeichen tragen. Es ist ein geschlossenes Zielobjekt, kein Freitext;
 - **ein Auto nennt zusätzlich seinen Re-Arm-Body** (seit 2026-10-09, `server/types.ts#LineageAutoTarget`):
-  `target` ist genau `{text, everySec, idleSec, runsLeft}`, der Text VOLLSTÄNDIG (Deckel wie
+  `target` ist genau `{text, everySec, idleSec, runsLeft}`, seit 2026-10-17 dazu `nextAt`, `enabled` und
+  `perpetual` (alle drei oder keins: eine Erinnerung behält ihren Zeitpunkt, ein angehaltenes Auto bleibt
+  aus), der Text VOLLSTÄNDIG (Deckel wie
   `POST /api/self/autos`, 10 000 Zeichen). Anlass: die Nachfolge der Orchestratorin am 2026-10-09 trug
   sechs Autos nur per ID; die Auto-Zeilen sterben mit der Vorgängerin, und die Tür verweigert einen
   Body ohne Text — alle sechs waren verloren. Daraus baut die Nachfolgerin `{text, everySec, idleSec,

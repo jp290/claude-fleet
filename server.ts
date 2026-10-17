@@ -145,7 +145,7 @@ import {
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
-  loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX,
+  loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, LINEAGE_NOT_REARMED_MAX,
   type LineageRole, type LineageOccupant, type LineageSeat, type LineageWatchTarget, type LineageAutoTarget, type LineageObligationRef, type LineageHandover,
   type LineageHandoverLoss,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch, type ProgramDispatch,
@@ -213,9 +213,9 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
-import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
-  settingForSuccessor, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
-  type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
+import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
+  rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
+  type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { k15Speicher } from "./server/k15-speicher";
@@ -12972,30 +12972,25 @@ async function successionInitSteps(cwd: string): Promise<string[]> {
     `[… ${SUCCESSION_INIT_PATH} abgeschnitten: ${SUCCESSION_INIT_MAX} von ${text.length} Zeichen gezeigt — lies den Rest in der Datei selbst]`];
 }
 
-async function buildSuccessionBrief(cwd: string, carry: string | null, lineage: LineageBriefFacts): Promise<string> {
-  // THE LINE RECORD is the state transfer (e3e5084a); this prompt NAMES it and says how much it holds,
-  // and copies none of it. `carry` stays the deliberately tiny optional bridge it always was: an
-  // unbounded prompt channel between sessions would recreate the hidden coupling /api/self/watch
-  // was designed not to permit.
-  const next = carry ? [``, `Das Erste, was der Vorgänger als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
-  return [
-    `[fleet succession] Die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineage.lineageId} (GET /api/self, Feld \`lineage\`): ${lineageBriefContent(lineage)}`,
-    "Beginne exakt in dieser Reihenfolge:",
-    ...await successionInitSteps(cwd),
-    ...next,
-  ].join("\n");
+async function buildSuccessionBrief(cwd: string, carry: string | null, lineage: HandoverFacts): Promise<string> {
+  // THE LINE RECORD is the state transfer (e3e5084a); this prompt says in words what the record holds
+  // (server/succession.ts#handoverLines) and shows the intent itself (Bauleitung 2026-10-17), never a target's
+  // full body. `carry` stays
+  // the deliberately tiny optional bridge it always was: an unbounded prompt channel between sessions would
+  // recreate the hidden coupling /api/self/watch was designed not to permit.
+  return successionBriefText(await successionInitSteps(cwd), carry, lineage);
 }
 
 // --- THE ROLE-LINEAGE HANDOVER: the generic rail (server/types.ts#LineageHandover)
-// What the successor's brief may say about the record: the line, the count, which channel carries
-// the predecessor's intent. Never the obligations or the intent themselves — those are read at the door.
-interface LineageBriefFacts { lineageId: string; obligations: number; intent: boolean; pointer: string | null }
-const lineageBriefContent = (l: LineageBriefFacts): string =>
-  `${l.obligations} Pflichten per ID (watch/auto/inbox/report; nichts ist neu armiert), `
-  + (l.intent ? "dazu die Absicht in `intent`." : l.pointer ? `dazu der Zeiger \`${l.pointer}\`.` : "ohne intent und ohne pointer.");
-const lineageBriefContentEn = (l: LineageBriefFacts): string =>
-  `${l.obligations} obligations by id (watch/auto/inbox/report; nothing was re-armed), `
-  + (l.intent ? "plus the predecessor's `intent`." : l.pointer ? `plus the pointer \`${l.pointer}\`.` : "with no intent and no pointer.");
+// What the successor's brief says about the record, read while the predecessor still stands: what the bind
+// will re-arm (rearmLineObligations, after the brief), what it cannot, what stayed unread, and which channel
+// carries the predecessor's intent.
+const laneNow: LaneNow = (slot) => {
+  const t = slotFrom(slot);
+  return t?.cwd && t.worktree ? { cwd: t.cwd, branch: t.worktree.branch } : null;
+};
+const handoverFactsOf = (draft: LineageHandover, carry: string | null): HandoverFacts => ({ obligations: draft.obligations,
+  intent: draft.intent, pointer: draft.pointer, carry: carry !== null, now: Date.now(), laneNow });
 
 // THE CHANNEL, parsed from the succeed body: `intent` (prose, capped) OR `pointer` (a committed,
 // dated section, `path.md#anchor`), never both, and neither beside `carry` — one handover channel,
@@ -13038,14 +13033,18 @@ async function lineagePointerCommitted(cwd: string, pointer: string): Promise<bo
 // body the same way (server/types.ts#LineageAutoTarget), judged by the loader's own validator: a
 // legacy row whose fields it would refuse is written as null rather than refusing the succession.
 const lineageAutoTarget = (a: Auto): LineageAutoTarget | null => {
-  const t = lineageAutoTargetFrom({ text: a.text, everySec: a.everySec, idleSec: a.idleSec, runsLeft: a.runsLeft }, 0);
+  const t = lineageAutoTargetFrom({ text: a.text, everySec: a.everySec, idleSec: a.idleSec, runsLeft: a.runsLeft,
+    nextAt: a.nextAt, enabled: a.enabled, perpetual: a.perpetual === true }, 0);
   return typeof t === "string" ? null : t;
 };
 const lineageWatchTarget = (w: Watch): LineageWatchTarget | null => {
   const kind = watchKind(w);
+  const arm = { idleSec: w.idleSec, delivery: w.delivery ?? null };
   if ((kind === "lane" || kind === "merge") && "target" in w)
-    return { kind, target: w.target, targetCwd: w.targetCwd, targetBranch: w.targetBranch };
-  if (kind === "audit" && "repo" in w) return { kind, repo: w.repo, mainAfter: w.mainAfter };
+    return { kind, target: w.target, targetCwd: w.targetCwd, targetBranch: w.targetBranch, ...arm };
+  if (kind === "audit" && "repo" in w) return { kind, repo: w.repo, mainAfter: w.mainAfter, ...arm };
+  if (kind === "deploy" && "deployId" in w) return { kind, deployId: w.deployId, ...arm };
+  if (kind === "job" && "jobId" in w) return { kind, jobId: w.jobId, ...arm };
   return null;
 };
 function captureLineageObligations(pred: LineageOccupant): LineageObligationRef[] {
@@ -13097,6 +13096,39 @@ function writeLineageHandover(draft: LineageHandover, successor: Slot, at: numbe
   lineageHandovers = kept.filter((r) => !dropAll.has(r));
   successor.lineageId = draft.lineageId;
   return record;
+}
+
+// THE PREDECESSOR'S WATCHES AND AUTOS RUN ON (Mangel 100; owner 2026-10-17: „[Zitat entfernt]“
+// ). Until then the record named them and the
+// successor had to re-arm each by hand (record ec415625: the audit watch was re-armed by hand). Each one the
+// record carries with its target goes back through the door that armed it (server/succession.ts#rearmStepOf),
+// on the successor occupant the record is addressed to, and the record says per obligation what became of it.
+// Called AFTER the founding brief was attempted: a watch whose target is already done fires at once, and its
+// event must not reach the pane before the brief that explains it.
+async function rearmLineObligations(s: Slot, openedAt: number): Promise<{ rearmed: number; notRearmed: number }> {
+  const at = (r: LineageHandover): boolean => r.to.slot === s.id && r.to.openedAt === openedAt;
+  const record = lineageHandovers.find(at);
+  if (!record) return { rearmed: 0, notRearmed: 0 };
+  const obligations: LineageObligationRef[] = [];
+  for (const o of record.obligations) {
+    const step = rearmStepOf(o, Date.now(), laneNow);
+    if (!step) { obligations.push(o); continue; }
+    if (!s.cwd || s.openedAt !== openedAt) { obligations.push({ ...o, notRearmed: "die Nachfolgerin ist schon wieder beendet" }); continue; }
+    if ("skip" in step) { obligations.push({ ...o, notRearmed: step.skip }); continue; }
+    const res = step.door === "watch" ? await createWatchForSlot(s, step.body)
+      : createAutoForSlot(s, step.body, { allowPerpetual: step.perpetual });
+    const answer = await res.json() as { watch?: { id?: unknown }; auto?: { id?: unknown }; error?: unknown };
+    const id = step.door === "watch" ? answer.watch?.id : answer.auto?.id;
+    obligations.push(res.ok && typeof id === "string" ? { ...o, rearmed: id }
+      : { ...o, notRearmed: `Fleet lehnte ab: ${String(answer.error ?? res.status)}`.replace(/\s+/g, " ").slice(0, LINEAGE_NOT_REARMED_MAX) });
+  }
+  const rearmed = obligations.filter((o) => o.rearmed !== undefined && !record.obligations.includes(o)).length;
+  const notRearmed = obligations.filter((o) => o.notRearmed !== undefined && !record.obligations.includes(o)).length;
+  if (rearmed + notRearmed === 0) return { rearmed, notRearmed };
+  lineageHandovers = lineageHandovers.map((r) => r.lineageId === record.lineageId && at(r) ? { ...r, obligations } : r);
+  audit("main_succession", s.id, `line ${record.lineageId}: ${rearmed} re-armed on the successor (openedAt ${openedAt}), ${notRearmed} not`);
+  await saveStateNow();
+  return { rearmed, notRearmed };
 }
 
 interface LineageState {
@@ -13890,8 +13922,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
   // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
   // nobody; the same read after the kill would be a handover built on a slot already emptied.
-  const lineageFacts: LineageBriefFacts = { lineageId: draft.lineageId,
-    obligations: draft.obligations.length, intent: draft.intent !== null, pointer: draft.pointer };
+  const lineageFacts = handoverFactsOf(draft, carry);
   // THE ORCHESTRATOR TWIN of this founding: same rail, same gate, same record — one extra text
   // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
   // verbatim inheritance unless the body renamed the role, and an owner who renames it at
@@ -13903,7 +13934,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
     ? await orchestratorFoundingContext(predecessor.cwd, harness) : null;
   const ritual = orchestrator
     ? buildOrchestratorSuccessionBrief(harness, await successionInitSteps(predecessor.cwd), carry,
-      lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
+      draft.lineageId, lineageFacts, orchCtx?.ok ? orchCtx.value.anchorBlock : "")
     : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
@@ -13949,6 +13980,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       const debt = recordSuccessionDebt(s, "generic", predecessorIdentity, openedAt, reason,
         { brief, path: "succession", draft: null, label: s.label });
       await saveStateNow().catch((e: unknown) => logError("successionDebt", e));
+      // the successor stands without its brief, and its watches run on all the same
+      await rearmLineObligations(s, openedAt);
       return json({ error: `successor stands on slot ${s.id} but its founding brief was not delivered (${reason}) — `
         + `held as succession debt ${debt.id}: POST /api/succession-debts/${debt.id}/resend`,
       slot: s.id, delivered: false, debt: debt.id }, 500);
@@ -13972,9 +14005,10 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
     logPrompt(s, brief, "auto", now);
     if (orchCtx?.ok) await appendOrchestratorReceipt(s, orchCtx.value, brief, now);
     await saveStateNow();
+    const rearm = await rearmLineObligations(s, openedAt);
     return json({ ok: true, slot: s.id, label: s.label,
       ...(respawned.modelSupport ? { modelSupport: respawned.modelSupport } : {}),
-      lineage: { lineageId: record.lineageId, obligations: record.obligations.length },
+      lineage: { lineageId: record.lineageId, obligations: record.obligations.length, rearmed: rearm.rearmed },
       ...(opts.appendix !== null ? { briefBytes: Buffer.byteLength(brief) } : {}),
       ...planCarryAnswer(planned, null),
       ...(orchestrator ? { roleCard: orchCtx?.ok
@@ -41955,7 +41989,7 @@ function buildOrchestratorSpawnBrief(harness: string | null, anchorBlock: string
 // is named as such, because the card's own UEBERGABE block points at the same one channel and a
 // brief that offered a second would be the disagreement e3e5084a exists to prevent.
 function buildOrchestratorSuccessionBrief(harness: string | null, steps: readonly string[], carry: string | null,
-  lineage: LineageBriefFacts, anchorBlock: string): string {
+  lineageId: string, lineage: HandoverFacts, anchorBlock: string): string {
   const next = carry ? [``, `Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
   const briefSteps = [
     "1. Führe ./state.sh --brief aus — Self liest deinen Linien-Record, die Betriebssicht die Lage.",
@@ -41963,7 +41997,8 @@ function buildOrchestratorSuccessionBrief(harness: string | null, steps: readonl
     ...steps.filter((step) => !/state\.sh|register\.sh|GET \/api\/self|Board|HANDOFF\.md/.test(step)),
   ];
   return [
-    `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineage.lineageId} (GET /api/self, Feld \`lineage\`): ${lineageBriefContent(lineage)}`,
+    `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineageId} (GET /api/self, Feld \`lineage\`).`,
+    ...handoverLines(lineage),
     "Was folgt, ist deine Rollenkarte — Owner-Text, keine Empfehlung; die Langfassung steht in docs/controller.md.",
     orchestratorRoleCard(harness),
     "Beginne exakt in dieser Reihenfolge:",
@@ -53281,6 +53316,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // a generic line whose in-place respawn failed on THIS slot and cwd is taken up here
         const adopted = adoptSuccessionDebt(s);
         if (adopted) await saveStateNow();
+        if (adopted?.draft) await rearmLineObligations(s, s.openedAt);
         // …and for exactly one label, the role card (deliverOrchestratorSpawnCard). Every other
         // open returns the same bytes it always did.
         const roleCard = isOrchestratorLabel(s.label) ? await deliverOrchestratorSpawnCard(s, acc ?? undefined) : null;

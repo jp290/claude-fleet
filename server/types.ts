@@ -3082,15 +3082,24 @@ const laneSeatFrom = (raw: unknown): LaneSeat | null => {
 interface LineageSeat extends LineageOccupant { sessionId?: string | null; cwd?: string | null }
 // no slash, no dot-start: the id is joined into a transcript path by the harness readers
 const LINEAGE_SESSION_ID_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/;
-type LineageWatchTarget =
+// HOW THE WATCH DELIVERS, as armed (2026-10-17, Mangel 100: Fleet re-arms it on the successor, and a re-arm on
+// the door's defaults would be another subscription — ctl.sh arms with idleSec 0, the door's default is 60).
+// Both or neither: a record from before has neither and re-arms on the defaults. `delivery` null = absent (pane).
+interface LineageWatchArm { idleSec?: number; delivery?: "pane" | "inbox" | null }
+type LineageWatchTarget = (
   | { kind: "lane" | "merge"; target: number; targetCwd: string; targetBranch: string }
-  | { kind: "audit"; repo: string; mainAfter: string };
+  | { kind: "audit"; repo: string; mainAfter: string }
+  | { kind: "deploy"; deployId: string }
+  | { kind: "job"; jobId: string }) & LineageWatchArm;
 // AN AUTO'S RE-ARM BODY. The Auto row dies with the predecessor (teardown deletes every Auto of the
 // slot) and POST /api/self/autos refuses a request without its text, so an id alone left the successor
 // nothing to re-arm: measured 2026-10-09 at the Orchestratorin's succession (record 2ef6d8d1…), six of
 // seven obligations were such autos and all six were lost. The same four fields the door takes, the
 // text COMPLETE (createAutoForSlot's cap); `runsLeft` 0 is a spent auto, said rather than dropped.
-interface LineageAutoTarget { text: string; everySec: number | null; idleSec: number; runsLeft: number }
+// Since the re-arm (2026-10-17) also WHEN and WHETHER it runs, all three or none: `nextAt` (a reminder keeps
+// its time), `enabled` (an owner-paused auto stays paused) and `perpetual`.
+interface LineageAutoTarget { text: string; everySec: number | null; idleSec: number; runsLeft: number;
+  nextAt?: number; enabled?: boolean; perpetual?: boolean }
 const AUTO_TEXT_MAX = 10_000;
 const AUTO_IDLE_SEC_MAX = 86_400;
 interface LineageObligationRef {
@@ -3099,7 +3108,12 @@ interface LineageObligationRef {
   owedBy: string;        // `slot N@openedAt` of the occupant that owed it
   reArm: string | null;  // the door that re-registers it; null where no successor door exists
   target?: LineageWatchTarget | LineageAutoTarget | null; // a watch or an auto only; see their types above
+  // what the successor's bind did with a watch or an auto (server.ts#rearmLineObligations): the id of the new
+  // row, or why there is none. Neither: the bind has not run yet, or a server from before 2026-10-17 wrote it.
+  rearmed?: string;
+  notRearmed?: string;
 }
+const LINEAGE_NOT_REARMED_MAX = 300;
 interface LineageHandover {
   v: 1;
   lineageId: string;
@@ -3125,31 +3139,53 @@ const lineageBranchOk = (v: unknown): v is string => typeof v === "string" && v 
   && !/^[-\/.]|\/$|\.$|\.\.|\/\/|\/\.|@\{|\.lock(\/|$)/.test(v);
 const lineageWatchTargetFrom = (raw: unknown, index: number): LineageWatchTarget | null | string => {
   if (raw === null) return null;
-  const shape = `obligation ${index} target must be null, exactly {kind: lane|merge, target, targetCwd, targetBranch} or exactly {kind: audit, repo, mainAfter}`;
+  const shape = `obligation ${index} target must be null, exactly {kind: lane|merge, target, targetCwd, targetBranch}, {kind: audit, repo, mainAfter}, {kind: deploy, deployId} or {kind: job, jobId}, each with both of idleSec and delivery or neither`;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return shape;
-  const t = raw as Record<string, unknown>;
+  const { idleSec, delivery, ...t } = raw as Record<string, unknown>;
+  const armKeys = ["idleSec", "delivery"].filter((k) => Object.hasOwn(raw, k)).length;
+  if (armKeys === 1) return shape;
+  if (armKeys === 2 && (!Number.isInteger(idleSec) || (idleSec as number) < 0 || (idleSec as number) > AUTO_IDLE_SEC_MAX))
+    return `obligation ${index} target.idleSec must be an integer 0-${AUTO_IDLE_SEC_MAX}`;
+  if (armKeys === 2 && !(delivery === null || delivery === "pane" || delivery === "inbox"))
+    return `obligation ${index} target.delivery must be null, "pane" or "inbox"`;
+  const arm: LineageWatchArm = armKeys === 2 ? { idleSec: idleSec as number, delivery: delivery as "pane" | "inbox" | null } : {};
   const keys = Object.keys(t).sort().join(",");
   if ((t.kind === "lane" || t.kind === "merge") && keys === "kind,target,targetBranch,targetCwd") {
     if (!Number.isInteger(t.target) || (t.target as number) < 1 || (t.target as number) > MAX_SLOTS)
       return `obligation ${index} target.target must be a slot number`;
     if (!lineagePathOk(t.targetCwd)) return `obligation ${index} target.targetCwd must be an absolute path`;
     if (!lineageBranchOk(t.targetBranch)) return `obligation ${index} target.targetBranch must be a git branch name`;
-    return { kind: t.kind, target: t.target as number, targetCwd: t.targetCwd, targetBranch: t.targetBranch };
+    return { kind: t.kind, target: t.target as number, targetCwd: t.targetCwd, targetBranch: t.targetBranch, ...arm };
   }
   if (t.kind === "audit" && keys === "kind,mainAfter,repo") {
     if (!lineagePathOk(t.repo)) return `obligation ${index} target.repo must be an absolute path`;
     if (typeof t.mainAfter !== "string" || !/^[0-9a-f]{40,64}$/.test(t.mainAfter))
       return `obligation ${index} target.mainAfter must be a full git object id`;
-    return { kind: "audit", repo: t.repo, mainAfter: t.mainAfter };
+    return { kind: "audit", repo: t.repo, mainAfter: t.mainAfter, ...arm };
+  }
+  if (t.kind === "deploy" && keys === "deployId,kind") {
+    if (typeof t.deployId !== "string" || !/^[0-9a-f]{8}$/.test(t.deployId))
+      return `obligation ${index} target.deployId must be 8 hex characters`;
+    return { kind: "deploy", deployId: t.deployId, ...arm };
+  }
+  if (t.kind === "job" && keys === "jobId,kind") {
+    if (typeof t.jobId !== "string" || !/^[0-9a-f]{12}$/.test(t.jobId))
+      return `obligation ${index} target.jobId must be 12 hex characters`;
+    return { kind: "job", jobId: t.jobId, ...arm };
   }
   return shape;
 };
 const lineageAutoTargetFrom = (raw: unknown, index: number): LineageAutoTarget | null | string => {
   if (raw === null) return null;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)
-    || Object.keys(raw).sort().join(",") !== "everySec,idleSec,runsLeft,text")
-    return `obligation ${index} target must be null or exactly {text, everySec, idleSec, runsLeft}`;
+  const keys = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw).sort().join(",") : "";
+  if (keys !== "everySec,idleSec,runsLeft,text" && keys !== "enabled,everySec,idleSec,nextAt,perpetual,runsLeft,text")
+    return `obligation ${index} target must be null or exactly {text, everySec, idleSec, runsLeft}, optionally with all of nextAt, enabled and perpetual`;
   const t = raw as Record<string, unknown>;
+  const when = Object.hasOwn(t, "nextAt");
+  if (when && (typeof t.nextAt !== "number" || !Number.isFinite(t.nextAt) || t.nextAt <= 0))
+    return `obligation ${index} target.nextAt must be a positive number`;
+  if (when && (typeof t.enabled !== "boolean" || typeof t.perpetual !== "boolean"))
+    return `obligation ${index} target.enabled and target.perpetual must be booleans`;
   if (typeof t.text !== "string" || !t.text.trim() || t.text.length > AUTO_TEXT_MAX)
     return `obligation ${index} target.text must be a non-empty string of at most ${AUTO_TEXT_MAX} chars`;
   if (!(t.everySec === null || (Number.isInteger(t.everySec) && (t.everySec as number) > 0)))
@@ -3158,7 +3194,8 @@ const lineageAutoTargetFrom = (raw: unknown, index: number): LineageAutoTarget |
     return `obligation ${index} target.idleSec must be an integer 0-${AUTO_IDLE_SEC_MAX}`;
   if (!Number.isInteger(t.runsLeft) || (t.runsLeft as number) < 0)
     return `obligation ${index} target.runsLeft must be a non-negative integer`;
-  return { text: t.text, everySec: t.everySec as number | null, idleSec: t.idleSec as number, runsLeft: t.runsLeft as number };
+  return { text: t.text, everySec: t.everySec as number | null, idleSec: t.idleSec as number, runsLeft: t.runsLeft as number,
+    ...(when ? { nextAt: t.nextAt as number, enabled: t.enabled as boolean, perpetual: t.perpetual as boolean } : {}) };
 };
 const lineageOccupantFrom = (raw: unknown): LineageOccupant | null => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -3214,13 +3251,21 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail(`obligation ${index} must be an object`);
     const o = raw as Record<string, unknown>;
     const hasTarget = Object.hasOwn(o, "target");
-    if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k) && k !== "target")
-      || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length + (hasTarget ? 1 : 0))
-      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} (a watch or an auto may add target) — never a body outside its typed target`);
+    const outcome = ["rearmed", "notRearmed"].filter((k) => Object.hasOwn(o, k));
+    if (Object.keys(o).some((k) => !LINEAGE_OBLIGATION_KEYS.includes(k) && k !== "target" && !outcome.includes(k))
+      || Object.keys(o).length !== LINEAGE_OBLIGATION_KEYS.length + (hasTarget ? 1 : 0) + outcome.length)
+      return fail(`obligation ${index} must contain exactly ${LINEAGE_OBLIGATION_KEYS.join(", ")} (a watch or an auto may add target and one of rearmed, notRearmed) — never a body outside its typed target`);
     if (typeof o.kind !== "string" || !LINEAGE_OBLIGATION_KINDS.includes(o.kind as LineageObligationKind))
       return fail(`obligation ${index} kind must be one of ${LINEAGE_OBLIGATION_KINDS.join(", ")}`);
     if (hasTarget && o.kind !== "watch" && o.kind !== "auto")
       return fail(`obligation ${index} carries target, but only a watch or an auto names one`);
+    if (outcome.length > 0 && (outcome.length > 1 || (o.kind !== "watch" && o.kind !== "auto")))
+      return fail(`obligation ${index} carries ${outcome.join(" and ")}, but only a watch or an auto is re-armed, and only once`);
+    if (Object.hasOwn(o, "rearmed") && (typeof o.rearmed !== "string" || !/^[0-9a-zA-Z_-]{1,64}$/.test(o.rearmed)))
+      return fail(`obligation ${index} rearmed must be 1-64 id characters`);
+    if (Object.hasOwn(o, "notRearmed") && (typeof o.notRearmed !== "string" || o.notRearmed === ""
+      || o.notRearmed.length > LINEAGE_NOT_REARMED_MAX || /[\u0000-\u001f\u007f]/.test(o.notRearmed)))
+      return fail(`obligation ${index} notRearmed must be one line of at most ${LINEAGE_NOT_REARMED_MAX} chars`);
     const target = !hasTarget ? undefined
       : o.kind === "watch" ? lineageWatchTargetFrom(o.target, index) : lineageAutoTargetFrom(o.target, index);
     if (typeof target === "string") return fail(target);
@@ -3232,7 +3277,9 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
     if (seen.has(key)) return fail(`obligation ${index} repeats ${key}`);
     seen.add(key);
     obligations.push({ kind: o.kind as LineageObligationKind, id: o.id, owedBy: o.owedBy, reArm: o.reArm as string | null,
-      ...(target !== undefined ? { target } : {}) });
+      ...(target !== undefined ? { target } : {}),
+      ...(typeof o.rearmed === "string" ? { rearmed: o.rearmed } : {}),
+      ...(typeof o.notRearmed === "string" ? { notRearmed: o.notRearmed } : {}) });
   }
   return { ok: true, handover: { v: 1, lineageId, role: r.role as LineageRole, at: r.at, from, to, obligations,
     intent: r.intent as string | null, pointer: r.pointer as string | null, supersededBy } };
@@ -3589,7 +3636,7 @@ export {
   loadProgramHandover, loadProgramRecordLoss,
   LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
-  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, standingHandoverFrom, compactionFrom, startCompactFrom, laneStandNudgedFrom, slotPlanFrom,
+  loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, LINEAGE_NOT_REARMED_MAX, standingHandoverFrom, compactionFrom, startCompactFrom, laneStandNudgedFrom, slotPlanFrom,
   foundingOccupantFrom, foundingIdentityFrom,
   PROGRAM_DISPATCH_MAX_LANES_MAX, loadProgramDispatch,
   PROGRAM_RELEASE_POLICIES, loadProgramRelease, loadTaskHold, loadTaskHoldUntil, TASK_HOLD_GRUND_MAX, loadTaskKindChanges, loadStallSensor,

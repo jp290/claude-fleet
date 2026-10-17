@@ -385,8 +385,8 @@ Vorher dauerhaft machen:
   nicht als Übergabe. Eine selbstständige Fleet-Lane ist kein solcher Subagent; ihren Report
   und ihren Rückweg als dauerhafte Pflicht erhalten.
 - Watches, Autos, nicht quittierte Events und offene Reports prüfen. Auf der ungebundenen
-  Schiene enden die armierten Watches und Autos; der Linien-Record hält ihre IDs, Watch-Ziele
-  und `reArm` fest, armiert aber nichts neu (`docs/self-api.md` §Der Linien-Record).
+  Schiene setzt Fleet die armierten Watches und Autos mit ihrem Ziel bei der Nachfolgerin neu; der
+  Linien-Record nennt je Pflicht `rearmed` oder `notRearmed` (`docs/self-api.md` §Der Linien-Record).
   Bei einer gebundenen Standard-Program-MAIN persistiert Fleet übertragbare Pflichten im
   `handover`; verlorene stehen in `handover.lost` (§Nachfolge oben). Vor dem Ende Quelle und
   Rückweg der noch laufenden Arbeit lesbar machen, nach dem Schnitt Übertragung beziehungsweise

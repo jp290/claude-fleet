@@ -30,6 +30,14 @@ if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
 const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
 
 const out: { status: number; body: unknown }[] = [];
+// "$N.a.b" als ganzer Wert im Body: body.a.b der N-ten Antwort dieses Lebens — für eine Anfrage, die braucht, was eine
+// frühere im selben Leben erst gemacht hat (die SHA eines Lands, auf die danach eine Audit-Wache zeigt)
+const earlier = (v: unknown): unknown => {
+  const ref = typeof v === "string" ? /^\$(\d+)\.([\w.]+)$/.exec(v) : null;
+  if (ref) return ref[2]!.split(".").reduce<unknown>((x, k) => (x as Record<string, unknown> | undefined)?.[k], out[Number(ref[1])]?.body);
+  if (Array.isArray(v)) return v.map(earlier);
+  return v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, earlier(x)])) : v;
+};
 for (const step of steps) {
   if (step === "save") { await saveStateNow(); continue; }
   if ("until" in step) {
@@ -43,7 +51,7 @@ for (const step of steps) {
     ...(step.self ? { "x-fleet-self-token": step.self } : {}),
     ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
   const res = await fetch.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,
-    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(step.body) }) }), server);
+    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(earlier(step.body)) }) }), server);
   if (!res) throw new Error(`${step.path}: der Handler gab keine Antwort`);
   out.push({ status: res.status, body: await res.json() });
 }

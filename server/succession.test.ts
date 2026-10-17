@@ -8,10 +8,11 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, MAX_NUDGES,
-  orchestratorContextLine, ownSetting, settingForSuccessor, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision,
-  warmTextInput, type ActFacts, type SucceedPreviewFacts, type ThresholdChoice, type WarmFacts } from "./succession";
-import { loadHandoverSetting, type HandoverSetting } from "./types";
+import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
+  orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
+  thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
+  type ThresholdChoice, type WarmFacts } from "./succession";
+import { loadHandoverSetting, loadLineageHandover, type HandoverSetting, type LineageObligationRef } from "./types";
 
 const setting = (slot: number, openedAt: number): HandoverSetting => ({ thresholdPct: 55, nudge: false, keepCache: true,
   keepCacheIdleMin: 45, keepCacheText: "Lies den Stand und antworte mit einem Satz.", atThreshold: "succeed", setAt: 1,
@@ -478,5 +479,169 @@ describe("Agent, Modell und Effort der neuen Session", () => {
     expect(successorSpawnOf({ model: 5 }, cur).ok).toBe(false);
     expect(successorSpawnOf({ harness: ["codex"] }, cur).ok).toBe(false);
     expect(successorSpawnOf({ effort: { x: 1 } }, cur).ok).toBe(false);
+  });
+});
+
+// Mangel 100 · Owner 17.10.: „[Zitat entfernt]“
+// 
+const NOW = 1_800_000_000_000;
+const SHA = "816923e67a1b2c3d4e5f60718293a4b5c6d7e8f9";
+const owedBy = "slot 2@1700000000000";
+const watch = (id: string, target: LineageObligationRef["target"]): LineageObligationRef =>
+  ({ kind: "watch", id, owedBy, reArm: "POST /api/self/watch", target });
+const auto = (id: string, target: LineageObligationRef["target"]): LineageObligationRef =>
+  ({ kind: "auto", id, owedBy, reArm: "POST /api/self/autos", target });
+const auditWatch = watch("a1b2c3d4", { kind: "audit", repo: "/Users/x/claude-fleet", mainAfter: SHA, idleSec: 0, delivery: null });
+const laneWatch = watch("e5f6a7b8", { kind: "lane", target: 7, targetCwd: "/w/bau-x", targetBranch: "bau/x", idleSec: 60, delivery: null });
+const noLane: LaneNow = () => null;
+const sameLane: LaneNow = (slot) => slot === 7 ? { cwd: "/w/bau-x", branch: "bau/x" } : null;
+const beat = (over: Partial<{ text: string; everySec: number | null; runsLeft: number; nextAt: number; enabled: boolean; perpetual: boolean }> = {}) =>
+  ({ text: "Lies den Audit der Welle", everySec: 600 as number | null, idleSec: 120, runsLeft: 3,
+    nextAt: NOW + 900_000, enabled: true, perpetual: false, ...over });
+
+describe("die Pflichten der Vorgängerin: was neu scharf wird", () => {
+  test("eine Audit-Wache wird mit demselben Ziel und derselben Zustellung neu gesetzt", () => {
+    expect(rearmStepOf(auditWatch, NOW, noLane)).toEqual({ door: "watch", body: { kind: "audit", repo: "/Users/x/claude-fleet", mainAfter: SHA, idleSec: 0 } });
+    const inbox = watch("a1b2c3d4", { kind: "audit", repo: "/r", mainAfter: SHA, idleSec: 30, delivery: "inbox" });
+    expect(rearmStepOf(inbox, NOW, noLane)).toEqual({ door: "watch", body: { kind: "audit", repo: "/r", mainAfter: SHA, idleSec: 30, delivery: "inbox" } });
+    // ein Record von vorher kennt die Zustellung nicht: die Tür nimmt ihre Vorgabe
+    expect(rearmStepOf(watch("a1", { kind: "audit", repo: "/r", mainAfter: SHA }), NOW, noLane))
+      .toEqual({ door: "watch", body: { kind: "audit", repo: "/r", mainAfter: SHA } });
+  });
+  test("Deploy- und Helfer-Wachen tragen ihre Kennung so, wie die Tür sie liest", () => {
+    expect(rearmStepOf(watch("d1", { kind: "deploy", deployId: "1a2b3c4d" }), NOW, noLane))
+      .toEqual({ door: "watch", body: { kind: "deploy", deployId: "1a2b3c4d" } });
+    expect(rearmStepOf(watch("j1", { kind: "job", jobId: "0123456789ab" }), NOW, noLane))
+      .toEqual({ door: "watch", body: { kind: "job", target: "0123456789ab" } });
+  });
+  test("eine Lane-Wache gilt nur derselben Lane, nicht der nächsten im Slot", () => {
+    expect(rearmStepOf(laneWatch, NOW, sameLane)).toEqual({ door: "watch", body: { kind: "lane", target: 7, idleSec: 60 } });
+    expect(rearmStepOf(laneWatch, NOW, noLane)).toEqual({ skip: "die Lane läuft dort nicht mehr" });
+    expect(rearmStepOf(laneWatch, NOW, () => ({ cwd: "/w/bau-x", branch: "bau/y" }))).toEqual({ skip: "die Lane läuft dort nicht mehr" });
+  });
+  test("eine Erinnerung behält ihren Zeitpunkt, eine Wiederholung Takt, Rest und Zeitpunkt, eine ohne Ende bleibt ohne Ende", () => {
+    expect(rearmStepOf(auto("o1", beat({ everySec: null, runsLeft: 1, nextAt: NOW + 2_520_000 })), NOW, noLane))
+      .toEqual({ door: "auto", perpetual: false, body: { text: "Lies den Audit der Welle", everySec: null, idleSec: 120, inSec: 2520 } });
+    expect(rearmStepOf(auto("r1", beat()), NOW, noLane))
+      .toEqual({ door: "auto", perpetual: false, body: { text: "Lies den Audit der Welle", everySec: 600, idleSec: 120, runs: 3, inSec: 900 } });
+    expect(rearmStepOf(auto("p1", beat({ perpetual: true, runsLeft: 1 })), NOW, noLane))
+      .toEqual({ door: "auto", perpetual: true, body: { text: "Lies den Audit der Welle", everySec: 600, idleSec: 120, perpetual: true, inSec: 900 } });
+    // überfällig: sobald die Nachfolgerin ruht, nicht nie
+    expect(rearmStepOf(auto("o2", beat({ everySec: null, runsLeft: 1, nextAt: NOW - 60_000 })), NOW, noLane))
+      .toMatchObject({ door: "auto", body: { inSec: 1 } });
+    // ein Record von vorher kennt den Zeitpunkt einer Wiederholung nicht: ihr Takt ab jetzt
+    expect(rearmStepOf(auto("r2", { text: "x", everySec: 600, idleSec: 60, runsLeft: 2 }), NOW, noLane))
+      .toEqual({ door: "auto", perpetual: false, body: { text: "x", everySec: 600, idleSec: 60, runs: 2 } });
+  });
+  test("was nicht neu scharf wird, sagt warum; Ereignis und Bericht bleiben Lese-Pflichten, ein Ausgang gilt nur einmal", () => {
+    expect(rearmStepOf(watch("w1", null), NOW, noLane)).toEqual({ skip: "ihr Ziel ist nicht überliefert" });
+    expect(rearmStepOf({ kind: "watch", id: "w2", owedBy, reArm: "POST /api/self/watch" }, NOW, noLane)).toEqual({ skip: "ihr Ziel ist nicht überliefert" });
+    expect(rearmStepOf(auto("s1", beat({ runsLeft: 0, enabled: false })), NOW, noLane)).toEqual({ skip: REARM_SPENT });
+    expect(rearmStepOf(auto("h1", beat({ enabled: false })), NOW, noLane)).toEqual({ skip: "sie war angehalten" });
+    expect(rearmStepOf(auto("o3", { text: "x", everySec: null, idleSec: 60, runsLeft: 1 }), NOW, noLane))
+      .toEqual({ skip: "ihr Zeitpunkt ist nicht überliefert" });
+    expect(rearmStepOf({ kind: "inbox", id: "e1", owedBy, reArm: null }, NOW, noLane)).toBeNull();
+    expect(rearmStepOf({ kind: "report", id: "r1", owedBy, reArm: null }, NOW, noLane)).toBeNull();
+    expect(rearmStepOf({ ...auditWatch, rearmed: "ffff0000" }, NOW, noLane)).toBeNull();
+    expect(rearmStepOf({ ...auditWatch, notRearmed: "Fleet lehnte ab: 409" }, NOW, noLane)).toBeNull();
+  });
+});
+
+describe("der Brief sagt in Worten, was scharf ist und was als Nächstes kommt", () => {
+  const facts = (obligations: LineageObligationRef[], over: Partial<HandoverFacts> = {}): HandoverFacts =>
+    ({ obligations, intent: null, pointer: null, carry: false, now: NOW, laneNow: noLane, ...over });
+  const STEPS = ["1. Lies GET /api/self → `lineage.record`.", "2. Gründe dich auf git."];
+  const head = (text: string): string => text.slice(0, text.indexOf("Beginne exakt in dieser Reihenfolge:"));
+  test("keine Maschinenwörter; die Wache steht mit ihrem Ziel drin; fehlt die Absicht, sagt es ein Satz", () => {
+    const text = successionBriefText(STEPS, null, facts([auditWatch,
+      { kind: "inbox", id: "e1", owedBy, reArm: null }, { kind: "report", id: "r1", owedBy, reArm: null }, { kind: "report", id: "r2", owedBy, reArm: null }]));
+    expect(text.split("\n").slice(0, 3)).toEqual([
+      "[fleet succession] Die Vorgängerin ist auf diesem Slot beendet; du übernimmst ihre Arbeit.",
+      "Fleet stellt für dich wieder scharf:",
+      "- Wache: Audit von main 816923e6 in claude-fleet"]);
+    expect(text).toContain("Ungelesen geblieben sind 1 Ereignis und 2 Berichte an sie;");
+    expect(handoverLines(facts([{ kind: "inbox", id: "e1", owedBy, reArm: null }]))).toContain(
+      "Ungelesen geblieben ist 1 Ereignis an sie; die Kennung steht in GET /api/self, lineage.record.");
+    expect(text).toContain("Deine Vorgängerin hat nicht aufgeschrieben, was sie vorhatte und was als Nächstes zu tun ist.");
+    expect(text).not.toMatch(/Linien-Record|watch\/auto|inbox\/report|ohne intent|ohne pointer|Pflichten per ID|neu armiert|intent und|pointer\b/);
+    // der Kopf ist Text für die Chat-Ansicht: keine Backticks, die dort roh stehen blieben (Mangel 95)
+    expect(head(text)).not.toContain("`");
+    expect(text).toContain(`Beginne exakt in dieser Reihenfolge:\n${STEPS.join("\n")}`);
+  });
+  test("die Absicht steht selbst im Brief, je Zeile eingerückt: keine ihrer Zeilen sieht aus wie ein Schritt", () => {
+    const intent = "Erst den Audit von main lesen.\n1. dann die Charge landen\nKorrektur: Slot 3 ist NICHT frei.";
+    const text = successionBriefText(STEPS, null, facts([], { intent }));
+    expect(head(text).trimEnd().split("\n").slice(-4)).toEqual(["Was sie vorhatte und was als Nächstes kommt, hat sie dir aufgeschrieben:",
+      "  Erst den Audit von main lesen.", "  1. dann die Charge landen", "  Korrektur: Slot 3 ist NICHT frei."]);
+    expect(text.split("\n").filter((l) => /^\d+\./.test(l))).toEqual(STEPS);
+    expect(text).not.toContain("hat nicht aufgeschrieben");
+  });
+  test("Zeiger oder erster Schritt: je ein Satz, kein Feldname", () => {
+    expect(handoverLines(facts([], { pointer: "docs/stand-2026-10-17.md#weiter" })).at(-1))
+      .toBe("Was sie vorhatte und was als Nächstes kommt, steht in docs/stand-2026-10-17.md#weiter.");
+    const carried = successionBriefText(STEPS, "Erst den Audit lesen.", facts([], { carry: true }));
+    expect(carried).toContain("Was sie als Erstes täte, steht am Ende dieses Briefs.");
+    expect(carried.endsWith("\n\nDas Erste, was deine Vorgängerin als Nächstes täte:\nErst den Audit lesen.")).toBe(true);
+    expect(carried).not.toContain("hat nicht aufgeschrieben");
+  });
+  test("was nicht wieder scharf wird, steht mit Grund drin; eine abgelaufene Erinnerung nicht", () => {
+    const lines = handoverLines(facts([laneWatch, auto("s1", beat({ text: "ABGELAUFEN", runsLeft: 0, enabled: false })),
+      auto("h1", beat({ text: "Angehalten", enabled: false }))]));
+    expect(lines.slice(0, 4)).toEqual(["Nicht wieder scharf:",
+      "- Wache: Lane bau/x in Slot 7 ist fertig — die Lane läuft dort nicht mehr",
+      "- Wiederholung alle 10 min, noch 3 Mal: „Angehalten“ — sie war angehalten",
+      "Deine Vorgängerin hat nicht aufgeschrieben, was sie vorhatte und was als Nächstes zu tun ist."]);
+    expect(lines.join("\n")).not.toContain("ABGELAUFEN");
+  });
+  test("ohne Wachen und Wiederholungen ein Satz; Wiederholung und Erinnerung in Worten, lange Texte gekürzt", () => {
+    expect(handoverLines(facts([]))[0]).toBe("Laufende Wachen oder Wiederholungen hatte sie keine.");
+    expect(handoverLines(facts([auto("s1", beat({ runsLeft: 0, enabled: false }))]))[0]).toBe("Laufende Wachen oder Wiederholungen hatte sie keine.");
+    const long = `${"Erst lesen,\n dann ".repeat(12)}schreiben`;
+    expect(handoverLines(facts([auto("r1", beat()), auto("p1", beat({ perpetual: true, everySec: 3600, runsLeft: 1 })),
+      auto("o1", beat({ everySec: null, runsLeft: 1, nextAt: NOW + 2_520_000, text: long })), auto("o2", beat({ everySec: null, runsLeft: 1, nextAt: NOW - 1 }))])).slice(1, 5))
+      .toEqual(["- Wiederholung alle 10 min, noch 3 Mal: „Lies den Audit der Welle“",
+        "- Wiederholung alle 60 min, ohne Ende: „Lies den Audit der Welle“",
+        `- Erinnerung in 42 min: „${"Erst lesen, dann ".repeat(12).slice(0, 80)}…“`,
+        "- Erinnerung, jetzt fällig: „Lies den Audit der Welle“"]);
+  });
+  test("eine lange Liste nennt zehn und zählt den Rest", () => {
+    const many = Array.from({ length: 12 }, (_, i) => watch(`w${i}`, { kind: "deploy", deployId: `0000000${i % 10}`.slice(-8) }));
+    const lines = handoverLines(facts(many));
+    expect(lines.filter((l) => l.startsWith("- Wache: Deploy"))).toHaveLength(10);
+    expect(lines[11]).toBe("- … und 2 weitere (GET /api/self, lineage.record)");
+  });
+});
+
+describe("der Record trägt Ziel und Ausgang je Pflicht, und der Loader liest ihn zurück", () => {
+  const record = (obligations: unknown[]) => ({ v: 1 as const, lineageId: "ec415625ec415625ec415625", role: "generic" as const, at: NOW,
+    from: { slot: 2, openedAt: 1700000000000 }, to: { slot: 2, openedAt: 1700000000001 }, obligations,
+    intent: null, pointer: null, supersededBy: null });
+  test("Wache mit Zustellung, Auto mit Zeitpunkt, Ausgang neu gesetzt oder mit Grund: unverändert zurück", () => {
+    const obligations = [{ ...auditWatch, rearmed: "0a1b2c3d" }, { ...auto("r1", beat()), notRearmed: "sie war angehalten" },
+      watch("j1", { kind: "job", jobId: "0123456789ab", idleSec: 0, delivery: "inbox" }), { kind: "inbox", id: "e1", owedBy, reArm: null }];
+    const read = loadLineageHandover(JSON.parse(JSON.stringify(record(obligations))));
+    expect(read).toEqual({ ok: true, handover: record(obligations) as Extract<typeof read, { ok: true }>["handover"] });
+  });
+  test("ein Record von vorher bleibt lesbar: Wache ohne Zustellung, Auto mit vier Feldern, kein Ausgang", () => {
+    const old = [watch("a1", { kind: "audit", repo: "/r", mainAfter: SHA }), auto("x1", { text: "x", everySec: null, idleSec: 60, runsLeft: 1 })];
+    const read = loadLineageHandover(record(old));
+    expect(read).toEqual({ ok: true, handover: record(old) as Extract<typeof read, { ok: true }>["handover"] });
+  });
+  test("abgewiesen: halbe Zustellung, halber Zeitpunkt, zwei Ausgänge, ein Ausgang an einer Lese-Pflicht, ein Grund über mehrere Zeilen", () => {
+    const refused = (o: unknown): string => {
+      const r = loadLineageHandover(record([o]));
+      return r.ok ? "geladen" : r.error;
+    };
+    expect(refused(watch("a1", { kind: "audit", repo: "/r", mainAfter: SHA, idleSec: 0 } as LineageObligationRef["target"])))
+      .toContain("each with both of idleSec and delivery or neither");
+    expect(refused(watch("a1", { kind: "audit", repo: "/r", mainAfter: SHA, idleSec: 0, delivery: "mail" } as unknown as LineageObligationRef["target"])))
+      .toContain("target.delivery must be null");
+    expect(refused(watch("d1", { kind: "deploy", deployId: "nicht-hex" }))).toContain("target.deployId must be 8 hex characters");
+    expect(refused(auto("r1", { text: "x", everySec: 600, idleSec: 60, runsLeft: 2, nextAt: NOW } as LineageObligationRef["target"])))
+      .toContain("optionally with all of nextAt, enabled and perpetual");
+    expect(refused({ ...auditWatch, rearmed: "0a1b2c3d", notRearmed: "beides" })).toContain("only once");
+    expect(refused({ kind: "inbox", id: "e1", owedBy, reArm: null, notRearmed: "gelesen" })).toContain("only a watch or an auto is re-armed");
+    expect(refused({ ...auditWatch, notRearmed: "erste Zeile\nzweite Zeile" })).toContain("notRearmed must be one line");
+    expect(refused({ ...auditWatch, rearmed: "../x" })).toContain("rearmed must be 1-64 id characters");
   });
 });

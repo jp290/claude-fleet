@@ -1128,7 +1128,10 @@ export async function run(ctx: Ctx): Promise<void> {
     // ONE obligation that dies with the predecessor, so the record has something to name by id — and
     // the body the successor needs to re-arm it, which the record carries only inside its typed target
     // (server/types.ts#LineageAutoTarget; until 2026-10-09 the record named the id alone and the auto was lost)
-    const AUTO_BODY = "lineage-body-marker: this check-in text is the auto's re-arm body";
+    // NO SINGLE QUOTE in it: since 2026-10-17 the founding brief quotes an auto's text, and these panes are shells
+    // (FLEET_CMD=true) — an unbalanced ' typed with the brief left the shell inside a quote, so every later paneEnv
+    // probe of the successor read nothing (core run 1017201853, 19 FAIL from the first token read on)
+    const AUTO_BODY = "lineage-body-marker: this check-in text is the auto re-arm body";
     const armed = await fetch(`${BASE}/api/self/autos`, { method: "POST",
       headers: { "content-type": "application/json", "x-fleet-self-token": oldTok },
       body: JSON.stringify({ text: AUTO_BODY, inSec: 3600 }) });
@@ -1259,11 +1262,17 @@ export async function run(ctx: Ctx): Promise<void> {
     // and not one of claude-fleet's own entry points (2026-09-13: a successor in a private Owner repo went
     // searching ~/.claude for ./state.sh)
     const neutral = ["lineage.record", "HANDOFF.md", "README.md bzw. AGENTS.md"].map((x) => founding.indexOf(x));
-    check("the founding brief names the LINE RECORD; a repo without .fleet/init.md gets the neutral entry: lineage.record · HANDOFF.md · README/AGENTS",
+    // Mangel 95/100 (owner 2026-10-17): the brief says in words what is armed again and where the intent is —
+    // no record id, no count of „[Zitat entfernt]“, no „[Zitat entfernt]“ (this check pinned that until then)
+    check("the founding brief says in words what runs on and where the intent is; a repo without .fleet/init.md gets the neutral entry: lineage.record · HANDOFF.md · README/AGENTS",
       neutral.every((x) => x >= 0) && neutral.every((x, i) => i === 0 || neutral[i - 1]! < x)
         && founding.includes("Die Vorgängerin ist auf diesem Slot beendet")
-        && founding.includes(`Linien-Record ${sj.lineage?.lineageId}`) && founding.includes("1 Pflichten per ID")
-        && !founding.includes("alles Übergebene steht in HANDOFF.md") && !founding.includes("Absicht: erst"),
+        && /\nFleet stellt für dich wieder scharf:\n- Erinnerung in \d+ min: „lineage-body-marker: /.test(founding)
+        // the intent itself, each line indented (Bauleitung 2026-10-17: „[Zitat entfernt]“; this
+        // check pinned the opposite — no „[Zitat entfernt]“ in the brief — until then)
+        && founding.includes(`hat sie dir aufgeschrieben:\n${INTENT.split("\n").map((l) => `  ${l}`).join("\n")}\n`)
+        && !/Linien-Record|Pflichten per ID|neu armiert|watch\/auto/.test(founding)
+        && !founding.includes("alles Übergebene steht in HANDOFF.md"),
       founding.slice(0, 600));
     check("...and it names none of claude-fleet's entry points: no state.sh, no register.sh, no Fleet-Board",
       founding !== "" && ["state.sh", "register.sh", "Fleet-Board"].every((x) => !founding.includes(x)),
@@ -1278,14 +1287,22 @@ export async function run(ctx: Ctx): Promise<void> {
         && recB.to?.slot === sj.slot && recB?.to?.openedAt === successor?.openedAt
         && recB.intent === INTENT && recB.pointer === null && recB.supersededBy === null,
       JSON.stringify(lineB));
-    check("the record's obligation is the auto by id, owedBy the predecessor occupation, its re-arm door, and its body only in the typed target",
+    // since 2026-10-17 the target also says WHEN and WHETHER (nextAt, enabled, perpetual), and the bind re-arms it on B:
+    // `rearmed` names B's own auto, same text and time (this check pinned the four-field target until then)
+    const autoTarget = recB?.obligations?.[0]?.target as { nextAt?: number } | undefined;
+    const autoB = ((await (await get("/api/sessions")).json()) as { autos: { id: string; slot: number; slotOpenedAt?: number;
+      text: string; nextAt: number; enabled: boolean }[] }).autos.find((a) => a.id === recB?.obligations?.[0]?.rearmed);
+    check("the record's obligation is the auto by id, owedBy the predecessor occupation, its re-arm door, its body only in the typed target — and re-armed on B",
       recB?.obligations?.length === 1
-        && JSON.stringify(Object.keys(recB.obligations[0] ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "target"])
-        && JSON.stringify(recB.obligations[0]?.target) === JSON.stringify({ text: AUTO_BODY, everySec: null, idleSec: 60, runsLeft: 1 })
+        && JSON.stringify(Object.keys(recB.obligations[0] ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "rearmed", "target"])
+        && JSON.stringify(recB.obligations[0]?.target) === JSON.stringify({ text: AUTO_BODY, everySec: null, idleSec: 60, runsLeft: 1,
+          nextAt: autoTarget?.nextAt, enabled: true, perpetual: false })
         && recB.obligations[0]?.kind === "auto" && recB.obligations[0]?.id === autoId
         && recB.obligations[0]?.owedBy === `slot ${free}@${oldOpenedAt}` && recB.obligations[0]?.reArm === "POST /api/self/autos"
-        && JSON.stringify(lineB).split("lineage-body-marker").length === 2,
-      JSON.stringify(recB?.obligations));
+        && JSON.stringify(lineB).split("lineage-body-marker").length === 2
+        && autoB?.slot === free && autoB.slotOpenedAt === successor?.openedAt && autoB.text === AUTO_BODY && autoB.enabled
+        && Math.abs(autoB.nextAt - (autoTarget?.nextAt ?? 0)) <= 1000,
+      `${JSON.stringify(recB?.obligations)} autoB=${JSON.stringify(autoB ?? null)}`);
 
     // THE BAND READS A THROUGH THE RECORD. A filed no report, so only the pair in `from` ties A to
     // its file — and since the in-place respawn B sits on A's own slot, so the band is where A was.
@@ -1411,8 +1428,10 @@ export async function run(ctx: Ctx): Promise<void> {
     check("B's armed watch reaches C's record by id, owed by B, with its re-arm door",
       watchOb?.owedBy === `slot ${sj.slot}@${watchedJ.watch?.slotOpenedAt}` && watchOb.reArm === "POST /api/self/watch",
       `obligation=${JSON.stringify(watchOb ?? null)}`);
-    check("...and carries a typed target of exactly {kind, repo, mainAfter}",
-      JSON.stringify(Object.keys(watchTarget ?? {}).sort()) === JSON.stringify(["kind", "mainAfter", "repo"]),
+    // since 2026-10-17 with how it delivers, so the re-armed watch is the same subscription (this pinned the bare three until then)
+    check("...and carries a typed target of exactly {kind, repo, mainAfter, idleSec, delivery}",
+      JSON.stringify(Object.keys(watchTarget ?? {}).sort()) === JSON.stringify(["delivery", "idleSec", "kind", "mainAfter", "repo"])
+        && watchTarget?.idleSec === 60 && watchTarget.delivery === null,
       `target=${JSON.stringify(watchTarget)}`);
     check("the record is C's only source for the sha: intent is null and the sha occurs once in the record",
       lineC?.record?.intent === null && recordCText.split(auditMainAfter).length - 1 === 1,
@@ -1427,10 +1446,14 @@ export async function run(ctx: Ctx): Promise<void> {
     check("after B's in-place succession, B's token is dead and its slot holds C, not an empty row",
       retired.status === 401 && retiredRow?.cwd === sr && retiredRow.openedAt === overrideRow?.openedAt,
       `${retired.status} ${JSON.stringify(retiredRow)}`);
-    const landWatches = ((await (await get("/api/sessions")).json()) as { watches: { slot: number; mainAfter?: string }[] })
-      .watches.filter((w) => w.mainAfter === auditMainAfter);
-    check("nothing was re-armed: once B ended, no watch on that land exists on any slot, C's included",
-      landWatches.length === 0, `watches=${JSON.stringify(landWatches.map((w) => w.slot))}`);
+    // TURNED 2026-10-17 (Mangel 100, owner: „[Zitat entfernt]“): until then
+    // this check pinned „[Zitat entfernt]“ — the successor had to re-arm the watch by hand
+    const landWatches = ((await (await get("/api/sessions")).json()) as { watches: { id: string; slot: number; slotOpenedAt?: number;
+      armed: boolean; mainAfter?: string }[] }).watches.filter((w) => w.mainAfter === auditMainAfter);
+    check("re-armed without a call of its own: once B ended, exactly one watch on that land exists — armed, on C's occupation, the id C's record names",
+      landWatches.length === 1 && landWatches[0]?.armed === true && landWatches[0].slot === oj.slot
+        && landWatches[0].slotOpenedAt === overrideRow?.openedAt && landWatches[0].id === watchOb?.rearmed,
+      `watches=${JSON.stringify(landWatches)} rearmed=${JSON.stringify(watchOb?.rearmed)}`);
 
     // --- C → D with a POINTER at a committed, dated section ---
     writeFileSync(`${sr}/handoff-2026-09-14.md`, "## next\nthe committed, dated section\n");

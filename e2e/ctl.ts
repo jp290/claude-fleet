@@ -665,12 +665,17 @@ await import(pathToFileURL(process.argv[2]).href);
     const obligations = line?.record?.obligations ?? [];
     const autoOb = obligations.find((o) => o.kind === "auto" && o.id === autoId);
     const watchOb = obligations.find((o) => o.kind === "watch" && o.id === watchId);
-    check("POST /api/self/succeed: the record carries the auto re-armable — target exactly {text, everySec, idleSec, runsLeft} as armed — through a boot",
+    // since 2026-10-17 (Mangel 100) the target also says when and whether it runs, and the bind re-armed both on the
+    // successor: `rearmed` names the new row (these two checks pinned the four-field target and no outcome until then)
+    const autoTarget = autoOb?.target as { nextAt?: unknown } | undefined;
+    check("POST /api/self/succeed: the record carries the auto re-armable — target {text, everySec, idleSec, runsLeft, nextAt, enabled, perpetual} as armed — through a boot, re-armed on the successor",
       succeeded?.ok === true && line?.state === "present" && line.record?.intent === INTENT && autoOb?.reArm === "POST /api/self/autos"
-        && JSON.stringify(autoOb?.target) === JSON.stringify({ text: AUTO.text, everySec: AUTO.everySec, idleSec: AUTO.idleSec, runsLeft: AUTO.runs }),
+        && JSON.stringify(autoOb?.target) === JSON.stringify({ text: AUTO.text, everySec: AUTO.everySec, idleSec: AUTO.idleSec, runsLeft: AUTO.runs,
+          nextAt: autoTarget?.nextAt, enabled: true, perpetual: false })
+        && typeof autoTarget?.nextAt === "number" && typeof autoOb?.rearmed === "string",
       `${succeeded?.status} state=${line?.state} obligations=${JSON.stringify(obligations)}`);
-    check("...and the watch beside it keeps its own shape: kind, id, owedBy, reArm and its lane target",
-      JSON.stringify(Object.keys(watchOb ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "target"])
+    check("...and the watch beside it keeps its own shape: kind, id, owedBy, reArm, its lane target with how it delivers, and its re-armed id",
+      JSON.stringify(Object.keys(watchOb ?? {}).sort()) === JSON.stringify(["id", "kind", "owedBy", "reArm", "rearmed", "target"])
         && JSON.stringify(watchOb?.target ?? null).includes(`"kind":"lane","target":${watched.slot}`),
       JSON.stringify(watchOb ?? null));
     // the brief as the successor reads it: state.sh beside a copy of ctl.sh, against THIS server

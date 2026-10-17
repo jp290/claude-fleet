@@ -51255,6 +51255,13 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           points: doneSinceLastLand(record), passt, checked });
         if (landed.ok) branchBook = landed.book;
         await saveStateNow();
+        // main moved, so this land owes what recordLand gives every main-MOVING lane land (Mangel 94:
+        // until here a charge got neither, and every audit since the switch to branches was queued by
+        // hand through /api/repos/audit-tip). `proportional` false: a charge passed no land gate, so
+        // there is no docs-only short-chain verdict to carry — NOT PROVEN, the full suite, the same
+        // reading recordLand gives a land without `prov.verify`. The merge check is no such verdict.
+        await schedulePostLandAudit(repo, main, body.branch, commit.out, false);
+        scheduleMainGraphRebuild(repo, main);
         workplacesCache = null;
         void tickGit().catch(() => {});
         return json({ ok: true, sha: commit.out, main, commits: commits.length, passt, checked,

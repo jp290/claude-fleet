@@ -76,14 +76,15 @@ export function branchTestkit() {
     sockets.push(sock);
     return { repo, state, token: `owner-${process.pid}-${fixtures}`, sock };
   }
-  async function life(f: Fixture, steps: unknown[]): Promise<Answer[]> {
+  // `extra`: Umgebung nur für dieses Leben, etwa ein Tier-2-Audit-Befehl (FLEET_POSTLAND_AUDIT_CMD)
+  async function life(f: Fixture, steps: unknown[], extra: Record<string, string> = {}): Promise<Answer[]> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env))
       if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
     const proc = Bun.spawn([process.execPath, DRIVE, JSON.stringify(steps)], { cwd: f.state, stdout: "pipe", stderr: "pipe",
       env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude",
         PATH: PANE_PATH, FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo,
-        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", ...extra } });
     const deadline = setTimeout(() => proc.kill("SIGKILL"), LIFE_DEADLINE_MS);
     const code = await proc.exited;
     clearTimeout(deadline);
@@ -96,5 +97,5 @@ export function branchTestkit() {
     rmSync(TMP, { recursive: true, force: true });
     rmSync(SOCKETS, { recursive: true, force: true });
   }
-  return { TMP, PROJECTS, fixture, life, cleanup };
+  return { TMP, PROJECTS, BIN, fixture, life, cleanup };
 }

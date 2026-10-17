@@ -5,11 +5,11 @@
 // per `git merge main` gibt bei der nächsten Charge weder Konflikt noch Doppelung; ohne Merge-Check nur
 // ausdrücklich. main bewegt sich hier nur in Fixture-Repos.
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { type Answer, branchTestkit, commitIn, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
 
-const { fixture, life, cleanup } = branchTestkit();
+const { BIN, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
 
 const land = (repo: string, branch: string, subject: string, extra: Record<string, unknown> = {}) =>
@@ -220,5 +220,61 @@ describe("ein Land überdauert den Neustart", () => {
     await life(f, [land(f.repo, "branch/bleibt", "Bleibt", { unchecked: true })]);
     const books = persisted(f).branches as { lands: { subject: string }[] }[];
     expect(books[0]?.lands.map((l) => l.subject)).toEqual(["Bleibt"]);
+  }, LIFE_DEADLINE_MS);
+});
+
+// Mangel 94, Owner 17.10.: „[Zitat entfernt]“. Eine Charge, die
+// main bewegt, bekommt, was jedes Lane-Land bekommt: das Tier-2-Audit des neuen main-Tips steht in der
+// Warteschlange (volle Suite, denn eine Charge lief durch kein Land-Gate), und der Code-Graph des
+// Haupt-Checkouts wird neu gebaut. Eine Charge, die main nicht bewegt, bekommt keins von beiden.
+describe("nach der Charge: Audit des neuen Tips und Code-Graph des Haupt-Checkouts", () => {
+  // eine Helfer-Bereitstellung wie die echte (.env): ein Land reiht ein, die Uhr gibt frei — hier läuft keine Suite
+  const AUDIT_ENV = { FLEET_POSTLAND_AUDIT_CMD: "true", FLEET_AUDIT_HELPER_GRACE_MS: "60000" };
+  // graphify als Attrappe: der Graph ist der HEAD des Checkouts, in dem es lief, jeder Lauf eine Zeile in runs.log
+  writeFileSync(join(BIN, "graphify"), "#!/bin/sh\nmkdir -p graphify-out\ngit rev-parse HEAD >> graphify-out/runs.log\n"
+    + "git rev-parse HEAD > graphify-out/graph.tmp && mv graphify-out/graph.tmp graphify-out/graph.json\n", { mode: 0o755 });
+  function graphFixture() {
+    const f = fixture();
+    writeFileSync(join(f.repo, ".gitignore"), "graphify-out/\n");
+    sh(f.repo, "add", ".gitignore");
+    sh(f.repo, "commit", "-q", "-m", "gitignore");
+    return f;
+  }
+  const queueFile = (f: { state: string }) => join(f.state, "post-land-audit-queue.json");
+  const graphOf = (f: { repo: string }) => join(f.repo, "graphify-out", "graph.json");
+
+  test("main bewegt: ein Audit des neuen Tips wartet (ohne Kurzketten-Urteil), der Graph zeigt den neuen Tip", async () => {
+    const f = graphFixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Nachlauf" })]);
+    commitIn(String(made?.body.path), "n.txt", "Arbeit");
+    const [landed, graph, audits] = await life(f, [land(f.repo, "branch/nachlauf", "Nachlauf", { unchecked: true }),
+      { until: graphOf(f), ms: 10_000 }, get("/api/post-land-audits")], AUDIT_ENV);
+    const tip = sh(f.repo, "rev-parse", "main");
+    expect(landed).toMatchObject({ status: 200, body: { ok: true, sha: tip } });
+    expect(audits?.body.pending).toEqual([{ repo: basename(f.repo), main: "main", covers: 1,
+      oldestAt: expect.any(Number), newestAt: expect.any(Number), hold: "quiet", releaseAt: expect.any(Number) }]);
+    expect(JSON.parse(readFileSync(queueFile(f), "utf8"))).toEqual({
+      [f.repo]: { main: "main", covers: [{ branch: "branch/nachlauf", mainAfter: tip, at: expect.any(Number) }] } });
+    expect(audits?.body.audits).toEqual([]);
+    expect(graph?.status).toBe(200);
+    expect(readFileSync(graphOf(f), "utf8").trim()).toBe(tip);
+    expect(readFileSync(join(f.repo, "graphify-out", "runs.log"), "utf8").trim().split("\n")).toEqual([tip]);
+  }, LIFE_DEADLINE_MS);
+
+  test("main bleibt (ungesicherte Arbeit im Haupt-Checkout): kein Audit eingereiht, kein Graph gebaut", async () => {
+    const f = graphFixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Steht" })]);
+    commitIn(String(made?.body.path), "README", "README geändert");
+    writeFileSync(join(f.repo, "README"), "ungesichert im Haupt-Checkout\n");
+    const before = sh(f.repo, "rev-parse", "main");
+    const [refused, graph, audits] = await life(f, [land(f.repo, "branch/steht", "Steht", { unchecked: true }),
+      { until: graphOf(f), ms: 2_000 }, get("/api/post-land-audits")], AUDIT_ENV);
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.error)).toContain("main wurde nicht bewegt");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(before);
+    expect([audits?.body.pending, audits?.body.audits]).toEqual([[], []]);
+    expect(existsSync(queueFile(f))).toBe(false);
+    expect(graph?.status).toBe(408);
+    expect(existsSync(join(f.repo, "graphify-out"))).toBe(false);
   }, LIFE_DEADLINE_MS);
 });

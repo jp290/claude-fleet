@@ -235,7 +235,7 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       issueSummary(copiedProseResult));
 
     const missingBytes = new Map(fixture.facts.sourceBytes);
-    missingBytes.delete("AGENTS.md");
+    missingBytes.delete(".fleet/vertraege/lane.md");
     const unknownResult = validateContextPacks({
       packs: CONTEXT_PACKS,
       repo: { trackedPaths: fixture.facts.trackedPaths, sourceBytes: missingBytes },

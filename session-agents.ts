@@ -161,7 +161,7 @@ export function renderSessionAgents(input: SessionAgentsInput): SessionAgents {
 }
 
 // A rulebook line that sends a lane to a rule its session file already carries says so in ONE
-// shape — "(Session-Datei, inline: `AGENTS.md` ### Lane, Regeln 7, 8)" — and only for a section
+// shape — "(Session-Datei, inline: `.fleet/vertraege/lane.md` ### Lane, Regeln 7, 8)" — and only for a section
 // this renderer puts in the box: a pointer the lane would have to FOLLOW is the "lies einmal" that
 // 0 of 38 lanes followed (docs/messungen/2026-10-10-kontext-bestandteile.md F7). e2e/pins.ts holds
 // every such line of the lane fragments against a real lane render.

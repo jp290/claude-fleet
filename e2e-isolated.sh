@@ -118,8 +118,9 @@ cp "$SRC/docs/verify-tiering.md" "$DIR/docs/verify-tiering.md"
 cp "$SRC/docs/land-mechanics.md" "$DIR/docs/land-mechanics.md"
 cp "$SRC/docs/plan-queue-refinement-2026-08-11.md" "$DIR/docs/plan-queue-refinement-2026-08-11.md"
 cp "$SRC/docs/container.md" "$DIR/docs/container.md"
-mkdir -p "$DIR/.fleet"
+mkdir -p "$DIR/.fleet/vertraege"
 cp "$SRC/.fleet/klassen.json" "$DIR/.fleet/klassen.json"
+cp "$SRC/.fleet/vertraege/lane.md" "$DIR/.fleet/vertraege/lane.md"
 ( cd "$DIR" && git init -q -b main && git config user.email t@t && git config user.name t \
   && git config commit.gpgsign false && git add -A && git commit -qm init )
 # THE DAEMON-VINTAGE FLOOR for this instance. The server refuses a command-job claim whose device

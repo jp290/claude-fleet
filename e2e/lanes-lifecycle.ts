@@ -1770,7 +1770,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     if (typeof lane.slot === "number" && typeof lane.cwd === "string") {
       const rulesPath = `${lane.cwd}/AGENTS.override.md`;
       const claudeRules = readFileSync(rulesPath, "utf8");
-      const portable = readFileSync(`${ROOT}/AGENTS.md`, "utf8").split("## Portable operating contract\n")[1]?.split("\n## Verify")[0]?.trim() ?? "";
+      const portable = readFileSync(`${ROOT}/.fleet/vertraege/lane.md`, "utf8").split("## Portable operating contract\n")[1]?.split("\n## Verify")[0]?.trim() ?? "";
       const hasPortable = (text: string): boolean => portable.length > 0 && text.includes(portable);
       check("native attach fixture: the actual Claude file carries the exact portable contract",
         hasPortable(claudeRules) && claudeRules.includes("then POST /api/self/succeed"));
@@ -1862,13 +1862,13 @@ export async function run(lc: LaneCtx): Promise<void> {
           && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
           && part.sha256 === createHash("sha256").update(role).digest("hex") && part.ort === "box"
           && meta.parts.some((row) => row.id === "footer" && typeof row.bytes === "number" && row.bytes > 0));
-        // THE REPORT RULES (portable-core Zusatz "reporting", Charge 4): a Claude lane carries AGENTS.md
+        // THE REPORT RULES (portable-core Zusatz "reporting", Charge 4): a Claude lane carries the lane contract's
         // ## Reporting of its own head inline, once; a Codex or Pi lane file stays without it
-        const laneContract = cwd && existsSync(`${cwd}/AGENTS.md`) ? readFileSync(`${cwd}/AGENTS.md`, "utf8") : "";
+        const laneContract = cwd && existsSync(`${cwd}/.fleet/vertraege/lane.md`) ? readFileSync(`${cwd}/.fleet/vertraege/lane.md`, "utf8") : "";
         const reportingAt = laneContract.indexOf("\n## Reporting\n");
         const reportingEnd = reportingAt < 0 ? -1 : laneContract.indexOf("\n## ", reportingAt + 1);
         const reporting = reportingAt < 0 ? "" : laneContract.slice(reportingAt + 1, reportingEnd < 0 ? undefined : reportingEnd).trimEnd();
-        check(`native dispatch ${harness}: AGENTS.md ## Reporting of the lane's head is ${harness === "claude" ? "inline once, receipted as a box part" : "not in the session file"}`,
+        check(`native dispatch ${harness}: the lane contract's ## Reporting of the lane's head is ${harness === "claude" ? "inline once, receipted as a box part" : "not in the session file"}`,
           reporting !== "" && (harness === "claude"
             ? agents.split(reporting).length === 2 && meta?.parts.some((row) => row.id === "portable-core.reporting" && row.ort === "box") === true
             : !agents.includes("## Reporting") && meta?.parts.some((row) => row.id === "portable-core.reporting") !== true),

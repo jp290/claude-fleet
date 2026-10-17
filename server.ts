@@ -40323,7 +40323,10 @@ async function foundingSessionInput(fp: Pick<FoundingPlan, "repoRoot" | "head" |
   position: "lane" | "main" | "orchestratorin", selection?: Readonly<Record<string, "box" | "ausleihe">>, footer?: string): Promise<SessionAgentsInput> {
   const sourceBytes = new Map<string, string>();
   const paths = new Set(fp.plan.selected.flatMap((pack) => "privateSourceId" in pack.sources ? [] : pack.sources.map((source) => source.path)));
-  if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi")) paths.add("AGENTS.md");
+  // Codex and Pi always carry the contract (session-agents.ts#renderSessionAgents boxes the portable-core
+  // seed for them), so its sources are read even when the plan did not select the pack
+  if (resolveContextHarness(harness) === "codex" || resolveContextHarness(harness).startsWith("pi"))
+    for (const source of CONTEXT_PACKS.find((pack) => pack.id === "portable-core")!.sources) paths.add(source.path);
   for (const path of paths) {
     const entry = await gitRead(fp.repoRoot, "ls-tree", fp.head, "--", path);
     if (entry.code !== 0 || !/^100(?:644|755) blob /.test(entry.out)) continue;

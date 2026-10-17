@@ -127,24 +127,6 @@
     "status": "active"
   },
   {
-    "id": "codex-native-context-v1",
-    "useWhen": "Als Codex-Session: dein Fenster kompaktiert nativ — wann trotzdem bewusst uebergeben wird und was die Uebergabe traegt.",
-    "scope": "repo-contract",
-    "audience": "agent",
-    "triggers": ["always"],
-    "hardness": "guidance",
-    "sources": [
-      { "path": "AGENTS.md", "anchor": "### Context self-management (§6, §8)" }
-    ],
-    "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["codex"],
-    "modes": ["read-only", "mutating", "monitoring"],
-    "estimatedBytes": 850,
-    "evidence": "tree-anchor",
-    "owner": "owner",
-    "status": "superseded"
-  },
-  {
     "id": "nachfolge-klug",
     "useWhen": "Wenn deine Claude-Session die wirksame Uebergabe-Schwelle erreicht: warm sichern und den Nachfolgezeitpunkt entscheiden.",
     "scope": "repo-contract",

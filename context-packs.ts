@@ -211,12 +211,15 @@ const AUSLEIHE = { lane: "ausleihe", main: "ausleihe", orchestratorin: "ausleihe
 // THE CONTRACT TRAVELS WHOLE (Befund F3, docs/messungen/2026-10-10-kontext-bestandteile.md): since
 // f91136eb no Claude role loads the repo AGENTS.md natively, and a pointer to the section was read in
 // 0 of 38 lane transcripts — so every position carries it inline, as Codex and Pi already do.
+// THE LANE CONTRACT LIVES IN FLEET'S OWN FOLDER (Umstieg B1): the sections the server reads moved out of
+// the repo AGENTS.md verbatim, headings unchanged, so every anchor below names the same section.
+const LANE_CONTRACT = ".fleet/vertraege/lane.md";
 const CONTRACT_BOX = { lane: "box", main: "box", orchestratorin: "box" } as const;
 const VERIFY_BOX = { lane: "box", main: "box", orchestratorin: "ausleihe" } as const;
-const VERIFY_KERN = { id: "verify-e2e.kern", path: "AGENTS.md", anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX } as const;
-const VERIFY_LANE = { id: "verify-e2e.lane", path: "AGENTS.md", anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } } as const;
-const VERIFY_MAIN = { id: "verify-e2e.main", path: "AGENTS.md", anchor: "### MAIN", sorte: "anleitung", positions: { ...AUSLEIHE, main: "box" } } as const;
-const VERIFY_MORE = { id: "verify-e2e.more", path: "AGENTS.md", anchor: "### More", sorte: "anleitung", positions: AUSLEIHE } as const;
+const VERIFY_KERN = { id: "verify-e2e.kern", path: LANE_CONTRACT, anchor: "### Kern", sorte: "anleitung", positions: VERIFY_BOX } as const;
+const VERIFY_LANE = { id: "verify-e2e.lane", path: LANE_CONTRACT, anchor: "### Lane", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } } as const;
+const VERIFY_MAIN = { id: "verify-e2e.main", path: LANE_CONTRACT, anchor: "### MAIN", sorte: "anleitung", positions: { ...AUSLEIHE, main: "box" } } as const;
+const VERIFY_MORE = { id: "verify-e2e.more", path: LANE_CONTRACT, anchor: "### More", sorte: "anleitung", positions: AUSLEIHE } as const;
 const VERIFY_GATE_VS_AUDIT = { id: "verify-e2e.gate-vs-audit", path: "docs/verify-tiering.md", anchor: "### 6.0 gate-vs-audit — What each buys", sorte: "wissen", positions: { ...AUSLEIHE, main: "box" } } as const;
 const VERIFY_PROPORTION = { id: "verify-e2e.proportion", path: "docs/verify-tiering.md", anchor: "### 6.0b proportion — Docs-only gate and audit", sorte: "wissen", positions: AUSLEIHE } as const;
 
@@ -235,12 +238,12 @@ export const CONTEXT_PACKS = [
     audience: "agent",
     triggers: ["always"],
     hardness: "hard",
-    sources: [{ id: "portable-core.contract", path: "AGENTS.md", anchor: "## Portable operating contract", sorte: "anleitung", positions: CONTRACT_BOX }],
+    sources: [{ id: "portable-core.contract", path: LANE_CONTRACT, anchor: "## Portable operating contract", sorte: "anleitung", positions: CONTRACT_BOX }],
     // THE REPORT RULES TRAVEL WITH A CLAUDE LANE (Charge 4): a lane writes the report, so its file
-    // carries AGENTS.md ## Reporting inline, read at the lane's head like the contract. Only a Claude
+    // carries the lane contract's ## Reporting inline, read at the lane's head like the contract. Only a Claude
     // lane: a MAIN and the Orchestratorin plan as before, and a Codex or Pi file is left as it was.
     zusaetze: [{ id: "reporting", bedingung: { positions: ["lane"], harnesses: ["claude"] },
-      sources: [{ id: "portable-core.reporting", path: "AGENTS.md", anchor: "## Reporting", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } }] }],
+      sources: [{ id: "portable-core.reporting", path: LANE_CONTRACT, anchor: "## Reporting", sorte: "anleitung", positions: { ...AUSLEIHE, lane: "box" } }] }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ALL_MODES,
@@ -299,7 +302,7 @@ export const CONTEXT_PACKS = [
     triggers: ["landing"],
     hardness: "hard",
     sources: [
-      { id: "land-mechanics.landing", path: "AGENTS.md", anchor: "## Landing", sorte: "anleitung", positions: AUSLEIHE },
+      { id: "land-mechanics.landing", path: LANE_CONTRACT, anchor: "## Landing", sorte: "anleitung", positions: AUSLEIHE },
       { id: "land-mechanics.doc", path: "docs/land-mechanics.md", anchor: "# Landing a lane — what actually moves, and how to know before you press it", sorte: "anleitung", positions: AUSLEIHE },
     ],
     requiredCapabilities: ["tracked-source-read", "git-inspect"],

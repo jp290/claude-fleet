@@ -180,13 +180,13 @@ export async function run(externalCheck?: ContextPlanCheck): Promise<void> {
       && observedSourceHash([], promiseShas) === undefined);
   // stamping: seeds and repo packs go through ONE function, so `sourceHash` means one thing
   const stamped = stampObservedSourceHashes([...valid.selected, ...normal.selected],
-    new Map([["docs/promise.md", blob(1)], ["AGENTS.md", blob(3)]]));
+    new Map([["docs/promise.md", blob(1)], [".fleet/vertraege/lane.md", blob(3)]]));
   const stampedPromise = stamped.find((p) => p.id === "product-promise");
   const stampedCore = stamped.find((p) => p.id === "portable-core");
   const stampedVerify = stamped.find((p) => p.id === "verify-e2e");
   check("context plan: stamping versions a seed only when EVERY source has a blob — a partly-tracked seed stays unstamped",
-    stampedCore?.sourceHash === observedSourceHash([{ path: "AGENTS.md", anchor: "## Portable operating contract" }],
-      new Map([["AGENTS.md", blob(3)]]))
+    stampedCore?.sourceHash === observedSourceHash([{ path: ".fleet/vertraege/lane.md", anchor: "## Portable operating contract" }],
+      new Map([[".fleet/vertraege/lane.md", blob(3)]]))
       && stampedVerify !== undefined && stampedVerify.sourceHash === undefined
       && normal.selected.every((p) => p.sourceHash === undefined),
     JSON.stringify(stamped.map((p) => [p.id, p.sourceHash ?? null])));
@@ -1267,21 +1267,6 @@ function orchestrationTriggerChecks(check: ContextPlanCheck): void {
     CONTEXT_PACK_HARNESSES.every((harness) =>
       planRepoContext({ manifest, repo, facts: { ...laneFacts, harness } }).selected.some((pack) => pack.id === "haltung-worker")),
     JSON.stringify(CONTEXT_PACK_HARNESSES));
-  // THE CODEX PACK IS SUPERSEDED, NOT DELETED (L16, MAIN answer 96d8a3f0, 2026-10-08): its one anchor
-  // lies inside AGENTS.md ## Portable operating contract, which session-agents.ts#renderSessionAgents
-  // boxes whole for every codex session, so the pointer told no session anything new. Omission: every
-  // harness, lane and founding alike, omits it as status-not-active — and the same manifest with only
-  // the status flipped back selects it for codex, so the reason is the status and nothing else.
-  const CODEX_PACK = "codex-native-context-v1";
-  const codexOmissions = CONTEXT_PACK_HARNESSES.flatMap((harness) => [laneFacts, bootstrapFacts].map((facts) =>
-    ({ harness, why: planRepoContext({ manifest, repo, facts: { ...facts, harness } }).omitted.find((pack) => pack.id === CODEX_PACK)?.why ?? null })));
-  check("codex-native-context-v1: every harness omits the superseded pack as status-not-active, on lane and founding facts",
-    codexOmissions.every((row) => row.why === "status-not-active"), JSON.stringify(codexOmissions));
-  const isRecord = (pack: unknown): pack is Record<string, unknown> => !!pack && typeof pack === "object";
-  const activeAgain = manifest.kind === "packs" ? { ...manifest, packs: manifest.packs.map((pack) =>
-    isRecord(pack) && pack.id === CODEX_PACK ? { ...pack, status: "active" } : pack) } : manifest;
-  check("codex-native-context-v1: flipping only its status back to active selects it for codex — the omission is the status alone",
-    planRepoContext({ manifest: activeAgain, repo, facts: { ...laneFacts, harness: "codex" } }).selected.some((pack) => pack.id === CODEX_PACK));
   const laneSeeds = planContext({ sourceTree: "fleet", ...laneFacts });
   const deliveryPlan = { selected: [...laneSeeds.selected, ...lanePlan.selected],
     omitted: [...laneSeeds.omitted, ...lanePlan.omitted] };
@@ -1491,7 +1476,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     const boxed = (rendered: ReturnType<typeof renderSessionAgents>): boolean => {
       const contract = rendered.parts.find((part) => part.id === "portable-core.contract");
       return contractSection !== null && contract?.ort === "box" && contract.content === contractSection
-        && rendered.text.includes(contractSection) && !rendered.text.includes("AGENTS.md | ## Portable operating contract");
+        && rendered.text.includes(contractSection) && !rendered.text.includes(`${contractSource?.path} | ## Portable operating contract`);
     };
     const rendered = renderSessionAgents({ ...input, plan: claudePlan });
     check(`session agents: a claude ${position} carries the portable contract verbatim in its box, and the borrow control is rejected`,
@@ -1796,13 +1781,13 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
   const filePlain = render(merged(plain, repoPlain), null);
   const fileLive = render(merged(live, repoLive), "live-bau");
   const part = (file: typeof filePlain, id: string) => file.parts.find((p) => p.id === id);
-  const kernText = sourceSection(repo.sourceBytes.get("AGENTS.md")!, "AGENTS.md", "### Kern")!.content;
+  const kernText = sourceSection(repo.sourceBytes.get(".fleet/vertraege/lane.md")!, ".fleet/vertraege/lane.md", "### Kern")!.content;
   const liveBauText = sourceSection(repo.sourceBytes.get("docs/testinstanz.md")!, "docs/testinstanz.md",
     "## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt")!.content;
   check("live-bau file: verify-e2e Kern and Lane are receipt rows ausleihe with zeitpunkt vor-dem-land, the pointer says so, the text is out",
     ["verify-e2e.kern", "verify-e2e.lane"].every((id) => part(fileLive, id)?.ort === "ausleihe" && part(fileLive, id)?.zeitpunkt === "vor-dem-land"
       && part(fileLive, id)?.content === null && part(fileLive, id)?.sha256 !== null)
-      && fileLive.text.includes("  AGENTS.md | ### Kern — vor dem Land ausleihen\n  AGENTS.md | ### Lane — vor dem Land ausleihen")
+      && fileLive.text.includes("  .fleet/vertraege/lane.md | ### Kern — vor dem Land ausleihen\n  .fleet/vertraege/lane.md | ### Lane — vor dem Land ausleihen")
       && !fileLive.text.includes(kernText) && filePlain.text.includes(kernText),
     JSON.stringify(["verify-e2e.kern", "verify-e2e.lane"].map((id) => part(fileLive, id))));
   check("live-bau file: the Testinstanz instruction is boxed — its exact bytes in the file and on the receipt row",

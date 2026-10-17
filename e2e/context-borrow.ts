@@ -93,7 +93,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
           { id: "exact", path: "exact.md", anchor: "### Kern" },
         ] }], omitted: [] }, selection: { "renderer-anchor.ambiguous": "box", "renderer-anchor.exact": "box" },
         sourceBytes: new Map([["ambiguous.md", ambiguousText], ["exact.md", exactText],
-          ["AGENTS.md", "## Portable operating contract\nFixture contract.\n"]]), footer: "Keep footer." } as const;
+          [".fleet/vertraege/lane.md", "## Portable operating contract\nFixture contract.\n"]]), footer: "Keep footer." } as const;
       let rendered: ReturnType<typeof renderSessionAgents> | undefined;
       let error: unknown;
       try { rendered = renderSessionAgents(input); } catch (caught) { error = caught; }
@@ -130,7 +130,8 @@ export async function run(check: ContextPlanCheck): Promise<void> {
     const hash = createHash("sha256").update(content).digest("hex");
     const sectionHash = createHash("sha256").update(section).digest("hex");
     writeFileSync(join(root, "AGENTS.md"), content);
-    mkdirSync(join(root, ".fleet"));
+    mkdirSync(join(root, ".fleet/vertraege"), { recursive: true });
+    writeFileSync(join(root, ".fleet/vertraege/lane.md"), contract);
     const repoPack = { id: "repo-borrow", scope: "repo-contract", audience: "agent", triggers: ["always"], hardness: "guidance",
       sources: [{ path: "AGENTS.md", anchor: "## Section" }], requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex"],
       modes: ["mutating"], estimatedBytes: 0, evidence: "tree-anchor", owner: "owner", status: "active", useWhen: "Read the fixture" };
@@ -303,10 +304,11 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       ambiguous.status === 409 && ambiguous.body.refusal === "source-anchor-ambiguous" && !ambiguous.body.sources
       && ambiguousLine?.refusal === "source-anchor-ambiguous" && ambiguousLine.bytes === 0
       && ambiguousLine.borrowedAt === null && JSON.stringify(ambiguousLine.sources) === "[]");
-    writeFileSync(join(root, "AGENTS.md"), readFileSync(join(sourceRoot, "AGENTS.md")));
+    mkdirSync(join(root, ".fleet/vertraege"), { recursive: true });
+    writeFileSync(join(root, ".fleet/vertraege/lane.md"), readFileSync(join(sourceRoot, ".fleet/vertraege/lane.md")));
     mkdirSync(join(root, "docs"));
     writeFileSync(join(root, "docs/verify-tiering.md"), readFileSync(join(sourceRoot, "docs/verify-tiering.md")));
-    g("add", "AGENTS.md", "docs/verify-tiering.md"); g("commit", "-q", "-m", "real verify sources");
+    g("add", ".fleet/vertraege/lane.md", "docs/verify-tiering.md"); g("commit", "-q", "-m", "real verify sources");
     const verify = await borrow("verify-e2e");
     const verifySources = verify.body.sources;
     const verifyLine = (await readLedger<Record<string, unknown>>(borrowFile)).rows.at(-1);

@@ -189,10 +189,10 @@ export type SectionCutKey = RoleAudience | "lane" | ContextPositionVariante;
  * rule is already in its session file and needs no `cat`.
  */
 const LANE_CUT_INLINE_DEF = {
-  "proportionale-lokale-verifikation": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regeln 1, 2) (Session-Datei, inline: `AGENTS.md` ### Lane, Regeln 6, 7)",
-  "verify-kette": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regel 1) (Session-Datei, inline: `AGENTS.md` ### Lane, Regel 6)",
-  "e2e-isolated-sh-ist-tier": "(Session-Datei, inline: `AGENTS.md` ### Lane, Regel 7)",
-  "nie-einen-prozess-ueber-ein": "(Session-Datei, inline: `AGENTS.md` ### Kern, Regel 5) (Session-Datei, inline: `AGENTS.md` ### Lane, Regel 9)",
+  "proportionale-lokale-verifikation": "(Session-Datei, inline: `.fleet/vertraege/lane.md` ### Kern, Regeln 1, 2) (Session-Datei, inline: `.fleet/vertraege/lane.md` ### Lane, Regeln 6, 7)",
+  "verify-kette": "(Session-Datei, inline: `.fleet/vertraege/lane.md` ### Kern, Regel 1) (Session-Datei, inline: `.fleet/vertraege/lane.md` ### Lane, Regel 6)",
+  "e2e-isolated-sh-ist-tier": "(Session-Datei, inline: `.fleet/vertraege/lane.md` ### Lane, Regel 7)",
+  "nie-einen-prozess-ueber-ein": "(Session-Datei, inline: `.fleet/vertraege/lane.md` ### Kern, Regel 5) (Session-Datei, inline: `.fleet/vertraege/lane.md` ### Lane, Regel 9)",
 } as const;
 export const LANE_CUT_INLINE: Readonly<Record<string, string>> = LANE_CUT_INLINE_DEF;
 
@@ -271,7 +271,7 @@ export const ROLE_SECTION_CUT: Record<SectionCutKey, Record<RulebookFragment, Fr
     graphify: "aus",
   },
   // lane: the three fragments of FRAGMENTS_FOR.lane minus the verify sections whose every rule the
-  // lane's session file already carries inline — the Anleitung box, AGENTS.md ### Kern and ### Lane
+  // lane's session file already carries inline — the Anleitung box, .fleet/vertraege/lane.md ### Kern and ### Lane
   // (LANE_CUT_INLINE names the rules; e2e/pins.ts holds each against a real lane render). A MAIN
   // has no session file, so its own render keeps them. What a cut section says that no box rule
   // carries (host suites, pkill examples) rides along in `suite-offer`, which a MAIN omits.

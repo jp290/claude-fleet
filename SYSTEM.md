@@ -5,10 +5,11 @@ die Fleet hin entwickelt wird. Es behauptet nicht, dass jede Kante bereits imple
 gemessene Ist-Befund und die bekannten Abweichungen stehen in
 `docs/kontextschicht-analyse-2026-08-20.md`.
 
-`SYSTEM.md` ist die kurze mentale Karte des Produkts. `AGENTS.md` bleibt der portable normative
-Arbeitsvertrag; `rulebook/*.md` bleibt das private operative Overlay; Code, Ledger und Live-Sensoren
-entscheiden, was heute tatsächlich existiert. Routen, Harness-Matrizen und Featureinventare gehören
-nicht handgepflegt hierher, sondern später in eine aus Code generierte Capability-Sicht.
+`SYSTEM.md` ist die kurze mentale Karte des Produkts. `AGENTS.md` ist die Arbeitsweise jeder Session
+in diesem Repo; `.fleet/vertraege/lane.md` ist der Vertrag, den Fleet einer Lane mitgibt; Code, Ledger
+und Live-Sensoren entscheiden, was heute tatsächlich existiert. Routen, Harness-Matrizen und
+Featureinventare gehören nicht handgepflegt hierher, sondern später in eine aus Code generierte
+Capability-Sicht.
 
 ## Produktversprechen
 
@@ -223,8 +224,8 @@ Provenienz.
 
 - `README.md` erklärt öffentlich Produktversprechen, Einstieg und sichtbare Nutzung.
 - `SYSTEM.md` erklärt das stabile Rollen-, Objekt- und Lebenszyklusmodell.
-- `AGENTS.md` ist der portable normative Arbeitsvertrag.
-- `rulebook/*.md` erzeugt das private operative Overlay.
+- `AGENTS.md` ist die Arbeitsweise jeder Session in diesem Repo.
+- `.fleet/vertraege/lane.md` ist der Lane-Vertrag; Fleet trägt ihn in die Session-Datei jeder Lane.
 - Die geplante Capability-Registry im Code ist die ausführbare Featurewahrheit; ihre Dokumentansicht
   wird generiert und nie handgeschrieben.
 - Context Packs zeigen auf bestehende Quellen; sie kopieren diese nicht.

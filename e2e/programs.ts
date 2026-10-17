@@ -975,7 +975,7 @@ export async function run(ctx: Ctx): Promise<void> {
   // unchanged in shape — a manifest committed into the Fleet checkout — only the verdict flipped.
   mkdirSync(`${ROOT}/.fleet`, { recursive: true });
   writeFileSync(`${ROOT}/.fleet/context-packs.json`, JSON.stringify([
-    repoPackEntry({ id: "fleet-frame-carrier-probe", sources: [{ path: "AGENTS.md", anchor: "## Verify" }] }),
+    repoPackEntry({ id: "fleet-frame-carrier-probe", sources: [{ path: ".fleet/vertraege/lane.md", anchor: "## Verify" }] }),
   ]));
   gitIn(ROOT, "add", ".fleet/context-packs.json");
   const fleetManifestCommit = gitIn(ROOT, "commit", "-qm", "fleet-frame manifest carrier probe");

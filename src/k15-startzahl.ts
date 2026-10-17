@@ -59,3 +59,14 @@ export function startZahl(a: StartZahlAntwort): StartZahl | null {
   return s ? startZahlVon({ bausteine: a.plan.bausteine, geliefert: a.lieferung?.geliefert ?? [], claudeCode: a.claudeCode ?? null,
     fleetBytes: s.fleetBytes, bytesJeToken: s.bytesJeToken.wert }) : null;
 }
+// eine Summe ganzer Tokens auf Teile nach ihren Bytes verteilt, sodass die Teile die Summe ergeben (Runde 4, Punkt 0: die Gruppen unter
+// der Summe des Gründungsfensters): jeder Teil abgerundet, der Rest einzeln an die größten Nachkomma-Anteile, bei Gleichstand an den früheren
+export function verteile(gesamt: number, anteile: readonly number[]): number[] {
+  const summe = anteile.reduce((n, x) => n + x, 0);
+  if (summe === 0) return anteile.map(() => 0);
+  const genau = anteile.map((x) => (x / summe) * gesamt);
+  const teile = genau.map(Math.floor);
+  const rest = gesamt - teile.reduce((n, x) => n + x, 0);
+  genau.map((x, i) => ({ i, r: x - Math.floor(x) })).sort((p, q) => q.r - p.r || p.i - q.i).slice(0, rest).forEach(({ i }) => { teile[i]! += 1; });
+  return teile;
+}

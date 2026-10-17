@@ -6640,6 +6640,15 @@ window.fixtureOpen = () => openPicker(2); document.querySelector('#fixture-free'
         const parts = (sum?.title.match(/[\\d.]+ Tok/g) ?? []).map(n);
         return !!sum && n(sum.querySelector('.fdsumn').textContent) === 30227 && parts.length >= 2 && parts.reduce((x, y) => x + y, 0) === 30227
           && /aufgeschlüsselt/.test(sum.title); })()`);
+      // … and so do its groups after a click (Runde 4, Punkt 0): Claude Code's group by the same rule, not the fixed measurement
+      await click('[data-start="sum"]');
+      await click('.fdsg[data-start="claude-code"]');
+      g['a click on the sum shows groups that add up to it: Claude Code from its breakdown, its line says where the number comes from'] = await evaluate<boolean>(`(() => {
+        const n = (s) => Number(s.replace(/\\D/g, ''));
+        const tokGroups = Array.from(document.querySelectorAll('#shell-found .fdstart .fdsg .fdsgr'), (r) => r.textContent).filter((t) => / Tok$/.test(t));
+        const cc = document.querySelector('#shell-found .fdsg[data-start="claude-code"] .fdsgr')?.textContent;
+        return cc === '≈ 30.000 Tok' && tokGroups.length >= 2 && tokGroups.map(n).reduce((x, y) => x + y, 0) === n(document.querySelector('#shell-found .fdsumn').textContent)
+          && /Aufgeschlüsselt am Start einer Session/.test(document.querySelector('#shell-found .fdsgd')?.textContent ?? ''); })()`);
       await reset('window.fixtureStart = true');
       g['with a start sum, Was die Session bekommt is one row: the sum in tokens beside Anpassen, no kB, no groups until the sum is clicked'] = await evaluate<boolean>(`(() => {
         const row = document.querySelector('#shell-found .fdsum'), sum = row?.querySelector('[data-start="sum"]');

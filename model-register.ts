@@ -32,6 +32,12 @@ export const HARNESS_AVAILABILITY: Readonly<Record<string, HarnessAvailability>>
 // What a door asks: the register's entry, lifted by FLEET_HARNESS_RESUME. Read per call, never cached.
 export const harnessAvailability = (id: string, resume = process.env.FLEET_HARNESS_RESUME ?? ""): HarnessAvailability =>
   resume.split(",").map((x) => x.trim()).includes(id) ? { status: "available" } : HARNESS_AVAILABILITY[id] ?? { status: "available" };
+// WHICH HARNESSES THIS MACHINE NEVER STARTS — a fact about the machine, not the adapter or the platform (Bauleitung 16.10. 23:05:
+// GLM not on the Mac, a local rule; the owner may lift it again without code). FLEET_HARNESSES_OFF (env, comma
+// list, default empty, restart). Read per call. The doors that start something refuse it (server.ts#harnessPausedError), GET
+// /api/harnesses publishes it as `hier`/`grund`; a founding plan for it still computes.
+export const harnessOffReason = (id: string, off = process.env.FLEET_HARNESSES_OFF ?? ""): string | null =>
+  id !== "" && off.split(",").map((x) => x.trim()).includes(id) ? "auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)" : null;
 
 type RoleDefault = { harness: ModelHarness; id: string; effort: string | null };
 const OPUS_WORKER = { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" } as const;

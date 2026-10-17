@@ -40,7 +40,8 @@ import { modelLabel } from "./modelname";
 import { packIdFassung, standSincePreview, type BranchesView, type BranchOtherView, type FoundingPlanOmission, type FoundingPlanPack,
   type FoundingPlanPart, type FoundingSessionAgents, type LaneAnchor, type PackAnchors, type PackStand } from "./protocol";
 import { openShell, type Shell } from "./shell";
-import { startZahl } from "./k15-startzahl";
+import { anatomieVon } from "./k15-anatomie";
+import { startZahl, verteile } from "./k15-startzahl";
 
 // the four roles of the register (session-blocks.ts#SessionRole); the server's own word for each
 // comes with the plan (`rollen[].wort`), the sentence is the window's (Konzept 3, Blatt 20)
@@ -980,7 +981,11 @@ function sumRow(a: StartAnswer): HTMLElement {
 // THE GROUPS of the sum, one line each (name left, tokens right), the rows of one group on a click
 function startView(a: StartAnswer): HTMLElement {
   const s = S!;
-  const l = a.lieferung, ratio = a.startSumme.bytesJeToken.wert;
+  const l = a.lieferung, sum = a.startSumme;
+  // the groups add up to the sum above them (Runde 4, Punkt 0): Claude Code's part by the rule that makes the sum (src/k15-startzahl.ts),
+  // the rest shared over Fleet's ways by their bytes
+  const z = startZahl(a);
+  const fleetTotal = sum.tokens === "unknown" ? sum.fleetTokens : sum.tokens - (z?.claudeCode?.tokens ?? 0);
   const box = el("div", "fdstart");
   const group = (id: string, name: string, right: string, lines: HTMLElement[]) => {
     const open = s.startOpen === id;
@@ -1008,22 +1013,29 @@ function startView(a: StartAnswer): HTMLElement {
     // the value in words ("14", "kein Server"), the switch Claude Code is started with small under the name
     const lines = cc.zeilen.map((x) => line(x.wort, typeof x.bytes === "number" && x.bytes > 0 ? kb(x.bytes) : x.wert.replace(` ${x.wort}`, ""),
       { sub: x.weg === "Claude Code" ? undefined : x.weg, title: `${x.satz} (${x.quelle})` }));
-    lines.push(el("div", `fdsgm${m.gilt ? "" : " warn"}`, `Gemessen am ${dayOf(m.am)} mit Claude Code ${m.claude}: erste Antwort einer leeren Session mit dieser Startzeile.${m.gilt ? "" : ` Veraltet: ${m.grund ?? ""}.`}`));
+    // where the group's number comes from: the breakdown of a measured start, else the fixed measurement, else nothing counted
+    const q = anatomieVon(cc)?.quelle, teil = z?.claudeCode;
+    const eigene = cc.zeilen.filter((x) => x.weg === "native Datei" && typeof x.bytes === "number" && x.bytes > 0).map((x) => x.wort);
+    lines.push(el("div", `fdsgm${teil ? "" : " warn"}`, teil?.wie === "aufgeschlüsselt" && q
+      ? `Aufgeschlüsselt am Start einer Session in ${q.ort} (Claude Code ${q.claude}, ${new Date(q.seit).toLocaleDateString("de-DE")})${eigene.length ? `, dazu ${eigene.join(", ")}` : ""}. Die feste Messung vom ${dayOf(m.am)}, ${tok(m.tokens)}, gilt nur ohne Aufschlüsselung.`
+      : `Gemessen am ${dayOf(m.am)} mit Claude Code ${m.claude}: erste Antwort einer leeren Session mit dieser Startzeile.${teil ? "" : ` Veraltet: ${m.grund ?? ""}. Nicht in der Summe.`}`));
     if (cc.danach) lines.push(el("div", "fdsgm", `Ab dem nächsten Start dieser MAIN mit ihrer Werkzeugliste: ${tok(cc.danach.tokens)}.`));
-    group("claude-code", "Claude Code selbst", tok(m.tokens), lines);
+    group("claude-code", "Claude Code selbst", !teil ? "nicht gezählt" : teil.wie === "aufgeschlüsselt" ? `≈ ${tok(teil.tokens)}` : tok(teil.tokens), lines);
   }
   const delivered = new Set(l.geliefert.map((x) => x.id));
-  for (const g of WEG_GRUPPE) {
+  const wege = WEG_GRUPPE.map((g) => {
     const rows = l.geliefert.filter((x) => x.weg === g.weg).map((x) => a.plan.bausteine.find((b) => b.id === x.id)).filter((b): b is Baustein => !!b);
-    if (!rows.length) continue;
     const counted = rows.filter((b) => !(b.enthaltenIn && delivered.has(b.enthaltenIn)));
-    const bytes = counted.reduce((n, b) => n + (typeof b.bytes === "number" ? b.bytes : 0), 0);
+    return { g, rows, counted, bytes: counted.reduce((n, b) => n + (typeof b.bytes === "number" ? b.bytes : 0), 0) };
+  }).filter((w) => w.rows.length);
+  // the plan's own rows act as switches only (agent, model, effort, self access): counted, never sized
+  const wegTokens = verteile(fleetTotal, wege.map((w) => w.g.weg === "plan" ? 0 : w.bytes));
+  for (const [i, { g, rows, counted }] of wege.entries()) {
     const known = counted.some((b) => typeof b.bytes === "number" && b.bytes > 0);
     const unknown = counted.some((b) => b.bytes === "unknown");
     // "Größe unbekannt" once: on the group when nothing in it is known, else on the one row that is
-    // the plan's own rows act as switches only (agent, model, effort, self access): counted, never sized
     const switches = g.weg === "plan";
-    const right = switches ? String(counted.length) : bytes > 0 ? `≈ ${tok(Math.round(bytes / ratio))}` : unknown ? "Größe unbekannt" : "kein Text";
+    const right = switches ? String(counted.length) : wegTokens[i]! > 0 ? `≈ ${tok(wegTokens[i]!)}` : unknown ? "Größe unbekannt" : "kein Text";
     const size = (b: Baustein): string => switches ? "" : b.bytes === "unknown" ? (known ? "Größe unbekannt" : "") : b.bytes === 0 ? "kein Text" : kb(b.bytes);
     const lines: HTMLElement[] = [];
     // a row inside a delivered container stands indented under it, its bytes "davon" — they are the

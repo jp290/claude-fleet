@@ -18,7 +18,7 @@ import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:f
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname, loadavg, cpus } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, harnessOffReason, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -12036,6 +12036,9 @@ function harnessAutomatable(s: Slot): boolean {
 // what it is (no row is rewritten onto another harness) and be refused by name, never silently run as
 // something else.
 function harnessPausedError(h: Harness): string | null {
+  // switched off on THIS machine (FLEET_HARNESSES_OFF, model-register.ts#harnessOffReason) is refused first, by the same doors
+  const off = harnessOffReason(h.id);
+  if (off) return `harness ${h.id}: ${off} — nothing was started; name another harness for this row`;
   const a = harnessAvailability(h.id);
   return a.status === "unavailable"
     ? `harness ${h.id} is unavailable since ${a.since}: ${a.reason} — nothing was started; name another harness for this row`
@@ -52025,6 +52028,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           // unavailable harness keeps every other field: it is paused, not removed, and every start
           // door answers 409 with this reason.
           availability: harnessAvailability(h.id),
+          // whether THIS machine starts it at all (FLEET_HARNESSES_OFF): `hier` false is refused by every start door with `grund`
+          hier: harnessOffReason(h.id) === null, grund: harnessOffReason(h.id),
         })),
         // A null model on the default adapter still launches this concrete model, and the picker must be
         // able to say WHICH. Claude-only on purpose: a foreign adapter keeps its own implicit default.

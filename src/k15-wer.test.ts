@@ -2,7 +2,7 @@
 // ): je Baustein aus dem Plan, je Zeile von Claude Code; jedes „[Zitat entfernt]“ mit Grund
 import { describe, expect, test } from "bun:test";
 import type { Baustein } from "./founding";
-import { DU, istSchalter, nativVon, werBeiClaudeCode, werBeiTeil, werBestimmt, type WerPlan } from "./k15-wer";
+import { DU, istSchalter, nativVon, werBeiClaudeCode, werBeiTeil, werBestimmt, werDesAbschnitts, werTitel, type Wer, type WerPlan } from "./k15-wer";
 
 const bst = (id: string, x: Partial<Baustein> = {}): Baustein => ({ id, wort: id, satz: "", funktion: ["orientierung"], grenze: { art: "frei" }, schicht: "",
   zustand: "an", quelle: "default", rollenDefault: "an", harness: { gueltig: true, grund: null }, schaltbar: { ja: true }, bytes: 10, ersatzKandidaten: [], ...x });
@@ -109,5 +109,28 @@ describe("werBeiTeil", () => {
   test("ein Wort mit Bindestrich ist kein Schalter", () => {
     expect(werBeiTeil({ weg: "claude.ai-Anbindung", satz: "s" }).art).toBe("claude-code");
     expect(werBeiTeil({ weg: "mitgeliefert", satz: "s" }).art).toBe("claude-code");
+  });
+});
+
+// Runde 4, Owner Z60 „[Zitat entfernt]“: ein Kennzeichen je Abschnitt, an der Zeile nur, wo sie abweicht
+describe("werDesAbschnitts", () => {
+  const F: Wer = { art: "fleet", grund: "g", herleitung: "h" }, C: Wer = { art: "claude-code", grund: "c", herleitung: "h" };
+  test("die Art der meisten Zeilen steht einmal im Kopf; ihr Grund zählt die Zeilen", () => {
+    expect(werDesAbschnitts([F, F, DU, F, C])).toEqual({ art: "fleet", grund: "3 von 5 Zeilen dieses Abschnitts; eine Zeile, die abweicht, trägt ihr eigenes Kennzeichen.",
+      herleitung: "der Grund je Zeile steht in ihrem Title" });
+    expect(werDesAbschnitts([DU, F, DU, DU, F])).toEqual(DU);
+  });
+  test("bei Gleichstand gilt die zuerst genannte Art", () => {
+    expect(werDesAbschnitts([C, F, F, C])?.art).toBe("claude-code");
+    expect(werDesAbschnitts([F, C])?.art).toBe("fleet");
+  });
+  test("ohne Zeile, die etwas sagt, steht im Kopf nichts", () => {
+    expect(werDesAbschnitts([])).toBeNull();
+    expect(werDesAbschnitts([null, null])).toBeNull();
+    expect(werDesAbschnitts([null, C, null])?.art).toBe("claude-code");
+  });
+  test("was an der Zeile wegfällt, steht in ihrem Title", () => {
+    expect(werTitel(F)).toBe("Fleet-Standard: g");
+    expect(werTitel(DU)).toBe("änderbar: du stellst es hier ein");
   });
 });

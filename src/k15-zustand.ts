@@ -12,6 +12,7 @@ import {
   type Ebene, type Env, type GruppeId, type Konst, type PlanRolle, type Position, type Profil, type Regler, type Schalter, type Stufe,
 } from "./k15-entwurf-modell";
 import { fassungenImport, type TextFassung } from "./k15-wortlaut";
+import { agentVon, agentWort, passtEffort, passtModell, standardAgent, type Katalog } from "./k15-agent";
 import { packsImport, type PackEntwurf } from "./k15-kontextpack";
 import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, profilAus } from "./k15-import";
 import { SPEICHER_ROUTE } from "./k15-speicher";
@@ -34,6 +35,8 @@ export interface St {
   aktiv: number; bst: string | null; tour: number | null; detail: Detail; alles: boolean;
   // das Repo, dessen Gründungsplan gelesen wird; die Env der Instanz (undefined = wird gelesen, null = nicht lesbar)
   repo: string | null; env: Env | null | undefined; fleetModell: string | null; plaene: Map<string, PlanStand>;
+  // die Agenten des Servers mit ihren Modellen (GET /api/harnesses, src/k15-agent.ts); undefined = wird gelesen, null = nicht lesbar
+  katalog: Katalog | null | undefined;
   // die gepinnten Ordner (null = wird gelesen), was /api/dirinfo je Repo sagt, die offene Auswahl „Neue Session in“ und ihre Ordnerwahl
   pins: string[] | null; infos: Map<string, InfoStand>; repoMenu: boolean; ordner: Ordner | null;
   // eigene Fassungen je Abschnitt und Kontextpacks als Entwurf (auf dem Server, src/k15-speicher.ts; `speicher` sagt, ob er gelesen
@@ -294,9 +297,15 @@ export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
   render();
 }
 
-// DER GRÜNDUNGSPLAN je Rolle und Schalter, einmal gelesen und gemerkt; ein abgelehnter Schalter kommt als `fehler`
-export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter): string => {
+// DER GRÜNDUNGSPLAN je Rolle, Agent und Schalter, einmal gelesen und gemerkt; ein abgelehnter Schalter kommt als `fehler`. Agent, Modell
+// und Effort nimmt die Route wie ein Start (server.ts#foundingPlanAnswer: harness, model, effort); was nicht gesetzt ist, fehlt in der
+// Adresse, dann gilt der Standard der Rolle
+export interface Dreier { harness?: string; model?: string; effort?: string }
+export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier = {}): string => {
   const q = new URLSearchParams({ repo, role: rolle });
+  if (d.harness) q.set("harness", d.harness);
+  if (d.model) q.set("model", d.model);
+  if (d.effort) q.set("effort", d.effort);
   const b = Object.entries(sch).map(([id, v]) => `${id}=${v}`).sort().join(",");
   if (b) q.set("bausteine", b);
   return `/api/founding-plan?${q}`;
@@ -342,7 +351,8 @@ export interface Lage { voll: PlanStand; plan: PlanStand; umfang: Partial<Record
   eigen: Schalter; sch: Schalter }
 export function lage(s: St, p: Profil, q: Position | null): Lage | null {
   if (!s.repo) return null;
-  const voll = hole(s, planUrl(s.repo, p.rolle, {}));
+  const d = dreier(s, p, q);
+  const voll = hole(s, planUrl(s.repo, p.rolle, {}, d));
   const va = antwort(voll);
   const umfang: Partial<Record<GruppeId, Stufe>> = {}, regler: Partial<Record<GruppeId, Regler>> = {};
   let vs: Schalter = {};
@@ -356,7 +366,7 @@ export function lage(s: St, p: Profil, q: Position | null): Lage | null {
   }
   const sch = schalterVon(vs, p, q);
   const wartet = !va && p.rolle !== "nur-ordner" && GRUPPEN.some((g) => umfangVon(p, q, g.id) !== "standard");
-  const plan = wartet ? voll : hole(s, planUrl(s.repo, p.rolle, sch));
+  const plan = wartet ? voll : hole(s, planUrl(s.repo, p.rolle, sch, d));
   return { voll, plan, umfang, regler, unten: q ? { ...vs, ...p.schalter } : vs, eigen: (q ? q.schalter : p.schalter) ?? {}, sch };
 }
 // die Bausteine, die Spalte 3 und 4 für diese Rolle zeigen; die übrigen schaltet der Plan nur für andere Rollen an. Dazu, was sich in
@@ -430,28 +440,59 @@ export function eigeneBytes(a: Answer): Map<string, number> {
   return out;
 }
 
-// MODELL UND EFFORT: gesetzt, sonst der Standard der Rolle aus dem Plan (model-register.ts#MODEL_DEFAULTS); eine Session ohne Rolle
-// startet mit FLEET_MODEL und ohne --effort (server.ts#agentCmd). Rangfolge aus dem Modell (`wirksam`): Session vor Profil vor Standard.
-// `herkunft` steht vorne in Menschenworten, `quelle` (Datei und Funktion) nur im Title.
+// AGENT, MODELL UND EFFORT: gesetzt, sonst der Standard der Rolle aus dem Plan (model-register.ts#MODEL_DEFAULTS); eine Session ohne Rolle
+// startet mit Fleets Standard-Agenten, FLEET_MODEL und ohne --effort (server.ts#agentCmd). Rangfolge aus dem Modell (`wirksam`): Session
+// vor Profil vor Standard. Modell und Effort gelten nur, wenn sie zum wirksamen Agenten passen (src/k15-agent.ts#passtModell): Der Server
+// lehnte sie beim Start ab. Der Standard der Rolle gilt nur für ihren eigenen Agenten; ein anderer nimmt sein eigenes. `herkunft` steht
+// vorne in Menschenworten, `quelle` (Datei und Funktion) nur im Title.
+export type WahlFeld = "agent" | "modell" | "effort";
 export interface Wahl { wert: string; wort: string; herkunft: string; quelle: string; gesetzt: boolean }
-export function wahlVon(s: St, p: Profil, q: Position | null, feld: "modell" | "effort"): Wahl {
-  const wort = (v: string | null) => v === null ? "Claude-Standard" : feld === "modell" ? modelLabel(v) : EFFORT_WORT[v] ?? v;
+// der Standard der Rolle aus ihrem Plan ohne Agent und Schalter (jeder Plan nennt ihn für alle Rollen gleich); null = ohne Rolle
+const rollenStd = (s: St, p: Profil) => s.repo ? antwort(hole(s, planUrl(s.repo, p.rolle, {})))?.rollen.find((r) => r.id === p.rolle)?.standard ?? null : null;
+export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): Wahl {
+  const std = rollenStd(s, p), kat = s.katalog ?? null;
+  const gesetzt = (v: unknown, gilt: (x: string) => boolean) => typeof v === "string" && v !== "" && gilt(v);
+  if (feld === "agent") {
+    const qa = q?.abw?.agent, pa = p.agent;
+    const w = wirksam<{ v: string | null; quelle: string }>({
+      ...(gesetzt(qa, () => true) ? { position: { wert: { v: String(qa), quelle: "" }, herkunft: "für diese Session gesetzt" } } : {}),
+      ...(gesetzt(pa, () => true) ? { profil: { wert: { v: String(pa), quelle: "" }, herkunft: `im Profil ${p.name} gesetzt` } } : {}),
+      standard: std ? { wert: { v: std.harness, quelle: "model-register.ts#MODEL_DEFAULTS" }, herkunft: "Fleets Standard für diese Rolle" }
+        : { wert: { v: kat ? standardAgent(kat) : null, quelle: "GET /api/harnesses (default) · server.ts CLAUDE_HARNESS" }, herkunft: "ohne Rolle: der Agent, mit dem Fleet jede Session startet" },
+    });
+    const v = w?.wert.v ?? null;
+    return { wert: v ?? "", wort: v ? agentWort(v) : "unbekannt", herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil" };
+  }
+  const agent = wahlVon(s, p, q, "agent").wert;
+  const ka = kat ? agentVon(kat, agent) : undefined;
+  if (kat && ka && !(feld === "modell" ? ka.modell : ka.effort))
+    return { wert: "", wort: "keins", herkunft: `${agentWort(agent)} nimmt ${feld === "modell" ? "kein Modell" : "keinen Effort"} an`, quelle: `GET /api/harnesses (supports.${feld === "modell" ? "model" : "effort"})`, gesetzt: false };
+  const passt = (v: string) => feld === "modell" ? passtModell(kat, agent, v) : passtEffort(kat, agent, v);
   const qa = q?.abw?.[feld], pa = p[feld];
-  const std = antwort(lage(s, p, null)?.voll ?? "laedt")?.rollen.find((r) => r.id === p.rolle)?.standard ?? null;
-  const ohneRolle = feld === "modell"
-    ? { wert: s.fleetModell, herkunft: "ohne Rolle: das Modell, mit dem Fleet jede Session startet", quelle: "FLEET_MODEL · server.ts#agentCmd" }
-    : { wert: null, herkunft: "ohne Rolle: Claude Code nimmt seinen eigenen Standard", quelle: "kein --effort · server.ts#agentCmd" };
+  const eigenes = { v: null, quelle: `kein --${feld === "modell" ? "model" : "effort"} · server.ts#agentCmd`, herkunft: `${agentWort(agent)} nimmt ${feld === "modell" ? "sein eigenes Standardmodell" : "seinen eigenen Standard"}` };
+  const standard: { v: string | null; quelle: string; herkunft: string } = std && std.harness === agent
+    ? { v: feld === "modell" ? std.modell : std.effort, quelle: "model-register.ts#MODEL_DEFAULTS", herkunft: "Fleets Standard für diese Rolle" }
+    : feld === "modell" && !std && (!kat || agent === standardAgent(kat))
+      ? { v: s.fleetModell, quelle: "FLEET_MODEL · server.ts#agentCmd", herkunft: "ohne Rolle: das Modell, mit dem Fleet jede Session startet" }
+      : feld === "modell" && kat && agent === standardAgent(kat) && kat.standardModell
+        ? { v: kat.standardModell, quelle: "server.ts DEFAULT_MODEL", herkunft: `ohne Modell startet ${agentWort(agent)} mit Fleets Standardmodell` }
+        : eigenes;
   const w = wirksam<{ v: string | null; quelle: string }>({
-    ...(typeof qa === "string" ? { position: { wert: { v: qa, quelle: "" }, herkunft: "für diese Session gesetzt" } } : {}),
-    ...(typeof pa === "string" ? { profil: { wert: { v: pa, quelle: "" }, herkunft: `im Profil ${p.name} gesetzt` } } : {}),
-    standard: std ? { wert: { v: feld === "modell" ? std.modell : std.effort, quelle: "model-register.ts#MODEL_DEFAULTS" }, herkunft: "Fleets Standard für diese Rolle" }
-      : { wert: { v: ohneRolle.wert, quelle: ohneRolle.quelle }, herkunft: ohneRolle.herkunft },
+    ...(gesetzt(qa, passt) ? { position: { wert: { v: String(qa), quelle: "" }, herkunft: "für diese Session gesetzt" } } : {}),
+    ...(gesetzt(pa, passt) ? { profil: { wert: { v: String(pa), quelle: "" }, herkunft: `im Profil ${p.name} gesetzt` } } : {}),
+    standard: { wert: { v: standard.v, quelle: standard.quelle }, herkunft: standard.herkunft },
   });
   const v = w?.wert.v ?? null;
-  return { wert: v ?? "", wort: !std && feld === "modell" && v === null ? "unbekannt" : wort(v), herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "",
-    gesetzt: w?.rang === "position" || w?.rang === "profil" };
+  const wort = v !== null ? (feld === "modell" ? modelLabel(v) : EFFORT_WORT[v] ?? v)
+    : standard.quelle.startsWith("FLEET_MODEL") ? "unbekannt" : `Standard von ${agentWort(agent)}`;
+  return { wert: v ?? "", wort, herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil" };
 }
-// DIE ÜBERGABE-SCHWELLE: ist die Übergabe auf der ganzen Instanz aus (FLEET_MIGRATE_PCT 0), wirkt kein eigener Wert; der Server prüft
+// was der Plan einer Position über ihren Agenten wissen muss: nur was gesetzt ist und passt
+export function dreier(s: St, p: Profil, q: Position | null): Dreier {
+  const a = wahlVon(s, p, q, "agent"), m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort");
+  return { ...(a.gesetzt ? { harness: a.wert } : {}), ...(m.gesetzt ? { model: m.wert } : {}), ...(e.gesetzt ? { effort: e.wert } : {}) };
+}
+// DIE SUCCESSION-SCHWELLE: ist die Succession auf der ganzen Instanz aus (FLEET_MIGRATE_PCT 0), wirkt kein eigener Wert; der Server prüft
 // den Hauptschalter vor dem Wert der Session (server.ts#succeedAtThreshold)
 export function schwelleWahl(s: St, p: Profil, q: Position | null): { pct: number | null; herkunft: string; quelle: string; gesetzt: boolean } {
   const std = schwelleVon(p.schiene, s.env ?? null);

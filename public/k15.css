@@ -73,6 +73,13 @@
 .k15 .k15card.on .fdglyph, .k15 .k15card.weg .fdglyph { color: var(--chat-ink); }
 .k15 .k15cn { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
 .k15 .k15cp { font: 11px/1 var(--chat-mono); color: var(--chat-faint); white-space: nowrap; }
+.k15 .k15ag { display: flex; align-items: center; gap: 6px; padding-left: 24px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--chat-mute); }
+.k15 .k15ag .k15agw { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k15 .k15ag .mark { flex: none; }
+.k15 .k15ag .mark.clawd { display: block; width: auto; height: 11px; }
+.k15 .k15ag .mark.codexmark, .k15 .k15ag .mark.pimark { font: 700 11px/1 var(--chat-mono); }
+.k15 .k15ag .mark.codexmark { color: var(--chat-ink); }
+.k15 .k15ag .mark.pimark { color: #8abeb7; }
 .k15 .k15cs, .k15 .k15cm { padding-left: 24px; font-size: 12px; line-height: 1.35; color: var(--chat-mute); }
 .k15 .k15cm { color: var(--chat-faint); font-size: 11.5px; }
 .k15 .k15kids { margin-left: 12px; padding-left: 14px; }
@@ -156,6 +163,9 @@
   font-size: 13px; color: var(--chat-prose); }
 .k15 .k15menu button:hover { background: var(--c-hover); color: var(--chat-ink); }
 .k15 .k15menu button.on { color: var(--chat-ink); }
+.k15 .k15menu button:disabled { cursor: default; color: var(--chat-faint); }
+.k15 .k15menu button:disabled:hover { background: none; color: var(--chat-faint); }
+.k15 .k15menu .k15menuaus { font-size: 11.5px; }
 .k15 .k15menu svg { width: 14px; height: 14px; }
 .k15 .k15ov { position: absolute; inset: 0; z-index: 9; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
   border: 1px dashed var(--chat-mute); border-radius: inherit; background: color-mix(in srgb, var(--chat-void) 84%, transparent); pointer-events: none; }
@@ -189,7 +199,7 @@
 .k15 .k15x { display: none; flex-direction: column; gap: 3px; padding-top: 4px; font-size: 11.5px; line-height: 1.45; color: var(--chat-faint); }
 .k15 .k15tz:hover .k15x, .k15 .k15tz:focus-within .k15x, .k15 .k15tz.zeig .k15x,
 .k15 .k15z:hover .k15x, .k15 .k15z:focus-within .k15x, .k15 .k15z.zeig .k15x,
-.k15 .k15card:hover .k15x, .k15 .k15card:focus-visible .k15x { display: flex; }
+.k15 .k15card:hover .k15x, .k15 .k15card:focus-visible .k15x, .k15 .k15gr:hover > .k15grw, .k15 .k15gr:focus-within > .k15grw { display: flex; }
 .k15 .k15cx { padding-left: 24px; }
 .k15 .k15xk { color: var(--chat-mute); }
 .k15 .k15info { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--chat-faint); }
@@ -329,6 +339,7 @@
 .k15 .k15grz { flex: 1; font-size: 11.5px; color: var(--chat-faint); }
 .k15 .k15grt { flex: none; font: 11px/1 var(--chat-mono); color: var(--chat-mute); }
 .k15 .k15grs { padding: 2px 0 0 22px; font-size: 12px; line-height: 1.4; color: var(--chat-faint); }
+.k15 .k15grw { padding-left: 22px; }
 .k15 .k15gr .k15spur, .k15 .k15gr .k15regler { margin-left: 22px; }
 .k15 .k15gr .k15rc { height: 14px; }
 .k15 .k15stufen button { min-height: 26px; padding: 0 9px; font-size: 12px; }

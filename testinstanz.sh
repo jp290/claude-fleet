@@ -375,6 +375,12 @@ ti_serve() {
     set -- "$@" FLEET_HARNESS_RESUME=codex
     echo FLEET_HARNESS_RESUME >> "$DIR/env-names"
   fi
+  # A HARNESS SWITCHED OFF ON THIS MACHINE (model-register.ts#harnessOffReason): passed through when the caller names it,
+  # so the instance can show and refuse it as the machine would (`FLEET_HARNESSES_OFF=pi-zai ./testinstanz.sh up|refresh`)
+  if [ -n "${FLEET_HARNESSES_OFF:-}" ]; then
+    set -- "$@" "FLEET_HARNESSES_OFF=$FLEET_HARNESSES_OFF"
+    echo FLEET_HARNESSES_OFF >> "$DIR/env-names"
+  fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT FLEET_MIGRATE_PCT; do
     echo "$TI_V" >> "$DIR/env-names"

@@ -4,7 +4,7 @@ import { el } from "./k15-haupt";
 import { icon } from "./icons";
 import { alle, herkunftVon, pos, type Konst, type Position } from "./k15-entwurf-modell";
 import { S, gehe, gewaehlt, toast } from "./k15-zustand";
-import { geaendertTag, kennzeichen, kopfzeile, profilHerkunft, unterkopf } from "./k15-teile";
+import { fleetKopf, geaendertTag, herkunftTitel, herkunftWenn, kopfzeile, profilHerkunft, unterkopf } from "./k15-teile";
 import { oeffneAblauf } from "./k15-agentmd";
 
 export const ROLLE_MIME = "text/x-k15-rolle";
@@ -42,13 +42,18 @@ export function spalteLinks(): HTMLElement {
   const col = el("section", "k15col k15c1");
   if (!s) return col;
   col.append(kopfzeile(0, "welche Sessions zusammenarbeiten"));
+  // „Fleet“ einmal je Liste, an der Zeile nur, was nicht mitgeliefert ist (src/k15-teile.ts#herkunftWenn)
+  const konstKopf = unterkopf("Konstellationen", "eine wählen");
+  konstKopf.querySelector(".k15subw")?.append(fleetKopf());
+  col.append(konstKopf);
   for (const k of s.konst) {
     const b = el("button", `k15konst${k === s.k ? " on" : ""}`);
     const g = el("span", "k15minibox");
     g.append(mini(k));
     const t = el("span", "k15kt");
     const ks = el("span", "k15ks");
-    ks.append(...kennzeichen(herkunftVon(k), k.v), ...(s.konstNeu.has(k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []), k.satz);
+    ks.append(...herkunftWenn(herkunftVon(k)), ...(s.konstNeu.has(k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []), k.satz);
+    b.title = `${k.name}: ${herkunftTitel(herkunftVon(k), k.v)}`;
     t.append(el("span", "k15kn", k.name), ks);
     b.append(g, t);
     b.onclick = () => {
@@ -80,19 +85,21 @@ export function spalteLinks(): HTMLElement {
   neu.append(n1, n2);
   col.append(neu);
 
-  col.append(unterkopf("Rollen", "Profile · auf eine Session ziehen"));
+  const rollenKopf = unterkopf("Rollen", "Profile · auf eine Session ziehen");
+  rollenKopf.querySelector(".k15subw")?.append(fleetKopf());
+  col.append(rollenKopf);
   const { q } = gewaehlt(s);
   for (const p of s.profile) {
     const on = s.sel.art === "profil" && s.sel.id === p.id;
     const b = el("button", `k15role${on ? " on" : ""}${q?.profil === p.id ? " nutzt" : ""}`);
-    b.title = p.satz;
+    b.title = `${p.satz}\n${herkunftTitel(profilHerkunft(p), p.v)}`;
     b.draggable = true;
     b.ondragstart = (e) => { e.dataTransfer?.setData(ROLLE_MIME, p.id); if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy"; };
     const g = el("span", "fdglyph");
     g.append(icon(p.glyph));
     const t = el("span", "k15kt");
     const ks = el("span", "k15ks");
-    ks.append(...kennzeichen(profilHerkunft(p), p.v),
+    ks.append(...herkunftWenn(profilHerkunft(p)),
       ...(s.profilNeu.has(p.id) ? [geaendertTag("ungespeicherte Änderung am Profil")] : []), el("span", "", p.kurz));
     t.append(el("span", "k15kn", p.name), ks);
     b.append(g, t);

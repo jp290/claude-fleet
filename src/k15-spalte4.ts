@@ -6,7 +6,7 @@ import type { Answer, Baustein } from "./founding";
 import { EINSTELLUNGEN_ID, GRUPPEN, aspekt, fmt, gruppeVon, landungVon, pct, tokVon, unter, verbindungen, type Knoten } from "./k15-entwurf-modell";
 import { S, bausteineVon, fehltWeil, gehe, gewaehlt, grundWort, kommtAn, lage, plural, render, schwelleWahl, wahlVon, werPlan, zahl, antwort, type QuelleId } from "./k15-zustand";
 import { istSchalter, kopfzeile, nachZahl, qLeiste, qTitel, unterkopf, werTag } from "./k15-teile";
-import { DU, werBeiClaudeCode, werBestimmt, type Wer } from "./k15-wer";
+import { DU, werBeiClaudeCode, werBestimmt, werDesAbschnitts, werTitel, type Wer } from "./k15-wer";
 import { springe, oeffnePack } from "./k15-spalte3";
 import { wortlautAnsicht } from "./k15-wortlaut-ui";
 import { landungSatz, packsAnsicht } from "./k15-packs-ui";
@@ -31,7 +31,8 @@ export function spalteQuelle(): HTMLElement {
   const { q, p } = gewaehlt(s);
   const l = lage(s, p, q);
   const a = l ? antwort(l.plan) : null;
-  // wer bestimmt (src/k15-wer.ts): das Kennzeichen an jedem Baustein, jeder Zeile von Claude Code und jeder Einstellung
+  // wer bestimmt (src/k15-wer.ts): je Abschnitt einmal im Kopf, an einem Baustein, einer Zeile von Claude Code oder einer Einstellung nur,
+  // wo sie davon abweicht (werDesAbschnitts); sonst steht es in ihrem Title
   const wp = a ? werPlan(s, a) : null;
   const werVon = (b: Baustein): Wer | null => wp ? werBestimmt(b, wp) : null;
   // der Grund eines „fest“ als eigene Zeile: in „Wo es landet“ erst mit „Alles zeigen“ (sonst beim Darüberfahren am Kennzeichen), damit die
@@ -91,14 +92,15 @@ export function spalteQuelle(): HTMLElement {
     // ihm gingen (src/k15-kontextpack.ts#packLandung)
     const lhDa = ld.orte.some((o) => o.knoten.flatMap(unter).some((k) => k.b.id === LESEHINWEISE));
     const lose = lhDa ? [] : entwuerfe.filter((x) => x.la.art === "mit");
-    const knotenZeile = (k: Knoten, start: boolean): HTMLElement => {
+    const knotenZeile = (k: Knoten, start: boolean, kopf: Wer | null): HTMLElement => {
       const box = el("div", "k15lk");
       box.dataset.id = k.b.id;
       const r = el("button", `k15lkz${s.bst === k.b.id ? " on" : ""}`);
       const wer = werVon(k.b);
-      r.append(el("span", "k15lkn", bausteinName(k.b)), el("span", "k15lkg", gruppenWort(k.b)), ...(wer ? [werTag(wer)] : []),
+      const eigenes = !!wer && wer.art !== kopf?.art;
+      r.append(el("span", "k15lkn", bausteinName(k.b)), el("span", "k15lkg", gruppenWort(k.b)), ...(wer && eigenes ? [werTag(wer)] : []),
         start ? el("span", "k15lkt", "") : nachZahl("k15lkt", typeof k.b.bytes === "number" ? tokVon(k.b.bytes) : "Größe unbekannt"));
-      r.title = `${bausteinName(k.b)}: ${k.b.satz}`;
+      r.title = `${bausteinName(k.b)}: ${k.b.satz}${wer && !eigenes ? `\n${werTitel(wer)}` : ""}`;
       r.onclick = () => springe(k.b.id);
       box.append(r);
       if (start) box.append(el("div", "k15lkp", k.b.satz));
@@ -112,7 +114,7 @@ export function spalteQuelle(): HTMLElement {
       const mit = k.b.id === "context-anchors" ? entwuerfe.filter((x) => x.la.art === "mit") : [];
       if (k.kinder.length || mit.length) {
         const kids = el("div", "k15lkk");
-        for (const c of k.kinder) kids.append(knotenZeile(c, start));
+        for (const c of k.kinder) kids.append(knotenZeile(c, start, kopf));
         for (const x of mit) kids.append(entwurfZeile(x));
         box.append(kids);
       }
@@ -125,20 +127,23 @@ export function spalteQuelle(): HTMLElement {
       const mess = a.claudeCode?.messung;
       const groesse = o.id === "system" ? (cca ? tokCc(anatomieBytes(cca), cca) : mess?.gilt ? `${fmt(mess.tokens)} gemessen` : "nicht gemessen")
         : o.id === "start" ? "nicht im Kontext" : tokVon(bytes);
-      kopfz.append(el("span", "k15orti", String(i + 1)), el("span", "k15ortn", o.wort), nachZahl("k15ortt", groesse));
+      const kopfWer = werDesAbschnitts([...o.knoten.flatMap(unter).map((k) => werVon(k.b)), ...(o.id === "system" && cca ? [] : o.cc.map(werBeiClaudeCode))]);
+      kopfz.append(el("span", "k15orti", String(i + 1)), el("span", "k15ortn", o.wort), ...(kopfWer ? [werTag(kopfWer)] : []), nachZahl("k15ortt", groesse));
       const satz = el("div", "k15orts", o.id === "system" && cca ? `${o.satz}. ${quelleSatz(cca)}`
         : o.id === "system" && mess?.gilt ? `${o.satz}. Gemessen in einem leeren Ordner, mit deinen globalen Regeln.` : o.satz);
       if (o.id === "system" && cca) satz.title = kopfz.title = quelleTitel(cca);
       box.append(kopfz, satz);
       const baum = el("div", "k15ortb");
-      for (const k of o.knoten) baum.append(knotenZeile(k, o.id === "start"));
+      for (const k of o.knoten) baum.append(knotenZeile(k, o.id === "start", kopfWer));
       for (const x of lose) if (x.la.art === "mit" && x.la.weg === o.weg) baum.append(entwurfZeile(x, true));
       if (o.id === "system" && cca) baum.append(...anatomieGruppen(cca));
       for (const z of o.id === "system" && cca ? [] : o.cc) {
         const r = el("div", "k15lk k15lkcc");
         const zz = el("div", "k15lkz");
         const wer = werBeiClaudeCode(z);
-        zz.append(el("span", "k15lkn", z.wort), el("span", "k15lkg", "Claude Code"), werTag(wer), nachZahl("k15lkt", typeof z.bytes === "number" ? tokVon(z.bytes) : ""));
+        zz.append(el("span", "k15lkn", z.wort), el("span", "k15lkg", "Claude Code"), ...(wer.art !== kopfWer?.art ? [werTag(wer)] : []),
+          nachZahl("k15lkt", typeof z.bytes === "number" ? tokVon(z.bytes) : ""));
+        if (wer.art === kopfWer?.art) zz.title = werTitel(wer);
         // der Weg in Worten, außer er ist ein Schalter (dann im Title) oder wiederholt das Kennzeichen „Claude Code“ daneben
         const wie = el("div", "k15lkp", `${istSchalter(z.weg) || z.weg === "Claude Code" ? "" : `${z.weg} · `}${z.wert}${o.id === "datei" && mess?.gilt && !cca ? " · steckt in der Messung oben" : ""}`);
         if (istSchalter(z.weg)) wie.title = `Claude Code: ${z.weg}`;
@@ -155,7 +160,8 @@ export function spalteQuelle(): HTMLElement {
     if (fehlen.length) {
       const box = el("section", "k15ort ort-nicht");
       const kopfz = el("div", "k15ortk");
-      kopfz.append(el("span", "k15orti", "–"), el("span", "k15ortn", "Fehlt bei diesem Start"));
+      const kopfWer = werDesAbschnitts(fehlen.map((x) => x.wer));
+      kopfz.append(el("span", "k15orti", "–"), el("span", "k15ortn", "Fehlt bei diesem Start"), ...(kopfWer ? [werTag(kopfWer)] : []));
       box.append(kopfz, el("div", "k15orts", "Der Plan schaltet es an, aber dieser Start liefert es nicht."));
       const baum = el("div", "k15ortb");
       for (const x of fehlen) {
@@ -163,7 +169,8 @@ export function spalteQuelle(): HTMLElement {
         if (x.pk) r.dataset.pack = x.pk.id; else r.dataset.id = x.id;
         const zz = el("button", "k15lkz");
         // der Grund steht hier ohnehin als Zeile darunter: das Kennzeichen trägt ihn nur im Title
-        zz.append(el("span", "k15lkn", x.name), el("span", "k15lkg", x.gruppe), ...(x.wer ? [werTag(x.wer)] : []));
+        zz.append(el("span", "k15lkn", x.name), el("span", "k15lkg", x.gruppe), ...(x.wer && x.wer.art !== kopfWer?.art ? [werTag(x.wer)] : []));
+        if (x.wer && x.wer.art === kopfWer?.art) zz.title = werTitel(x.wer);
         const pk = x.pk;
         zz.onclick = () => { if (pk) oeffnePack(s, pk); else springe(x.id); };
         r.append(zz, el("div", "k15lkp", x.grund));
@@ -177,11 +184,15 @@ export function spalteQuelle(): HTMLElement {
     col.append(...wortlautAnsicht(s, a, () => oeffnePack(s, null)));
   } else if (s.quelle === "bst") {
     // JEDER BAUSTEIN GENAU: was er tut, was ohne ihn fehlt, ob er Pflicht ist, wie er beim Start ankommt (lieferung des Plans)
-    col.append(...qTitel(`Bausteine von ${q ? q.name : `Profil ${p.name}`}`, null, "was jeder Baustein tut, was ohne ihn fehlt und wie er beim Start ankommt"));
+    const titel = qTitel(`Bausteine von ${q ? q.name : `Profil ${p.name}`}`, null, "was jeder Baustein tut, was ohne ihn fehlt und wie er beim Start ankommt");
+    col.append(...titel);
     if (!a || !l) { col.append(ohnePlan()); return col; }
+    const bs = bausteineVon(a, l);
+    const kopfWer = werDesAbschnitts(bs.map(werVon));
+    if (kopfWer) titel[0].append(werTag(kopfWer));
     const weg = new Map((a.lieferung?.geliefert ?? []).map((x) => [x.id, x.weg]));
     const name = (id: string) => { const b = a.plan.bausteine.find((x) => x.id === id); return b ? bausteinName(b) : id; };
-    for (const b of bausteineVon(a, l)) {
+    for (const b of bs) {
       const an = kommtAn(a, b), fehlt = fehltWeil(a, b);
       const box = el("div", `k15bst${an ? "" : " aus"}${s.bst === b.id ? " ziel" : ""}`);
       box.dataset.id = b.id;
@@ -189,7 +200,8 @@ export function spalteQuelle(): HTMLElement {
       const wer = werVon(b);
       const tags = el("span", "k15bsttags");
       tags.append(el("span", `k15tag ${an ? "an" : "aus"}`, fehlt !== null ? "fehlt bei diesem Start" : b.grenze.art === "noetig" && an ? (b.grenze.gesperrt ? "gesperrt" : "Pflicht") : an ? "an" : "aus"),
-        ...(wer ? [werTag(wer)] : []));
+        ...(wer && wer.art !== kopfWer?.art ? [werTag(wer)] : []));
+      if (wer && wer.art === kopfWer?.art) tags.title = werTitel(wer);
       kopfz.append(el("span", "k15bstn", bausteinName(b)), tags);
       const w = weg.get(b.id);
       // „Nicht einstellbar, weil“ trägt den Grund dessen, der den Standard setzt (für eine Pflicht ihr Grund aus dem Plan), die Herleitung im Title
@@ -223,7 +235,8 @@ export function spalteQuelle(): HTMLElement {
   } else if (s.quelle === "packs") {
     col.append(...packsAnsicht(s, a, ohnePlan));
   } else if (s.quelle === "rechte") {
-    col.append(...qTitel("Rechte", p.rechteV, `was Claude Code für ${wer} bekommt`));
+    const titel = qTitel("Rechte", p.rechteV, `was Claude Code für ${wer} bekommt`);
+    col.append(...titel);
     if (!a) { col.append(ohnePlan()); return col; }
     const cca = anatomieVon(a.claudeCode);
     if (cca) {
@@ -233,10 +246,14 @@ export function spalteQuelle(): HTMLElement {
       satz.title = quelleTitel(cca);
       col.append(satz, baum);
     }
-    for (const z of cca ? [] : a.claudeCode?.zeilen ?? []) {
+    const ccZeilen = cca ? [] : a.claudeCode?.zeilen ?? [];
+    const kopfWer = werDesAbschnitts(ccZeilen.map(werBeiClaudeCode));
+    if (kopfWer) titel[0].append(werTag(kopfWer));
+    for (const z of ccZeilen) {
       const kopf = unterkopf(z.wort, istSchalter(z.weg) ? undefined : z.weg);
-      if (istSchalter(z.weg)) kopf.title = `Claude Code: ${z.weg}`;
-      kopf.querySelector(".k15subw")?.append(werTag(werBeiClaudeCode(z)));
+      const zw = werBeiClaudeCode(z);
+      kopf.title = [istSchalter(z.weg) ? `Claude Code: ${z.weg}` : "", zw.art === kopfWer?.art ? werTitel(zw) : ""].filter(Boolean).join("\n");
+      if (zw.art !== kopfWer?.art) kopf.querySelector(".k15subw")?.append(werTag(zw));
       col.append(kopf, el("div", "k15zt k15pad", z.wert));
       const det = "details" in z && z.details && typeof z.details === "object" && "namen" in z.details ? z.details.namen : null;
       const namen = Array.isArray(det) ? det.map(String) : [];
@@ -268,21 +285,27 @@ export function spalteQuelle(): HTMLElement {
     }
   } else {
     // EINSTELLUNGEN: je Wert, woher er kommt; Variable, Datei und Funktion im Title
-    const m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort"), sw = schwelleWahl(s, p, q);
-    col.append(...qTitel("Einstellungen", p.einV, `von ${p.name} v${p.v}${q ? ` · für ${q.name}` : ""}`));
-    // Modell, Effort und Übergabe stellst du in Spalte 3 ein; den Permission-Mode setzt Fleet für alle gleich
-    const zeile = (name: string, wert: string, herkunft: string, innen: string, wer: Wer) => {
+    const ag = wahlVon(s, p, q, "agent"), m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort"), sw = schwelleWahl(s, p, q);
+    // Agent, Modell, Effort und Succession stellst du in Spalte 3 ein; den Permission-Mode setzt Fleet für alle gleich
+    const zeilen: [string, string, string, string, Wer][] = [
+      ["Agent", ag.wort, ag.herkunft, ag.quelle, DU],
+      ["Modell", m.wort, m.herkunft, m.quelle, DU],
+      ["Effort", e.wort, e.herkunft, e.quelle, DU],
+      ["Succession ab", pct(sw.pct), `${sw.herkunft}. Ab dieser Füllung des Kontexts startet Fleet die Succession, eine neue Session übernimmt; bis 5 Punkte darüber wartet es, solange der Cache warm ist.`, sw.quelle, DU],
+      ["Permission-Mode", String(aspekt("permission-mode")?.standard ?? ""), "für alle Sessions gleich; je Rolle erst, wenn jede Session ihre eigene Startzeile bekommt", aspekt("permission-mode")?.heute ?? "",
+        PM_WER(aspekt("permission-mode")?.heute ?? "")],
+    ];
+    const kopfWer = werDesAbschnitts(zeilen.map((z) => z[4]));
+    const titel = qTitel("Einstellungen", p.einV, `von ${p.name} v${p.v}${q ? ` · für ${q.name}` : ""}`);
+    if (kopfWer) titel[0].append(werTag(kopfWer));
+    col.append(...titel);
+    for (const [name, wert, herkunft, innen, wer] of zeilen) {
       const h = el("div", "k15qd", herkunft);
       h.title = innen;
       const kopf = unterkopf(name);
-      kopf.querySelector(".k15subw")?.append(werTag(wer));
+      if (wer.art !== kopfWer?.art) kopf.querySelector(".k15subw")?.append(werTag(wer)); else kopf.title = werTitel(wer);
       col.append(kopf, el("div", "k15zt k15pad", wert), h);
-    };
-    zeile("Modell", m.wort, m.herkunft, m.quelle, DU);
-    zeile("Effort", e.wort, e.herkunft, e.quelle, DU);
-    zeile("Übergabe ab", pct(sw.pct), `${sw.herkunft}. Ab dieser Füllung des Kontexts übergibt Fleet an eine Nachfolgerin; bis 5 Punkte darüber wartet es, solange der Cache warm ist.`, sw.quelle, DU);
-    zeile("Permission-Mode", String(aspekt("permission-mode")?.standard ?? ""), "für alle Sessions gleich; je Rolle erst, wenn jede Session ihre eigene Startzeile bekommt", aspekt("permission-mode")?.heute ?? "",
-      PM_WER(aspekt("permission-mode")?.heute ?? ""));
+    }
     const abw = q?.abw ? Object.keys(q.abw).length : 0;
     if (abw) col.append(el("div", "k15hinweis", `${plural(abw, "Wert weicht", "Werte weichen")} für ${q?.name} vom Profil ab.`));
   }

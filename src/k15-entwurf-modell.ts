@@ -2,9 +2,8 @@
 // nicht hier, sondern im Gründungsplan (GET /api/founding-plan, aus session-blocks.ts#SESSION_BLOCKS): ein Profil wählt
 // die Rolle, deren Plan es liest, den Umfang je Gruppe (nur Pflicht, Standard, alles) und Abweichungen einzelner Bausteine.
 // Die Gruppen (wofür) und die Orte (wo es landet) liest dieses Modell aus dem Plan, es erfindet keinen Katalog daneben.
-// Konstellation = Positionen, die je auf ein Profil zeigen, und wer an wen meldet. Modell, Effort und Übergabe tragen ihre
+// Konstellation = Positionen, die je auf ein Profil zeigen, und wer an wen meldet. Modell, Effort und Succession tragen ihre
 // Herkunft (Rangfolge: `wirksam`). Profil und Konstellation tragen einen Autor: „Fleet“ für mitgelieferte.
-import { MODEL_ALIASES } from "../model-register";
 import { icon } from "./icons";
 import { K15_DATEN as D } from "./k15-entwurf-daten";
 import type { Answer, Baustein } from "./founding";
@@ -16,11 +15,12 @@ export type Wert = string | number | string[];
 export interface Quelle { id?: string; titel: string; v: number; pfad: string; abschnitte: Abschnitt[] }
 // die Rolle, deren Gründungsplan gilt (GET /api/founding-plan?role=)
 export type PlanRolle = "lane" | "main" | "orchestratorin" | "nur-ordner";
-// die Schiene der Übergabe (server/succession.ts#SessionKind)
+// die Schiene der Succession (server/succession.ts#SessionKind)
 export type Schiene = "orchestrator" | "program-main" | "bau" | "lane" | "session";
 export type Schalter = Record<string, "an" | "aus">;
-// null = der Standard, den Fleet für die Rolle meldet; eine Zahl oder ein Wort = gesetzt
-export interface Werte { modell: string | null; effort: string | null; schwelle: number | null }
+// null = der Standard, den Fleet für die Rolle meldet; eine Zahl oder ein Wort = gesetzt. `agent` ist die Harness-ID des Servers
+// (GET /api/harnesses), src/k15-agent.ts
+export interface Werte { agent: string | null; modell: string | null; effort: string | null; schwelle: number | null }
 export type Feld = keyof Werte;
 export interface Profil extends Werte {
   id: string; name: string; glyph: Glyph; v: number; kurz: string; satz: string; autor: string;
@@ -54,8 +54,8 @@ export const REVIEW_MD: Quelle = { titel: "review-regeln.md", v: 1, pfad: "eigen
   { titel: "## Was du meldest", text: "Ein Satz Urteil, darunter die Stellen mit Datei und Zeile." },
 ] };
 
-const profil = (o: Omit<Profil, "modell" | "effort" | "schwelle" | "schalter" | "nativ" | "einV" | "rechteV" | "werte" | "autor" | "autonomie"> & Partial<Profil>): Profil =>
-  ({ modell: null, effort: null, schwelle: null, schalter: {}, nativ: null, einV: 1, rechteV: 1, werte: {}, autor: FLEET, autonomie: null, ...o });
+const profil = (o: Omit<Profil, "agent" | "modell" | "effort" | "schwelle" | "schalter" | "nativ" | "einV" | "rechteV" | "werte" | "autor" | "autonomie"> & Partial<Profil>): Profil =>
+  ({ agent: null, modell: null, effort: null, schwelle: null, schalter: {}, nativ: null, einV: 1, rechteV: 1, werte: {}, autor: FLEET, autonomie: null, ...o });
 export const PROFILE0: Profil[] = [
   profil({ id: "orchestratorin", name: "Orchestratorin", glyph: "ranke", v: 2, kurz: "beaufsichtigt die MAINs", satz: "beaufsichtigt die MAINs",
     rolle: "orchestratorin", schiene: "orchestrator", einV: 3, rechteV: 2 }),
@@ -192,12 +192,7 @@ const LESE_WORT: Record<string, string> = {
 export const leseFassung = (t: string): string =>
   LESE_SATZ.reduce((x, [von, zu]) => x.split(von).join(zu), t).replace(/[A-Za-zÄÖÜäöüß]+/g, (w) => LESE_WORT[w] ?? w);
 
-// die Wahl je Feld: je Modellname die ID, auf die Fleet ihn auflöst (das Register ist die einzige Liste der IDs),
-// Effort-Stufen wie Claude Code sie nimmt
-export const WAHL: Record<"modell" | "effort", string[]> = {
-  modell: ["opus", "sonnet", "haiku", "fable"].map((n) => MODEL_ALIASES[n]),
-  effort: ["low", "medium", "high", "xhigh", "max"],
-};
+// Agent, Modell und Effort wählt man aus dem Katalog des Servers (src/k15-agent.ts), nicht aus einer Liste hier
 export const EFFORT_WORT: Record<string, string> = { low: "niedrig", medium: "mittel", high: "hoch", xhigh: "xhigh", max: "max" };
 
 // ÜBERGABE: die Basis je Schiene, abgeschrieben aus server/succession.ts#FLEET_BASE_PCT (keine Leseroute liefert die
@@ -209,7 +204,7 @@ export interface Env { migratePct: number; laneMigratePct: number }
 // `herkunft` in Menschenworten, `quelle` (Variable, Datei, Funktion) nur für den Title
 export function schwelleVon(schiene: Schiene, env: Env | null): { pct: number | null; herkunft: string; quelle: string } {
   if (!env) return { pct: null, herkunft: "nicht lesbar: Fleet nennt die Einstellungen dieser Instanz nicht", quelle: "GET /api/machine-settings" };
-  if (env.migratePct <= 0) return { pct: 0, herkunft: "auf dieser Instanz übergibt keine Session; ein eigener Wert wirkt erst, wenn die Übergabe dort an ist", quelle: "FLEET_MIGRATE_PCT = 0" };
+  if (env.migratePct <= 0) return { pct: 0, herkunft: "auf dieser Instanz läuft keine Succession; ein eigener Wert wirkt erst, wenn sie dort an ist", quelle: "FLEET_MIGRATE_PCT = 0" };
   if (schiene === "orchestrator") return { pct: FLEET_BASE_PCT.orchestrator, herkunft: "Fleets fester Wert für die Orchestratorin", quelle: "server/succession.ts#FLEET_BASE_PCT; die Env gilt für sie nicht" };
   if (schiene === "lane") return { pct: env.laneMigratePct, herkunft: "Fleets Wert für Lanes auf dieser Instanz", quelle: "FLEET_LANE_MIGRATE_PCT, sonst server/succession.ts#FLEET_BASE_PCT" };
   return { pct: env.migratePct, herkunft: "Fleets Wert für diese Instanz", quelle: "FLEET_MIGRATE_PCT in der .env des Servers" };
@@ -231,11 +226,11 @@ export const ASPEKTE: Aspekt[] = [
     art: "wahl", standard: "standard",
     optionen: ["pflicht", "standard", "alles"], wirkung: { wo: "plan", was: "nur Pflicht = jeder freie Baustein der Gruppe aus; Standard = was der Plan der Rolle anschaltet; alles = jeder Baustein der Gruppe an, den der Server annimmt" },
     bindung: "erzwungen", gruppe: "bausteine", heute: "Der Plan prüft jeden Schalter (session-blocks.ts#resolveSessionPlan); eine Pflicht lässt sich nicht abschalten." },
-  { id: "modell", name: "Modell", bedeutung: "welches Modell die Session fährt", art: "wahl", standard: "Standard der Rolle", optionen: WAHL.modell,
+  { id: "modell", name: "Modell", bedeutung: "welches Modell die Session fährt", art: "wahl", standard: "Standard der Rolle",
     wirkung: { wo: "start", flag: "--model" }, bindung: "erzwungen", gruppe: "einstellungen", heute: "model-register.ts#MODEL_DEFAULTS je Rolle" },
-  { id: "effort", name: "Effort", bedeutung: "wie gründlich sie denkt", art: "wahl", standard: "Standard der Rolle", optionen: WAHL.effort,
+  { id: "effort", name: "Effort", bedeutung: "wie gründlich sie denkt", art: "wahl", standard: "Standard der Rolle",
     wirkung: { wo: "start", flag: "--effort" }, bindung: "erzwungen", gruppe: "einstellungen", heute: "model-register.ts#MODEL_DEFAULTS je Rolle" },
-  { id: "schwelle", name: "Übergabe ab", bedeutung: "ab welchem Kontext-Füllstand sie übergibt", art: "prozent", standard: "Fleet-Wert der Schiene",
+  { id: "schwelle", name: "Succession ab", bedeutung: "ab welchem Kontext-Füllstand ihre Succession beginnt", art: "prozent", standard: "Fleet-Wert der Schiene",
     wirkung: { wo: "fleet", regel: "server/succession.ts#thresholdOf: Basis; Obergrenze Basis + 5, solange der Cache warm ist" }, bindung: "erzwungen", gruppe: "einstellungen",
     heute: "je Session änderbar über PATCH /api/slots/:id/handover" },
   { id: "permission-mode", name: "Permission-Mode", bedeutung: "ob und wie sie vor Aktionen fragt", art: "wahl", standard: "auto",
@@ -277,15 +272,55 @@ export function wirksam<T>(stufen: Partial<Record<Rang, { wert: T; herkunft: str
 // Baustein da ist, aus der ersten `funktion` seines Registereintrags (session-blocks.ts#SessionFunction), in Owner-Worten (Lesart
 // der Bauleitung). Agent · Modell · Effort (spawn-profile) steht in keiner Gruppe; es sind die Einstellungen, so wie das
 // Startfenster es zeigt (src/founding.ts#getsWords).
+// WAS EINE GRUPPE IM LAUF TUT (Runde 4, Owner Z63: „[Zitat entfernt]“
+// ): `lauf` ein Satz je Rolle, abgeleitet aus der Tür-Tabelle server.ts#planDoorRow (wer was bei
+// welchem Start wirklich bekommt) und dem Register session-blocks.ts, am 17.10. gelesen; `fund` die Fundstellen (nur im Title); `wo`, wo
+// man sie einstellt. `satz` sagt, wofür sie da ist.
 export type GruppeId = "regeln" | "auftrag" | "rueckweg" | "beweis" | "wissen" | "gedaechtnis";
-export interface Gruppe { id: GruppeId; funktion: string; wort: string; satz: string }
+export interface Gruppe { id: GruppeId; funktion: string; wort: string; satz: string; lauf: Readonly<Record<PlanRolle, string>>; fund: string; wo: string }
 export const GRUPPEN: readonly Gruppe[] = [
-  { id: "regeln", funktion: "vertrag", wort: "Regeln", satz: "was für sie gilt und was sie nicht darf" },
-  { id: "auftrag", funktion: "auftrag", wort: "Auftrag", satz: "was sie tun soll" },
-  { id: "rueckweg", funktion: "rueckweg", wort: "Rückweg", satz: "wie sie Fleet erreicht, meldet und endet" },
-  { id: "beweis", funktion: "beweis", wort: "Beweis", satz: "was ihre Arbeit belegt und woher eine Nachricht kommt" },
-  { id: "wissen", funktion: "orientierung", wort: "Wissen", satz: "was sie zum Lesen und Nachschlagen bekommt" },
-  { id: "gedaechtnis", funktion: "gedaechtnis-zeiger", wort: "Gedächtnis", satz: "wo ihr Arbeitsstand bei Fleet liegt" },
+  { id: "regeln", funktion: "vertrag", wort: "Regeln", satz: "was für sie gilt und was sie nicht darf",
+    lauf: { lane: "Der Agent lädt die Regeln des Ordners selbst; Fleet schreibt Rollenkarte und deine Korrekturen in ihre Session-Datei.",
+      main: "Der Agent lädt die Regeln des Ordners selbst; Fleet gibt Rollenkarte und deine Korrekturen in der ersten Nachricht dazu.",
+      orchestratorin: "Der Agent lädt die Regeln des Ordners selbst; Fleet schickt ihre Rollenkarte und deine Korrekturen als erste Nachricht.",
+      "nur-ordner": "Der Agent lädt die Regeln des Ordners selbst; Fleet gibt nichts dazu." },
+    fund: "server.ts#planDoorRow (native-agents, portable-contract, role-card, owner-heft, orchestrator-card, private-rulebook)",
+    wo: "die Regeln des Ordners in seinen Dateien, das private Regelbuch hier; Vertrag und Korrekturen sind gesperrt (Owner-Entscheid), die Rollenkarte unter „Autonomie“" },
+  { id: "auftrag", funktion: "auftrag", wort: "Auftrag", satz: "was sie tun soll",
+    lauf: { lane: "Die Karte kommt nur, wenn der Dispatcher die Lane für eine Karte gründet; ein Start aus diesem Fenster hat keine.",
+      main: "Die MAIN bekommt Auftrag und Reihenfolge ihres Programs in der ersten Nachricht.",
+      orchestratorin: "Ihren Auftrag trägt ihre Rollenkarte (Regeln).",
+      "nur-ordner": "Ohne Rolle gibt Fleet ihr keinen Auftrag mit; du schreibst ihn ihr selbst." },
+    fund: "server.ts#planDoorRow (task-brief: PLAN_NUR_DISPATCH; main-rail → Prompt) · server.ts#buildProgramMainBrief",
+    wo: "in der Karte und im Program, nicht in diesem Fenster" },
+  { id: "rueckweg", funktion: "rueckweg", wort: "Rückweg", satz: "wie sie Fleet erreicht, meldet und endet",
+    lauf: { lane: "Ihr Ausweis kommt mit dem Start; die Session-Datei sagt ihr, an wen sie meldet, wie sie berichtet und wie sie aufhört.",
+      main: "Ihr Ausweis kommt mit dem Start und öffnet ihr ihre Türen bei Fleet; an wen sie meldet, sagt ihre Rollenkarte.",
+      orchestratorin: "Ihr Ausweis kommt mit dem Start und öffnet ihr ihre Türen bei Fleet; an wen sie meldet, sagt ihre Rollenkarte.",
+      "nur-ordner": "Ihr Ausweis kommt mit dem Start; einen Rückweg darüber hinaus gibt Fleet ihr nicht mit." },
+    fund: "server.ts#planDoorRow (self-credential → Startzeile, lane-footer → Session-Datei) · server.ts#ensureSlot (selfExport, FLEET_SELF_TOKEN)",
+    wo: "nicht schaltbar, beides ist Pflicht; die Wege im Lauf stehen unter „Verbindungen im Lauf“" },
+  { id: "beweis", funktion: "beweis", wort: "Beweis", satz: "was ihre Arbeit belegt und woher eine Nachricht kommt",
+    lauf: { lane: "Vor jede Nachricht in ihre Pane setzt Fleet einen Kopf, woher sie kommt (nur Claude); ihr Abschluss verlangt für ein Ergebnis Commit und sauberen Stand.",
+      main: "Vor jede Nachricht in ihre Pane setzt Fleet einen Kopf, woher sie kommt; nur Claude trägt ihn.",
+      orchestratorin: "Vor jede Nachricht in ihre Pane setzt Fleet einen Kopf, woher sie kommt; nur Claude trägt ihn.",
+      "nur-ordner": "Vor jede Nachricht in ihre Pane setzt Fleet einen Kopf, woher sie kommt; nur Claude trägt ihn." },
+    fund: "server.ts#planDoorRow (delivery-header → Zustellung, nur Claude; commit-expectation → Session-Datei mit dem lane-footer)",
+    wo: "den Zustell-Kopf hier, wo der Plan ihn schalten lässt; die Commit-Erwartung kommt mit dem Abschluss der Lane" },
+  { id: "wissen", funktion: "orientierung", wort: "Wissen", satz: "was sie zum Lesen und Nachschlagen bekommt",
+    lauf: { lane: "Lesehinweise und gewählte Packs stehen in ihrer Session-Datei; Notizen und Code-Stellen zur Karte kommen nur, wenn der Dispatcher sie gründet.",
+      main: "Lesehinweise und gewählte Packs kommen in der ersten Nachricht, wenn ein Pack an ist.",
+      orchestratorin: "Lesehinweise und gewählte Packs kommen mit ihrer Rollenkarte in der ersten Nachricht.",
+      "nur-ordner": "Lesehinweise und gewählte Packs kommen in der ersten Nachricht, wenn ein Pack an ist." },
+    fund: "server.ts#planDoorRow (context-anchors, pack:*; lane-notes, source-pointers, source-code: PLAN_NUR_DISPATCH)",
+    wo: "der Regler „Wie viel Wissen“ und die Pack-Schalter hier; ein fehlendes Thema als Kontextpack" },
+  { id: "gedaechtnis", funktion: "gedaechtnis-zeiger", wort: "Gedächtnis", satz: "wo ihr Arbeitsstand bei Fleet liegt",
+    lauf: { lane: "Ein Hinweis in ihrer Session-Datei führt zu ihrem Arbeitsstand bei Fleet; Claudes eigene Notizen (Auto-Memory) sind bei einer Lane aus.",
+      main: "Ein Hinweis in der ersten Nachricht führt zu ihrem Arbeitsstand bei Fleet; Claude Code lädt dazu seine eigenen Notizen (Auto-Memory).",
+      orchestratorin: "Claude Code lädt seine eigenen Notizen (Auto-Memory); einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht.",
+      "nur-ordner": "Claude Code lädt seine eigenen Notizen (Auto-Memory); einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht." },
+    fund: "server.ts#memoryPointer (GET /api/self/memory) · server.ts#planDoorRow (memory-pointer; auto-memory: nur Claude, nicht in einer Lane)",
+    wo: "den Hinweis hier; das Auto-Memory pflegt Claude Code in deinem Konfig-Ordner, Fleet schaltet es nur für Lanes ab" },
 ];
 export const EINSTELLUNGEN_ID = "spawn-profile";
 // Zwei erste Funktionen des Registers lesen sich falsch (Prüfung 16.10., an die Bauleitung gemeldet): Die Rollenkarte der Orchestratorin
@@ -435,8 +470,10 @@ export const unter = (k: Knoten): Knoten[] => [k, ...k.kinder.flatMap(unter)];
 // VERBINDUNGEN IM LAUF: was eine Session nach dem Start mit Fleet verbindet und das Register (session-blocks.ts) nicht
 // abdeckt. Jede Zeile am Code von bau/neue-session (Basis e8be8a5c) nachgelesen, 15.10.; `fehlt` ist ein Server-Schritt.
 export interface Verbindung { name: string; kurz: string; heute: string; quelle: string; fehlt?: string }
-const NACHFOLGE_FLEET: Verbindung = { name: "Nachfolge", kurz: "Fleet übergibt an der Schwelle",
-  heute: "An der Schwelle übergibt Fleet selbst über die Owner-Tür, auch ohne Zutun der Session; nur für Claude. Je Session abschaltbar mit Übergabe „aus“.",
+// Fleets Begriff bleibt (Owner 16.10. 22:5x: „[Zitat entfernt]“, wie K16);
+// „[Zitat entfernt]“ heißt nur die geschriebene Notiz, der Bericht mit Status handoff
+const NACHFOLGE_FLEET: Verbindung = { name: "Succession", kurz: "Fleet startet sie an der Schwelle",
+  heute: "An der Schwelle startet Fleet die Succession selbst über die Owner-Tür, auch ohne Zutun der Session; nur für Claude. Je Session abschaltbar mit Succession „aus“.",
   quelle: "server.ts#succeedAtThreshold → server.ts#handleOwnerSucceed · server/succession.ts#thresholdOf (0 = aus)" };
 const HINWEISE: Verbindung = { name: "Hinweise in die Pane", kurz: "immer",
   heute: "Fleet tippt Ereignisse und den Postfach-Hinweis in jede Pane. Abstellen lässt sich das nur für die ganze Instanz, nicht je Session.",
@@ -454,7 +491,7 @@ const VERBINDUNGEN: Record<string, Verbindung[]> = {
       quelle: "server.ts#messageSenderFor („a lane does not address principals“)" },
     { name: "Rückweg", kurz: "Rückfrage und Bericht an die MAIN", heute: "Rückfragen gehen über Fleet an ihre MAIN, das Ergebnis als Bericht.",
       quelle: "POST /api/self/clarifications · POST /api/self/fleet-report · server.ts#openClarification · server.ts#openFleetReport" },
-    { name: "Nachfolge", kurz: "übergibt selbst", heute: "Eine Lane übergibt selbst: erst ein Bericht „Übergabe“, dann die Nachfolge. Fleets eigener Akt an der Schwelle lehnt Lanes ab.",
+    { name: "Succession", kurz: "startet sie selbst", heute: "Eine Lane startet ihre Succession selbst: erst ein Bericht „Übergabe“, dann die Succession. Fleets eigener Akt an der Schwelle lehnt Lanes ab.",
       quelle: "Bericht mit Status handoff, dann POST /api/self/succeed · server.ts#ownerSucceedRailRefusal („a lane hands over by its own handoff fleet-report“)" },
     HINWEISE, AUSWEIS,
   ],
@@ -482,7 +519,7 @@ export const verbindungen = (profilId: string): Verbindung[] => VERBINDUNGEN[pro
 
 // WAS GEÄNDERT WURDE gegenüber dem Profil in seiner Fassung (Owner 11:0x: „[Zitat entfernt]“
 // ), je Zeile „[Zitat entfernt]“
-const FELDER = [["modell", "Modell"], ["effort", "Effort"], ["schwelle", "Übergabe ab"]] as const;
+const FELDER = [["agent", "Agent"], ["modell", "Modell"], ["effort", "Effort"], ["schwelle", "Succession ab"]] as const;
 const wertText = (w: Wert | null | undefined): string => w === undefined || w === null ? "Standard" : Array.isArray(w) ? w.join(", ") : String(w);
 export function abweichungen(p: Profil, q: Position, name: (id: string) => string): string[] {
   return [
@@ -501,7 +538,7 @@ export function exportJson(o: { ebene: Ebene; voll: boolean; konst: Konst[]; k: 
   const von = (id: string) => o.profile.find((x) => x.id === id) ?? o.p;
   const ref = (x: Profil) => `${x.id}@${x.v}`;
   const voll = (x: Profil) => ({ id: x.id, version: x.v, name: x.name, glyph: x.glyph, kurz: x.kurz, satz: x.satz, autor: x.autor, rolle: x.rolle, schiene: x.schiene,
-    modell: x.modell, effort: x.effort, uebergabeAb: x.schwelle, einV: x.einV, rechteV: x.rechteV, ...(x.datei ? { datei: x.datei } : {}),
+    agent: x.agent, modell: x.modell, effort: x.effort, uebergabeAb: x.schwelle, einV: x.einV, rechteV: x.rechteV, ...(x.datei ? { datei: x.datei } : {}),
     ...(Object.keys(x.schalter).length ? { schalter: x.schalter } : {}), werte: x.werte,
     ...(x.kopieVon ? { kopieVon: `${x.kopieVon.name}@${x.kopieVon.v}` } : {}),
     ...(x.autonomie ? { autonomie: Object.fromEntries((["selbst", "fragt", "nie", "weg"] as const).map((art) => [art, x.autonomie?.filter((p) => p.art === art).map((p) => p.text) ?? []])) } : {}) });
@@ -518,7 +555,7 @@ export function exportJson(o: { ebene: Ebene; voll: boolean; konst: Konst[]; k: 
   const obj = o.ebene === "system" ? { fleet: "system", konstellationen: o.konst.map(konst), profile: o.profile.map((x) => o.voll ? voll(x) : ref(x)) }
     : o.ebene === "konst" ? { fleet: "konstellation", ...konst(o.k) }
     : o.ebene === "session" ? { fleet: "session", ...(o.q ? position(o.k, o.q) : { profil: o.voll ? voll(p) : ref(p) }) }
-    : { fleet: "baustein", art: "einstellungen", version: p.einV, modell: p.modell, effort: p.effort, uebergabeAb: p.schwelle };
+    : { fleet: "baustein", art: "einstellungen", version: p.einV, agent: p.agent, modell: p.modell, effort: p.effort, uebergabeAb: p.schwelle };
   return JSON.stringify({ format: 1, ...obj, ...o.zusatz }, null, 2);
 }
 
@@ -530,7 +567,7 @@ export function profilAlsMd(p: Profil): string {
   const kopf = [
     `name: ${j(p.id)}`, `description: ${j(p.satz)}`, ...(p.modell ? [`model: ${j(p.modell)}`] : []), ...(p.effort ? [`effort: ${j(p.effort)}`] : []),
     `permissionMode: ${j(aspektWert("permission-mode", p, null))}`,
-    "fleet:", `  format: 1`, `  fassung: ${p.v}`, `  autor: ${j(p.autor)}`, `  rolle: ${j(p.rolle)}`, ...(p.schwelle !== null ? [`  uebergabeAb: ${p.schwelle}`] : []),
+    "fleet:", `  format: 1`, `  fassung: ${p.v}`, `  autor: ${j(p.autor)}`, `  rolle: ${j(p.rolle)}`, ...(p.agent ? [`  agent: ${j(p.agent)}`] : []), ...(p.schwelle !== null ? [`  uebergabeAb: ${p.schwelle}`] : []),
     `  schalter: ${j(p.schalter)}`, `  aspekte: ${j(p.werte)}`,
   ];
   return `---\n${kopf.join("\n")}\n---\n`;

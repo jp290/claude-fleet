@@ -72,9 +72,9 @@ const werteAus = (v: unknown): Record<string, Wert> | null => {
 };
 const abwAus = (v: unknown): Partial<Werte> | null => {
   const o = obj(v);
-  if (!o || Object.keys(o).some((k) => !["modell", "effort", "schwelle"].includes(k))) return null;
+  if (!o || Object.keys(o).some((k) => !["agent", "modell", "effort", "schwelle"].includes(k))) return null;
   const ok = (k: string, t: "string" | "number") => o[k] === undefined || o[k] === null || typeof o[k] === t;
-  return ok("modell", "string") && ok("effort", "string") && ok("schwelle", "number") ? o as Partial<Werte> : null;
+  return ok("agent", "string") && ok("modell", "string") && ok("effort", "string") && ok("schwelle", "number") ? o as Partial<Werte> : null;
 };
 
 // EIN PROFIL aus dem eigenen Speicher oder einem vollständigen Export (exportJson#voll); null = passt nicht
@@ -82,8 +82,8 @@ export function profilAus(v: unknown): Profil | null {
   const o = obj(v);
   const id = str(o?.id, 80), rolle = o?.rolle, schiene = o?.schiene;
   if (!o || !id || !ROLLEN.includes(rolle as PlanRolle) || !SCHIENEN.includes(schiene as Schiene)) return null;
-  const modell = o.modell ?? null, effort = o.effort ?? null, schwelle = o.uebergabeAb ?? o.schwelle ?? null;
-  if ((modell !== null && typeof modell !== "string") || (effort !== null && typeof effort !== "string") || (schwelle !== null && zahl(schwelle) === null)) return null;
+  const agent = o.agent ?? null, modell = o.modell ?? null, effort = o.effort ?? null, schwelle = o.uebergabeAb ?? o.schwelle ?? null;
+  if ((agent !== null && typeof agent !== "string") || (modell !== null && typeof modell !== "string") || (effort !== null && typeof effort !== "string") || (schwelle !== null && zahl(schwelle) === null)) return null;
   const schalter = o.schalter === undefined ? {} : schalterAus(o.schalter);
   const werte = o.werte === undefined ? {} : werteAus(o.werte);
   const datei = o.datei === undefined ? null : quelleAus(o.datei);
@@ -113,14 +113,14 @@ export function profilAus(v: unknown): Profil | null {
   const glyph = GLYPHEN.has(o.glyph as Glyph) ? o.glyph as Glyph : "file";
   return { id, name: str(o.name, 80) ?? id, glyph, v: Math.max(1, Math.floor(zahl(o.version) ?? zahl(o.v) ?? 1)), kurz: str(o.kurz, 120) ?? "",
     satz: str(o.satz, 300) ?? "", autor: str(o.autor, 40) ?? "?", rolle: rolle as PlanRolle, schiene: schiene as Schiene,
-    modell: modell as string | null, effort: effort as string | null, schwelle: schwelle as number | null, schalter, nativ: null,
+    agent: agent as string | null, modell: modell as string | null, effort: effort as string | null, schwelle: schwelle as number | null, schalter, nativ: null,
     einV: Math.max(1, Math.floor(zahl(o.einV) ?? 1)), rechteV: Math.max(1, Math.floor(zahl(o.rechteV) ?? 1)), werte, autonomie,
     ...(datei ? { datei } : {}),
     ...(kv ? { kopieVon: { name: kv.split("@")[0], v: Number(kv.split("@")[1]) || 1 } } : kopie && typeof kopie.name === "string" ? { kopieVon: { name: kopie.name, v: zahl(kopie.v) ?? 1 } } : {}) };
 }
 
 // was ein Profil ausmacht, ohne Herkunft und Version: so erkennt der Import, ob ein eingebettetes Profil das hiesige ist
-const kern = (p: Profil): string => JSON.stringify([p.rolle, p.schiene, p.modell, p.effort, p.schwelle, p.schalter, p.werte, p.autonomie?.map((x) => [x.art, x.text]) ?? null,
+const kern = (p: Profil): string => JSON.stringify([p.rolle, p.schiene, p.agent, p.modell, p.effort, p.schwelle, p.schalter, p.werte, p.autonomie?.map((x) => [x.art, x.text]) ?? null,
   p.datei ? p.datei.abschnitte.map((a) => [a.titel, a.text]) : null]);
 
 // IMPORT EINER KONSTELLATION: jede Position geprüft (Typen, Eltern, kein Kreis), ihre Profile aufgelöst. Ein eingebettetes Profil, das

@@ -49,6 +49,20 @@ export function werBestimmt(b: Baustein, w: WerPlan): Wer | null {
   return DU;
 }
 
+// EIN KENNZEICHEN JE ABSCHNITT (Runde 4, Owner Z60: „[Zitat entfernt]“; Auftrag: „[Zitat entfernt]“): was die
+// meisten Zeilen eines Abschnitts tragen, steht einmal in seinem Kopf, bei Gleichstand das zuerst genannte; eine Zeile trägt ihr eigenes
+// nur, wenn es davon abweicht, sonst steht es in ihrem Title (werTitel). null = keine Zeile sagt etwas
+export function werDesAbschnitts(ws: readonly (Wer | null)[]): Wer | null {
+  const da = ws.filter((w): w is Wer => w !== null);
+  const zahl = (art: WerArt) => da.filter((w) => w.art === art).length;
+  const art = da.map((w) => w.art).reduce<WerArt | null>((m, a) => m === null || zahl(a) > zahl(m) ? a : m, null);
+  if (art === null) return null;
+  if (art === "du") return DU;
+  return { art, grund: `${zahl(art)} von ${da.length} Zeilen dieses Abschnitts; eine Zeile, die abweicht, trägt ihr eigenes Kennzeichen.`,
+    herleitung: "der Grund je Zeile steht in ihrem Title" };
+}
+export const werTitel = (w: Wer): string => w.art === "du" ? `${WER_WORT.du}: du stellst es hier ein` : `${WER_WORT[w.art]}: ${w.grund}`;
+
 // was über Fleets Startzeile kommt, gilt für jede Session der Rolle; was Claude Code selbst mitbringt oder lädt, stellt man dort ein, wo der
 // Satz es nennt (Konfig-Ordner, Repo, Plugin), nicht in Fleet
 const JE_SESSION_NOCH_NICHT = "Noch nicht je Session einstellbar, Fleet setzt es beim Start: ";

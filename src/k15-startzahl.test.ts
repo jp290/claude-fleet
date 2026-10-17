@@ -2,7 +2,7 @@
 // CLAUDE_CODE_MESSUNG nur als Rückfall ohne Quelle“)
 import { describe, expect, test } from "bun:test";
 import type { Answer, Baustein } from "./founding";
-import { startZahl } from "./k15-startzahl";
+import { startZahl, verteile } from "./k15-startzahl";
 
 const baustein = (id: string, o: Partial<Baustein> = {}): Baustein => ({ id, wort: id, satz: "", funktion: ["vertrag"], grenze: { art: "frei" },
   schicht: "", zustand: "an", quelle: "default", rollenDefault: "an", harness: { gueltig: true, grund: null }, schaltbar: { ja: true }, bytes: "unknown",
@@ -74,5 +74,30 @@ describe("die Summe und die Dateien des Repos", () => {
   });
   test("ohne Start-Summe (älterer Server) keine Zahl", () => {
     expect(startZahl({ ...plan({}), startSumme: undefined })).toBe(null);
+  });
+});
+
+// Runde 4, Punkt 0: die Gruppen nach dem Klick auf die Summe ergeben die Summe. Fleets Teil wird nach Bytes auf die Wege verteilt;
+// einzeln gerundet ergäben drei Wege mit je 1,5 Tokens 6 statt der 5 (4,5 gerundet), die oben stehen
+describe("verteile: Fleets Tokens auf die Wege, die Teile ergeben die Summe", () => {
+  test("drei gleiche Wege mit halben Tokens: zusammen genau die Summe, nicht jeder einzeln aufgerundet", () => {
+    expect(verteile(5, [3, 3, 3])).toEqual([2, 2, 1]);
+  });
+  test("der Rest geht an den Weg mit dem größten Nachkomma-Anteil, nicht an den ersten", () => {
+    expect(verteile(10, [1, 8.4, 0.6].map((x) => x * 2.1))).toEqual([1, 8, 1]);
+  });
+  test("ein Weg ohne Bytes bekommt nichts, ein einzelner Weg alles", () => {
+    expect(verteile(227, [0, 476])).toEqual([0, 227]);
+  });
+  test("ohne Bytes und ohne Wege: nichts zu verteilen", () => {
+    expect(verteile(0, [0, 0])).toEqual([0, 0]);
+    expect(verteile(0, [])).toEqual([]);
+  });
+  test("jeder Teil ist sein genauer Anteil ab- oder aufgerundet, die Summe stimmt", () => {
+    const anteile = [5729, 20664, 13300, 1, 4892];
+    const teile = verteile(21170, anteile);
+    const summe = anteile.reduce((n, x) => n + x, 0);
+    expect(teile.reduce((n, x) => n + x, 0)).toBe(21170);
+    teile.forEach((t, i) => expect(Math.abs(t - (anteile[i]! / summe) * 21170)).toBeLessThan(1));
   });
 });

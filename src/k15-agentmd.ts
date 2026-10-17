@@ -7,7 +7,7 @@
 import { el, baseName, bausteinName } from "./k15-haupt";
 import { icon } from "./icons";
 import { modelLabel } from "./modelname";
-import { DU, EFFORT_WORT, GRUPPEN, REVIEW_MD, WAHL, alle, fmt, gruppeVon, tokVon, type Abschnitt, type Profil, type Quelle, type Schiene } from "./k15-entwurf-modell";
+import { DU, EFFORT_WORT, GRUPPEN, REVIEW_MD, alle, fmt, gruppeVon, tokVon, type Abschnitt, type Profil, type Quelle, type Schiene } from "./k15-entwurf-modell";
 import { ANBINDUNGEN, anbindungRolle, ankommend, fleetTeil, type Anbindung } from "./k15-anbindung";
 import { startZahl } from "./k15-startzahl";
 import { VORSCHAU, aenderung, regler, stufenPlan, vorschauWahl, type StufenPlan, type Vorschau } from "./k15-anbindung-ui";
@@ -15,6 +15,7 @@ import { abschnitte, dateiPasst } from "./k15-import";
 import { istPackRolle, neuerPack, packBytes, packLandung } from "./k15-kontextpack";
 import { packEditor } from "./k15-packs-ui";
 import { knopf } from "./k15-teile";
+import { effortVon, modelleVon, standardAgent } from "./k15-agent";
 import { S, gehe, gewaehlt, plural, render, speichereEigenes, toast, verwirft, type St } from "./k15-zustand";
 
 // `entwurf` ist der offene Abschnitt, wie er gerade getippt ist: Er lebt im Zustand, so übersteht er jedes Neuzeichnen (Prüfung Punkt 3)
@@ -61,7 +62,7 @@ export function oeffneAblauf(s: St): void {
   const datei = q?.datei ? structuredClone(q.datei) : null;
   s.ablauf = { schritt: datei ? 1 : 0, datei, vorher: datei ? structuredClone(datei.abschnitte) : [], offen: null, entwurf: null,
     stufe: p.id === "eigen" || !istPackRolle(p.rolle) ? "ordner" : "standard", rolle: p.rolle === "main" ? "main" : "lane",
-    packs: [], name: "", modell: WAHL.modell[0], effort: "high" };
+    packs: [], name: "", modell: s.katalog?.standardModell ?? "", effort: "high" };
   s.exp = false;
   render();
 }
@@ -261,6 +262,10 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
   name.placeholder = "z. B. Review";
   name.dataset.feld = "ab-name";
   name.oninput = () => { a.name = name.value; };
+  // eine Agent-MD ist eine Datei für Claude Code: Modelle und Effort-Stufen des Standard-Agenten aus dem Katalog des Servers; der gewählte
+  // Wert steht immer darin, leer heißt der Standard der Rolle
+  const std = s.katalog ? standardAgent(s.katalog) ?? "" : "";
+  const liste = (xs: string[], jetzt: string): string[] => xs.includes(jetzt) ? xs : [jetzt, ...xs];
   const auswahl = (werte: string[], jetzt: string, wort: (v: string) => string, nimm: (v: string) => void) => {
     const sel = document.createElement("select");
     sel.className = "k15absel";
@@ -286,8 +291,8 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
   return [el("div", "k15abh", "Als Profil speichern"),
     el("div", "k15abs2", "Das Profil steht danach links unter Rollen. Du ziehst es auf eine Session oder startest es allein."),
     feld("Name", name),
-    reihe(feld("Modell", auswahl(WAHL.modell, a.modell, modelLabel, (v) => { a.modell = v; })),
-      feld("Effort", auswahl(WAHL.effort, a.effort, (v) => EFFORT_WORT[v] ?? v, (v) => { a.effort = v; }))),
+    reihe(feld("Modell", auswahl(liste(s.katalog ? modelleVon(s.katalog, std) : [], a.modell), a.modell, (v) => v ? modelLabel(v) : "Standard der Rolle", (v) => { a.modell = v; })),
+      feld("Effort", auswahl(liste(s.katalog ? effortVon(s.katalog, std) : [], a.effort), a.effort, (v) => v ? EFFORT_WORT[v] ?? v : "Standard der Rolle", (v) => { a.effort = v; }))),
     dl,
     el("div", "k15hinweis", "Noch ein Entwurf: Beim Start gibt Fleet deine Datei und die Packs heute nicht mit, dafür fehlt noch ein Schritt am Server. Gespeichert wird das Profil schon."),
     ...(fehler ? [el("div", "k15abf", fehler)] : [])];
@@ -303,7 +308,7 @@ function speichere(s: St, a: Ablauf): void {
   // das Profil trägt seine Datei: so bekommt jede neue Session mit ihm sie mit, und es übersteht ein Neuladen (Prüfung Punkt 4)
   const datei: Quelle = { ...structuredClone(a.datei), id: a.datei.id ?? neueId(), v: 1 };
   const p: Profil = { id: neueId(), name: a.name.trim(), glyph: "file", v: 1, kurz: "deine Agent-MD", satz: `arbeitet nach ${a.datei.titel}`, autor: DU,
-    rolle, schiene, modell: a.modell, effort: a.effort, schwelle: null, schalter, nativ: null, einV: 1, rechteV: 1, werte: {}, autonomie: null, datei };
+    rolle, schiene, agent: null, modell: a.modell || null, effort: a.effort || null, schwelle: null, schalter, nativ: null, einV: 1, rechteV: 1, werte: {}, autonomie: null, datei };
   s.profile = [...s.profile, p];
   s.profilNeu.add(p.id);
   const { q } = gewaehlt(s);

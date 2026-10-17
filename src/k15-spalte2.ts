@@ -1,13 +1,14 @@
 // K15 ENTWURF D · SPALTE 2, der Aufbau der gewählten Konstellation als Baum kompakter Session-Karten; oben, wer anleitet. Eine Karte
-// zeigt Rolle, Name und Kennzeichen; Modell, Effort, Übergabe und was sie vom Profil abweicht erst beim Darüberfahren oder mit „Alles
-// zeigen“ (Owner 16.10.: „[Zitat entfernt]“).
+// zeigt Rolle, Name, Kennzeichen und darunter Agent und Modell (Runde 4, Owner Z62); Effort, Succession und was sie vom Profil abweicht erst
+// beim Darüberfahren oder mit „Alles zeigen“ (Owner 16.10.: „[Zitat entfernt]“).
 import { el, bausteinName } from "./k15-haupt";
-import { icon } from "./icons";
+import { harnessMark, icon } from "./icons";
+import { modelLabel } from "./modelname";
 import {
   GRUPPEN, KONST0, abweichungen, ahnen, alle, eltern, herkunftVon, istName, orchHinweis, orchZahl, pos, umfangVon, type Konst, type Position, type Profil,
 } from "./k15-entwurf-modell";
 import { S, antwort, gehe, lage, plural, profilVon, schwelleWahl, toast, wahlVon, type St } from "./k15-zustand";
-import { geaendertTag, kennzeichen, kopfzeile, profilHerkunft, verTag } from "./k15-teile";
+import { geaendertTag, herkunftTitel, herkunftWenn, kennzeichen, kopfzeile, profilHerkunft } from "./k15-teile";
 import { ROLLE_MIME } from "./k15-spalte1";
 
 // der Name eines Bausteins, wie das Startfenster ihn nennt; die ID nur, wenn der Plan ihn nicht kennt
@@ -82,21 +83,32 @@ export function spalteAufbau(ansichten: readonly string[]): HTMLElement {
     const top = el("span", "k15ct");
     const g = el("span", "fdglyph");
     g.append(icon(p.glyph));
-    // ein Kennzeichen am Ende (Owner 11:1x): unverändert aus Fleet, geändert gegenüber dem Profil, oder deine eigene
+    // ein Kennzeichen am Ende (Owner 11:1x), aber nur, wo es etwas sagt (Runde 4, Z60): geändert gegenüber dem Profil, oder nicht von
+    // Fleet; „[Zitat entfernt]“ steht einmal über dem Baum, Profil und Version im Title der Karte
     const geaendert = abweichungen(p, q, (id) => nameVon(s, p, id));
-    const fassung = istName(q, p) ? `v${p.v}` : `${p.name} v${p.v}`;
+    const herkunft = p.id === "eigen" ? { art: "eigen" as const } : profilHerkunft(p);
     const kz = el("span", "k15tags");
-    kz.append(...kennzeichen(p.id === "eigen" ? { art: "eigen" } : profilHerkunft(p)));
-    kz.append(verTag(fassung, `Profil ${p.name} in Version ${p.v}`));
+    kz.append(...herkunftWenn(herkunft));
+    b.title = `${istName(q, p) ? "" : `${q.name} · `}Profil ${p.name}: ${herkunftTitel(herkunft, p.v)}`;
     if (geaendert.length) kz.append(geaendertTag(`${plural(geaendert.length, "Änderung", "Änderungen")} gegenüber ${p.name} v${p.v}`));
     top.append(g, el("span", "k15cn", q.name), kz);
+    // AGENT UND MODELL OHNE HOVER (Owner Z62: „[Zitat entfernt]“
+    // ): das Zeichen, das das Board für den Agenten malt
+    // (src/icons.ts#harnessMark), und das Modell ohne Fenstergröße; wählt der Agent sein Modell selbst, steht nur er da
+    const ag = wahlVon(s, p, q, "agent"), mo = wahlVon(s, p, q, "modell");
+    const agz = el("span", "k15ag");
+    agz.dataset.agent = ag.wert;
+    const zeichen = harnessMark(ag.wert);
+    if (zeichen) agz.append(zeichen);
+    agz.append(el("span", "k15agw", [ag.wort, mo.wert ? modelLabel(mo.wert).replace(/ · .*$/, "") : ""].filter(Boolean).join(" · ")));
+    agz.title = `Agent: ${ag.wort}, ${ag.herkunft}\nModell: ${mo.wort}, ${mo.herkunft}`;
     const sw = schwelleWahl(s, p, q);
     const umfang = p.rolle === "nur-ordner" ? "" : GRUPPEN.filter((x) => umfangVon(p, q, x.id) !== "standard")
       .map((x) => ` · ${x.wort}: ${umfangVon(p, q, x.id) === "pflicht" ? "nur Pflicht" : "alles"}`).join("");
     const x = el("span", "k15x k15cx");
-    x.append(el("span", "k15cs", `${wahlVon(s, p, q, "modell").wort} · ${wahlVon(s, p, q, "effort").wort} · ${sw.pct === null ? "Übergabe ?" : sw.pct <= 0 ? "Übergabe aus" : `Übergabe ab ${sw.pct} %`}${umfang}`));
+    x.append(el("span", "k15cs", `${wahlVon(s, p, q, "effort").wort} · ${sw.pct === null ? "Succession ?" : sw.pct <= 0 ? "Succession aus" : `Succession ab ${sw.pct} %`}${umfang}`));
     if (geaendert.length) x.append(el("span", "k15xk", `gegenüber ${p.name} v${p.v}`), ...geaendert.map((z) => el("span", "", z)));
-    b.append(top, x);
+    b.append(top, agz, x);
     b.onclick = () => { s.sel = { art: "pos", id: q.id }; if (!ansichten.includes(s.quelle)) s.quelle = "landet"; gehe(2, 2); };
     b.addEventListener("dragover", (e) => { if (e.dataTransfer?.types.includes(ROLLE_MIME)) { e.preventDefault(); b.classList.add("ziel"); } });
     b.addEventListener("dragleave", () => b.classList.remove("ziel"));

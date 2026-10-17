@@ -15,6 +15,16 @@ export function kennzeichen(h: Herkunft, v?: number | string): HTMLElement[] {
   t.title = h.art === "fleet" ? "Fleet-Vorlage: mitgeliefert; ändern geht an einer Kopie" : h.art === "autor" ? `importiert, geschrieben von ${h.name}; hier deine bearbeitbare Kopie` : "deine eigene, bearbeitbar";
   return v === undefined ? [t] : [t, verTag(v)];
 }
+// KENNZEICHEN NUR, WO ES ETWAS SAGT (Runde 4, Owner Z60: „[Zitat entfernt]“): in einer Liste trägt eine Zeile ihre Herkunft nur, wenn Fleet
+// sie nicht mitliefert; „[Zitat entfernt]“ steht einmal im Kopf der Liste (fleetKopf), Herkunft und Version jeder Zeile in ihrem Title
+export const herkunftWenn = (h: Herkunft): HTMLElement[] => h.art === "fleet" ? [] : kennzeichen(h);
+export const herkunftTitel = (h: Herkunft, v: number | string): string =>
+  `${h.art === "fleet" ? "Fleet-Vorlage, mitgeliefert" : h.art === "autor" ? `importiert, von ${h.name}` : "deine eigene"} · ${typeof v === "number" ? `Version ${v}` : v}`;
+export function fleetKopf(): HTMLElement {
+  const t = kennzeichen({ art: "fleet" })[0];
+  t.title = "Was in dieser Liste kein Kennzeichen trägt, liefert Fleet mit; eigene und importierte sind markiert. Die Version steht im Title jeder Zeile.";
+  return t;
+}
 export function verTag(v: number | string, title?: string): HTMLElement {
   const t = el("span", "k15tag ver", typeof v === "number" ? `v${v}` : v);
   t.title = title ?? (typeof v === "number" ? `Version ${v}` : v);
@@ -68,7 +78,9 @@ export function schalt(an: boolean, title: string, onClick: () => void): HTMLEle
   sw.onclick = onClick;
   return sw;
 }
-export function waehle(anker: HTMLElement, optionen: { wert: string; wort: string }[], jetzt: string, nimmt: (v: string) => void): void {
+// eine Option mit `aus` steht im Menü, ist aber nicht wählbar; `aus` steht daneben, `grund` im Title
+export interface Option { wert: string; wort: string; aus?: string; grund?: string }
+export function waehle(anker: HTMLElement, optionen: Option[], jetzt: string, nimmt: (v: string) => void): void {
   const s = S;
   const win = s?.shell.root.querySelector<HTMLElement>(".shellwin");
   if (!s || !win) return;
@@ -76,11 +88,17 @@ export function waehle(anker: HTMLElement, optionen: { wert: string; wort: strin
   const m = el("div", "k15menu");
   m.setAttribute("role", "menu");
   for (const o of optionen) {
-    const b = el("button", o.wert === jetzt ? "on" : "");
+    const b = knopf(o.wert === jetzt ? "on" : "");
     b.setAttribute("role", "menuitemradio");
     b.setAttribute("aria-checked", String(o.wert === jetzt));
+    b.dataset.wert = o.wert;
     b.append(el("span", "", o.wort));
     if (o.wert === jetzt) b.append(icon("check"));
+    if (o.aus) {
+      b.disabled = true;
+      b.title = o.grund ?? o.aus;
+      b.append(el("span", "k15menuaus", o.aus));
+    }
     b.onclick = () => { m.remove(); nimmt(o.wert); };
     m.append(b);
   }

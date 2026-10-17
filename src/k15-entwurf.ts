@@ -12,12 +12,12 @@
 import { el, api, baseName } from "./k15-haupt";
 import { icon } from "./icons";
 import { openShell } from "./shell";
-import { KONST0, PROFILE0, alle, fmt, herkunftVon } from "./k15-entwurf-modell";
+import { KONST0, PROFILE0, alle, fmt } from "./k15-entwurf-modell";
 import { dateiPasst } from "./k15-import";
 import {
   S, SCHMAL, antwort, beimZeichnen, gehe, gewaehlt, lage, ladeEigenes, liesPins, plural, profilVon, repos, setzeS, toast, type St,
 } from "./k15-zustand";
-import { SPALTEN, geaendertTag, kennzeichen } from "./k15-teile";
+import { SPALTEN, geaendertTag } from "./k15-teile";
 import { legeMenue, menueZu, repoKopf, repoMenue } from "./k15-repo";
 import { spalteLinks } from "./k15-spalte1";
 import { spalteAufbau } from "./k15-spalte2";
@@ -27,6 +27,7 @@ import { exportPanel, nimm } from "./k15-export";
 import { ablaufNimmt, ablaufPanel } from "./k15-agentmd";
 import { anatomieKurz, anatomieVon } from "./k15-anatomie-ui";
 import { startZahl } from "./k15-startzahl";
+import { katalogAus } from "./k15-agent";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -59,7 +60,7 @@ export function openK15Entwurf(): void {
     offen: new Set<string>(),
     exp: h?.[1] === "export", ebene: "konst", voll: false, tief: Number(h?.[2] ?? 0), neuAb: 4, profilNeu: new Set(), konstNeu: new Set(), toastT: 0,
     aktiv: h?.[1] ? 2 : 0, bst: null, tour: rundgangGesehen() ? null : 0, detail: gemerktesDetail(), alles: gemerktesAlles(),
-    repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(),
+    repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(), katalog: undefined,
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
     fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt" };
   setzeS(s);
@@ -78,6 +79,12 @@ export function openK15Entwurf(): void {
     s.fleetModell = typeof f === "string" ? f : null;
     render();
   }).catch(() => { if (S === s) { s.env = null; render(); } });
+  // welche Agenten es gibt und welche Modelle jeder nimmt (Runde 4): einmal je Öffnen, wie das Startfenster (src/client.ts#loadHarnesses)
+  void api("/api/harnesses").then((r) => r.ok ? r.json() : null).then((j: unknown) => {
+    if (S !== s) return;
+    s.katalog = katalogAus(j);
+    render();
+  }).catch(() => { if (S === s) { s.katalog = null; render(); } });
   kopf(s);
   ablage(s, zu.signal);
   menueZu(s, zu.signal);
@@ -211,7 +218,8 @@ function render(): void {
   f.classList.add("k15foot");
   const n = alle(s.k.wurzeln).length;
   const say = el("span", "k15say");
-  say.append(el("span", "k15sayk", s.k.name), ...kennzeichen(herkunftVon(s.k), s.k.v), ...(s.konstNeu.has(s.k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []),
+  // Herkunft und Version stehen über dem Aufbau (Spalte 2); hier nur, ob er geändert ist (Runde 4, Z60)
+  say.append(el("span", "k15sayk", s.k.name), ...(s.konstNeu.has(s.k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []),
     el("span", "", ` ${plural(n, "Session", "Sessions")} · ${s.repo ? baseName(s.repo) : "kein Repo"} · neuer Branch aus main`));
   const go = el("button", "k15go", n === 1 ? "Starten" : `${n} Sessions starten`);
   go.title = "Entwurf: Starten ist hier nicht verdrahtet";
@@ -252,7 +260,7 @@ const RUNDGANG: readonly { spalte: number; ziel: string; titel: string; text: st
   { spalte: 0, ziel: ".k15c1 .k15konst.on", titel: "Konstellation",
     text: "Oben steht, in welchem Repo die neue Session startet. Hier wählst du, welche Sessions zusammenarbeiten. „Fleet“ heißt mitgeliefert; eine Kopie wird deine eigene." },
   { spalte: 1, ziel: ".k15c2 .k15baum", titel: "Aufbau",
-    text: "Wer wem meldet: oben die Session, die anleitet, darunter die, die an sie melden. Modell und Übergabe einer Session siehst du, wenn du über ihre Karte fährst." },
+    text: "Wer wem meldet: oben die Session, die anleitet, darunter die, die an sie melden. Agent und Modell stehen auf jeder Karte; Effort und Succession siehst du, wenn du über sie fährst." },
   { spalte: 2, ziel: ".k15c3 .k15grs0", titel: "Was die Session bekommt",
     text: "Die Bausteine nach Gruppen: wofür sie da sind. Jedes Kästchen ist ein Baustein, kräftig heißt Pflicht. Tokens und Erklärungen erscheinen beim Darüberfahren; „Alles zeigen“ oben blendet sie überall ein." },
   { spalte: 3, ziel: ".k15c4 .k15vseg", titel: "Wo es landet",

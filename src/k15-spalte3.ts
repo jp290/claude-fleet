@@ -6,14 +6,15 @@ import { icon } from "./icons";
 import { modelLabel } from "./modelname";
 import type { Answer, Baustein } from "./founding";
 import {
-  EFFORT_WORT, EINSTELLUNGEN_ID, GRUPPEN, STUFEN, WAHL, abwZahl, alle, aspekt, eltern, gruppeVon, pct, schalte, schwelleVon, stufeAus, stufeWort,
+  EFFORT_WORT, EINSTELLUNGEN_ID, GRUPPEN, STUFEN, abwZahl, alle, aspekt, eltern, gruppeVon, pct, schalte, schwelleVon, stufeAus, stufeWort,
   tokVon, traegerVon, umfangId, umfangVon, verbindungen, type Feld, type GruppeId, type Position, type Profil, type Stufe,
 } from "./k15-entwurf-modell";
 import {
-  S, antwort, bausteineVon, eigeneBytes, fehltWeil, gehe, gewaehlt, kommtAn, lage, lies, planUrl, plural, render, schwelleWahl, toast, wahlVon, wegVon, werPlan, zeige,
+  S, antwort, bausteineVon, dreier, eigeneBytes, fehltWeil, gehe, gewaehlt, kommtAn, lage, lies, planUrl, plural, render, schwelleWahl, toast, wahlVon, wegVon, werPlan, zeige,
   type Detail, type Lage, type QuelleId, type St,
 } from "./k15-zustand";
-import { chip, istSchalter, kennzeichen, kopfzeile, nachZahl, schalt, waehle } from "./k15-teile";
+import { chip, istSchalter, kennzeichen, kopfzeile, nachZahl, schalt, waehle, type Option } from "./k15-teile";
+import { agentOptionen, agentWort, effortVon, modelleVon, passtEffort, passtModell } from "./k15-agent";
 import { werBestimmt } from "./k15-wer";
 import { autonomieBlock } from "./k15-autonomie";
 import { entferne } from "./k15-spalte2";
@@ -68,8 +69,23 @@ function setze(s: St, q: Position | null, p: Profil, feld: Feld, neu: string | n
     else p[feld] = String(neu);
     s.profilNeu.add(p.id);
   }
+  if (feld === "agent") passeAn(s, q, p);
   s.quelle = "einst";
   render();
+}
+// ein neuer Agent nimmt nicht mit, was zum alten gehört (wie src/founding.ts#pickHarness): ein Modell oder Effort, den er nicht kennt,
+// fällt auf dieser Ebene weg, und es gilt seiner
+function passeAn(s: St, q: Position | null, p: Profil): void {
+  const agent = wahlVon(s, p, q, "agent").wert, kat = s.katalog ?? null;
+  if (q) {
+    const abw = { ...q.abw };
+    if (typeof abw.modell === "string" && !passtModell(kat, agent, abw.modell)) delete abw.modell;
+    if (typeof abw.effort === "string" && !passtEffort(kat, agent, abw.effort)) delete abw.effort;
+    if (Object.keys(abw).length) q.abw = abw; else delete q.abw;
+    return;
+  }
+  if (p.modell !== null && !passtModell(kat, agent, p.modell)) p.modell = null;
+  if (p.effort !== null && !passtEffort(kat, agent, p.effort)) p.effort = null;
 }
 // den Umfang einer Gruppe setzen: für die Position als Abweichung, sonst im Profil; einzelne Schalter der Gruppe fallen weg, die der
 // anderen Gruppen bleiben
@@ -100,7 +116,7 @@ export async function setzeBaustein(s: St, q: Position | null, p: Profil, b: Bau
     if (!l || !s.repo) return null;
     const std = antwort(l.voll)?.plan.bausteine.find((x) => x.id === b.id)?.zustand === "an" ? "an" : "aus";
     const neu = schalte(l.unten, l.eigen, b.id, an, std);
-    return { neu, url: planUrl(s.repo, p.rolle, { ...l.unten, ...neu }) };
+    return { neu, url: planUrl(s.repo, p.rolle, { ...l.unten, ...neu }, dreier(s, p, q)) };
   };
   for (let runde = 0; runde < RUNDEN; runde++) {
     const z = ziel();
@@ -167,7 +183,7 @@ export function spalteSession(): HTMLElement {
   // eine Zeile: Wert und Daten sichtbar; Erklärung und „Standard → hier“ erst bei Hover, Fokus oder Antippen (Owner 11:0x). `innen`
   // nennt Datei und Funktion, aus der die Erklärung stammt; sie steht nur im Title.
   const zeile = (o: { k: string; v: string; sub?: string; erkl?: string[]; innen?: string; quelle?: QuelleId;
-    wahl?: { optionen: { wert: string; wort: string }[]; jetzt: string; nimmt: (v: string) => void }; abw?: string }): HTMLElement => {
+    wahl?: { optionen: Option[]; jetzt: string; nimmt: (v: string) => void }; abw?: string }): HTMLElement => {
     const key = `x:z:${o.k}`;
     const r = el("div", `k15z${o.quelle ? " geht" : ""}${o.quelle && s.quelle === o.quelle ? " on" : ""}${o.abw ? " abw" : ""}${s.offen.has(key) ? " zeig" : ""}`);
     const vv = el("span", "k15zv");
@@ -322,7 +338,12 @@ export function spalteSession(): HTMLElement {
     kopfz.setAttribute("aria-expanded", String(auf));
     kopfz.append(icon("chevron"), el("span", "k15grn", gr.wort), el("span", "k15grz", `${anB.length} von ${bs.length} an`), nachZahl("k15grt", tokVon(bytes)));
     kopfz.onclick = () => { if (s.offen.has(key)) s.offen.delete(key); else s.offen.add(key); render(); };
-    box.append(kopfz, el("div", "k15grs", gr.satz));
+    // was die Gruppe im Lauf tut, sichtbar; wofür sie da ist und die Fundstelle im Title; wo man sie einstellt beim Darüberfahren (Runde 4, Z63)
+    const lauf = el("div", "k15grs", gr.lauf[p.rolle]);
+    lauf.title = `${gr.wort}: ${gr.satz}\nFundstelle: ${gr.fund}`;
+    const wo = el("div", "k15x k15grw");
+    wo.append(el("span", "", `Einstellen: ${gr.wo}`));
+    box.append(kopfz, lauf, wo);
     const std = new Map((va?.plan.bausteine ?? []).map((b) => [b.id, b.zustand]));
     const spur = el("div", "k15spur");
     spur.style.setProperty("--n", String(bs.length));
@@ -445,17 +466,25 @@ export function spalteSession(): HTMLElement {
     if (trotzdem.length) col.append(el("div", "k15hinweis", `Die Tür liefert trotzdem, was der Plan abschaltet: ${trotzdem.join(" · ")}.`));
   }
 
-  // EINSTELLUNGEN · Modell, Effort, Übergabe und Permission-Mode, je mit Herkunft in Menschenworten (Datei und Funktion im Title)
-  const m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort"), sw = schwelleWahl(s, p, q);
+  // EINSTELLUNGEN · Agent, Modell, Effort, Succession und Permission-Mode, je mit Herkunft in Menschenworten (Datei und Funktion im Title).
+  // Agenten, Modelle und Effort-Stufen kommen aus dem Katalog des Servers (src/k15-agent.ts); die Modell-Liste folgt dem Agenten (Runde 4)
+  const ag = wahlVon(s, p, q, "agent"), m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort"), sw = schwelleWahl(s, p, q);
+  const kat = s.katalog;
   const abwVon = (f: Feld): string | undefined => q?.abw?.[f] === undefined ? undefined
     : f === "schwelle" ? pct(typeof p.schwelle === "number" ? p.schwelle : schwelleVon(p.schiene, s.env ?? null).pct)
-    : typeof p[f] === "string" ? (f === "modell" ? modelLabel(String(p[f])) : EFFORT_WORT[String(p[f])] ?? String(p[f])) : "Standard";
+    : typeof p[f] === "string" ? (f === "agent" ? agentWort(String(p[f])) : f === "modell" ? modelLabel(String(p[f])) : EFFORT_WORT[String(p[f])] ?? String(p[f])) : "Standard";
+  const ohneKatalog = kat === undefined ? "wird gelesen" : "Fleet nennt die Agenten nicht";
+  const modelle = kat ? modelleVon(kat, ag.wert) : [], efforts = kat ? effortVon(kat, ag.wert) : [];
   gruppe("Einstellungen", p.einV, "einst", [
+    zeile({ k: "Agent", v: ag.wort, erkl: [ag.herkunft], innen: ag.quelle, abw: abwVon("agent"),
+      ...(kat ? { wahl: { optionen: agentOptionen(kat, p.rolle === "lane"), jetzt: ag.wert, nimmt: (neu) => setze(s, q, p, "agent", neu) } } : { sub: ohneKatalog }) }),
     zeile({ k: "Modell", v: m.wort, erkl: [m.herkunft], innen: m.quelle, abw: abwVon("modell"),
-      wahl: { optionen: WAHL.modell.map((x) => ({ wert: x, wort: modelLabel(x) })), jetzt: m.wert, nimmt: (neu) => setze(s, q, p, "modell", neu) } }),
+      ...(modelle.length ? { wahl: { optionen: modelle.map((x) => ({ wert: x, wort: modelLabel(x) })), jetzt: m.wert, nimmt: (neu) => setze(s, q, p, "modell", neu) } }
+        : { sub: kat ? `${ag.wort} nennt keine Liste` : ohneKatalog }) }),
     zeile({ k: "Effort", v: e.wort, erkl: [e.herkunft], innen: e.quelle, abw: abwVon("effort"),
-      wahl: { optionen: WAHL.effort.map((x) => ({ wert: x, wort: EFFORT_WORT[x] ?? x })), jetzt: e.wert, nimmt: (neu) => setze(s, q, p, "effort", neu) } }),
-    zeile({ k: "Übergabe ab", v: pct(sw.pct), erkl: [sw.herkunft], innen: sw.quelle, abw: abwVon("schwelle"),
+      ...(efforts.length ? { wahl: { optionen: efforts.map((x) => ({ wert: x, wort: EFFORT_WORT[x] ?? x })), jetzt: e.wert, nimmt: (neu) => setze(s, q, p, "effort", neu) } }
+        : { sub: kat ? `${ag.wort} kennt keine Stufen` : ohneKatalog }) }),
+    zeile({ k: "Succession ab", v: pct(sw.pct), erkl: [sw.herkunft], innen: sw.quelle, abw: abwVon("schwelle"),
       wahl: { optionen: SCHWELLEN.map((x) => ({ wert: String(x), wort: pct(x) })), jetzt: String(sw.pct ?? ""), nimmt: (neu) => setze(s, q, p, "schwelle", Number(neu)) } }),
     zeile({ k: "Permission-Mode", v: String(aspekt("permission-mode")?.standard ?? ""), sub: "für alle Sessions gleich",
       erkl: ["Fleet startet jede Claude-Session im Auto-Mode: ein Klassifizierer prüft jede Aktion, statt nachzufragen; was er sperrt, meldet die Session ihrer Leitung.",
@@ -480,7 +509,7 @@ export function spalteSession(): HTMLElement {
         innen: istSchalter(z.weg) ? `Claude Code: ${z.weg} · ${z.quelle}` : z.quelle }));
   gruppe("Rechte", p.rechteV, null, rechte.length ? rechte : [el("div", "k15leer", a ? "Der Plan nennt für diesen Agenten keine Claude-Code-Zeilen." : "wird mit dem Plan gelesen")]);
 
-  // VERBINDUNGEN IM LAUF · was das Register nicht abdeckt: Postfach, Rückweg, Nachfolge, Hinweise, Ausweis
+  // VERBINDUNGEN IM LAUF · was das Register nicht abdeckt: Postfach, Rückweg, Succession, Hinweise, Ausweis
   gruppe("Verbindungen im Lauf", null, "wege", verbindungen(p.id).map((v) => zeile({ k: v.name, v: v.kurz, quelle: "wege",
     ...(v.fehlt ? { sub: "heute nicht" } : {}), erkl: [v.heute, ...(v.fehlt ? [v.fehlt] : [])], innen: v.quelle })));
 

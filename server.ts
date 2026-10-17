@@ -211,8 +211,8 @@ import { createTranscriptPush } from "./server/transcript-push";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
-  doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
-  setOpener, usableCheck, writeText } from "./server/branches";
+  doneSinceLastLand, dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
+  setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
   settingForSuccessor, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput, type CacheView, type HintFacts, type SessionKind,
   type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
@@ -8366,8 +8366,9 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     return { branch: record.branch, name: record.name, base, head: ref.head, text: record.text, rev: record.rev,
       seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
       distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null,
-      lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, checked: l.checked })),
-      chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
+      lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, checked: l.checked,
+        form: l.form ?? "squash" })),
+      landForm: record.landForm ?? "squash", chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
       check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
   return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons };
@@ -51050,14 +51051,25 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         rev: done.record.rev }, existed ? 200 : 201);
     }
     // the points (= notepad text) of a branch, written whole against the `rev` the writer read: a
-    // stale rev answers 409 with the stored text and rev, and nothing is overwritten
+    // stale rev answers 409 with the stored text and rev, and nothing is overwritten. The same door
+    // sets the branch's land form alone ({ repo, branch, landForm }, K16): how a charge lands when
+    // /api/branches/land is not told — one commit (squash, the default) or all commits.
     if (url.pathname === "/api/branches/note" && req.method === "POST") {
       const body = await readJson(req);
-      if (!body || typeof body.branch !== "string" || typeof body.text !== "string" || typeof body.rev !== "number")
-        return json({ error: "expected { repo, branch, text, rev }" }, 400);
+      const form = body?.landForm;
+      const formOnly = form !== undefined && body?.text === undefined && body?.rev === undefined;
+      if (!body || typeof body.branch !== "string" || (formOnly ? !isLandForm(form) : typeof body.text !== "string" || typeof body.rev !== "number"))
+        return json({ error: "expected { repo, branch, text, rev } or { repo, branch, landForm: \"squash\" | \"commits\" }" }, 400);
       const ro = await branchRepoOf(body.repo);
       if (!ro.ok) return json({ error: ro.error }, 400);
       if (!(await branchExists(ro.repo, body.branch))) return json({ error: `no such branch: ${body.branch}` }, 404);
+      if (isLandForm(form) && formOnly) {
+        branchBook = setBranchLandForm(branchBook, ro.repo, body.branch, form, Date.now()).book;
+        await saveStateNow();
+        workplacesCache = null;
+        return json({ ok: true, landForm: form });
+      }
+      if (typeof body.text !== "string" || typeof body.rev !== "number") return json({ error: "expected { repo, branch, text, rev }" }, 400);
       const w = writeText(branchBook, ro.repo, body.branch, body.text, body.rev, Date.now());
       if (!w.ok) return json({ error: w.error, ...(w.current ? { current: { text: w.current.text, rev: w.current.rev } } : {}) }, w.status);
       branchBook = w.book;
@@ -51208,12 +51220,15 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // with the subject from the board's question. Its tree is the merge check's candidate (or, without
     // a merge check and only with unchecked:true, the same per-commit build here); main moves by
     // advanceIntegration. Branch, worktree and session stay; the land is recorded on the branch.
+    // squash:false (or, without body.squash, the branch's landForm "commits"): no charge commit — main
+    // fast-forwards to the candidate itself, which ci/merge-check.ts#candidateOf built commit by commit
+    // on this very main. Only with a merge check: chargeTree's steps are no commits for main.
     if (url.pathname === "/api/branches/land" && req.method === "POST") {
       const body = await readJson(req);
       const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
       if (!body || typeof body.branch !== "string" || !subject || subject.length > 200 || /[\r\n]/.test(subject)
-        || (body.unchecked !== undefined && typeof body.unchecked !== "boolean"))
-        return json({ error: "expected { repo, branch, subject (one line, ≤200), unchecked? }" }, 400);
+        || (body.unchecked !== undefined && typeof body.unchecked !== "boolean") || (body.squash !== undefined && typeof body.squash !== "boolean"))
+        return json({ error: "expected { repo, branch, subject (one line, ≤200), unchecked?, squash? }" }, 400);
       const ro = await branchRepoOf(body.repo);
       if (!ro.ok) return json({ error: ro.error }, 400);
       const repo = ro.repo;
@@ -51231,6 +51246,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const base = chargeBase(record, main);
         if (!base) return json({ error: "cannot resolve the charge's base" }, 400);
         const checked = hasMergeCheck(repo);
+        const form = body.squash === undefined ? record.landForm ?? "squash" : body.squash ? "squash" : "commits";
+        if (form === "commits" && !checked)
+          return json({ error: "alle Commits nur mit Merge-Check — dieses Repo hat keinen; „ein Commit“ geht (squash: true)" }, 409);
         const use = checked ? usableCheck(await mergeCheckRows(repo), { branch: body.branch, base, tip, main: mainSha }) : null;
         if (use && !use.ok) return json({ error: use.why }, 409);
         if (!checked && body.unchecked !== true)
@@ -51249,13 +51267,18 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           tree = built.tree;
         }
         const passt = record.seen?.head === tip;
-        const commit = await git(repo, "commit-tree", tree, "-p", mainSha, "-m",
-          chargeMessage(subject, { branch: body.branch, tip, commits, passt, checked }));
-        if (commit.code !== 0 || !commit.out) return json({ error: `commit-tree: ${commit.err.slice(0, 200)}` }, 409);
-        const moved = await advanceIntegration(repo, main, commit.out);
+        let sha: string;
+        if (form === "commits" && use) sha = use.row.candidate;
+        else {
+          const commit = await git(repo, "commit-tree", tree, "-p", mainSha, "-m",
+            chargeMessage(subject, { branch: body.branch, tip, commits, passt, checked }));
+          if (commit.code !== 0 || !commit.out) return json({ error: `commit-tree: ${commit.err.slice(0, 200)}` }, 409);
+          sha = commit.out;
+        }
+        const moved = await advanceIntegration(repo, main, sha);
         if (moved) return json({ error: `main wurde nicht bewegt: ${moved.error}` }, 409);
-        const landed = recordBranchLand(branchBook, repo, body.branch, { sha: commit.out, at: Date.now(), tip, base, subject,
-          points: doneSinceLastLand(record), passt, checked });
+        const landed = recordBranchLand(branchBook, repo, body.branch, { sha, at: Date.now(), tip, base, subject,
+          points: doneSinceLastLand(record), passt, checked, form });
         if (landed.ok) branchBook = landed.book;
         await saveStateNow();
         // main moved, so this land owes what recordLand gives every main-MOVING lane land (Mangel 94:
@@ -51263,11 +51286,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // hand through /api/repos/audit-tip). `proportional` false: a charge passed no land gate, so
         // there is no docs-only short-chain verdict to carry — NOT PROVEN, the full suite, the same
         // reading recordLand gives a land without `prov.verify`. The merge check is no such verdict.
-        await schedulePostLandAudit(repo, main, body.branch, commit.out, false);
+        await schedulePostLandAudit(repo, main, body.branch, sha, false);
         scheduleMainGraphRebuild(repo, main);
         workplacesCache = null;
         void tickGit().catch(() => {});
-        return json({ ok: true, sha: commit.out, main, commits: commits.length, passt, checked,
+        return json({ ok: true, sha, main, commits: commits.length, passt, checked, form,
           ...(FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? { deploy: "nötig — der Server fährt den neuen Stand erst nach einem Deploy" } : {}) });
       } finally {
         branchLanding.delete(repo);

@@ -148,7 +148,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
     ...Array.from({ length: 8 }, (_, i) => ({ id: i + 9, cwd: null, label: null, lastOutput: 0 })),
   ];
   const branch = (b: string, name: string, slot: number, openedAt: number) => ({ branch: b, name, base: null, head: "h", text: "", rev: 1,
-    seen: null, path: null, session: { slot, openedAt }, distance: null, lands: [], chargeBase: null, chargeCommits: null, check: null });
+    seen: null, path: null, session: { slot, openedAt }, distance: null, lands: [], landForm: "squash", chargeBase: null, chargeCommits: null, check: null });
   const branches = { repos: [{ repo: "/fixture/r", integration: "main", others: [], othersTotal: 0, reasons: [],
     branches: [branch("bau/einstellungen", "Einstellungen (K16)", 5, 5000), branch("bau/alt", "Alt", 7, 1)] }] };
   const programs = { programs: [{ id: "p-alpha", status: "active", title: "Alpha", createdAt: 0, main: { slot: 2, openedAt: 2000 } }] };

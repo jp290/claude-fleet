@@ -11,7 +11,7 @@ export interface Fixture { repo: string; state: string; token: string; sock: str
 export type BranchRow = { branch: string; name: string; text: string; rev: number; path: string | null; head: string;
   session: { slot: number; openedAt: number } | null;
   seen: { head: string; via: string } | null; distance: { ahead: number; behind: number } | null;
-  lands: { sha: string; subject: string; points: string[]; passt: boolean; checked: boolean }[];
+  lands: { sha: string; subject: string; points: string[]; passt: boolean; checked: boolean; form?: string }[]; landForm: string;
   chargeBase: string | null; chargeCommits: number | null; check: { state: string; at: number | null; why: string | null } | null };
 export const LIFE_DEADLINE_MS = 30_000;
 const DRIVE = join(import.meta.dir, "branches.drive.ts");

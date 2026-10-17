@@ -933,14 +933,16 @@ export interface BranchSeenView { at: number; head: string; via: "cookie" | "bea
 // A CHARGE (K5 S3) is the branch's commits since its last charge (`chargeBase`, the tip of the last
 // one); `chargeCommits` counts them. `check` is the merge check of the current tip against that base —
 // null where the repo has no ci/merge-check.ts (a charge there needs the explicit „ohne Merge-Check“).
-export interface BranchLandView { sha: string; at: number; subject: string; points: string[]; passt: boolean; checked: boolean }
+// `form` says how a charge landed (K16): "squash" one commit, "commits" main fast-forwarded to the
+// merge check's candidate; `landForm` on the branch is how the next one lands when the board does not say.
+export interface BranchLandView { sha: string; at: number; subject: string; points: string[]; passt: boolean; checked: boolean; form: "squash" | "commits" }
 export interface BranchCheckView { state: "none" | "running" | "green" | "red" | "stale"; at: number | null; why: string | null }
 export interface BranchView {
   branch: string; name: string; base: string | null; head: string;
   text: string; rev: number; seen: BranchSeenView | null;
   path: string | null; session: { slot: number; openedAt: number } | null;
   distance: WorktreeDistance | null;
-  lands: BranchLandView[]; chargeBase: string | null; chargeCommits: number | null; check: BranchCheckView | null;
+  lands: BranchLandView[]; landForm: "squash" | "commits"; chargeBase: string | null; chargeCommits: number | null; check: BranchCheckView | null;
 }
 export interface BranchOtherView { branch: string; head: string; at: number; path: string | null }
 export interface BranchesRepoView {

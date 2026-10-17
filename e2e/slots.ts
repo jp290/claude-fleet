@@ -1963,8 +1963,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("B5: the checks are the block Prüfungen of the Arbeitsorte — one line per run that runs or waits; at its lane the run is the diamond on its way back",
     /checks = block\("runs", "Prüfungen"\)/.test(cliSrc)
       && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done"\)\.sort\(/.test(cliSrc)
-      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc) && /if \(gate\) row\.appendChild\(gateButton\(gateKey, gate, w, mine, ended\)\);/.test(cliSrc)
-      && cliSrc.indexOf("checks.appendChild(runRows(focusSlot === null));") > cliSrc.indexOf("projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));")
+      && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc)
+      // K16 git-Struktur: the diamond at the lane and the block's place under Projekte are runArbeitsorteDom's claims
       && !/"Alle Prüfläufe"/.test(cliSrc) && !/meterOpen/.test(cliSrc)
       && !/function gateSection[\s\S]*?\n\}/.exec(cliSrc)?.[0]?.includes("g?.reports"), "runRows + arbeitsorteSection in src/board.ts");
   // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
@@ -2270,10 +2270,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // row in the session block, no Checks section of its own
   check("client: the session's checks are a value of its lane, not a section of their own",
     !/sectionHead\("Checks"|boardHead\("Checks"/.test(boardSrc) && !/kvRow\("Check"/.test(cliSrc) && !/kvRow\("Land"/.test(cliSrc)
-    // since Owner-Runde 8b the gear for the land form hangs on the way line, so it stands in `wl` first
-    && !/laneFlag|lflag/.test(boardSrc) && /const wl = wayLine\(w, mine\);/.test(boardSrc) && /out\.push\(wl\);/.test(boardSrc)
+    && !/laneFlag|lflag/.test(boardSrc)
     && !/No suite reported in the last few minutes/.test(cliSrc),
-    "laneRow + wayLine in src/board.ts, no laneFlag");
+    "the session block in src/board.ts, no laneFlag");
   // WHOSE FACT: every section head carries one word from the closed set, and the two machine
   // alarms — which have no head of their own — carry it as their first line. A section that
   // re-appears without one is the confusion this cut exists to end (a fleet number read as a
@@ -2345,11 +2344,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       withHex.slice(0, 3).join(" | ") || `${boardCss.length} rules, none with a literal colour`);
   }
   // (nameWithoutModel reads s.model for one purpose: to cut the model OFF a label that ends in it —
-  // Konzept 1 §2, the model is no part of who — so its body is the one place the scan leaves out)
+  // Konzept 1 §2, the model is no part of who — so its body is the one place the scan leaves out; and
+  // gsCard, the card on a circle of the git structure, which the K16 brief asks for: „Rolle, Agent · Modell“)
   {
-    const shown = boardSrc.replace(/export function nameWithoutModel\(s: SlotInfo\): string \{[\s\S]*?\n\}/, "");
+    const shown = boardSrc.replace(/export function nameWithoutModel\(s: SlotInfo\): string \{[\s\S]*?\n\}/, "")
+      .replace(/function gsCard\(s: SlotInfo\): GsCard \{[\s\S]*?\n\}/, "");
     check("client: the board repeats neither the model, the effort nor the context fill",
-      shown !== boardSrc && !/s\.model/.test(shown) && !/s\.effort/.test(shown) && !/s\.ctx/.test(shown),
+      shown !== boardSrc && /function gsCard/.test(boardSrc) && !/function gsCard/.test(shown) && !/s\.model/.test(shown) && !/s\.effort/.test(shown) && !/s\.ctx/.test(shown),
       "renderBoard vs the sidebar row");
   }
   // the lanes list LEFT the folded tools on 2026-09-19 ("[Zitat entfernt]") — it is a section now, and its absence from the fold list is
@@ -11644,50 +11645,29 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: `{ label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null }`, with: `{ label: "Fleet-Instanz", text: null, st }` },
   { name: "a tap shows no other carrier", state: "doppelt", claim: "a tap on workhorse opens its instance",
     needle: "for (const f of facts) {", with: "for (const f of [] as MachineFact[]) {" },
-  { name: "every project shown, none behind the row", state: "leer", width: 1200, claim: "with no running work every project waits behind one row",
+  { name: "every project shown, none behind the row", state: "leer", width: 1200, claim: "with no running work every project waits behind one line",
     needle: "const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));", with: "const quiet: WorkplaceRepo[] = [];" },
   // ("a session merely sitting in a checkout counts as work" left with the owner's 2026-10-09 word: a focused
   // session shows its project alone, so repoAtWork decides only the overview — whose fixture, `leer`, has no
   // session at all to sit anywhere; the statement has no witness until a state carries one)
-  { name: "a detached worktree reads \"ohne Branch\" again", state: "doppelt", claim: "a detached worktree says what it is",
-    needle: ": `losgelöst · ${laneWords(baseName(w.path))}`);", with: ": \"ohne Branch\");" },
-  { name: "a date inside a branch name stays in its words", state: "doppelt", claim: "none carries a date in its words",
-    needle: String.raw`.replace(/(^|[-_/])(?:\d{6,}|(?:19|20)\d\d-\d\d-\d\d)(?=[-_/]|$)/g, "$1")`, with: String.raw`.replace(/^\d{6,}-/, "")` },
-  { name: "two rows alike keep their words alike", state: "doppelt", claim: "two branches whose words differ only by date read apart",
-    needle: "if (alike.length < 2) continue;", with: "continue;" },
-  { name: "a worktree on the stem stands as a lane too", state: "doppelt", claim: "overhaul stands once",
-    needle: "stemWt.set(w.branch, w);", with: "void w;" },
-  { name: "the quiet projects' row opens nothing", state: "leer", width: 1200, claim: "the quiet project is one tap away",
+  { name: "the quiet projects' row opens nothing", state: "leer", width: 1200, claim: "with no running work every project waits behind one line",
     needle: "if (rankeQuietOpen) for (const R of quiet)", with: "if (false) for (const R of quiet)" },
   // THE CLOSED ROW AND THE OPENED LANE (owner 2026-10-08; the flag left 2026-10-10): the closed row
   // quiet, a tap opens in place
-  { name: "the closed row draws the five points again", state: "lane", claim: "a closed lane carries no row of points",
-    needle: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  row.appendChild(rt);",
-    with: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  rt.appendChild(laneWay(w));\n  row.appendChild(rt);" },
   // the flag back where a check came to green or red (owner 2026-10-10: „[Zitat entfernt]“)
-  ...([390, 1200] as const).map((width) => ({ name: `the green flag back on the closed row (${width})`, state: "viele", width,
-    claim: ["a closed lane carries no row of points and no flag", "no closed lane carries a flag"],
-    needle: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  row.appendChild(rt);",
-    with: "  if (tiLook(w).cls === \"up\") rt.appendChild(tiSign(w));\n  if (WAY.some(({ key }) => w.checks?.[key]?.state === \"green\" || w.checks?.[key]?.state === \"red\")) { const f = el(\"span\", \"lflag ok\"); f.appendChild(icon(\"flag\")); rt.appendChild(f); }\n  row.appendChild(rt);" })),
   // MANGEL 76: the Context line shows the warm cap as the threshold again
   ...([390, 1200] as const).map((width) => ({ name: `the Context line shows the cap as where Fleet asks (${width})`, state: "uebergabe", width,
     claim: "the handover is ONE line", needle: "`Succession at ${at.pct}${", with: "`Succession at ${at.cap ?? at.pct}${" })),
-  // K16 uebergabe-b (Bauleitung 16.10.): a lane's block back in the session block pushes Land lane off the first screen
+  // K16 uebergabe-b (Bauleitung 16.10.): a lane's block back in the session block pushes Land lane down when it opens
   { name: "a lane's Handover block stands in the session block again", state: "lane", width: 1200,
-    claim: ["Land lane stands on the first screen at 1200 × 900", "the Handover block stands under Changes"],
+    claim: ["Land lane stands where it stood when the Handover block opens", "the Handover block stands under Changes"],
     needle: "const handoverUnderChanges = (c: BoardCtx): boolean => !!c.s.worktree && !!c.brief;",
     with: "const handoverUnderChanges = (c: BoardCtx): boolean => false;" },
   // K9 S1 (owner 13.10.: „[Zitat entfernt]“): the block opens in place, without a column render and its /brief
   { name: "the handover block opens through the column render again", state: "uebergabe",
     claim: "the switch opens the „Handover“ block in place without reading the brief",
     needle: "  if (!paintHandover(c)) void renderBoard();\n};", with: "  void renderBoard();\n};" },
-  { name: "a tap on a lane jumps to its session", state: "tippen", claim: "a tap on 3B opens it in place",
-    needle: "rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });",
-    with: "rowTarget(row, () => { if (s) jumpTo(s.id); else { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); } });" },
   // THE TEST INSTANCE AT THE PHONE (K19): the opened lane without its instance line
-  { name: "the opened lane draws no instance line", state: "modell",
-    claim: ["a running test instance is a green square IN its branch's row", "its line says the deadline", "Öffnen asks the slot's route"],
-    needle: `  else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));`, with: "" },
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
   { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live-Server says in one sentence how it runs",
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
@@ -11709,25 +11689,11 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "not-applicable is an alarm again", state: "alarm", claim: "a check after the land that does not apply to its repo draws no card", file: "src/plaudit.ts",
     needle: `  if (a.result === "not-applicable") return null;`, with: "" },
   // THE LIVE SESSION (owner 2026-10-09; UI-MAIN: „[Zitat entfernt]“)
-  { name: "no lane is live", state: "live", claim: "a live lane says Live beside its name",
+  { name: "no lane is live", state: "live", claim: "a live lane's block says Live",
     needle: "  return !!branch && branch.startsWith(LIVE_BRANCH_PREFIX);", with: "  return false && !!branch;" },
-  { name: "Mergen merges without asking", state: "live", claim: "Mergen asks first",
-    needle: "b.onclick = (e) => { e.stopPropagation(); void doLand(s.id); };", with: "b.onclick = (e) => { e.stopPropagation(); void post(`/api/slots/${s.id}/merge`, {}); };" },
-  { name: "a refused lane goes unsaid", state: "live", claim: "a refused lane is said under the project",
-    needle: "liveErr.set(repo, `Die Live-Session", with: "void (`Die Live-Session" },
-  { name: "a sentence that did not arrive goes unsaid", state: "live", claim: "a sentence that did not arrive is said at the lane",
-    needle: "liveErr.set(cwd, `Der Auftrag", with: "void (`Der Auftrag" },
-  { name: "an instance that did not start goes unsaid", state: "live", claim: "an instance that did not start is said at the lane",
+  { name: "an instance that did not start goes unsaid", state: "live", claim: "an instance that did not start is said under the structure",
     needle: "liveErr.set(cwd, `${liveErr.get(cwd)", with: "void (`${liveErr.get(cwd)" },
   // THE LANE VIEW, OWNER ROUND 2026-10-09 (UI-MAIN: „[Zitat entfernt]“)
-  { name: "a lane has no way back", state: "lane", claim: "every lane runs back to its target's rail",
-    needle: `  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";`, with: "" },
-  { name: "a landed lane's way back stays dashed", state: "viele", claim: "every lane runs back to its target's rail",
-    needle: `  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";`, with: `  row.dataset.land = "wait";` },
-  { name: "a running check draws no diamond", state: "land", claim: "3A's closed row carries no flag",
-    needle: "  if (gate) row.appendChild(gateButton(gateKey, gate, w, mine, ended));", with: "  void gateKey;" },
-  { name: "a tap on the diamond says nothing", state: "land", claim: "a tap on 3A's diamond says what runs",
-    needle: "  if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine, ended));", with: "" },
   { name: "every project beside the focused one", state: "lane", claim: "only the focused session's project stands",
     needle: "const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;", with: "const focusR: WorkplaceRepo | undefined = undefined;" },
   { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
@@ -11737,93 +11703,24 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from says so in its state",
     needle: "      markHere(rows[0]);", with: "" },
   // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note
-  { name: "the diamond sits midway to the rail", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
-    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);", with: "        const gx = (x0 + rx) / 2;" },
-  { name: "the diamond sits on the square again", state: "land", width: 1200, claim: "every diamond stands on its way back a few dashes after the row's last mark",
-    needle: "        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);", with: "        const gx = Math.min(x0 + 5, rx - GATE_RAIL);" },
-  { name: "a run that ended leaves no colour", state: "viele", claim: "a run that just ended colours its lane's diamond",
-    needle: `  return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;`, with: "  return looks.length ? null : null;" },
-  { name: "the note never shows", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
-    needle: "    #board .zr > .lgate:hover > .gnote, #board .zr > .lgate:focus-visible > .gnote { display: block; }", with: "" },
-  { name: "the note says no way", state: "land", width: 1200, claim: "hovering 3A's diamond shows its note at once",
-    needle: "  out.push(way);\n  return out;", with: "  return out;" },
-  { name: "a run the lane reported stands at no point", state: "land", width: 1200, claim: "the preview its lane reported waits at its point",
-    needle: "    : mine.find((b) => b.station !== \"done\" && RUN_POINT[b.kind] === key);", with: "    : undefined;" },
   { name: "the checks block opens by default", state: "land", claim: "closed by default, the Prüfungen block is one line",
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
   { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
-  { name: "the bar stops short of the square again", state: "viele", claim: "an opened row's bar runs over its words, git stand and marks",
-    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(Math.min(...[...row.querySelectorAll(\":scope > .ti, :scope > .lr > :not(.gs)\")].map((e) => e.getBoundingClientRect().left - tb.left), end(row) + 6)) - 2 - p[0])" },
-  { name: "the hovered bar runs on into the way back", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
-    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, Math.round(end(row)) + 14 - p[0])" },
-  { name: "a row with a square reads as one without", state: "viele", claim: "an opened row's bar runs over its words, git stand and marks",
-    needle: "      row.dataset.bar = hasMark(row) ? \"mark\" : \"end\";", with: "      row.dataset.bar = \"end\";" },
-  { name: "the stem's bar runs to the rail again", state: "main", width: 1200, claim: "the focused main's bar runs from its point over its test instance's square",
-    needle: "Math.max(0, Math.round(end(row)) + 4 - p[0])", with: "Math.max(0, (rails.get(row.dataset.id ?? \"\")?.x ?? Math.round(end(row)) + 4) - p[0])" },
-  { name: "the bar starts at the row's edge", state: "lane", claim: "the focused row's bar runs from its point over its words",
-    needle: "      row.style.setProperty(\"--zb-l\", `${p[0] - off}px`);", with: "      row.style.setProperty(\"--zb-l\", \"0px\");" },
-  { name: "the focused row fades its ground on every repaint", state: "lane", claim: "the focused row's bar runs from its point over its words",
-    needle: "  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }", with: "" },
-  { name: "the focused row keeps its whole ground", state: "lane", claim: "the focused row's bar runs from its point over its words",
-    needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "" },
-  { name: "the hovered row paints its whole ground again", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
-    needle: "  #board .ranke .rk > .zr[data-bar] { background: none; }", with: "  #board .ranke .rk > .zr[data-bar]:not(:hover) { background: none; }" },
-  { name: "the hovered row shows no bar", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
-    needle: "  #board .ranke .rk > .zr.zw[data-bar]:hover::before, #board .ranke .rk > .zr[data-bar].flash::before { background: var(--c-hover); }", with: "" },
-  { name: "only the focused row carries a bar", state: "lane", width: 1200, claim: "hovering 3B shows the same bar in the hover tone",
-    needle: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.zw, :scope > .zr.base\")) {", with: "    for (const row of rk.querySelectorAll<HTMLElement>(\":scope > .zr.here\")) {" },
   // round 6: the check after a land on the board, a label that is only its branch, the live field's line
-  { name: "the stem's check after the land has no diamond", state: "viele", width: 1200, claim: "each stem carries its diamond",
-    needle: "  if (mainAudit) mrow.appendChild(stemAuditButton(mainAuditKey, mainAudit, \"main\"));", with: "" },
-  { name: "the stem's line to its diamond is not dashed", state: "viele", claim: ["each stem carries its diamond", "each stem's check after the land stands at the end of a dashed line"],
-    needle: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${gx - 6}` });", with: "      if (gx - 6 > x) paths.push({ cls: \"rail\", d: `M${x} ${y}H${gx - 6}` });" },
-  { name: "the stem's dashed line runs past its diamond to the head", state: "viele", width: 1200, claim: "each stem's check after the land stands at the end of a dashed line",
-    needle: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${gx - 6}` });", with: "      if (gx - 6 > x) paths.push({ cls: \"rail back wait audit\", d: `M${x} ${y}H${headX - 4}` });" },
-  { name: "the check after a land is a lane's diamond again", state: "viele", claim: "the running check after E's land puts none on E's row",
-    needle: "  const states = LANE_CHECKS.map(({ key }) => w.checks?.[key] ?? null);", with: "  const states = WAY_CHECKS.map(({ key }) => w.checks?.[key] ?? null);" },
-  { name: "the stem's check matches no basename", state: "viele", width: 1200, claim: "each stem carries its diamond",
-    needle: "    || (repo === name && (workplaces?.repos ?? []).filter((x) => baseName(x.repo) === name).length === 1);", with: "    || false;" },
-  { name: "a landed lane's way goes solid while its check after the land runs", state: "viele", width: 1200, claim: "a landed lane's way back stays dashed",
-    needle: "  row.dataset.land = w.target.landed === \"yes\" && !auditOf(w.branch) ? \"yes\" : \"wait\";", with: "  row.dataset.land = w.target.landed === \"yes\" ? \"yes\" : \"wait\";" },
-  { name: "the running audit's covers count for nothing", state: "viele", claim: "a landed lane's way back stays dashed",
-    needle: "  if (a.running?.covers.includes(branch)) return \"run\";", with: "" },
-  { name: "a label that is only its branch stays the branch", state: "live", width: 1200, claim: "a lane whose label is only its branch",
-    needle: "  const bare = !!w.branch && (label === w.branch || label === w.branch.replace(/^fleet\\//, \"\"));", with: "  const bare = false;" },
-  { name: "a live branch's words keep their live", state: "live", width: 1200, claim: "a lane whose label is only its branch",
-    needle: ".replace(isLiveLane(w.branch) ? /^live\\s+/ : /$^/, \"\")", with: "" },
-  { name: "the live field says nothing of what it makes", state: "live", width: 1200, claim: "a project head carries Live-Session",
-    needle: "  box.appendChild(el(\"div\", \"hint live-hint\", \"Eine Lane mit eigener Testinstanz · am Ende Mergen\"));", with: "" },
   // round 8: "Mehr zu dieser Session" above the notepad and History
   { name: "Mehr zu dieser Session stands last again", state: "lane", width: 1200, claim: "the sections stand in the owner's order",
     needle: "    boardBody.replaceChildren(...nodes);", with: "    nodes.push(...nodes.splice(nodes.indexOf(msec), 1)); boardBody.replaceChildren(...nodes);" },
-  { name: "a rule stands between Projekte and Prüfungen again", state: "land", claim: "no rule between Projekte and Prüfungen",
-    needle: "  #board .rkblock.rk-proj + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }", with: "" },
   // round 8: the land form
-  { name: "the projects carry no gear", state: "lane", claim: "the gear over the projects opens one line",
-    needle: "    projects.firstElementChild!.appendChild(landFormButton(\"projects\", `Beim Land der Lanes — ${says}`));", with: "" },
-  { name: "a land form is not kept", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+  { name: "a land form is not kept", state: "lane", width: 1200, claim: "3A's menu carries On land",
     needle: "  prefSet(\"fleet.board.landform\", JSON.stringify(next));", with: "" },
-  { name: "the field says again that nothing reads the choice", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "const LAND_FORM_NOTE = \"Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.\";",
-    with: "const LAND_FORM_NOTE = \"Nur in diesem Browser vorgemerkt, noch liest sie keiner: „Mergen“ landet bis auf Weiteres alle Commits, wie sie gemacht wurden, und die MAIN sieht diese Wahl nicht.\";" },
-  { name: "the field promises the choice to the MAIN's land door", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "const LAND_FORM_NOTE = \"Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.\";",
-    with: "const LAND_FORM_NOTE = \"Gilt für jedes Land, auch wenn eine MAIN die Lane landet.\";" },
-  { name: "ein Commit says again a lane of one commit lands unchanged", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "  squash: \"Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert\" };",
-    with: "  squash: \"Die Commits der Lane landen als ein Commit — ihre Reihe bleibt im Verlauf der Lane erhalten, eine Lane mit nur einem Commit landet unverändert\" };" },
-  { name: "a choice not made reads alle Commits again", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
+  { name: "a choice not made reads alle Commits again", state: "lane", width: 1200, claim: "3A's menu carries On land",
     needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"squash\", own: false };", with: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"commits\", own: false };" },
-  { name: "an opened lane carries no gear", state: "lane", claim: "an opened lane carries a gear at the end of its way",
-    needle: "    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? \"\" : \" (wie das Projekt)\"}`));", with: "" },
-  { name: "a lane that follows ignores its project", state: "lane", width: 1200, claim: "an opened lane carries a gear at the end of its way",
-    needle: "  return own ? { form: own, own: true } : { form: f.repo[repo] ?? \"squash\", own: false };", with: "  return own ? { form: own, own: true } : { form: \"squash\", own: false };" },
-  { name: "Mergen drops the land form again", state: "live", width: 1200, claim: "Mergen asks first",
+  { name: "Mergen drops the land form again", state: "live", width: 1200, claim: "Merge asks first",
     needle: "    const r = await post(`/api/slots/${slot}/merge`, commits ? { squash: false } : {});", with: "    const r = await post(`/api/slots/${slot}/merge`, {});" },
-  { name: "Mergen names squash:true for ein Commit", state: "live", width: 1200, claim: "Mergen asks first",
+  { name: "Mergen names squash:true for ein Commit", state: "live", width: 1200, claim: "Merge asks first",
     needle: "    const r = await post(`/api/slots/${slot}/merge`, commits ? { squash: false } : {});", with: "    const r = await post(`/api/slots/${slot}/merge`, { squash: !commits });" },
-  { name: "⏏ carries the land form too", state: "live", width: 1200, claim: "Mergen asks first",
+  { name: "⏏ carries the land form too", state: "live", width: 1200, claim: "Merge asks first",
     needle: "    const direct = await post(`/api/slots/${slot}/land`, {});", with: "    const direct = await post(`/api/slots/${slot}/land`, commits ? { squash: false } : {});" },
   { name: "a device that reports says läuft again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
     needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\" };" },
@@ -11844,20 +11741,53 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const sec = el(\"div\", \"bsec ranke\");\n  const wp = workplaces;", with: "  const sec = el(\"div\", \"bsec ranke\");\n  sec.appendChild(sectionHead(\"Arbeitsorte\", \"fleet\"));\n  const wp = workplaces;" },
   { name: "the files stand under History only", state: "mehr", claim: "Changes carries what the lane changes",
     needle: "  if (brief.files.length) work.appendChild(footprintBlock(slot, brief));", with: "" },
-  { name: "the gear's sentence stands open without its ⓘ", state: "lane", width: 1200, claim: "the gear over the projects opens one line",
-    needle: "    if (landFormInfo) box.appendChild(el(\"div\", \"hint lf-hint\", LAND_FORM_NOTE));", with: "    box.appendChild(el(\"div\", \"hint lf-hint\", LAND_FORM_NOTE));" },
   { name: "an icon button's focus key has no label", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
     needle: "\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}", with: "" },
-  { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Starten does",
+  { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Start does",
     needle: "  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce(", with: "  if (false) box.appendChild(LIVE_HOW.reduce(" },
   // round 10: the new live lane's way in
-  { name: "no bar while the lane is made", state: "live", width: 1200, claim: "Starten first draws a bar with the sentence",
-    needle: "  if (arriving) g.appendChild(liveGhost(arriving));", with: "" },
-  { name: "a new live lane jumps into its row", state: "live", width: 1200, claim: "Starten first draws a bar with the sentence",
-    needle: "    if (flip) liveFlipAfter(flip);", with: "" },
   { name: "the focus restore scrolls to its button again", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
     needle: "  return `${a.tagName}\\u0000${cls}\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;",
     with: "  return `${a.tagName}\\u0000${a.className}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;" },
+  // THE GIT STRUCTURE (K16, auftraege/k16-git-struktur*.md, owner Z79–Z87): each of its claims against one swap in
+  // src/gitstruktur.ts or src/board.ts
+  { name: "a circle as large as before round 5", state: "lane", claim: "a circle is small and filled while its session works",
+    file: "src/gitstruktur.ts", needle: "const ROW = 30, RH = 20, TOP = 14, CR = 5,", with: "const ROW = 30, RH = 20, TOP = 14, CR = 9," },
+  { name: "the dispatcher's label names the lane again", state: "lane", claim: "a lane block carries its name",
+    file: "src/gitstruktur.ts", needle: ": s?.label && !/^⎇\\s*task\\s/.test(s.label) ? fromLabel(s.label) : null;", with: ": s?.label ? fromLabel(s.label) : null;" },
+  { name: "the rectangles' words drawn smaller than Info's", state: "lane", claim: "the words in the structure's rectangles have Info's size",
+    file: "src/gitstruktur.ts", needle: "#board .gss .gsr text { fill: var(--chat-ink); font-size: inherit;", with: "#board .gss .gsr text { fill: var(--chat-ink); font-size: 9.5px;" },
+  { name: "the legend behind an i again", state: "lane", claim: "what the signs mean is one quiet line under the structure",
+    file: "src/gitstruktur.ts", needle: "lg.textContent = ui.info ? \"Hide legend\" : \"What the signs mean\";", with: "lg.textContent = \"i\";" },
+  { name: "a running instance's square says no port", state: "modell", claim: "a running test instance is a square in its lane's row that says its port",
+    file: "src/gitstruktur.ts", needle: "if (p.port !== null) g.appendChild(", with: "if (false) g.appendChild(" },
+  { name: "a circle shows no card under the pointer", state: "lane", width: 1200, claim: "hovering a circle shows its card",
+    file: "src/gitstruktur.ts", needle: "g.addEventListener(\"mouseenter\", () => show(g, ses));", with: "g.addEventListener(\"mouseenter\", () => undefined);" },
+  { name: "the project's head runs past the edge with a wider font", state: "viele", width: 1200,
+    claim: "with a wider font the project's head wraps rather than run past the edge, and nothing in the top of Info is cut",
+    file: "src/gitstruktur.ts", needle: "#board .gsh { display: flex; flex-wrap: wrap;", with: "#board .gsh { display: flex;" },
+  { name: "main's menu does not say which tip it is", state: "lane", claim: "a click on a head opens its menu, whose first line names it",
+    needle: "isMain ? `${m.integration} · ${sha7(m.head) ?? \"tip unknown\"}`", with: "isMain ? m.integration" },
+  { name: "a lane's diamond opens as a merge check", state: "lane", claim: "3A's diamond opens its checks",
+    needle: "dia ? `${lane ? \"Land check\" : \"Merge check\"} of ${name}`", with: "dia ? `${lane ? \"Merge check\" : \"Land check\"} of ${name}`" },
+  { name: "the menu says Starten again", state: "lane", claim: "the menus carry no Diff, Passt or Landen and no German word",
+    needle: "} else if (look.cls === \"off\") act(\"Start\", \"Start a test instance", with: "} else if (look.cls === \"off\") act(\"Starten\", \"Start a test instance" },
+  { name: "Stop stops nothing", state: "modell", width: 1200, claim: "Open asks the slot's route for the opening link",
+    needle: "act(\"Stop\", \"Stop the test instance — the copy no longer runs\", \"down\");", with: "act(\"Stop\", \"Stop the test instance — the copy no longer runs\", \"refresh\");" },
+  { name: "Open opens the branch instead of the worktree", state: "tippen", claim: "Open there reopens the worktree in a free slot",
+    needle: "      const r = await post(\"/api/lanes\", { repo: wts.repo, attach: w.path });", with: "      const r = await post(\"/api/lanes\", { repo: wts.repo, attach: w.branch });" },
+  { name: "the worktrees without a session never fold", state: "viele30", claim: "from 13 on, the worktrees without a session wait behind one line",
+    needle: "const folded = idle.length > 12 &&", with: "const folded = idle.length > 99 &&" },
+  { name: "a project closed by hand opens again on a reload", state: "branch", width: 1200, claim: "a project closed by hand stays closed across a reload",
+    needle: "rankeRepos.set(R.repo, !open); prefSet(\"fleet.ranke.repos\", JSON.stringify(Object.fromEntries(rankeRepos)));", with: "rankeRepos.set(R.repo, !open);" },
+  { name: "a rule stands between the git structure and Prüfungen again", state: "land", claim: "no rule between the git structure and Prüfungen",
+    needle: "#board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }", with: "#board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; }" },
+  { name: "a refused lane goes unsaid in the field", state: "live", width: 1200, claim: "a refused lane is said in the field",
+    needle: "  const err = liveErr.get(repo);\n  if (err) box.appendChild(el(\"div\", \"err\", err));", with: "  const err = liveErr.get(repo);\n  if (false) box.appendChild(el(\"div\", \"err\", err));" },
+  { name: "a sentence that did not arrive goes unsaid", state: "live", width: 1200, claim: "a sentence that did not arrive is said under the structure",
+    needle: "  for (const w of rows) { const e = liveErrLine(w); if (e) below.push(e); }", with: "" },
+  { name: "the live field says nothing of what it makes", state: "live", width: 1200, claim: "main's \"Live session\" opens one field",
+    needle: "box.appendChild(el(\"div\", \"hint live-hint\", \"A lane with its own test instance · merge at the end\"));", with: "" },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // A MUTANT NEEDS ITS OWN VERDICTS ONLY (UI-MAIN e5b9a171: preview shard 2 lapsed twice; the 33 lane
@@ -11890,7 +11820,7 @@ export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "ueberga
 // A MUTANT (owner card 2026-10-07, „[Zitat entfernt]“): `mutate`
 // swaps one needle of src/board.ts in the bundle the page runs; a needle that is not in the source
 // throws, so a probe that could not apply its mutation fails as ITSELF and never reads as caught.
-export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/plaudit.ts" | "src/handover.ts" | "src/handover-now.ts" | "public/index.html" };
+export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/gitstruktur.ts" | "src/plaudit.ts" | "src/handover.ts" | "src/handover-now.ts" | "public/index.html" };
 // THE PROBE'S BROWSER: headless Chromium with CDP on a free port, its endpoint read from stderr. One
 // run starts its own; the mutants share one (UI-MAIN e5b9a171: preview shard 2 lapsed twice once
 // this lane's 83 mutants each started a Chromium, ~2.9 s apiece before the page ran)
@@ -12384,6 +12314,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         hier: [...sec.querySelectorAll('[data-hier]')].map((e) => ({ cls: String(e.className), text: e.innerText.replace(/\\s+/g, ' ').trim(),
           chip: e.querySelector(':scope > .zs')?.textContent ?? null })),
         secBox: box(sec), secOverflow: sec.scrollWidth - sec.clientWidth, pageScroll: document.documentElement.scrollWidth - innerWidth,
+        // what runs off: the innermost elements whose right edge passes the section's (Linux fonts differ from the Mac's)
+        over: (() => { const r = sec.getBoundingClientRect().right; const o = [...sec.querySelectorAll('*')].filter((e) => e.getBoundingClientRect().right > r + 0.5);
+          return o.filter((e) => !o.some((c) => c !== e && e.contains(c))).slice(0, 6).map((e) => String(e.getAttribute('class') ?? e.tagName) + ' +'
+            + Math.round(e.getBoundingClientRect().right - r) + ': ' + (e.textContent ?? '').trim().slice(0, 40)); })(),
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'), machineCards: body.querySelectorAll('.testinstanzmachine').length, cut,
         live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'), faint: probe('var(--chat-faint)'), ink: probe('var(--chat-ink)'),
         field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
@@ -12405,7 +12339,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       backs: { cls: string | null; for: string | null; y: number; x0: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
         gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
       heads: { row: string | null; next: boolean; x: number }[]; hier: { cls: string; text: string; chip: string | null }[];
-      secBox: { x: number; r: number; w: number }; secOverflow: number; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
+      secBox: { x: number; r: number; w: number }; secOverflow: number; over: string[]; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
       trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number; y: number } | null; mort: string | null };
@@ -12414,9 +12348,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       if (!r) throw new Error("arbeitsorte DOM probe: no .ranke section in #boardbody: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no #boardbody'"));
       return r;
     };
-    const lane = (r: Read, slot: number) => r.rows.find((x) => x.slot === String(slot));
-    const byId = (r: Read, id: string) => r.rows.find((x) => x.id === id);
-    const branchRows = (r: Read) => r.rows.filter((x) => x.cls.split(" ").includes("zw"));
     const sha7 = (h: string) => h.slice(0, 7);
     const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString("de-DE", { hour: '2-digit', minute: '2-digit' })`);
     // a click judged by its request: wait until the fixture has RECEIVED it, not a fixed pause
@@ -12484,184 +12415,74 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await settle(200);
           await evaluate("document.querySelector('#minfo')?.click()");
         };
-        // #minfo toggles the stored fleet.board, and the phone does not show Info from it on a reload — so
-        // the reload starts from the state the probe set up above ('0') and opens Info as above
-        const reopen = async (ready: string) => {
-          if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
-          await navigate("http://fleet.fixture/");
-          await openInfo();
-          await wait(ready, 8000);
-          await settle(200);
-        };
-        // …and back to the state's own fixture: the column's later claims read "Mehr zu dieser Session",
-        // whose summaries arrive after the page — the files' count and the prompts' "6" last (a prompt
-        // count of "0" stands first: two reds at live 390 while this waited only for four words)
-        const restored = `document.querySelector('#boardbody .ranke .zr.base[data-bar]') && document.querySelectorAll('#boardbody .bmoresec .btab .sum').length === 4
-          && [...document.querySelectorAll('#boardbody .bmoresec .btab .sum')].every((x) => x.textContent.trim())
-          && document.querySelector('#boardbody .bmoresec .btab[data-tab="files"] .sum')?.textContent === '412 Dateien'
-          && document.querySelector('#boardbody .bmoresec .btab[data-tab="prompts"] .sum')?.textContent === '6'`;
         await openInfo();
-        if (st === "leer") {
-          // NO RUNNING WORK ANYWHERE (owner 2026-10-07, „[Zitat entfernt]“): every
-          // project waits behind its one row; a tap draws them closed, a tap on a head opens it
-          await wait(`document.querySelector('#boardbody .ranke .zr.zq')`, 15000);
-          await settle(300);
-          const quiet = await evaluate<{ heads: number; fold: string | null; exp: string | null }>(`(() => { const f = document.querySelector('#boardbody .ranke .zr.zq');
-            return { heads: document.querySelectorAll('#boardbody .ranke .zr.repo').length, fold: f ? f.innerText.trim() : null, exp: f ? f.getAttribute('aria-expanded') : null }; })()`);
-          await evaluate(`document.querySelector('#boardbody .ranke .zr.zq')?.click()`);
-          const drawn = await wait(`document.querySelectorAll('#boardbody .ranke .zr.repo').length === 3`, 3000)
-            && await evaluate<boolean>(`[...document.querySelectorAll('#boardbody .ranke .zr.repo')].every((h) => h.getAttribute('aria-expanded') === 'false')`);
-          facts.quiet = { ...quiet, drawn };
-          claims[`${st}: with no running work every project waits behind one row "3 ruhige Projekte", no head drawn, and one tap draws the three, each still closed`] =
-            quiet.heads === 0 && quiet.fold === "3 ruhige Projekte" && quiet.exp === "false" && drawn;
-          for (const name of ["claude-fleet", "rezepte-app", "alte-skripte"]) {
-            await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith(${JSON.stringify(name)}))?.click()`);
-            await settle(150);
-          }
-          // a quiet project opens like any — its stamp-only branch reads "Zweig vom 20.09."
-          const stamp = await wait(`[...document.querySelectorAll('#boardbody .zr.zw .nm')].some((x) => x.textContent === 'Zweig vom 20.09.')`, 3000);
-          claims[`${st}: the quiet project is one tap away and opens like any — its stamp-only branch reads "Zweig vom 20.09."`] = drawn && stamp;
-          // a tap that drew nothing is that claim's red, not a probe that could not run: nothing below has rows to read
-          if (!drawn) { results.push({ width, height, state: st, claims, facts }); continue; }
-        }
-        const shown = await wait(`document.querySelector('#boardbody .ranke .rk .zr.zw')`, 15000);
-        if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the Ranke did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
+        const shown = await wait(`document.querySelector('#boardbody .ranke .rk-git ${st === "leer" ? ".gsquiet, #boardbody .ranke .rk-git .gs" : ".gss .gsr"}')`, 15000);
+        if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the git structure did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
         await settle(400);
         const tag = `${st}: `;
         // --- the common claims, every state
         let r = await read();
-        facts.base = { index: r.index, before: r.before, head: r.head, blocks: r.blocks, rows: r.rows.length, secOverflow: r.secOverflow, pageScroll: r.pageScroll, cut: r.cut };
+        facts.headFit = null; // filled by the Info pass — first, so a truncated FAIL line still carries it
+        facts.base = { index: r.index, before: r.before, head: r.head, blocks: r.blocks, rows: r.rows.length, secOverflow: r.secOverflow, over: r.over, pageScroll: r.pageScroll, cut: r.cut };
         // NO HEAD OF THEIR OWN (owner 2026-10-09: „[Zitat entfernt]“)
-        claims[`${tag}the Arbeitsorte are the first section of Info after the alarms, above the session — no head of their own, Projekte on top`] = r.head === null
-          && r.blocks[0]?.title === "Projekte" && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
+        claims[`${tag}the Arbeitsorte are the first section of Info after the alarms, above the session — no head of their own, the git structure on top`] = r.head === null
+          && r.blocks[0]?.cls.split(" ").includes("rk-git") === true && r.blocks[0]?.title === null && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
         // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
-        // the machines — each under its own small head, so the eye finds a kind of thing, not a row; the
-        // block Prüfungen stands only while a run runs or waits (here: `land`)
-        claims[`${tag}the Arbeitsorte stand in blocks under their own heads: Projekte · Prüfungen (only while a run runs or waits) · Geräte`] =
-          JSON.stringify(r.blocks.map((b) => b.title)) === JSON.stringify(["Projekte", "Prüfungen", "Geräte"])
-          && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title)) === JSON.stringify(st === "land" ? ["Projekte", "Prüfungen", "Geräte"] : ["Projekte", "Geräte"]);
+        // the machines; the git structure took the Projekte block's place and needs no head (owner Z83: „[Zitat entfernt]“
+        // ) — each project's name heads its drawing; the block Prüfungen stands only while a run
+        // runs or waits (here: `land`)
+        claims[`${tag}the Arbeitsorte stand in blocks: the git structure, Prüfungen (only while a run runs or waits) and Geräte under their own heads`] =
+          JSON.stringify(r.blocks.map((b) => b.title ?? b.cls)) === JSON.stringify(["rkblock rk-git", "Prüfungen", "Geräte"])
+          && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title ?? "git")) === JSON.stringify(st === "land" ? ["git", "Prüfungen", "Geräte"] : ["git", "Geräte"]);
         // THE CHECKS STAND WITH THE PROJECTS (owner 2026-10-09: „[Zitat entfernt]“
         // ): no
         // rule above Prüfungen; Geräte keeps its own
-        if (st === "land") claims[`${tag}no rule between Projekte and Prüfungen; Geräte keeps its rule`] =
+        if (st === "land") claims[`${tag}no rule between the git structure and Prüfungen; Geräte keeps its rule`] =
           r.blocks.find((b) => b.title === "Prüfungen")?.rule === "0px" && r.blocks.find((b) => b.title === "Geräte")?.rule === "1px";
-        const zw = branchRows(r);
-        const lrR = new Set(zw.map((x) => x.lr?.r));
-        facts.columns = { lrR: [...lrR], heights: [...new Set(zw.map((x) => x.box.h))] };
-        claims[`${tag}one row per branch, the same height (${phone ? 40 : 24} px), and every row's end stands one under the other across every repo`] =
-          zw.length > 0 && zw.every((x) => x.box.h === (phone ? 40 : 24)) && lrR.size === 1;
-        // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
-        // ; 2026-10-10: „[Zitat entfernt]“
-        // ): its git stand, no flag
-        // and no points — what its checks came to stands at the opened lane's points, what runs at the diamond
-        facts.flags = zw.map((x) => `${x.slot ?? x.id}: ${x.flag ? x.flag.cls : "-"} · git ${x.git ?? "-"} · points ${x.points}`);
-        claims[`${tag}a closed lane carries no row of points and no flag — its checks stand in the opened lane and at the diamond`] =
-          zw.every((x) => x.points === 0 && !x.flag);
-        // THE WAY BACK (owner 2026-10-09: „[Zitat entfernt]“): every lane runs on
-        // past its row's end to its target's rail — dashed until it has landed, solid after — and the
-        // rail ends in its target's head
-        const landedIds = new Set(lanesOf(st).filter((l) => l.landed === "yes").map(pathOf));
-        facts.backs = { backs: r.backs, heads: r.heads, landed: [...landedIds] };
-        claims[`${tag}every lane runs back to its target's rail on the right — dashed until it has landed, solid after — and the rail ends in its target's head`] =
-          zw.length > 0 && zw.every((x) => { const b = r.backs.filter((p) => p.for === x.id);
-            return b.length === 1 && (b[0].cls ?? "").split(" ").includes(landedIds.has(x.id ?? "") ? "land" : "wait"); })
-          && r.heads.length > 0 && r.heads.every((h) => !!h.row && r.rows.some((x) => x.id === h.row && x.cls.split(" ").includes("base")));
-        // THE BAR OF A ROW (owner 2026-10-09: „[Zitat entfernt]“
-        // ; the same day, shorter: „[Zitat entfernt]“, and "bei
-        // anderen Slots schließt die graue Hinterlegung nicht an das View-Element … an"; then "dass der grüne
-        // Button der Testinstanz innerhalb des grau hinterlegten Objekts sich befindet"): the row's ground
-        // runs from its own point over its words, git stand and marks (the square) to 4 px past
-        // the last, where its way back begins — and paints no ground itself
-        const barClaim = (rr: Read, fr: Row | undefined, kind: string) => {
-          facts[`bar-${kind}`] = { row: fr && { bar: fr.bar, box: fr.barBox, ndC: fr.ndC, wordsR: fr.wordsR, marksR: fr.marksR, endR: fr.endR, ground: fr.ground, fade: fr.fade } };
-          return !!fr?.barBox && fr.ndC !== null && Math.abs(fr.barBox.l - fr.ndC) <= 1 && fr.barBox.r >= fr.wordsR
-            && Math.abs(fr.barBox.r - (fr.endR + 4)) <= 1
-            && (fr.marksR !== null ? fr.bar === "mark" && fr.barBox.r >= fr.marksR + 3 : fr.bar === "end")
-            && fr.barBox.bg !== "rgba(0, 0, 0, 0)" && fr.ground === "rgba(0, 0, 0, 0)" && fr.fade === "0s" && rr.secOverflow <= 0;
+        // THE GIT STRUCTURE (K16, src/gitstruktur.ts; owner Z79–Z87): one drawing per project in the block rk-git — its heads
+        // (rectangles), its sessions (circles), its checks (diamonds), its lines, its test instances; the menu of a selected
+        // head in two steps; the legend as a quiet line under it. Read in one pass, as the Ranke was
+        const GS_READ = `(() => { const git = document.querySelector('#boardbody .ranke .rk-git'); if (!git) return null;
+          const t = (e) => e ? e.innerText.replace(/\\s+/g, ' ').trim() : null;
+          const tip = (e) => e?.querySelector(':scope > title')?.textContent ?? null;
+          const info = parseFloat(getComputedStyle(document.querySelector('#boardbody')).fontSize);
+          return { info, quiet: [...git.querySelectorAll(':scope > .gsquiet')].map((b) => ({ text: t(b), exp: b.getAttribute('aria-expanded') })),
+            repos: [...git.querySelectorAll(':scope > .gs')].map((g) => { const s = g.querySelector('svg.gss:not(.gslg)'); const k = s ? s.getBoundingClientRect().width / s.viewBox.baseVal.width : null;
+              const m = g.querySelector('.gsm');
+              return { repo: g.dataset.repo, open: g.classList.contains('open'), name: g.querySelector('.gsn')?.textContent ?? null, fold: g.querySelector('.gsf')?.getAttribute('aria-expanded') ?? null,
+                side: t(g.querySelector('.gsside')), ib: g.querySelectorAll('.gsh .rk-btn.ib:not(.gsadd)').length,
+                heads: s ? [...s.querySelectorAll(':scope > g.gsr')].map((h) => ({ key: h.dataset.head, cls: h.getAttribute('class'), text: h.querySelector('text')?.textContent ?? null, title: tip(h),
+                  aria: h.getAttribute('aria-label'), exp: h.getAttribute('aria-expanded'), px: Math.round(parseFloat(getComputedStyle(h.querySelector('text')).fontSize) * k * 100) / 100,
+                  x: Number(h.querySelector('rect').getAttribute('x')), y: Number(h.querySelector('text').getAttribute('y')) - 4, w: Number(h.querySelector('rect').getAttribute('width')) })) : [],
+                circles: s ? [...s.querySelectorAll(':scope > g.gsk')].map((c) => ({ slot: c.dataset.slot, at: c.dataset.at, on: c.classList.contains('on'), aria: c.getAttribute('aria-label'),
+                  r: Number(c.querySelector('circle').getAttribute('r')), x: Number(c.querySelector('circle').getAttribute('cx')), y: Number(c.querySelector('circle').getAttribute('cy')) })) : [],
+                diamonds: s ? [...s.querySelectorAll(':scope > g.gsdg')].map((d) => ({ of: d.dataset.of, cls: d.querySelector('path').getAttribute('class'), title: tip(d), aria: d.getAttribute('aria-label') })) : [],
+                lines: s ? [...s.querySelectorAll(':scope > path.gsl')].map((p) => ({ d: p.getAttribute('d'), open: p.classList.contains('open') })) : [],
+                tis: s ? [...s.querySelectorAll(':scope > g.gst')].map((q) => ({ of: q.dataset.of, title: tip(q), port: q.querySelector('text')?.textContent ?? null })) : [],
+                legend: g.querySelector(':scope > .gslegbtn')?.textContent ?? null, legendOpen: g.querySelectorAll(':scope > .gslegend > li').length,
+                below: [...g.querySelectorAll('.gsbelow')].map(t),
+                menu: m ? { head: m.querySelector('.gshd')?.textContent ?? null, cap: t(m.querySelector('.gscap')), words: [...m.querySelectorAll('.gsword')].map((b) => b.textContent),
+                  on: [...m.querySelectorAll('.gsword.on')].map((b) => b.textContent), step2: t(m.querySelector('.gsm2')), text: t(m),
+                  buttons: [...m.querySelectorAll('button')].map((b) => b.textContent.trim()).filter(Boolean) } : null,
+                card: (() => { const c = g.querySelector('.gscard'); return c && !c.hidden ? [...c.children].map((x) => x.textContent) : null; })(),
+                text: t(g) }; }) }; })()`;
+        type GsHeadRead = { key: string; cls: string; text: string | null; title: string | null; aria: string | null; exp: string | null; px: number; x: number; y: number; w: number };
+        type GsRepoRead = { repo: string; open: boolean; name: string | null; fold: string | null; side: string | null; ib: number; heads: GsHeadRead[];
+          circles: { slot: string; at: string; on: boolean; aria: string | null; r: number; x: number; y: number }[];
+          diamonds: { of: string; cls: string; title: string | null; aria: string | null }[]; lines: { d: string; open: boolean }[];
+          tis: { of: string; title: string | null; port: string | null }[]; legend: string | null; legendOpen: number; below: string[];
+          menu: { head: string | null; cap: string | null; words: string[]; on: string[]; step2: string | null; text: string | null; buttons: string[] } | null;
+          card: string[] | null; text: string };
+        type GsRead = { info: number; quiet: { text: string; exp: string | null }[]; repos: GsRepoRead[] };
+        const gsRead = async (): Promise<GsRead> => {
+          const g = await evaluate<GsRead | null>(GS_READ);
+          if (!g) throw new Error("arbeitsorte DOM probe: no git structure (.rk-git) in #boardbody");
+          return g;
         };
-        if (st === "lane") {
-          // 3A carries no mark since the flag left the closed row (owner 2026-10-10): its bar ends past its
-          // git stand; the bar over a square is claimed on 3B opened in `viele`
-          claims[`${tag}the focused row's bar runs from its point over its words and git stand — 3A has no mark — and the row paints no ground of its own`] =
-            barClaim(r, lane(r, 9), "focus");
-          // UNDER THE POINTER THE SAME BAR (owner 2026-10-09: „[Zitat entfernt]“
-          // ): 3B hovered carries the bar
-          // in the hover tone, not a ground across the whole row
-          if (!phone) {
-            const c = await evaluate<number[] | null>(`(() => { const n = document.querySelector('#boardbody .zr[data-slot="10"] > .nm'); if (!n) return null;
-              const b = n.getBoundingClientRect(); return [b.left + 8, b.top + b.height / 2]; })()`);
-            if (c) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1] });
-            await settle(150);
-            const rh = await read();
-            await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
-            await settle(100);
-            const before = lane(r, 10)?.barBox?.bg ?? null;
-            claims[`${tag}hovering 3B shows the same bar in the hover tone, from its point over its marks, and no ground across the row`] =
-              !!c && barClaim(rh, lane(rh, 10), "hover") && before === "rgba(0, 0, 0, 0)" && lane(rh, 10)?.barBox?.bg !== lane(rh, 9)?.barBox?.bg;
-          }
-          // THE LAND FORM (owner 2026-10-09: „[Zitat entfernt]“
-          // ; UI-MAIN 7f0b3158): a
-          // gear over the projects sets each shown project's default, a gear at the end of an opened lane's way
-          // the lane's own — kept in this browser (fleet.board.landform), each field closing with where it holds
-          type LfRead = { head: { title: string; exp: string | null } | null; lane: { title: string } | null; stored: string | null;
-            sets: { cls: string; label: string; choices: string[]; says: string[]; on: string[]; note: string | null; info: string | null; follow: string | null }[] };
-          const lfRead = () => evaluate<LfRead>(`(() => { const g = document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn'), lg = document.querySelector('#boardbody .zd.wl.lf .lf-btn');
-            return { head: g ? { title: g.title, exp: g.getAttribute('aria-expanded') } : null, lane: lg ? { title: lg.title } : null, stored: localStorage.getItem('fleet.board.landform'),
-              sets: [...document.querySelectorAll('#boardbody .zd.lf-set')].map((z) => ({ cls: z.className, label: z.querySelector('.lf-k')?.textContent ?? '',
-                choices: [...z.querySelectorAll('.lf-c')].map((b) => b.textContent), says: [...z.querySelectorAll('.lf-c')].map((b) => b.title), on: [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent),
-                note: z.querySelector('.lf-hint')?.textContent ?? null, info: z.querySelector('.lf-i')?.getAttribute('aria-expanded') ?? null, follow: [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'wie das Projekt')?.title ?? null })) }; })()`);
-          const pick = (cls: string, word: string) => evaluate(`[...document.querySelectorAll('#boardbody .zd.lf-set.${cls} .lf-c')].find((b) => b.textContent === ${JSON.stringify(word)})?.click()`);
-          const pressed = (cls: string, word: string) => wait(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-c[aria-pressed="true"]')?.textContent === ${JSON.stringify(word)}`, 3000);
-          // the sentence on where it holds stands behind the field's ⓘ (owner 2026-10-09: „[Zitat entfernt]“
-          // ): Mergen sends the choice, the MAIN's land door
-          // does not see it (since d5657b56 every gated land is one commit unless the call names squash:false)
-          const LF_NOTE = "Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.";
-          const LF_SQUASH = "Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert";
-          const lfInfo = async (cls: string) => { await evaluate(`document.querySelector('#boardbody .zd.lf-set.${cls} .lf-i')?.click()`);
-            await wait(`!!document.querySelector('#boardbody .zd.lf-set.${cls} .lf-hint')`, 3000); return lfRead(); };
-          const lfQuiet = await lfRead();
-          await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.lf-set.repo')`, 3000);
-          const lf0 = await lfRead();
-          const lf0i = await lfInfo("repo");
-          await pick("repo", "alle Commits");
-          await pressed("repo", "alle Commits");
-          const lf1 = await lfRead();
-          await shot(`${st}-landform-${width}`);
-          await evaluate(`document.querySelector('#boardbody .rk-proj > .rkbh .lf-btn')?.click()`);
-          await wait(`!document.querySelector('#boardbody .zd.lf-set')`, 3000);
-          await evaluate(`(() => { const x = document.querySelector('#boardbody .zr[data-slot="9"]'); if (x && x.getAttribute('aria-expanded') !== 'true') x.click(); })()`);
-          await wait(`document.querySelector('#boardbody .zd.wl.lf .lf-btn')`, 3000);
-          const lfOpen = await lfRead();
-          await evaluate(`document.querySelector('#boardbody .zd.wl.lf .lf-btn')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.lf-set.lane')`, 3000);
-          const lf2 = await lfRead();
-          const lf2i = await lfInfo("lane");
-          await pick("lane", "ein Commit");
-          await pressed("lane", "ein Commit");
-          const lf3 = await lfRead();
-          await shot(`${st}-landform-lane-${width}`);
-          facts.landForm = { lfQuiet, lf0, lf0i, lf1, lfOpen, lf2, lf2i, lf3 };
-          const set0 = lf0.sets[0], set1 = lf1.sets[0], set2 = lf2.sets[0], set3 = lf3.sets[0];
-          claims[`${tag}the gear over the projects opens one line for the shown project — ein Commit pressed without a choice, as the server lands — and an ⓘ for the sentence where it holds; alle Commits is kept for the project in this browser`] =
-            lfQuiet.head?.exp === "false" && lfQuiet.head?.title === "Beim Land der Lanes — claude-fleet: ein Commit" && lfQuiet.stored === null && lfQuiet.sets.length === 0
-            && lf0.head?.exp === "true" && lf0.sets.length === 1 && !!set0 && set0.cls.split(" ").includes("repo") && set0.label === "Beim Land jeder Lane"
-            && JSON.stringify(set0.choices) === JSON.stringify(["alle Commits", "ein Commit"]) && JSON.stringify(set0.on) === JSON.stringify(["ein Commit"])
-            && set0.says[1] === LF_SQUASH
-            && set0.note === null && set0.info === "false" && lf0i.sets[0]?.note === LF_NOTE && lf0i.sets[0]?.info === "true"
-            && !!set1 && JSON.stringify(set1.on) === JSON.stringify(["alle Commits"]) && lf1.head?.title === "Beim Land der Lanes — claude-fleet: alle Commits"
-            && lf1.stored === JSON.stringify({ repo: { [REPO]: "commits" }, lane: {} });
-          claims[`${tag}an opened lane carries a gear at the end of its way: its line follows the project (alle Commits) until ein Commit is kept as the lane's own`] =
-            lfOpen.lane?.title === "Beim Land dieser Lane: alle Commits (wie das Projekt)" && lf2.sets.length === 1 && !!set2 && set2.cls.split(" ").includes("lane")
-            && set2.label === "Beim Land dieser Lane" && JSON.stringify(set2.choices) === JSON.stringify(["wie das Projekt", "alle Commits", "ein Commit"])
-            && JSON.stringify(set2.on) === JSON.stringify(["wie das Projekt"]) && set2.follow === "Wie das Projekt: alle Commits"
-            && set2.note === null && set2.info === "false" && lf2i.sets[0]?.note === LF_NOTE
-            && !!set3 && JSON.stringify(set3.on) === JSON.stringify(["ein Commit"]) && lf3.lane?.title === "Beim Land dieser Lane: ein Commit"
-            && lf3.stored === JSON.stringify({ repo: { [REPO]: "commits" }, lane: { [pathOf(own)]: "squash" } });
-          // back to the state as it was: nothing kept, the page anew
-          await evaluate(`localStorage.removeItem('fleet.board.landform')`);
-          await reopen(restored);
-        }
+        let g = await gsRead();
+        const fleetGs = () => g.repos.find((x) => x.repo === REPO);
+        facts.gs = g.repos.map((x) => ({ ...x, text: x.text.slice(0, 300) }));
+        facts.gsQuiet = g.quiet;
         // WHERE YOU ARE (owner 2026-10-09: „[Zitat entfernt]“; the same day: „[Zitat entfernt]“
         // ; the evening: „[Zitat entfernt]“): the instance this page comes from says "hier" in its chip — here the
         // Live-Server under this machine, a due restart before it — and nothing else does
@@ -12678,7 +12499,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         facts.oldCard = { present: r.oldCard, machineCards: r.machineCards, retiredTitles: /Testinstanz · dieser Worktree|Lanes in |Alle Testinstanzen dieser Maschine/.test(r.bodyText) };
         claims[`${tag}the old cards "Testinstanz · dieser Worktree" and "Testinstanzen" and the list "Lanes in ‹repo›" are gone — an instance opens at its lane`] =
           !r.oldCard && r.machineCards === 0 && !/Testinstanz · dieser Worktree|Lanes in |Alle Testinstanzen dieser Maschine/.test(r.bodyText);
-        claims[`${tag}the Ranke has its lines (1 px, vertical and horizontal)`] = r.svgPaths > 0;
         // abe74821 — the stand of every carrier, ONE ROW PER MACHINE (owner 2026-10-07: „[Zitat entfernt]“
         // ): the fixture reports Mac as this server AND as a link, workhorse as a
         // helper (daemon + instance) AND as a link — the rule groups by the reported name. ALL MACHINES
@@ -12730,38 +12550,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         claims[`${tag}a machine silent for days is taken back: mainMacbook stands after every other machine, its name in the faint ink`] =
           lastMach?.machine === "mainMacbook" && lastMach.tone === "still" && lastMach.nmColor === r.faint
           && machRows.slice(0, -1).every((x) => x.tone !== "still" && x.nmColor !== r.faint);
-        // NO ROW WITHOUT A STATEMENT, NO TWO ALIKE: the words of a worktree without a session
-        const slotless = branchRows(r).filter((x) => !x.slot).map((x) => x.name ?? "");
-        facts.slotless = slotless;
-        claims[`${tag}no worktree without a session reads "ohne Branch", none carries a date in its words, and no two read alike`] =
-          !slotless.some((n) => n === "ohne Branch" || /\b20\d\d\b|\b\d{6,}\b/.test(n)) && new Set(slotless).size === slotless.length;
-        const repos = r.rows.filter((x) => x.cls.split(" ").includes("repo"));
-        const quietRow = r.rows.find((x) => x.cls.split(" ").includes("zq"));
-        facts.repos = { heads: repos.map((x) => ({ text: x.text, tag: x.tag, chip: x.chip, cls: x.cls, exp: x.exp, title: x.title })), quiet: quietRow ? { text: quietRow.text, exp: quietRow.exp } : null };
-        // FEWER WORDS (owner 2026-10-08): the head shows a remote only where the copy and its image differ
-        claims[`${tag}every repo the server reads is a group; its head shows a remote only where copy and image differ ("origin ↑3"), the rest — "ohne Remote" too — is its title`] =
-          repos.length === (st === "leer" ? 3 : 1)
-          && repos.some((x) => x.text.startsWith("claude-fleet") && x.tag === "origin ↑3" && /origin\/main: [0-9a-f]{7} · 3 vor, 0 hinter/.test(x.title))
-          && (st !== "leer" || repos.some((x) => x.text.startsWith("rezepte-app") && x.tag === null && !/Remote/.test(x.text) && /ohne Remote/.test(x.title)));
-        // THE PROJECT'S STATE (owner 2026-10-08, round 2): dot and word at the head's end
-        const pWord = st === "leer" ? "ruhig" : ["viele", "viele30", "branch"].includes(st) ? "1 wartet auf dich" : "1 arbeitet";
-        claims[`${tag}a project head says its state as a dot and a word: claude-fleet "${pWord}"`] =
-          repos.some((x) => x.text.startsWith("claude-fleet") && x.chip === pWord);
-        // ONLY THE FOCUSED SESSION'S PROJECT (owner 2026-10-09: „[Zitat entfernt]“
-        // ); the
-        // overview with its quiet row stays for a session outside every project (`leer`)
-        if (st !== "leer") claims[`${tag}only the focused session's project stands — claude-fleet open, no other project, no row of quiet ones`] =
-          repos.length === 1 && repos[0].text.startsWith("claude-fleet") && repos[0].exp === "true" && !quietRow;
-        const mainRow = byId(r, `${REPO}#main`), overRow = byId(r, `${REPO}#overhaul`);
-        // how many land on a stem is said by its lanes' own words, not again on the stem: the tip and the
-        // count are the stems' titles (owner 2026-10-08: the row had crowded into two lines)
-        const nOverT = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.target === "overhaul" && l.branch !== "overhaul").length;
-        // main: the lanes that still want to land on it, and overhaul (41 ahead) — what landed is not counted
-        const nMainT = lanesOf(st).filter((l) => (l.repo ?? REPO) === REPO && l.target === "main" && l.landed !== "yes" && l.branch !== "overhaul").length + 1;
-        facts.lands = { main: [mainRow?.text, mainRow?.title], over: [overRow?.text, overRow?.title], nOverT };
-        claims[`${tag}the stem main names its tip and what wants to land there on hover; overhaul says how far ahead it is, and on hover how many land in it`] = !!mainRow && !!overRow
-          && mainRow.title === `main · Spitze ${sha7(MAIN)} · ${nMainT} ${nMainT === 1 ? "Zweig will" : "Zweige wollen"} hierher landen` && overRow.text.includes("41 vor main")
-          && (st === "doppelt" ? /ausgecheckt in /.test(overRow.title) : overRow.title === `overhaul — ${nOverT} ${nOverT === 1 ? "Lane landet" : "Lanes landen"} hier`);
         // the worktree field under the composer (desktop: the tray's right end; phone: the island's Arbeitsort)
         if (focus) {
           const name = st === "main" ? "Program-MAIN Oberfläche" : "Rechter Tab dichter";
@@ -12774,514 +12562,27 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               && (r.field.box.x >= r.schedBox.r || r.field.box.y >= r.schedBox.y + 24)
               && !!r.trayBox && r.trayBox.r - r.field.box.r <= 12;
         }
-        // --- the state's own claims
-        if (["lane", "laneb", "land", "modell", "tippen", "uebergabe", "menue", "kopf", "mehr"].includes(st)) {
-          const mine = lane(r, 9)!, zeitRow = lane(r, 10)!;
-          claims[`${tag}the own lane is the marked row 3A with its name; with no test instance running its closed row carries no square`] =
-            !!mine && mine.cls.includes("here") && mine.ref === "3A" && mine.name === "Rechter Tab dichter" && !mine.ti;
-          claims[`${tag}the own path main → overhaul → 3A is drawn in ink`] = r.inkPaths === 1;
-          claims[`${tag}the node says the state: 3A works (green), 3B is still (a ring), the word in the tooltip`] =
-            mine.nd === r.live && mine.title.includes("arbeitet") && zeitRow.node === "still" && zeitRow.nd !== r.live && /still/.test(zeitRow.title);
-          // THE DIAMOND FOR WHAT RUNS (owner 2026-10-09: „[Zitat entfernt]“
-          // ), NO FLAG FOR RESULTS on
-          // the closed row (owner 2026-10-10): that 3A's ${st === „[Zitat entfernt]“ ? „[Zitat entfernt]“ : „[Zitat entfernt]“} runs is the filled diamond ON its way back
-          const gateOf = (slot: number) => r.gates.find((g) => g.row === String(slot));
-          const onLine = (slot: number, l: Lane) => { const g = gateOf(slot), b = r.backs.find((p) => p.for === pathOf(l)); return !!g && !!b && Math.abs(g.cy - b.y) <= 1; };
-          facts.gates = r.gates;
-          claims[`${tag}3A's closed row carries no flag; that its ${st === "land" ? "land check" : "preview"} runs is the filled diamond on its way back; 3B ${st === "land" ? "carries an ink-ring diamond while its preview waits" : "has no diamond"}`] =
-            !mine.flag && !zeitRow.flag
-            && gateOf(9)?.gate === "run" && gateOf(9)?.placed === "1" && gateOf(9)?.vis === true && onLine(9, own)
-            && (st === "land" ? /^Landprüfung läuft \d+:\d\d von ~4:10 · .+ · auf Mac — /.test(gateOf(9)?.aria ?? "") : /^Eine Prüfung läuft/.test(gateOf(9)?.aria ?? ""))
-            && (st === "land" ? gateOf(10)?.gate === "queue" && onLine(10, zeit) && /^Vorschau wartet/.test(gateOf(10)?.aria ?? "") : !gateOf(10));
-          // A FEW DASHES AFTER THE ROW'S LAST MARK (owner 2026-10-09: „[Zitat entfernt]“
-          // ; the same day: "dass der grüne
-          // Testinstanz-Button … mit der Raute … verbunden wird über ein paar gestrichelte Linien"): its centre
-          // up to 18 px right of the row's end (#drawRankeLines, GATE_DASHES), and where the rail comes
-          // first 9 px before it (GATE_RAIL) — measured 2026-10-09: 16 px at 1200, 9 px at 390 (both at the rail
-          // cap); the midway mutant 14 at 1200
-          claims[`${tag}every diamond stands on its way back a few dashes after the row's last mark — its centre ${phone ? "9" : "16"} px (±1) past the row's end`] =
-            r.gates.length > 0 && r.gates.every((g) => g.gap !== null && Math.abs(g.gap - (phone ? 9 : 16)) <= 1);
-          claims[`${tag}3A's git stand: ↑3 and the pencil with 2 — the words on hover`] = mine.git === "↑3 2"
-            && mine.gitTitle === "3 Commits noch nicht auf overhaul\n2 Dateien ohne Commit";
-        }
-        if (st === "lane" && !phone) {
-          // the worktree field shows its worktree in Info: a click marks the own row for a moment
-          await evaluate(`document.querySelector('#boardbody').scrollTop = 9999; document.querySelector('#compwt')?.click()`);
-          const marked = await wait(`document.querySelector('#boardbody .zr.flash')?.dataset.slot === '9'`, 4000);
-          claims[`${tag}a click on the worktree field marks the own branch in Info`] = marked;
-        }
-        if (st === "lane" || st === "land") {
-          // EVERY LANE OPENS IN PLACE (owner 2026-10-08: „[Zitat entfernt]“
-          // ): a tap on 3A opens „[Zitat entfernt]“ and the four points in the order a lane goes
-          // them, its run with its machine, its test instance as one sentence with Starten
-          if (st === "land") {
-            // THE BLOCK FOLDS (owner 2026-10-09: „[Zitat entfernt]“): closed by
-            // default one line — a diamond per run and the count — and a tap on its head opens a line per run,
-            // remembered per browser
-            const shut = r.lines.filter((l) => l.cls.split(" ").includes("run"));
-            const fold0 = await evaluate<{ exp: string | null; gates: string[] }>(`({ exp: document.querySelector('#boardbody .rk-runs > .rkbh')?.getAttribute('aria-expanded') ?? null,
-              gates: [...document.querySelectorAll('#boardbody .zd.run.sum .gq')].map((q) => q.dataset.gate) })`);
-            facts.runsFolded = { lines: shut.map((l) => `${l.cls}: ${l.text}`), ...fold0 };
-            claims[`${tag}closed by default, the Prüfungen block is one line — a diamond per run and "1 läuft · 1 wartet"; its head says it opens`] =
-              shut.length === 1 && shut[0].cls.split(" ").includes("sum") && shut[0].text === "1 läuft · 1 wartet"
-              && JSON.stringify(fold0.gates) === JSON.stringify(["run", "queue"]) && fold0.exp === "false";
-            await evaluate(`document.querySelector('#boardbody .rk-runs > .rkbh')?.click()`);
-            await wait(`document.querySelector('#boardbody .zd.run.free')`, 3000);
-            r = await read();
-            const kept = await evaluate<string>(`localStorage.getItem('fleet.board.folds') ?? ''`);
-            const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
-            facts.runsClosed = { lines: free0.map((l) => `${l.cls}: ${l.text}`), kept };
-            claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
-              free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
-              && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste"
-              && kept.includes('"pruefungen"');
-            // A NOTE ON HOVER (owner 2026-10-09: „[Zitat entfernt]“
-            // ): at once, the run with its machine, then the lane's
-            // way with its five points in their colours; inside the column; no title standing over it. 3B's
-            // preview, which the lane reported itself, waits at its point though its checks say an older green
-            if (!phone) {
-              const hoverOn = async (slot: number) => {
-                const c = await evaluate<number[] | null>(`(() => { const g = document.querySelector('#boardbody .zr[data-slot="${slot}"] > .lgate'); if (!g) return null;
-                  const b = g.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
-                if (c) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1] });
-                await settle(150);
-                return (await read());
-              };
-              const h9 = await hoverOn(9), n9 = h9.gates.find((g) => g.row === "9");
-              const h10 = await hoverOn(10), n10 = h10.gates.find((g) => g.row === "10");
-              await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
-              await settle(100);
-              const shownAfter = (await read()).gates.filter((g) => g.note !== null).length;
-              facts.note = { n9: n9 && { note: n9.note, box: n9.noteBox, points: n9.notePoints, title: n9.title }, n10: n10 && { note: n10.note, points: n10.notePoints }, sec: h9.secBox, shownAfter };
-              claims[`${tag}hovering 3A's diamond shows its note at once — the land check with its machine, then "Weg nach overhaul" and the four points, the land check running; inside the column, no title over it, gone when the pointer leaves`] =
-                !!n9 && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung Nachprüfung$/.test(n9.note ?? "")
-                && JSON.stringify(n9.notePoints) === JSON.stringify(["local:ok", "preview:ok", "gate:run", "audit:none"])
-                && !!n9.noteBox && n9.noteBox.x >= h9.secBox.x && n9.noteBox.r <= h9.secBox.r && n9.title === "" && shownAfter === 0;
-              claims[`${tag}hovering 3B's diamond: the preview its lane reported waits at its point, though its checks say an older green`] =
-                !!n10 && /^Vorschau wartet · Vorschau auf Mac Weg nach overhaul /.test(n10.note ?? "")
-                && JSON.stringify(n10.notePoints) === JSON.stringify(["local:ok", "preview:queue", "gate:none", "audit:none"]);
-            }
-            // A TAP ON THE DIAMOND says what runs and where: 3A's land check, on Mac
-            await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
-            await wait(`document.querySelector('#boardbody .zd.gate')`, 3000);
-            const gl = (await read()).lines.find((l) => l.cls.split(" ").includes("gate"));
-            facts.gateTap = gl ?? null;
-            claims[`${tag}a tap on 3A's diamond says what runs and on which machine — under the lane, the lane stays closed`] =
-              !!gl && gl.for === `gate:${pathOf(own)}`
-              && /^Landprüfung läuft \d+:\d\d von ~4:10 · Sicherheit \(2\/3\) auf Mac Weg nach overhaul Beweis Vorschau Landprüfung Nachprüfung$/.test(gl.text)
-              && await evaluate<boolean>(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`);
-            await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"] > .lgate')?.click()`);
-            await wait(`!document.querySelector('#boardbody .zd.gate')`, 3000);
-          }
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"]')?.click()`);
-          await wait(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'true' && document.querySelector('#boardbody .zd.wl')`, 3000);
-          await settle(150);
-          r = await read();
-          const wl = r.lines.find((l) => l.cls.split(" ").includes("wl") && l.for === pathOf(own));
-          const tiL = r.lines.find((l) => l.cls.split(" ").includes("ti") && l.for === pathOf(own));
-          facts.opened = r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text} {${l.points.map((p) => `${p.key}:${p.cls}`).join(",")}}`);
-          const want = st === "land" ? ["ok", "ok", "run", "none"] : ["ok", "run", "none", "none"];
-          claims[`${tag}a tap opens 3A in place: "Weg nach overhaul" and four points — Beweis · Vorschau · Landprüfung · Nachprüfung as ${want.join(" · ")}, each stage's words on hover, the land's own words last`] =
-            lane(r, 9)?.exp === "true" && lane(r, 9)?.cls.includes("here") === true && !!wl && wl.text.startsWith("Weg nach overhaul")
-            && JSON.stringify(wl.points.map((p) => p.key)) === JSON.stringify(["local", "preview", "gate", "audit"])
-            && JSON.stringify(wl.points.map((p) => p.cls)) === JSON.stringify(want)
-            && wl.way.split("\n").length === 5 && /^1 Beweis: grün/.test(wl.way) && wl.way.endsWith("\nLand: noch nicht auf overhaul")
-            && wl.wayAria.startsWith("Weg nach overhaul: 1 Beweis: grün");
-          if (st === "land") {
-            const runs = r.lines.filter((l) => l.cls.split(" ").includes("run"));
-            claims[`${tag}opened, 3A's land check stands under the lane with the glyph of its machine; the Prüfungen block still says both runs, one line each`] =
-              runs.filter((l) => !l.cls.split(" ").includes("free")).length === 1 && /^Landprüfung /.test(runs.find((l) => !l.cls.split(" ").includes("free"))?.text ?? "")
-              && runs.filter((l) => l.cls.split(" ").includes("free")).length === 2
-              && await evaluate<boolean>(`!!document.querySelector('#boardbody .zd.run:not(.free) .dv[aria-label="läuft auf Mac"]')`);
-          }
-          await shot(`${st}-offen-${width}`);
-          if (st === "lane") {
-            await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Starten')?.click()`);
-            await wait(`false`, 400);
-            facts.writes = fx.writes;
-            claims[`${tag}its test instance is one sentence "Testinstanz aus" with Starten, and Starten asks for a copy of THIS lane for 4 hours`] =
-              !!tiL && tiL.text === "Testinstanz aus Starten" && tiL.buttons.join(",") === "Starten"
-              && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
-          }
-          // and closed again, so the claims below read the column as it stands
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="9"]')?.click()`);
-          await wait(`document.querySelector('#boardbody .zr[data-slot="9"]')?.getAttribute('aria-expanded') === 'false'`, 3000);
-          await settle(150);
-          r = await read();
-        }
-        if (st === "modell") {
-          const zeitRow = lane(r, 10), freeRow = byId(r, pathOf(free));
-          const until = await clock(fx.tiUntil);
-          const action = (path: string, act: string) => (w: { path: string; body: unknown }) => w.path === path && (w.body as { action?: string } | null)?.action === act;
-          const square = !!zeitRow?.ti && zeitRow.ti.state === "up" && zeitRow.ti.sq && zeitRow.ti.bg === r.live && zeitRow.ti.tag === "SPAN"
-            && !!freeRow?.ti && freeRow.ti.state === "up" && freeRow.ti.sq && freeRow.ti.bg === r.live
-            && zeitRow.ti.title === `Testinstanz läuft bis ${until} · :8913`;
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
-          const lineOpened = await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('Öffnen'))`, 3000);
-          claims[`${tag}a running test instance is a green square IN its branch's row, at 3B and at the worktree without a session — a sign, the row opens its line`] = square && lineOpened;
-          // K13 S7, Mangel 66 (owner 14.10.: „[Zitat entfernt]“): the measured port. A branch's
-          // row — the lane 3B and the worktree without a session alike — carries it in the square's title and in the
-          // opened line, not in the row, so the row keeps its 24 px and its name still wraps (state live)
-          const portRows = [zeitRow, freeRow].every((x) => x?.ti?.port === null && x.ti.title.endsWith(" · :8913"));
-          r = await read();
-          const line = r.lines.find((l) => l.cls.split(" ").includes("ti"));
-          claims[`${tag}a running test instance says its port in its square's title, at 3B and at the worktree without a session, and in the opened line`] =
-            portRows && !!line && line.text.startsWith(`Testinstanz läuft bis ${until} · :8913`);
-          claims[`${tag}its line says the deadline and where the copy came from, with Öffnen and Stoppen`] = !!line && line.text.startsWith(`Testinstanz läuft bis ${until}`)
-            && line.buttons.join(",") === "Öffnen,Stoppen" && line.title.includes(`kopiert von ${sha7(hex(zeit.branch))}`);
-          await shot(`${st}-${width}`);
-          // Öffnen, then Stoppen at once, in the order that failed under load (K19, C112): the line
-          // stands "wird ausgeführt…" BEFORE the answer comes, and the next read of the worktrees is HELD —
-          // so Stoppen has to come back when the action ends, not when that read answers; a Stoppen
-          // clicked in between hit the button the busy line had disabled, and sent nothing
-          let release = () => {}, answer = () => {};
-          fx.holdWorktrees = new Promise<void>((ok) => { release = ok; });
-          fx.holdOpen = new Promise<void>((ok) => { answer = ok; });
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Öffnen')?.click()`);
-          const busyShown = await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.innerText.includes('wird ausgeführt'))`, 3000);
-          fx.holdOpen = null; answer();
-          await wait(`(window.__opened || []).length >= 2`, 3000);
-          const opened = await evaluate<string[]>("window.__opened || []");
-          const stopAt = Date.now();
-          const stopReady = await wait(`[...document.querySelectorAll('#boardbody .zd.ti button')].some((b) => b.textContent === 'Stoppen' && !b.disabled)`, 3000);
-          const stopMs = Date.now() - stopAt;
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti button')].find((b) => b.textContent === 'Stoppen')?.click()`);
-          const down = await wrote(action("/api/slots/10/testinstanz", "down"));
-          fx.holdWorktrees = null; release();
-          // the slotless worktree's instance goes through the worktree route, named by repo and path
-          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
-          await wait(`[...document.querySelectorAll('#boardbody .zd.ti')].some((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})`, 3000);
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(free))})?.querySelector('button')?.click()`);
-          const wtOpen = await wrote(action(wtRoute, "open"));
-          // what the four claims read, first in the detail line (the runner cuts it at 1500 characters)
-          facts.focus = { until, ti: { zeit: zeitRow?.ti ?? null, free: freeRow?.ti ?? null }, lineOpened, tiLine: line ?? null, busyShown, opened, stopReady, stopMs, down,
-            writes: fx.writes.filter((w) => w.path !== "/resize") };
-          claims[`${tag}Öffnen asks the slot's route for the opening link and opens it in a new tab; Stoppen sends down`] =
-            fx.writes.some(action("/api/slots/10/testinstanz", "open")) && opened.includes("http://fleet.fixture/blank?instanz") && down;
-          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] = wtOpen;
-        }
-        if (st === "tippen") {
-          await shot(`${st}-vorher-${width}`);
-          // EVERY LANE OPENS IN PLACE (owner 2026-10-08, decided by the UI-MAIN: „[Zitat entfernt]“
-          // ): a tap on 3B opens it, nothing jumps
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="10"]')?.click()`);
-          const opened = await wait(`document.querySelector('#boardbody .zr[data-slot="10"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
-          await settle(300);
-          const infoStays = phone ? await evaluate<boolean>("!!document.querySelector('#shell-board')") : true;
-          r = await read();
-          facts.tapped = { opened, infoStays, here: r.rows.filter((x) => x.cls.includes("here")).map((x) => x.slot ?? x.id), lines: r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text}`) };
-          claims[`${tag}a tap on 3B opens it in place — no jump: Info stays open, 3A stays the marked lane, 3B shows its checks`] =
-            opened && infoStays && lane(r, 9)?.cls.includes("here") === true && !lane(r, 10)?.cls.includes("here") && branchRows(r).length === zw.length
-            && r.lines.some((l) => l.for === pathOf(zeit) && l.cls.split(" ").includes("wl") && l.text.startsWith("Weg nach overhaul"));
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${pathOf(free)}"]')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.zx')`, 3000);
-          r = await read();
-          const x = r.lines.find((l) => l.cls.includes("zx2"));
-          facts.opened = r.lines.map((l) => `${l.cls} [${l.for ?? ""}]: ${l.text} ${l.buttons.join("/")}`);
-          claims[`${tag}a branch without a session and without a check opens to "Noch keine Prüfung", its branch, Öffnen and Schließen…`] = !!x && x.buttons.includes("Öffnen") && x.buttons.includes("Schließen…")
-            && r.lines.some((l) => l.cls.includes("zx") && l.text.includes(free.branch))
-            && r.lines.some((l) => l.for === pathOf(free) && l.cls.split(" ").includes("wl") && l.text === "Noch keine Prüfung" && l.points.length === 0)
-            && lane(r, 10)?.exp === "false";
-          await shot(`${st}-${width}`);
-          await evaluate(`[...document.querySelectorAll('#boardbody .zd.zx2 button')].find((b) => b.textContent === 'Öffnen')?.click()`);
-          await wait(`false`, 400);
-          claims[`${tag}Öffnen there reopens the worktree in a free slot`] = fx.writes.some((w) => w.path === "/api/lanes"
-            && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
-        }
-        if (st === "live") {
-          // THE LIVE SESSION (owner 2026-10-09: „[Zitat entfernt]“
-          // ): one sentence at a project → a lane, the sentence in its session, its
-          // own test instance; the lane's row carries Live, Öffnen and Mergen; Mergen asks first. Each
-          // of the three steps that fails is said where it failed, and the lane stays (UI-MAIN 2026-10-09).
-          const liveTag = (slot: number) => evaluate<string | null>(`document.querySelector('#boardbody .zr[data-slot="${slot}"] .nm .livetag')?.textContent ?? null`);
-          const tiOf = (rr: Read, l: Lane) => rr.lines.find((x) => x.for === pathOf(l) && x.cls.split(" ").includes("ti"));
-          const errOf = (l: Lane) => evaluate<string | null>(`document.querySelector('#boardbody .zd.live-err[data-for="${pathOf(l)}"] .err')?.textContent ?? null`);
-          // CLOSED UNTIL TAPPED (owner 2026-10-09: „[Zitat entfernt]“
-          // )
-          const closedT = tiOf(r, liveLane), closedTag = await liveTag(12), ownTag = await liveTag(9);
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="12"]')?.click()`);
-          await wait(`document.querySelector('#boardbody .zr[data-slot="12"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
-          await settle(150);
-          r = await read();
-          const liveT = tiOf(r, liveLane);
-          facts.liveLane = { row: lane(r, 12), closedT, ti: liveT, tag: closedTag, ownTag };
-          claims[`${tag}a live lane says Live beside its name and stays closed — its instance and its buttons only after a tap: Öffnen, Stoppen and Mergen in one row; another lane says nothing of it`] =
-            closedTag === "Live" && ownTag === null && !closedT && lane(r, 12)?.exp === "true"
-            && !!liveT && liveT.text.startsWith("Testinstanz läuft bis") && liveT.buttons.join(",") === "Öffnen,Stoppen,Mergen";
-          await shot(`${st}-laeuft-${width}`);
-          // Mergen: the existing land review with its diff first, the merge only after its answer — and the land
-          // form goes along to /merge alone: without a choice (ein Commit, the server's default) no switch, with
-          // alle Commits {"squash":false}; ⏏ (/land) never carries one, it answers 409 to a named squash:true
-          const mergeOnce = async (form: "squash" | "commits" | null) => {
-            if (form) await evaluate(`localStorage.setItem('fleet.board.landform', ${JSON.stringify(JSON.stringify({ repo: { [REPO]: form }, lane: {} }))})`);
-            else await evaluate(`localStorage.removeItem('fleet.board.landform')`);
-            fx.writes = [];
-            await evaluate(`[...document.querySelectorAll('#boardbody .zd.ti')].find((z) => z.dataset.for === ${JSON.stringify(pathOf(liveLane))})?.querySelector('.live-merge-btn')?.click()`);
-            const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
-            const askTitle = await evaluate<string | null>(`document.querySelector('.riskoverlay .landreviewpanel h2')?.textContent ?? null`);
-            const beforeAnswer = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => w.path);
-            if (!form) await shot(`${st}-rueckfrage-${width}`);
-            await evaluate(`[...document.querySelectorAll('.riskoverlay .riskbtn')].find((b) => /land$/.test(b.textContent))?.click()`);
-            await wait(`!document.querySelector('.riskoverlay')`, 3000);
-            await wait(`false`, 300);
-            const landW = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path));
-            return { asked, askTitle, beforeAnswer, after: landW.map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
-          };
-          const mergeNone = await mergeOnce(null), mergeCommits = await mergeOnce("commits");
-          facts.merge = { none: mergeNone, commits: mergeCommits };
-          await evaluate(`localStorage.removeItem('fleet.board.landform')`);
-          const asksFirst = (m: typeof mergeNone) => m.asked && m.askTitle === `Land ${liveLane.branch} → main — review what lands` && m.beforeAnswer.length === 0;
-          claims[`${tag}Mergen asks first: the land review with the lane's diff opens and nothing is merged before it is answered; its answer goes to POST /api/slots/12/merge — without a choice no switch in the body, with alle Commits {"squash":false}, and ⏏ before it none`] =
-            asksFirst(mergeNone) && asksFirst(mergeCommits)
-            && mergeNone.after.join(",") === "/api/slots/12/land {},/api/slots/12/merge {}"
-            && mergeCommits.after.join(",") === `/api/slots/12/land {},/api/slots/12/merge {"squash":false}`;
-          // the field under the project's head
-          // Live-Session toggles its field: tapped only while the field is closed
-          const startOpen = async (sentence: string) => {
-            await evaluate(`document.querySelector('#boardbody .zd.live-new') || document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .live-btn')?.click()`);
-            await wait(`document.querySelector('#boardbody .zd.live-new .live-in')`, 3000);
-            await evaluate(`(() => { const f = document.querySelector('#boardbody .zd.live-new .live-in'); f.value = ${JSON.stringify(sentence)}; f.dispatchEvent(new Event('input')); })()`);
-          };
-          const go = () => evaluate(`[...document.querySelectorAll('#boardbody .zd.live-new button')].find((b) => b.textContent === 'Starten')?.click()`);
-          await evaluate(`document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .live-btn')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.live-new .live-in')`, 3000);
-          const field = await evaluate<{ ph: string; btn: string; off: boolean; head: string; hint: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
-            const b = [...z.querySelectorAll('button')].find((x) => x.textContent === 'Starten'); const h = z.previousElementSibling, n = z.querySelector('.live-hint');
-            return { ph: z.querySelector('.live-in')?.placeholder ?? '', btn: b?.textContent ?? '', off: !!b?.disabled, head: h?.classList.contains('repo') ? h.querySelector('.live-btn')?.textContent ?? '' : '',
-              hint: n && n.getClientRects().length ? n.textContent : null }; })()`);
-          facts.field = field;
-          // the field says what Starten makes (round 6: "Eine Lane mit eigener Testinstanz · am Ende Mergen")
-          claims[`${tag}a project head carries Live-Session; a tap opens one field "Auftrag in einem Satz" under it, with Starten held until a sentence stands there and a line saying what it makes`] =
-            !!field && field.head === "Live-Session" && field.ph === "Auftrag in einem Satz" && field.btn === "Starten" && field.off
-            && field.hint === "Eine Lane mit eigener Testinstanz · am Ende Mergen";
-          // WHAT STARTEN DOES behind the field's ⓘ (owner 2026-10-09: „[Zitat entfernt]“
-          // ): four steps, the sentence word for word
-          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
-          const how = await evaluate<{ steps: string[]; exp: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
-            return { steps: [...z.querySelectorAll('.live-how li')].map((l) => l.textContent ?? ''), exp: z.querySelector('.live-i')?.getAttribute('aria-expanded') ?? null }; })()`);
-          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
-          await wait(`!document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
-          facts.liveHow = how;
-          claims[`${tag}the field's ⓘ says in four steps what Starten does, from the sentence taken word for word to Mergen`] =
-            !!how && how.exp === "true" && how.steps.length === 4 && how.steps[0].startsWith("Starten legt eine Lane an")
-            && /wörtlich/.test(how.steps[1]) && /kein anderes Modell/.test(how.steps[1]) && how.steps[3].startsWith("Am Ende drückst du an der Lane „Mergen“");
-          // 1 — the lane is refused: said under the project, nothing sent, nothing started
-          fx.liveFail = "lane"; fx.writes = [];
-          await startOpen("Die Zeitleiste soll zur Stunde springen");
-          await shot(`${st}-start-${width}`);
-          await go();
-          await wait(`document.querySelector('#boardbody .zd.live-new .err')`, 4000);
-          const e1 = await evaluate<string | null>(`document.querySelector('#boardbody .zd.live-new .err')?.textContent ?? null`);
-          facts.refusedLane = { e1, writes: fx.writes.map((w) => w.path) };
-          claims[`${tag}a refused lane is said under the project — "Die Live-Session wurde nicht gestartet: …" — and nothing is sent or started`] =
-            e1 === "Die Live-Session wurde nicht gestartet: no free lane place." && !fx.writes.some((w) => w.path === "/send" || /testinstanz|rename/.test(w.path));
-          // 2 — all three steps answer: the lane, the sentence with the fixed paragraph, its instance
-          fx.liveFail = null; fx.writes = [];
-          // THE WAY IN (owner 2026-10-09: „[Zitat entfernt]“
-          // ): what
-          // the column holds when the bar first stands, and when the lane's own row is first drawn
-          await evaluate(`(() => { window.__arr = { ghost: null, row: null }; const body = document.querySelector('#boardbody');
-            const mo = new MutationObserver(() => { const g = body.querySelector('.live-ghost');
-              if (g && !window.__arr.ghost) window.__arr.ghost = { text: g.querySelector('.tx')?.firstChild?.textContent ?? '', live: g.querySelector('.livetag')?.textContent ?? '',
-                underField: g.previousElementSibling?.classList.contains('live-new') ?? false, st: g.querySelector('.st')?.textContent ?? '' };
-              const r = body.querySelector('.ranke .rk > .zr[data-slot="14"]');
-              if (r && !window.__arr.row) { window.__arr.row = { kf: r.getAnimations().map((a) => String(a.effect?.getKeyframes?.()[0]?.transform ?? '')),
-                ghost: !!body.querySelector('.live-ghost'), field: !!body.querySelector('.zd.live-new') }; mo.disconnect(); } });
-            mo.observe(body, { childList: true, subtree: true }); })()`);
-          await go();
-          const made = () => fx.liveMade[0];
-          const started = await wait(`(() => { const z = [...document.querySelectorAll('#boardbody .zd.ti')].find((x) => x.dataset.for && x.dataset.for.includes('die-zeitleiste-soll')); return z && /Öffnen/.test(z.innerText) && !document.querySelector('#boardbody .zd.live-new'); })()`, 5000);
-          const order = fx.writes.map((w) => w.path);
-          const at = (path: string) => order.indexOf(path);
-          const lw = fx.writes.find((w) => w.path === "/api/lanes")?.body as { repo?: string; branch?: string } | undefined;
-          const sw = fx.writes.find((w) => w.path === "/send")?.body as { slot?: number; text?: string; whenFree?: boolean; openedAt?: number } | undefined;
-          const tw = fx.writes.find((w) => w.path === "/api/slots/14/testinstanz")?.body;
-          const nw = fx.writes.find((w) => w.path === "/api/slots/14/rename")?.body;
-          r = await read();
-          facts.started = { started, order, lw, sw: sw ? { ...sw, text: sw.text?.slice(0, 200) } : null, tw, nw, tag: await liveTag(14), ti: made() ? tiOf(r, made()!) : null };
-          claims[`${tag}Starten makes the lane, hands it the sentence, starts its instance — POST /api/lanes on a fleet/live- branch, /send with the sentence and the fixed paragraph, then up for 4 hours; the lane is named by its sentence (cut at the server's 40); the field closes`] =
-            started && lw?.repo === REPO && /^fleet\/live-\d{10}-die-zeitleiste-soll-zur-[0-9a-f]{4}$/.test(lw?.branch ?? "")
-            && sw?.slot === 14 && sw.whenFree === true && sw.openedAt === openedAt(14)
-            && (sw.text ?? "").startsWith("Die Zeitleiste soll zur Stunde springen\n\nLive-Session: Der Owner arbeitet in deiner Testinstanz mit")
-            && (sw.text ?? "").endsWith("Nachlesen: docs/design/live-bau-profil-2026-10.md §2.") && !(sw.text ?? "").includes("`")
-            && JSON.stringify(tw) === JSON.stringify({ action: "up", ttlMin: 240 }) && JSON.stringify(nw) === JSON.stringify({ label: "⎇ Die Zeitleiste soll zur Stunde spring…" })
-            && at("/api/lanes") < at("/send") && at("/send") < at("/api/slots/14/testinstanz")
-            && await liveTag(14) === "Live" && (made() ? tiOf(r, made()!)?.buttons.join(",") : "") === "Öffnen,Stoppen,Mergen";
-          const arr = await evaluate<{ ghost: { text: string; live: string; underField: boolean; st: string } | null; row: { kf: string[]; ghost: boolean; field: boolean } | null }>(`window.__arr`);
-          facts.arrive = arr;
-          claims[`${tag}Starten first draws a bar with the sentence and Live under the field; the paint that draws the lane's row slides it in from there, and field and bar are gone`] =
-            !!arr.ghost && arr.ghost.text.startsWith("Die Zeitleiste soll zur Stunde spring") && arr.ghost.live === "Live" && arr.ghost.underField
-            && !!arr.row && arr.row.kf.some((t) => /^translateY\(-?\d/.test(t)) && !arr.row.ghost && !arr.row.field;
-          // 3 — the sentence does not arrive: said at the lane, the lane stands, its instance still starts
-          fx.liveFail = "send"; fx.writes = [];
-          await startOpen("Die Leiste breiter");
-          await go();
-          await wait(`document.querySelector('#boardbody .zr[data-slot="15"]') && document.querySelector('#boardbody .zd.live-err .err')`, 5000);
-          await wait(`false`, 200);
-          const e2 = fx.liveMade[1] ? await errOf(fx.liveMade[1]) : null;
-          facts.refusedSend = { e2, writes: fx.writes.map((w) => w.path) };
-          claims[`${tag}a sentence that did not arrive is said at the lane — the lane stands and its instance is still started`] =
-            !!e2 && e2.startsWith("Der Auftrag kam nicht in der Session an (slot is held by a different occupant") && e2.includes("die Lane steht")
-            && await evaluate<boolean>(`!!document.querySelector('#boardbody .zr[data-slot="15"]')`) && fx.writes.some((w) => w.path === "/api/slots/15/testinstanz");
-          // 4 — the instance does not start, twice: said at the lane, the lane stands
-          fx.liveFail = "ti"; fx.writes = [];
-          await startOpen("Fehlerfall zeigen");
-          await go();
-          await wait(`document.querySelector('#boardbody .zr[data-slot="16"]') && [...document.querySelectorAll('#boardbody .zd.live-err .err')].some((e) => /Testinstanz startete nicht/.test(e.textContent))`, 6000);
-          const e3 = fx.liveMade[2] ? await errOf(fx.liveMade[2]) : null;
-          facts.refusedTi = { e3, ups: fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length };
-          await evaluate(`document.querySelector('#boardbody .zr[data-slot="16"]')?.scrollIntoView({ block: 'center' })`);
-          await shot(`${st}-fehler-${width}`);
-          claims[`${tag}an instance that did not start is said at the lane after its second try — the lane stands`] =
-            e3 === "Die Testinstanz startete nicht (testinstanz up failed) — die Lane steht, ihre Testinstanz-Zeile startet sie neu."
-            && fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length === 2
-            && await evaluate<boolean>(`!!document.querySelector('#boardbody .zr[data-slot="16"]')`);
-          // A LABEL THAT IS ONLY ITS BRANCH (round 6): the live lane before its rename reads as its
-          // branch's words — no "live", no stamp, no hex; Live is its tag, the branch its name's title
-          fx.bare = true;
-          await reopen(`document.querySelector('#boardbody .zr[data-slot="12"] > .nm')`);
-          const bareName = await evaluate<{ words: string; title: string; tag: string | null } | null>(`(() => { const n = document.querySelector('#boardbody .zr[data-slot="12"] > .nm'); if (!n) return null;
-            return { words: [...n.childNodes].filter((c) => c.nodeType === 3).map((c) => c.textContent).join('').trim(), title: n.title, tag: n.querySelector('.livetag')?.textContent ?? null }; })()`);
-          fx.bare = false;
-          await reopen(restored);
-          facts.bareName = bareName;
-          claims[`${tag}a lane whose label is only its branch reads as the branch's words — "zeitleiste zur stunde", Live its tag, the branch its title`] =
-            !!bareName && bareName.words === "zeitleiste zur stunde" && bareName.tag === "Live" && bareName.title === liveLane.branch;
-        }
-        if (st === "land") await shot(`${st}-${width}`);
-        if (st === "viele" || st === "branch" || st === "viele30") {
-          // only the focused session's project stands (owner 2026-10-09): rezepte-app's slot 13 is not drawn
-          r = await read();
-          const z2 = branchRows(r);
-          const fold = r.rows.find((x) => x.cls.includes("zf"));
-          facts.many = { rows: z2.length, fold: fold?.text, flags: z2.map((x) => `${x.slot ?? x.id}: ${x.flag?.cls ?? "-"}`) };
-          claims[`${tag}with many branches: from 13 on, the worktrees without a session fold into one line; no row carries a flag`] =
-            !!fold && /\d+ ohne Session/.test(fold.text) && z2.every((x) => !x.flag) && !z2.some((x) => x.slot === "13");
-          const e = lane(r, 14)!, f = lane(r, 15)!, c = lane(r, 11)!, d = lane(r, 12)!, g = lane(r, 16)!;
-          // NO FLAG AT A CLOSED LANE (owner 2026-10-10: „[Zitat entfernt]“): C's red result
-          // on an older stand, D's and E's green ones stand at their opened points, not on the row. What waits
-          // or runs is the DIAMOND on the way back (#gateLook): a ring while it waits, filled while it runs.
-          // THE CHECK AFTER A LAND IS NO LANE'S (owner 2026-10-10: „[Zitat entfernt]“
-          // ): E's own check after its land runs, and
-          // E's row carries no diamond for it — that is the stem's (below)
-          const gate2 = (slot: number) => r.gates.find((x) => x.row === String(slot))?.gate ?? null;
-          facts.manyGates = r.gates.map((x) => `${x.row}: ${x.gate}`);
-          claims[`${tag}no closed lane carries a flag, red or green; a waiting check is a ring diamond, and the running check after E's land puts none on E's row`] =
-            [c, d, e, f, g].every((x) => !x.flag) && gate2(12) === "queue" && gate2(14) === null && gate2(15) === null;
-          // THE DIAMOND'S COLOURS AFTER A RUN (owner 2026-10-09: „[Zitat entfernt]“; 2026-10-08: „[Zitat entfernt]“
-          // ): for the server's minutes after its runs ended, filled green
-          // where they passed, filled red where one failed — no flag stands for them afterwards
-          const fillOf = (slot: number) => r.gates.find((x) => x.row === String(slot))?.fill ?? null;
-          facts.endedGates = r.gates.filter((x) => x.row === "11" || x.row === "16").map((x) => `${x.row}: ${x.gate} ${x.fill} ${x.aria}`);
-          claims[`${tag}a run that just ended colours its lane's diamond: C's passed preview filled green, G's failed one filled red — and no flag`] =
-            gate2(11) === "ok" && fillOf(11) === r.live && /^Vorschau bestanden vor \d+:\d\d · Vorschau · auf Mac — /.test(r.gates.find((x) => x.row === "11")?.aria ?? "")
-            && gate2(16) === "bad" && fillOf(16) === r.danger && /^Vorschau fehlgeschlagen vor \d+:\d\d · Vorschau · exit 1 · auf Mac — /.test(r.gates.find((x) => x.row === "16")?.aria ?? "")
-            && !c.flag && !g.flag;
-          claims[`${tag}a session waiting on you has the brown node`] = d.nd === r.wait && /wartet auf dich/.test(d.title);
-          await shot(`${st}-${width}`);
-          if (st === "viele") {
-            // the points of an opened lane read apart too: the land a filled point with its commit, a
-            // check after the land that runs, a skipped proof, an unreadable record amber
-            const openLane = async (slot: number) => {
-              await evaluate(`document.querySelector('#boardbody .zr[data-slot="${slot}"]')?.click()`);
-              const path = pathOf(lanesOf(st).find((l) => l.slot === slot)!);
-              await wait(`document.querySelector('#boardbody .zd.wl[data-for=${JSON.stringify(path)}]')`, 3000);
-              const x = await read();
-              return x.lines.find((l) => l.for === path && l.cls.split(" ").includes("wl"));
-            };
-            const wc = await openLane(11), wd = await openLane(12);
-            const we = await openLane(14), wf = await openLane(15), wg = await openLane(16);
-            facts.points = { c: wc?.points.map((p) => p.cls), d: wd?.points.map((p) => p.cls), e: we?.points.map((p) => p.cls), f: wf?.points.map((p) => p.cls), g: wg?.points.map((p) => p.cls) };
-            // WHAT THE FLAG SAID, NOW WHERE THE OWNER CLICKS (owner 2026-10-10: „[Zitat entfernt]“
-            // ): opened, C's red preview on an older stand is a red ring
-            // with its fail in words, D's green proof a filled green point beside its waiting preview
-            claims[`${tag}opened, a lane's results stand at its points: C's red on an older stand a red ring with "Vorschau rot", D's green proof filled green`] =
-              JSON.stringify(wc?.points.map((p) => p.cls)) === JSON.stringify(["ok", "bad old", "none", "none"])
-              && /^Weg nach overhaul .*Vorschau rot · e2e\/slots\.ts: glass island/.test(wc?.text ?? "") && /2 Vorschau: rot · .* · auf einem älteren Stand als dieser Worktree/.test(wc?.way ?? "")
-              && JSON.stringify(wd?.points.map((p) => p.cls)) === JSON.stringify(["ok", "queue", "none", "none"]) && /1 Beweis: grün/.test(wd?.way ?? "");
-            // THE BAR HOLDS THE SQUARE (owner 2026-10-09: „[Zitat entfernt]“
-            // ): 3B opened, its test instance up — the bar runs over the
-            // square to 4 px past the row's end (until 2026-10-10 3A's flag was the mark this claim read in `lane`)
-            await openLane(10);
-            const rb = await read();
-            claims[`${tag}an opened row's bar runs over its words, git stand and marks — 3B's square inside`] =
-              !!lane(rb, 10)?.ti && barClaim(rb, lane(rb, 10), "square");
-            claims[`${tag}opened, a landed lane says "Land: gelandet als <sha> in overhaul" after its points and shows its check after the land running`] =
-              JSON.stringify(we?.points.map((p) => p.cls)) === JSON.stringify(["ok", "ok", "ok", "run"])
-              && (we?.way ?? "").endsWith(`\nLand: gelandet als ${sha7(hex("landed-e"))} in overhaul`);
-            claims[`${tag}opened, the points read apart: a skipped proof "skip", an unreadable record amber "unk" with "unbekannt" in its words`] =
-              wg?.points[0]?.cls === "skip" && /1 Beweis: ausgelassen/.test(wg.way)
-              && wf?.points[3]?.cls === "unk" && /4 Nachprüfung: unbekannt/.test(wf.way);
-            await evaluate(`document.querySelector('#boardbody .zr[data-slot="16"]')?.click()`);
-            await wait(`document.querySelector('#boardbody .zr[data-slot="16"]')?.getAttribute('aria-expanded') === 'false'`, 3000);
-            r = await read();
-            await evaluate(`document.querySelector('#boardbody .zr.zf')?.click()`);
-            const unfolded = await wait(`!document.querySelector('#boardbody .zr.zf') && document.querySelectorAll('#boardbody .zr.zw').length === ${z2.length + Number(/(\d+) ohne Session/.exec(fold?.text ?? "")?.[1] ?? -99)}`, 3000);
-            claims[`${tag}a click on the fold line shows every worktree without a session`] = unfolded;
-            // THE CHECK AFTER A LAND ON THE BOARD (round 6, owner 2026-10-09: „[Zitat entfernt]“
-            // ; „[Zitat entfernt]“):
-            // while the audit runs for E's land on overhaul and a land on main waits for it, each stem carries
-            // its diamond — ink where it runs, a ring where it waits — at the END of a dashed line from the
-            // stem's row to the right (owner 2026-10-10: „[Zitat entfernt]“
-            // ), and E's way back stays dashed although
-            // E has landed. The server names the repo by its basename (fx.audit). Without an audit no stem has
-            // a diamond or a dashed line and E's way is solid
-            type StemRead = { id: string | null; audit: string | null; gate: string | null; placed: string | null; aria: string; cx: number | null; cy: number | null; rowEnd: number;
-              line: { x0: number; x1: number; y: number } | null; dashed: number };
-            const stemsOf = () => evaluate<StemRead[]>(`(() => { const lines = [...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait audit')
-                .map((p) => { const m = /^M([\\d.]+) ([\\d.]+)H([\\d.]+)$/.exec(p.getAttribute('d') ?? ''); return m ? { x0: +m[1], y: +m[2], x1: +m[3], rk: p.closest('.rk') } : null; }).filter(Boolean);
-              return [...document.querySelectorAll('#boardbody .ranke .zr.base')].map((x) => { const g = x.querySelector(':scope > .lgate.stem'), t = x.closest('.rk').getBoundingClientRect();
-                const gi = g?.querySelector(':scope > i')?.getBoundingClientRect(), cx = gi ? gi.left + gi.width / 2 - t.left : null, cy = gi ? gi.top + gi.height / 2 - t.top : null;
-                const rowEnd = Math.max(0, ...[...x.querySelectorAll(':scope > .lr, :scope > .nm, :scope > .rt, :scope > .ti, :scope > .fc')].map((e) => e.getBoundingClientRect().right - t.left));
-                const mine = lines.filter((l) => l.rk === x.closest('.rk') && cy !== null && Math.abs(l.y - cy) <= 1);
-                return { id: x.dataset.id ?? null, audit: x.dataset.audit ?? null, gate: g?.dataset.gate ?? null, placed: g?.dataset.placed ?? null, aria: g?.getAttribute('aria-label') ?? '',
-                  cx, cy, rowEnd, line: mine[0] ? { x0: mine[0].x0, x1: mine[0].x1, y: mine[0].y } : null, dashed: mine.length }; }); })()`);
-            const dashedHeads = () => evaluate<number>(`[...document.querySelectorAll('#boardbody .ranke .rk > svg path')].filter((p) => p.getAttribute('class') === 'rail back wait audit').length`);
-            // the line starts at the end of what the stem's row says and ends at the diamond's left tip
-            const endsInDiamond = (x: StemRead | undefined) => !!x?.line && x.cx !== null && x.dashed === 1
-              && Math.abs(x.line.x0 - (Math.round(x.rowEnd) + 5)) <= 1.5 && Math.abs(x.line.x1 - (x.cx - 6)) <= 1.5 && x.line.x1 - x.line.x0 >= 6;
-            const eBack = (rr: Read) => rr.backs.find((b) => b.for === pathOf(lanesOf(st).find((l) => l.slot === 14)!))?.cls ?? null;
-            const quietStems = await stemsOf(), quietHeads = await dashedHeads(), quietE = eBack(r);
-            fx.audit = true;
-            await reopen(`document.querySelectorAll('#boardbody .ranke .zr.base > .lgate.stem[data-placed]').length === 2`);
-            const ra = await read();
-            const stems = await stemsOf(), heads = await dashedHeads();
-            await shot(`${st}-nachpruefung-${width}`);
-            // the same with E opened: its points say its check after the land, its row carries no diamond
-            await evaluate(`document.querySelector('#boardbody .zr[data-slot="14"]')?.click()`);
-            await wait(`document.querySelector('#boardbody .zr[data-slot="14"]')?.getAttribute('aria-expanded') === 'true'`, 3000);
-            await settle(150);
-            await shot(`${st}-nachpruefung-offen-${width}`);
-            fx.audit = false;
-            await reopen(restored);
-            const sm = stems.find((x) => x.id === `${REPO}#main`), so = stems.find((x) => x.id === `${REPO}#overhaul`);
-            facts.stemAudit = { quietStems, quietHeads, quietE, stems, heads, e: eBack(ra), overflow: ra.secOverflow, page: ra.pageScroll };
-            claims[`${tag}while the check after a land runs on overhaul and a land on main waits for it, each stem carries its diamond — ink on overhaul, a ring on main — on a dashed line; none without`] =
-              quietStems.every((x) => x.gate === null && !x.audit) && quietHeads === 0
-              && so?.audit === "run" && so.gate === "run" && so.placed === "1" && /^Nachprüfung läuft [^—]* · für 5e6b — Nachprüfung von overhaul, Klick zeigt sie$/.test(so.aria)
-              && sm?.audit === "queue" && sm.gate === "queue" && sm.placed === "1" && /^1 Land wartet auf die nächste Nachprüfung · 4d2e — Nachprüfung von main/.test(sm.aria)
-              && heads === 2 && ra.secOverflow <= 0 && ra.pageScroll <= 0;
-            claims[`${tag}each stem's check after the land stands at the end of a dashed line from its row to the right: the line leaves where the row's words end and ends at the diamond`] =
-              endsInDiamond(so) && endsInDiamond(sm) && quietStems.every((x) => x.dashed === 0);
-            claims[`${tag}a landed lane's way back stays dashed while the check after its land runs — E's, solid once nothing of its way is open`] =
-              (quietE ?? "").split(" ").includes("land") && (eBack(ra) ?? "").split(" ").includes("wait");
-          }
-          if (st === "branch") {
-            // THE NAME COLUMN SHOWS NAMES (owner 2026-10-08, „[Zitat entfernt]“): the switch
-            // Name/Zweig/Stand left — the branch and the commit stand in each row's title
-            const m9 = lane(r, 9);
-            claims[`${tag}no name switch: 3A's row shows its name, its branch and the commit it stands on are its title`] =
-              !await evaluate<boolean>("!!document.querySelector('#boardbody .rkseg')") && m9?.name === "Rechter Tab dichter"
-              && (m9?.title ?? "").includes(own.branch) && (m9?.title ?? "").includes(`läuft auf ${sha7(hex(own.branch))}`);
-          }
-        }
-        if (st === "alarm") await shot(`${st}-${width}`);
-        if (st === "leer") {
-          claims[`${tag}without a session the Ranke still shows every worktree, none marked, each with Öffnen behind a click`] =
-            !r.rows.some((x) => x.cls.includes("here")) && zw.every((x) => x.node === "leer") && /Wähle eine Pane/.test(r.bodyText);
-          await shot(`${st}-${width}`);
+        if (st === "land") {
+        // THE BLOCK FOLDS (owner 2026-10-09: „[Zitat entfernt]“): closed by
+        // default one line — a diamond per run and the count — and a tap on its head opens a line per run,
+        // remembered per browser
+        const shut = r.lines.filter((l) => l.cls.split(" ").includes("run"));
+        const fold0 = await evaluate<{ exp: string | null; gates: string[] }>(`({ exp: document.querySelector('#boardbody .rk-runs > .rkbh')?.getAttribute('aria-expanded') ?? null,
+          gates: [...document.querySelectorAll('#boardbody .zd.run.sum .gq')].map((q) => q.dataset.gate) })`);
+        facts.runsFolded = { lines: shut.map((l) => `${l.cls}: ${l.text}`), ...fold0 };
+        claims[`${tag}closed by default, the Prüfungen block is one line — a diamond per run and "1 läuft · 1 wartet"; its head says it opens`] =
+          shut.length === 1 && shut[0].cls.split(" ").includes("sum") && shut[0].text === "1 läuft · 1 wartet"
+          && JSON.stringify(fold0.gates) === JSON.stringify(["run", "queue"]) && fold0.exp === "false";
+        await evaluate(`document.querySelector('#boardbody .rk-runs > .rkbh')?.click()`);
+        await wait(`document.querySelector('#boardbody .zd.run.free')`, 3000);
+        r = await read();
+        const kept = await evaluate<string>(`localStorage.getItem('fleet.board.folds') ?? ''`);
+        const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
+        facts.runsClosed = { lines: free0.map((l) => `${l.cls}: ${l.text}`), kept };
+        claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
+          free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
+          && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste"
+          && kept.includes('"pruefungen"');
         }
         if (st === "doppelt") {
           await shot(`${st}-${width}`);
@@ -13306,41 +12607,301 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.mac = me;
           claims[`${tag}this server's own link says "das ist dieser Server", never that its repos are not read here`] =
             me.lines.includes("Fleet-Instanz · verlinkt — das ist dieser Server") && !me.lines.some((t) => /ihre Repos liest/.test(t));
-          // the branches: a detached worktree says so, two branches alike carry their difference, the stem overhaul stands once
-          r = await read();
-          const det = byId(r, "/fixture/scratch/main-wt"), owners = branchRows(r).filter((x) => /owner notizen/.test(x.name ?? ""));
-          const overNamed = r.rows.filter((x) => (x.name ?? "") === "overhaul");
-          const overWt = `${REPO}.worktrees/overhaul`;
-          facts.branches = { det: det?.name, owners: owners.map((x) => x.name), overNamed: overNamed.map((x) => x.id) };
-          claims[`${tag}a detached worktree says what it is: "losgelöst · main wt", not "ohne Branch"`] = det?.name === "losgelöst · main wt";
-          claims[`${tag}two branches whose words differ only by date read apart, the difference first: "06.10. · owner notizen" and "07.10. · owner notizen"`] =
-            JSON.stringify(owners.map((x) => x.name).sort()) === JSON.stringify(["06.10. · owner notizen", "07.10. · owner notizen"]);
-          claims[`${tag}overhaul stands once — a worktree on it hangs its square on the stem row, no lane row of its own`] =
-            overNamed.length === 1 && overNamed[0].id === `${REPO}#overhaul` && !!overNamed[0].ti && !byId(r, overWt);
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${REPO}#overhaul"]')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.zx[data-for="${overWt}"]')`, 3000);
-          r = await read();
-          const ol = r.lines.find((l) => l.cls.includes("zx2"));
-          claims[`${tag}a tap on that stem opens the worktree's line with Öffnen, as its own row did`] =
-            r.lines.some((l) => l.for === overWt && l.text.startsWith("overhaul")) && !!ol && ol.buttons.includes("Öffnen");
-          await shot(`${st}-getippt-${width}`);
         }
-        if (st === "main") {
-          const m = byId(r, `${REPO}#main`)!;
-          // THE SESSIONS ON MAIN BY WHAT THEY ARE (owner 2026-10-08: „[Zitat entfernt]“ said nothing): one
-          // button names them — the Orchestratorin, the MAINs, the rest as a count — and a tap lists them
-          claims[`${tag}a session in the main checkout marks the stem; its sessions are one button "Orchestratorin · 1 MAIN", no lane is marked`] =
-            m.cls.includes("here") && m.msess === "Orchestratorin · 1 MAIN" && !zw.some((x) => x.cls.includes("here"));
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${REPO}#main"] .msess')?.click()`);
-          await wait(`document.querySelector('#boardbody .zd.msl')`, 3000);
-          const listed = await evaluate<{ t: string; on: boolean }[]>(`[...document.querySelectorAll('#boardbody .zd.msl')].map((z) => ({ t: z.innerText.trim(), on: z.classList.contains('on') }))`);
-          facts.msl = listed;
-          claims[`${tag}a tap on it lists them by name, this session marked`] =
-            JSON.stringify(listed) === JSON.stringify([{ t: "Orchestratorin", on: false }, { t: "Program-MAIN Oberfläche", on: true }]);
-          await evaluate(`document.querySelector('#boardbody .zr[data-id="${REPO}#main"] .msess')?.click()`);
-          await wait(`!document.querySelector('#boardbody .zd.msl')`, 3000);
-          await shot(`${st}-${width}`);
+        // --- THE GIT STRUCTURE'S OWN CLAIMS (auftraege/k16-git-struktur*.md, owner Z79–Z87). Its geometry — where a circle
+        // stands, what is dashed — is src/gitstruktur.test.ts's; here what the browser shows and what a click sends.
+        // a head, a diamond or a word is pressed as a finger does it: an SVG group has no click() of its own
+        const gsPress = async (sel: string) => {
+          await evaluate(`document.querySelector(${JSON.stringify(`#boardbody .rk-git .gs[data-repo="${REPO}"] ${sel}`)})?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+          await settle(120);
+          g = await gsRead();
+        };
+        const gsHead = (key: string) => gsPress(`svg.gss > g.gsr[data-head=${JSON.stringify(key)}]`);
+        const gsWord = (label: string) => evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .gsword')].find((b) => b.textContent === ${JSON.stringify(label)})?.click()`)
+          .then(() => settle(120)).then(async () => { g = await gsRead(); });
+        const gsClose = () => evaluate(`document.querySelector('#boardbody .rk-git svg.gss > .sel')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`).then(() => settle(120));
+        const laneKey = (l: Lane) => `lane:${l.branch}`;
+        // NO GERMAN IN THE STRUCTURE (owner Z87 „[Zitat entfernt]“): the words that stood there before round 5
+        const GERMAN = /\b(Testinstanz|Starten|Öffnen|Stoppen|Schließen|Prüfung|Prüfungen|Weg nach|Beim Land|läuft|wartet|keine|ruhig|Charge|Zweig|Auftrag|losgelöst|ungesichert)\b/;
+        const fl = fleetGs();
+        if (fl) {
+          // ONLY THE FOCUSED SESSION'S PROJECT (owner 2026-10-09) — a session outside every project keeps the overview
+          if (st !== "leer") claims[`${tag}only the focused session's project stands — claude-fleet's structure open, no other project, no row of quiet ones`] =
+            g.repos.length === 1 && fl.open && fl.fold === "true" && g.quiet.length === 0;
+          // THE TEXT HAS INFO'S SIZE (Bauleitung e105c447, round 3b): a rectangle's words are as large as Info's, never scaled
+          facts.gsPx = { info: g.info, px: [...new Set(fl.heads.map((h) => h.px))] };
+          claims[`${tag}the words in the structure's rectangles have Info's size — the drawing is not scaled`] =
+            fl.heads.length > 0 && fl.heads.every((h) => Math.abs(h.px - g.info) < 0.05);
+          // THE LEGEND IS A QUIET LINE (owner Z87 c: „[Zitat entfernt]“): under the structure, no i in the head
+          claims[`${tag}what the signs mean is one quiet line under the structure — no i button in the project's head`] =
+            fl.legend === "What the signs mean" && fl.ib === 0 && fl.legendOpen === 0;
+          claims[`${tag}the structure and its legend speak English — no German word in the drawing or under it`] = !GERMAN.test(fl.text)
+            && fl.heads.every((h) => !GERMAN.test(`${h.title} ${h.aria}`)) && fl.diamonds.every((d) => !GERMAN.test(`${d.title} ${d.aria}`))
+            && fl.circles.every((c) => !GERMAN.test(c.aria ?? ""));
         }
+        if (["lane", "laneb", "land", "modell", "tippen", "uebergabe", "menue", "kopf", "mehr"].includes(st) && fl) {
+          // WHERE A SESSION WORKS IS WHERE ITS CIRCLE STANDS (auftrag k16-git-struktur.md): in front of its lane, behind main
+          // for a session in the main checkout, none at a lane without a session; small, green while it works (Z87 a)
+          const head = (key: string) => fl.heads.find((h) => h.key === key);
+          const circ = (slot: number) => fl.circles.find((c) => c.slot === String(slot));
+          const h9 = head(laneKey(own)), h10 = head(laneKey(zeit)), hFree = head(laneKey(free)), hMain = head("main:main");
+          facts.gsPlace = { circles: fl.circles.map((c) => `${c.slot}@${c.at} ${c.on ? "on" : "off"} r${c.r} x${c.x}`), heads: fl.heads.map((h) => `${h.key} "${h.text}" x${h.x} w${h.w}`) };
+          claims[`${tag}each session's circle stands where it works: 3A and 3B in front of their lanes, Orchestratorin and MAIN behind main, none at the lane without a session`] =
+            !!h9 && !!h10 && !!hFree && !!hMain && circ(9)?.at === laneKey(own) && circ(9)!.x < h9.x && circ(10)?.at === laneKey(zeit) && circ(10)!.x < h10.x
+            && [1, 3].every((s) => circ(s)?.at === "main:main" && circ(s)!.x > hMain.x + hMain.w)
+            && !fl.circles.some((c) => c.at === laneKey(free)) && fl.circles.length === 4;
+          claims[`${tag}a circle is small and filled while its session works: 3A and the MAIN filled, 3B and the Orchestratorin a ring`] =
+            fl.circles.every((c) => c.r === 5) && circ(9)?.on === true && circ(3)?.on === true && circ(10)?.on === false && circ(1)?.on === false;
+          // A LANE CARRIES ITS NAME (owner Z81 5, Z83 1): the session's label, else the lane's goal — its id only when nothing else is there
+          claims[`${tag}a lane block carries its name — "Rechter Tab dichter", "Zeitleiste" — and the lane without a session its branch's short end`] =
+            h9?.text === "Rechter Tab dichter" && h10?.text === "Zeitleiste" && hFree?.text === "7c08";
+          // THE SLOT ON HOVER (owner Z81 1/4, Z83 2, Z87 a): no number in a circle; the card names the session
+          claims[`${tag}no circle carries a number — the slot is in the card`] =
+            await evaluate<boolean>(`![...document.querySelectorAll('#boardbody .rk-git svg.gss > g.gsk')].some((c) => c.querySelector('text'))`);
+          if (!phone) {
+            const c = await evaluate<number[] | null>(`(() => { const k = document.querySelector('#boardbody .rk-git svg.gss > g.gsk[data-slot="9"] circle'); if (!k) return null;
+              const b = k.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+            if (c) await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: c[0], y: c[1] });
+            await settle(150);
+            const hover = (await gsRead()).repos.find((x) => x.repo === REPO)?.card ?? null;
+            await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+            await settle(100);
+            const gone = (await gsRead()).repos.find((x) => x.repo === REPO)?.card ?? null;
+            facts.gsCard = { hover, gone };
+            claims[`${tag}hovering a circle shows its card — name, slot, role, agent and whether it works — and it goes with the pointer`] =
+              !!hover && hover[0] === "Rechter Tab dichter" && hover.some((l) => /Slot 9/.test(l)) && hover.some((l) => /Lane/.test(l))
+              && hover.some((l) => /Claude Code/.test(l)) && hover.some((l) => /working/.test(l)) && gone === null;
+          }
+          // STEP 1 NAMES ITS ELEMENT (owner Z87 d): its first line says whose menu it is; main has no test instance of a lane
+          await gsHead("main:main");
+          const mMain = fleetGs()?.menu ?? null;
+          await gsHead(laneKey(own));
+          const m9 = fleetGs()?.menu ?? null;
+          facts.gsMenu = { main: mMain, lane: m9 };
+          claims[`${tag}a click on a head opens its menu, whose first line names it: "main · ${sha7(MAIN)}", "Lane Rechter Tab dichter · ${own.branch}"`] =
+            mMain?.head === `main · ${sha7(MAIN)}` && m9?.head === `Lane Rechter Tab dichter · ${own.branch}` && fleetGs()?.heads.find((h) => h.key === laneKey(own))?.exp === "true";
+          // DIFF, PASST, LANDEN LEFT THE MENU (owner Z87 f); what stays reads English
+          claims[`${tag}the menus carry no Diff, Passt or Landen and no German word`] = [mMain, m9].every((m) => !!m
+            && !m.buttons.some((b) => /^(Diff|Passt|passt ✓|Landen|Charge mergen)$/.test(b)) && !GERMAN.test(m.text ?? ""));
+          // THE TEST INSTANCE OF A LANE in its first step (owner Z86): one line with Start, for this lane's own copy, 4 hours
+          if (st === "lane") {
+            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.ti button')].find((b) => b.textContent === 'Start')?.click()`);
+            await wait(`false`, 400);
+            claims[`${tag}3A's menu carries its test instance as one line "Test instance off" with Start, and Start asks for a copy of THIS lane for 4 hours`] =
+              (m9?.text ?? "").includes("Test instance off Start") && (m9?.buttons ?? []).includes("Start")
+              && fx.writes.some((w) => w.path === "/api/slots/9/testinstanz" && JSON.stringify(w.body) === JSON.stringify({ action: "up", ttlMin: 240 }));
+            // THE LAND FORM in the lane's first step (owner Z86 „[Zitat entfernt]“): it follows the
+            // project — one commit, as the server lands without a choice — until a form is kept as the lane's own, in this browser
+            const lf = () => evaluate<{ on: string[]; follow: string | null; stored: string | null }>(`(() => { const z = document.querySelector('#boardbody .rk-git .gsm .zd.lf-set');
+              return { on: z ? [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent) : [], stored: localStorage.getItem('fleet.board.landform'),
+                follow: z ? [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'like the project')?.title ?? null : null }; })()`);
+            const lf0 = await lf();
+            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.lf-set .lf-c')].find((b) => b.textContent === 'one commit')?.click()`);
+            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.lf-set .lf-c[aria-pressed="true"]')?.textContent === 'one commit'`, 3000);
+            const lf1 = await lf();
+            facts.gsLandForm = { lf0, lf1 };
+            claims[`${tag}3A's menu carries On land: like the project (one commit) until one commit is kept as the lane's own`] =
+              JSON.stringify(lf0.on) === JSON.stringify(["like the project"]) && lf0.follow === "Like the project: one commit" && lf0.stored === null
+              && JSON.stringify(lf1.on) === JSON.stringify(["one commit"]) && lf1.stored === JSON.stringify({ repo: {}, lane: { [pathOf(own)]: "squash" } });
+            await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+          }
+          await gsClose();
+          // THE LANE'S CHECKS AT ITS DIAMOND: its menu opens its way at once — "Way to overhaul" and the four points in the order a lane goes them
+          await gsPress(`svg.gss > g.gsdg[data-of=${JSON.stringify(laneKey(own))}]`);
+          const way = await evaluate<{ head: string | null; text: string | null; keys: string[]; cls: string[]; aria: string; title: string } | null>(`(() => { const m = document.querySelector('#boardbody .rk-git .gsm');
+            const w = m?.querySelector('.zd.wl .way'); if (!m) return null; return { head: m.querySelector('.gshd')?.textContent ?? null, text: m.querySelector('.zd.wl')?.innerText.replace(/\\s+/g, ' ').trim() ?? null,
+              keys: w ? [...w.querySelectorAll('i')].map((i) => i.dataset.key) : [], cls: w ? [...w.querySelectorAll('i')].map((i) => i.className) : [], aria: w?.getAttribute('aria-label') ?? '', title: w?.title ?? '' }; })()`);
+          facts.gsWay = way;
+          const want = st === "land" ? ["ok", "ok", "run", "none"] : ["ok", "run", "none", "none"];
+          claims[`${tag}3A's diamond opens its checks: "Land check of Rechter Tab dichter", "Way to overhaul" and four points — Proof · Preview · Land check · Check after land as ${want.join(" · ")}`] =
+            way?.head === "Land check of Rechter Tab dichter" && (way.text ?? "").startsWith("Way to overhaul")
+            && JSON.stringify(way.keys) === JSON.stringify(["local", "preview", "gate", "audit"]) && JSON.stringify(way.cls) === JSON.stringify(want)
+            && way.aria.startsWith("Way to overhaul: 1 Proof: green") && way.title.endsWith("\nLand: not on overhaul yet");
+          await gsClose();
+        }
+        if (st === "modell" && fl) {
+          // A RUNNING TEST INSTANCE is a green square in its row with its port (Mangel 66), at 3B and at the worktree without a session
+          const until = await clock(fx.tiUntil);
+          const action = (path: string, act: string) => (w: { path: string; body: unknown }) => w.path === path && (w.body as { action?: string } | null)?.action === act;
+          facts.gsTi = fl.tis;
+          claims[`${tag}a running test instance is a square in its lane's row that says its port — at 3B and at the worktree without a session`] =
+            [zeit, free].every((l) => fl.tis.some((q) => q.of === laneKey(l) && q.port === ":8913" && q.title === "Test instance running · port 8913"));
+          await gsHead(laneKey(zeit));
+          const m10 = fleetGs()?.menu ?? null;
+          facts.gsTiLine = m10;
+          claims[`${tag}3B's menu says its instance's deadline and port with Open and Stop`] =
+            (m10?.text ?? "").includes(`Test instance running until ${until} · :8913`) && ["Open", "Stop"].every((b) => (m10?.buttons ?? []).includes(b));
+          await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.ti button')].find((b) => b.textContent === 'Open')?.click()`);
+          await wait(`(window.__opened || []).length >= 2`, 3000);
+          const opened = await evaluate<string[]>("window.__opened || []");
+          await wait(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.ti button')].some((b) => b.textContent === 'Stop' && !b.disabled)`, 3000);
+          await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.ti button')].find((b) => b.textContent === 'Stop')?.click()`);
+          const down = await wrote(action("/api/slots/10/testinstanz", "down"));
+          claims[`${tag}Open asks the slot's route for the opening link and opens it in a new tab; Stop sends down`] =
+            fx.writes.some(action("/api/slots/10/testinstanz", "open")) && opened.includes("http://fleet.fixture/blank?instanz") && down;
+          await gsClose();
+          // the slotless worktree's instance goes through the worktree route, named by repo and path
+          const wtRoute = `/api/worktrees/testinstanz?repo=${encodeURIComponent(REPO)}&path=${encodeURIComponent(pathOf(free))}`;
+          await gsHead(laneKey(free));
+          await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.ti button')].find((b) => b.textContent === 'Open')?.click()`);
+          claims[`${tag}a worktree without a session reaches its own instance through the worktree route`] = await wrote(action(wtRoute, "open"));
+          await gsClose();
+        }
+        if (st === "tippen" && fl) {
+          // A WORKTREE WITHOUT A SESSION opens from its menu (Projekte's Öffnen, Bestandsaufnahme 3db17b9a): its branch, Open and Close…
+          await gsHead(laneKey(free));
+          const m = fleetGs()?.menu ?? null;
+          if (m && !m.step2) await gsWord("Worktree");
+          const m2 = fleetGs()?.menu ?? null;
+          facts.gsWt = { m, m2 };
+          claims[`${tag}a worktree without a session opens its line from its menu: its branch, Open and Close…`] =
+            (m2?.step2 ?? "").includes(free.branch) && ["Open", "Close…"].every((b) => (m2?.buttons ?? []).includes(b));
+          await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm2 button')].find((b) => b.textContent === 'Open')?.click()`);
+          claims[`${tag}Open there reopens the worktree in a free slot`] = await wrote((w) => w.path === "/api/lanes"
+            && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, attach: pathOf(free) }));
+          await gsClose();
+        }
+        if (st === "live" && fl) {
+          // THE LIVE SESSION (owner 2026-10-09: „[Zitat entfernt]“), now
+          // in the git structure: the lane block says Live, its menu carries its instance and Merge; main's „[Zitat entfernt]“ opens the
+          // field. Each of the three steps that fails is said where it failed, and the lane stays (UI-MAIN 2026-10-09)
+          const lk = laneKey(liveLane);
+          const lh = fl.heads.find((h) => h.key === lk);
+          await gsHead(lk);
+          const ml = fleetGs()?.menu ?? null;
+          facts.gsLive = { head: lh, menu: ml };
+          claims[`${tag}a live lane's block says Live; its menu carries its running instance with Open and Stop, and Merge`] =
+            !!lh && lh.cls.split(" ").includes("live") && (lh.title ?? "").startsWith("Live session · ")
+            && (ml?.text ?? "").includes("Test instance running until") && ["Open", "Stop"].every((b) => (ml?.buttons ?? []).includes(b)) && (ml?.words ?? []).includes("Merge");
+          // Merge: the land review with its diff first, the merge only after its answer — the land form goes along to /merge alone
+          const mergeOnce = async (form: "squash" | "commits" | null) => {
+            if (form) await evaluate(`localStorage.setItem('fleet.board.landform', ${JSON.stringify(JSON.stringify({ repo: { [REPO]: form }, lane: {} }))})`);
+            else await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+            fx.writes = [];
+            await gsWord("Merge");
+            const asked = await wait(`document.querySelector('.riskoverlay .landreviewpanel h2') && document.querySelector('.riskoverlay .difftxt')`, 4000);
+            const askTitle = await evaluate<string | null>(`document.querySelector('.riskoverlay .landreviewpanel h2')?.textContent ?? null`);
+            const beforeAnswer = fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => w.path);
+            await evaluate(`[...document.querySelectorAll('.riskoverlay .riskbtn')].find((b) => /land$/.test(b.textContent))?.click()`);
+            await wait(`!document.querySelector('.riskoverlay')`, 3000);
+            await wait(`false`, 300);
+            return { asked, askTitle, beforeAnswer, after: fx.writes.filter((w) => /^\/api\/slots\/12\/(merge|land)$/.test(w.path)).map((w) => `${w.path} ${JSON.stringify(w.body)}`) };
+          };
+          const mergeNone = await mergeOnce(null), mergeCommits = await mergeOnce("commits");
+          facts.gsMerge = { none: mergeNone, commits: mergeCommits };
+          await evaluate(`localStorage.removeItem('fleet.board.landform')`);
+          const asksFirst = (m: typeof mergeNone) => m.asked && m.askTitle === `Land ${liveLane.branch} → main — review what lands` && m.beforeAnswer.length === 0;
+          claims[`${tag}Merge asks first: the land review with the lane's diff opens and nothing is merged before it is answered; without a choice no switch goes along, with all commits {"squash":false}`] =
+            asksFirst(mergeNone) && asksFirst(mergeCommits)
+            && mergeNone.after.join(",") === "/api/slots/12/land {},/api/slots/12/merge {}"
+            && mergeCommits.after.join(",") === `/api/slots/12/land {},/api/slots/12/merge {"squash":false}`;
+          await gsClose();
+          // THE FIELD at main's „Live session“: one sentence, Start held until it stands, a line saying what it makes
+          const openField = async () => {
+            if (!await evaluate<boolean>(`!!document.querySelector('#boardbody .rk-git .gsm .zd.live-new .live-in')`)) {
+              await gsHead("main:main");
+              await gsWord("Live session");
+            }
+            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.live-new .live-in')`, 3000);
+          };
+          const startOpen = async (sentence: string) => {
+            await openField();
+            await evaluate(`(() => { const f = document.querySelector('#boardbody .zd.live-new .live-in'); f.value = ${JSON.stringify(sentence)}; f.dispatchEvent(new Event('input')); })()`);
+          };
+          const go = () => evaluate(`[...document.querySelectorAll('#boardbody .zd.live-new button')].find((b) => b.textContent === 'Start')?.click()`);
+          await openField();
+          const field = await evaluate<{ ph: string; btn: string; off: boolean; hint: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
+            const b = [...z.querySelectorAll('button')].find((x) => x.textContent === 'Start'); const n = z.querySelector('.live-hint');
+            return { ph: z.querySelector('.live-in')?.placeholder ?? '', btn: b?.textContent ?? '', off: !!b?.disabled, hint: n && n.getClientRects().length ? n.textContent : null }; })()`);
+          facts.gsField = field;
+          claims[`${tag}main's "Live session" opens one field "Task in one sentence", with Start held until a sentence stands there and a line saying what it makes`] =
+            !!field && field.ph === "Task in one sentence" && field.btn === "Start" && field.off && field.hint === "A lane with its own test instance · merge at the end";
+          // WHAT START DOES behind the field's ⓘ (owner 2026-10-09): four steps, the sentence word for word
+          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
+          await wait(`document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
+          const how = await evaluate<{ steps: string[]; exp: string | null } | null>(`(() => { const z = document.querySelector('#boardbody .zd.live-new'); if (!z) return null;
+            return { steps: [...z.querySelectorAll('.live-how li')].map((l) => l.textContent ?? ''), exp: z.querySelector('.live-i')?.getAttribute('aria-expanded') ?? null }; })()`);
+          await evaluate(`document.querySelector('#boardbody .zd.live-new .live-i')?.click()`);
+          await wait(`!document.querySelector('#boardbody .zd.live-new .live-how')`, 3000);
+          facts.gsHow = how;
+          claims[`${tag}the field's ⓘ says in four steps what Start does, from the sentence taken word for word to the merge`] =
+            !!how && how.exp === "true" && how.steps.length === 4 && how.steps[0].startsWith("Start creates a lane")
+            && /word for word/.test(how.steps[1]) && /no other model/.test(how.steps[1]) && how.steps[3].startsWith("At the end you press “Merge”");
+          // 1 — the lane is refused: said in the field, nothing sent, nothing started
+          fx.liveFail = "lane"; fx.writes = [];
+          await startOpen("Die Zeitleiste soll zur Stunde springen");
+          await go();
+          await wait(`document.querySelector('#boardbody .zd.live-new .err')`, 4000);
+          const e1 = await evaluate<string | null>(`document.querySelector('#boardbody .zd.live-new .err')?.textContent ?? null`);
+          facts.gsRefusedLane = { e1, writes: fx.writes.map((w) => w.path) };
+          claims[`${tag}a refused lane is said in the field — "The live session did not start: …" — and nothing is sent or started`] =
+            e1 === "The live session did not start: no free lane place." && !fx.writes.some((w) => w.path === "/send" || /testinstanz|rename/.test(w.path));
+          // 2 — all three steps answer: the lane, the sentence with the fixed paragraph, its instance
+          fx.liveFail = null; fx.writes = [];
+          await go();
+          const made = () => fx.liveMade[0];
+          const started = await wait(`[...document.querySelectorAll('#boardbody .rk-git svg.gss > g.gsr.live')].some((h) => (h.dataset.head ?? '').includes('die-zeitleiste-soll'))`, 8000);
+          await wrote((w) => w.path === "/api/slots/14/testinstanz");
+          const order = fx.writes.map((w) => w.path);
+          const at = (path: string) => order.indexOf(path);
+          const lw = fx.writes.find((w) => w.path === "/api/lanes")?.body as { repo?: string; branch?: string } | undefined;
+          const sw = fx.writes.find((w) => w.path === "/send")?.body as { slot?: number; text?: string; whenFree?: boolean; openedAt?: number } | undefined;
+          const tw = fx.writes.find((w) => w.path === "/api/slots/14/testinstanz")?.body;
+          const nw = fx.writes.find((w) => w.path === "/api/slots/14/rename")?.body;
+          facts.gsStarted = { started, order, lw, sw: sw ? { ...sw, text: sw.text?.slice(0, 200) } : null, tw, nw, made: made()?.branch ?? null };
+          claims[`${tag}Start makes the lane, hands it the sentence, starts its instance — POST /api/lanes on a fleet/live- branch, /send with the sentence and the fixed paragraph, then up for 4 hours; the lane is named by its sentence and drawn as a live lane`] =
+            started && lw?.repo === REPO && /^fleet\/live-\d{10}-die-zeitleiste-soll-zur-[0-9a-f]{4}$/.test(lw?.branch ?? "")
+            && sw?.slot === 14 && sw.whenFree === true && sw.openedAt === openedAt(14)
+            && (sw.text ?? "").startsWith("Die Zeitleiste soll zur Stunde springen\n\nLive-Session: Der Owner arbeitet in deiner Testinstanz mit")
+            && JSON.stringify(tw) === JSON.stringify({ action: "up", ttlMin: 240 }) && JSON.stringify(nw) === JSON.stringify({ label: "⎇ Die Zeitleiste soll zur Stunde spring…" })
+            && at("/api/lanes") < at("/send") && at("/send") < at("/api/slots/14/testinstanz");
+          // 3 — the sentence does not arrive: said under the structure, the lane stands, its instance still starts
+          fx.liveFail = "send"; fx.writes = [];
+          await startOpen("Die Leiste breiter");
+          await go();
+          await wait(`[...document.querySelectorAll('#boardbody .rk-git .gsbelow.live-err')].some((e) => /did not reach the session/.test(e.textContent))`, 5000);
+          await wait(`false`, 200);
+          const errs = () => evaluate<string[]>(`[...document.querySelectorAll('#boardbody .rk-git .gsbelow.live-err')].map((e) => e.textContent ?? '')`);
+          const e2 = (await errs()).find((t) => /did not reach the session/.test(t)) ?? null;
+          facts.gsRefusedSend = { e2, writes: fx.writes.map((w) => w.path) };
+          claims[`${tag}a sentence that did not arrive is said under the structure — the lane stands and its instance is still started`] =
+            !!e2 && e2.startsWith("The task did not reach the session (slot is held by a different occupant") && e2.includes("the lane stands")
+            && fx.writes.some((w) => w.path === "/api/slots/15/testinstanz");
+          // 4 — the instance does not start, twice: said under the structure, the lane stands
+          fx.liveFail = "ti"; fx.writes = [];
+          await startOpen("Fehlerfall zeigen");
+          await go();
+          await wait(`[...document.querySelectorAll('#boardbody .rk-git .gsbelow.live-err')].some((e) => /test instance did not start/.test(e.textContent))`, 6000);
+          const e3 = (await errs()).find((t) => /test instance did not start/.test(t)) ?? null;
+          facts.gsRefusedTi = { e3, ups: fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length };
+          await shot(`${st}-fehler-${width}`);
+          claims[`${tag}an instance that did not start is said under the structure after its second try — the lane stands`] =
+            e3 === "The test instance did not start (testinstanz up failed) — the lane stands, its test instance line starts it again."
+            && fx.writes.filter((w) => w.path === "/api/slots/16/testinstanz").length === 2;
+        }
+        if (st === "viele30" && fl) {
+          // FROM 13 ON the worktrees without a session wait behind one line (as they did in the Ranke); a click shows them
+          const fold = fl.below.find((b) => /worktrees without a session$/.test(b)) ?? null;
+          const before = fl.heads.length;
+          await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsbelow')].find((b) => /worktrees without a session$/.test(b.textContent))?.click()`);
+          await settle(200);
+          g = await gsRead();
+          const after = fleetGs()?.heads.length ?? 0;
+          facts.gsFold = { fold, before, after };
+          claims[`${tag}from 13 on, the worktrees without a session wait behind one line; a click draws every one of them`] =
+            !!fold && Number(/^(\d+)/.exec(fold)?.[1]) > 12 && after === before + Number(/^(\d+)/.exec(fold)?.[1]);
+        }
+        if (st === "leer") {
+          // NOTHING AT WORK (owner 2026-10-07, „[Zitat entfernt]“): every project waits behind one line; a click draws them, each closed
+          facts.gsQuietLeer = g.quiet;
+          const q0 = g.quiet[0];
+          await evaluate(`document.querySelector('#boardbody .rk-git > .gsquiet')?.click()`);
+          await settle(200);
+          g = await gsRead();
+          claims[`${tag}with no running work every project waits behind one line "3 quiet projects", and one click draws the three, each closed`] =
+            !!q0 && q0.text === "3 quiet projects" && q0.exp === "false" && g.repos.length === 3 && g.repos.every((x) => !x.open && x.fold === "false");
+        }
+        await shot(`${st}-${width}`);
         // --- THE REST OF INFO (cards R1–R4, rechter-tab-notiz.md §3–§4a, Variante 3A): the session
         // block, Changes with Land lane and its ⋯, the notepad, History, the four tabs under "Mehr",
         // the handover line with its popover, the checks strip in the Arbeitsorte's head. Every
@@ -13390,8 +12951,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               bodyText: [...body.querySelectorAll('.btabbody')].reduce((t, b) => t.replace(b.innerText, ''), body.innerText),
               small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
               vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
-              headH: Math.round(ranke?.querySelector(':scope > .rkblock > .rkbh')?.getBoundingClientRect().height ?? 0), ownHead: !!ranke?.querySelector(':scope > h3'),
+              headH: Math.round(ranke?.querySelector(':scope > .rk-git .gs > .gsh')?.getBoundingClientRect().height ?? 0), ownHead: !!ranke?.querySelector(':scope > h3'),
+              // the head's room and what fills it, in px (a Linux font is wider than the Mac's)
+              headFit: (() => { const h = ranke?.querySelector(':scope > .rk-git .gs > .gsh'); if (!h) return null;
+                const w = (e) => Math.round(e.getBoundingClientRect().width);
+                return { room: h.clientWidth, parts: [...h.querySelectorAll(':scope > *, :scope > .gsside > *')].map((e) => String(e.getAttribute('class') ?? e.tagName) + ' ' + w(e)) }; })(),
               landBottom: (() => { const b = [...body.querySelectorAll('.bchangeacts > button')].find((x) => /Land lane|Landing/.test(x.textContent)); return b ? Math.round(b.getBoundingClientRect().bottom) : null; })(),
+              // the same edge measured from Info's first element, whatever the column's scroll (opening the Handover block scrolls it)
+              landInInfo: (() => { const b = [...body.querySelectorAll('.bchangeacts > button')].find((x) => /Land lane|Landing/.test(x.textContent)); const top = body.firstElementChild; return b && top ? Math.round(b.getBoundingClientRect().bottom - top.getBoundingClientRect().top) : null; })(),
             }; })()`;
           type Info = { title: string | null; shellInfo: boolean; kids: string[];
             sess: { name: string | null; glyphs: { label: string | null; title: string; text: string }[]; meta: string | null; kv: { k: string | null; v: string | null; title: string; sw: string | null }[] } | null;
@@ -13407,8 +12974,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null; place: string | null; holder: string | null; state: string | null;
               stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
             cards: number; raised: string;
-            bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null;
-            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean };
+            bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null; landInInfo: number | null;
+            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean; headFit: { room: number; parts: string[] } | null };
           const info = async (): Promise<Info> => {
             const x = await evaluate<Info | null>(INFO);
             if (!x) throw new Error("info DOM probe: no #boardbody");
@@ -13421,23 +12988,27 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const detail = st !== "tippen";
           const ownLanded = st === "land";
           let n = await info();
-          facts.info = { kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
+          facts.headFit = n.headFit;
+          facts.info = { land: [n.landBottom, n.vh], kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
-          if (!phone && hasSession) claims[`${it}the Arbeitsorte carry no head of their own; their first block's head, Projekte, stays one line`] = !n.ownHead && n.headH > 0 && n.headH <= 26;
-          // …WHATEVER THE FONT: the Linux helper's sans is wider than this Mac's, and a head broke into two
-          // lines there once. Letter-spacing stands in for that font on every machine: the head stays one
-          // line, and nothing in the top of Info runs out under an ellipsis (owner 2026-10-08: „[Zitat entfernt]“
-          //  — names and repo heads wrap instead)
+          if (!phone && hasSession) claims[`${it}the Arbeitsorte carry no head of their own; the first project's head stays one line`] = !n.ownHead && n.headH > 0 && n.headH <= 36;
+          // …WHATEVER THE FONT: the Linux helper's sans is wider than this Mac's. Letter-spacing stands in for a
+          // still wider one on every machine: the head may wrap, but nothing in the top of Info runs out under
+          // an ellipsis and nothing passes the section's edge (owner 2026-10-08: „[Zitat entfernt]“ — names
+          // and repo heads wrap instead). One line at the machine's own font is the claim above. Until K16 this
+          // asked for one line here too, and a nowrap head met it by running 3 px past the edge on Linux.
           if (!phone && (st === "land" || st === "viele")) {
-            const wide = await evaluate<{ h: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke > .rkblock > .rkbh'); if (!h3) return null;
+            const wide = await evaluate<{ h: number; past: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke > .rk-git .gs > .gsh'); if (!h3) return null;
               const css = document.createElement('style'); css.textContent = '#board .plasec *, #board .ranke *, #board .bhead * { letter-spacing: 1px !important; }'; document.head.append(css);
               const cut = [...document.querySelectorAll('#boardbody .plasec *, #boardbody .ranke *, #boardbody .bhead *')].filter((e) => getComputedStyle(e).textOverflow === 'ellipsis'
                 && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
-              const out = { h: Math.round(h3.getBoundingClientRect().height), cut };
+              const edge = h3.closest('.ranke').getBoundingClientRect().right;
+              const past = Math.max(0, ...[...h3.querySelectorAll('*')].map((e) => Math.round(e.getBoundingClientRect().right - edge)));
+              const out = { h: Math.round(h3.getBoundingClientRect().height), past, cut };
               css.remove(); return out; })()`);
             facts.wideHead = wide;
-            claims[`${it}with a wider font the Projekte head stays one line and nothing in the top of Info is cut`] =
-              !!wide && wide.h > 0 && wide.h <= 26 && wide.cut.length === 0;
+            claims[`${it}with a wider font the project's head wraps rather than run past the edge, and nothing in the top of Info is cut`] =
+              !!wide && wide.h > 0 && wide.past <= 0 && wide.cut.length === 0;
           }
           // THE RUNS BESIDE THEIR LANES (owner 2026-10-08): the checks are the block „[Zitat entfernt]“ in the
           // Arbeitsorte and a lane's own flag — no word button in the head, no strip pinned under it
@@ -13476,10 +13047,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}"Gehört zu" carries the links${isLane ? " Auftrag · Akte" : ""}`] = isLane
               ? /^Auftrag [0-9a-f]{8} Akte$/.test(n.sess.kv.find((r) => r.k === "Gehört zu")?.v ?? "") : n.sess.kv.some((r) => r.k === "Gehört zu");
             if (isLane) {
-              const row9 = (await read()).rows.find((x) => x.slot === "9");
-              claims[`${it}the lane's branch and where it lands stand in its row under Arbeitsorte, not in the session block`] =
+              // where it lands is the line it hangs from in the git structure (under overhaul); its branch the lane block's title
+              const h9 = (await gsRead()).repos.find((x) => x.repo === REPO)?.heads.find((h) => h.key === `lane:${own.branch}`);
+              claims[`${it}the lane's branch stands at its block in the git structure, not in the session block`] =
                 !(n.sess.meta ?? "").includes(own.branch) && !n.sess.kv.some((r) => (r.v ?? "").includes(own.branch))
-                && (row9?.title ?? "").includes(own.branch) && (row9?.title ?? "").includes("landet in overhaul");
+                && (h9?.title ?? "").includes(own.branch);
             }
           }
           if (hasSession && detail && n.work) {
@@ -13515,7 +13087,21 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const small = n.small.filter((x) => x.h < (x.cls.includes("lk") ? 32 : 40));
             claims[`${it}on the phone every target below the Arbeitsorte is at least 40 px high (a link 32)`] = small.length === 0;
           }
-          if (st === "lane" && !phone) claims[`${it}Land lane stands on the first screen at 1200 × 900`] = n.landBottom !== null && n.landBottom <= n.vh;
+          // LAND LANE DOES NOT MOVE when the „Handover“ block opens (Bauleitung 16.10., relative since 17.10. b6353ee8: the
+          // purpose was that the block never pushes Land lane down — no fixed screen height, the git structure may be tall)
+          if (st === "lane" && !phone) {
+            const closed = n.landInInfo;
+            await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+            const opened = await wait(`document.querySelector('#boardbody .bueb.open')`, 3000);
+            await settle(150);
+            const withBlock = (await info()).landInInfo;
+            facts.landMoves = { closed, open: withBlock, opened };
+            claims[`${it}Land lane stands where it stood when the Handover block opens (±1 line)`] = opened && closed !== null
+              && withBlock !== null && Math.abs(withBlock - closed) <= 20;
+            await evaluate(`document.querySelector('#boardbody .bhead .optsw')?.click()`);
+            await wait(`!document.querySelector('#boardbody .bueb.open')`, 3000);
+            await settle(150);
+          }
           // the „Handover“ block (K16 uebergabe-b, Bauleitung 16.10.: „[Zitat entfernt]“):
           // a lane's stands at the end of Changes after Land lane, a MAIN's in the session block under the Context line
           if ((st === "lane" || st === "main") && hasSession && detail) claims[`${it}the Handover block stands ${isLane ? "under Changes, after Land lane" : "in the session block"}`] =
@@ -13706,22 +13292,23 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if (st === "branch") {
             // the repos the owner opened or closed by hand survive a reload (src/prefs.ts, fleet.ranke.repos):
             // claude-fleet stands open because it is the focused session's and at work — closed by hand, it stays closed
-            await evaluate(`[...document.querySelectorAll('#boardbody .zr.repo')].find((x) => x.innerText.startsWith('claude-fleet') && x.getAttribute('aria-expanded') === 'true')?.click()`);
-            await wait(`!document.querySelector('#boardbody .zr[data-slot="9"]')`, 3000);
+            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gs .gsf')].find((x) => x.textContent.includes('claude-fleet') && x.getAttribute('aria-expanded') === 'true')?.click()`);
+            await wait(`!document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]')`, 3000);
             // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
             if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
             await navigate("http://fleet.fixture/");
             if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); }
-            const back = await wait(`[...document.querySelectorAll('#boardbody .zr.repo')].some((x) => x.innerText.startsWith('claude-fleet') && x.getAttribute('aria-expanded') === 'false')
-              && !document.querySelector('#boardbody .zr[data-slot="9"]')`, 15000);
-            facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s9: !!document.querySelector('#boardbody .zr[data-slot="9"]'),
+            const back = await wait(`[...document.querySelectorAll('#boardbody .rk-git .gs .gsf')].some((x) => x.textContent.includes('claude-fleet') && x.getAttribute('aria-expanded') === 'false')
+              && !document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]')`, 15000);
+            facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s9: !!document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]'),
               text: (document.querySelector('#boardbody')?.innerText ?? '').slice(0, 300) })`);
             claims[`${it}a project closed by hand stays closed across a reload, though it is at work`] = back;
           }
           if (st === "viele3") {
             // (the second repo is at work and stands open: its branch is not one of claude-fleet's three)
-            const zw3 = branchRows(await read()).filter((x) => x.id?.startsWith(REPO));
-            claims[`${it}with three branches: one row each, no fold line`] = zw3.length === 3 && !(await read()).rows.some((x) => x.cls.includes("zf"));
+            const fl3 = (await gsRead()).repos.find((x) => x.repo === REPO);
+            claims[`${it}with three lanes: one block each, no fold line`] = (fl3?.heads.filter((h) => h.key.startsWith("lane:")).length ?? 0) === 3
+              && !(fl3?.below ?? []).some((b) => /without a session/.test(b));
           }
           if (!["alarm", "uebergabe", "main", "menue", "kopf", "mehr"].includes(st)) {
             await evaluate(`document.querySelector('#boardbody').scrollTop = 0`);
@@ -13732,20 +13319,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             await settle(120);
             await shot(`info-${st}-${width}-unten`);
           }
-        }
-        if (st === "main" && !phone) {
-          // …and a stem's bar is as short: with one lane landing straight in main, the focused main's bar
-          // holds its square, short of the head its lanes come back to on the rail
-          fx.mainLane = true;
-          await navigate("http://fleet.fixture/");
-          const barred = await wait(`[...document.querySelectorAll('#boardbody .zr.here')].some((x) => !!x.dataset.bar && x.classList.contains('base'))`, 8000);
-          await settle(200);
-          const rm = await read();
-          fx.mainLane = false;
-          const head = rm.heads.find((h) => h.row === `${REPO}#main`)?.x;
-          const mrow = byId(rm, `${REPO}#main`);
-          claims[`${tag}the focused main's bar runs from its point over its test instance's square, short of its head on the rail, and the row paints no ground of its own`] =
-            barred && barClaim(rm, mrow, "main") && head !== undefined && !!mrow?.barBox && mrow.barBox.r < head - 4;
         }
         if (st === "lane") {
           // A REPAINT KEEPS THE READER WHERE THEY ARE (owner 2026-10-09: „[Zitat entfernt]“

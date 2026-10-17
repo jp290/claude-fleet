@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchLand, type BranchRecord, chargeBase,
-  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand, repoBranches, restoreBook,
+  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand, repoBranches, restoreBook, setLandForm,
   setOpener, usableCheck, writeText,
 } from "./branches";
 
@@ -221,6 +221,31 @@ describe("Chargen: jede zählt ab dem Tip der letzten", () => {
     expect(restoreBook(raw)).toEqual(landed);
     raw[0]!.lands = [{ ...land(T1, []), tip: "kurz" }, land(T2, [])];
     expect(restoreBook(raw)[0]?.lands.map((l) => l.tip)).toEqual([T2]);
+  });
+});
+
+// K16 Runde 4, Bauleitung e194d4b3: „alle Commits“ oder „ein Commit“ ist eine Wahl am Branch, nicht im
+// Browser; Vorgabe ein Commit. Sie überdauert das Laden; ein Land sagt, in welcher Form es kam.
+describe("Land-Form am Branch: alle Commits oder ein Commit", () => {
+  test("die Wahl steht am Datensatz und kommt beim Laden zurück; ein unbekannter Wert fällt beim Laden weg", () => {
+    const book = opened([], "b", "Probe");
+    expect(findBranch(book, REPO, "b")?.landForm).toBeUndefined();
+    const set = setLandForm(book, REPO, "b", "commits", at + 1);
+    expect([set.record.landForm, set.record.updatedAt, set.record.text]).toEqual(["commits", at + 1, findBranch(book, REPO, "b")?.text]);
+    expect(findBranch(book, REPO, "b")?.landForm).toBeUndefined(); // der alte Stand bleibt
+    expect(restoreBook(JSON.parse(JSON.stringify(set.book)))).toEqual(set.book);
+    const raw = JSON.parse(JSON.stringify(set.book)) as Record<string, unknown>[];
+    raw[0]!.landForm = "alles";
+    expect(restoreBook(raw)[0]?.landForm).toBeUndefined();
+    expect(restoreBook(raw)[0]?.name).toBe("Probe");
+  });
+  test("ein Land trägt seine Form; eines ohne Form (vor K16) kommt ohne zurück, eines mit kaputter Form fällt heraus", () => {
+    const l = { sha: "c".repeat(40), at, tip: "1".repeat(40), base: "main", subject: "Reihe", points: [], passt: false, checked: true };
+    const landed = recordLand(opened([], "b", "Probe"), REPO, "b", { ...l, form: "commits" }).book;
+    expect(restoreBook(JSON.parse(JSON.stringify(landed)))[0]?.lands[0]?.form).toBe("commits");
+    const raw = JSON.parse(JSON.stringify(landed)) as Record<string, unknown>[];
+    raw[0]!.lands = [l, { ...l, tip: "2".repeat(40), form: "beides" }];
+    expect(restoreBook(raw)[0]?.lands).toEqual([l]);
   });
 });
 

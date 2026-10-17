@@ -23,7 +23,10 @@ export interface BranchSeen { at: number; head: string; via: SeenVia }
 // Eine Charge auf main: genau ein Commit `sha`, gebaut aus den Commits base..tip des Branches. Die
 // nächste Charge zählt ab `tip` (chargeBase). `points` sind die Punkte, die diese Charge erledigt hat;
 // `passt` sagt, ob der Owner genau diesen Tip gesehen hatte; `checked`, ob ein Merge-Check ihn prüfte.
-export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean }
+// `form` "commits": main sprang auf den Kandidaten des Merge-Checks, `sha` ist dessen Spitze; fehlt = ein Commit.
+export type LandForm = "squash" | "commits";
+export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean;
+  form?: LandForm }
 // Neuaufbau K13 · wer den Branch über die Tür geöffnet hat: der Sitz (Slot und Ordner) der Session, die
 // /api/branches/open mit ihrem Self-Token neben dem Owner-Bearer rief. Eine Nachfolge behält Slot und
 // Ordner und bleibt Öffner; ein Slot mit einer Session in einem anderen Ordner ist jemand anderes. Der
@@ -38,6 +41,7 @@ export interface BranchRecord {
   seen: BranchSeen | null;
   lands: BranchLand[];
   opener?: BranchOpener; // fehlt: vom Board oder ohne Self-Token geöffnet, oder vor K13
+  landForm?: LandForm; // wie eine Charge landet, wenn die Route es nicht sagt; fehlt = ein Commit
   createdAt: number; updatedAt: number;
 }
 export type BranchBook = readonly BranchRecord[];
@@ -113,6 +117,11 @@ export function setOpener(book: BranchBook, repo: string, branch: string, opener
   const prev = findBranch(book, repo, branch) ?? blank(repo, branch, opener.at);
   return put(book, { ...prev, opener: { slot: opener.slot, cwd: opener.cwd, at: opener.at }, updatedAt: opener.at });
 }
+export function setLandForm(book: BranchBook, repo: string, branch: string, form: LandForm, at: number): BranchChange {
+  const prev = findBranch(book, repo, branch) ?? blank(repo, branch, at);
+  return put(book, { ...prev, landForm: form, updatedAt: at });
+}
+export const isLandForm = (v: unknown): v is LandForm => v === "squash" || v === "commits";
 // die Branches, die dieser Sitz geöffnet hat
 export function openedBy(book: BranchBook, seat: BranchSeat): BranchRecord[] {
   return book.filter((r) => r.opener?.slot === seat.slot && r.opener.cwd === seat.cwd);
@@ -232,7 +241,9 @@ function landsOf(v: unknown): BranchLand[] {
     const l = x as Record<string, unknown>;
     return str(l.sha) && SHA_RE.test(l.sha) && num(l.at) && str(l.tip) && SHA_RE.test(l.tip) && str(l.base) && str(l.subject)
       && Array.isArray(l.points) && l.points.every(str) && typeof l.passt === "boolean" && typeof l.checked === "boolean"
-      ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked }] : [];
+      && (l.form === undefined || isLandForm(l.form))
+      ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked,
+        ...(l.form ? { form: l.form } : {}) }] : [];
   });
 }
 // ein Öffner kommt ganz oder gar nicht; ein kaputter nimmt den Datensatz nicht mit
@@ -257,7 +268,7 @@ export function restoreBook(raw: unknown): BranchBook {
     if (findBranch(out, r.repo, r.branch)) continue;
     const opener = openerOf(r.opener);
     out.push({ repo: r.repo, branch: r.branch, name: r.name, base: r.base, text: r.text, rev: r.rev, seen, lands,
-      ...(opener ? { opener } : {}), createdAt: r.createdAt, updatedAt: r.updatedAt });
+      ...(opener ? { opener } : {}), ...(isLandForm(r.landForm) ? { landForm: r.landForm } : {}), createdAt: r.createdAt, updatedAt: r.updatedAt });
   }
   return out;
 }

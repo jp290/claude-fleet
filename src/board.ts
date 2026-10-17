@@ -3,7 +3,9 @@ import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSel
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
 import { openK15Entwurf } from "./k15-lader";
-import { boardBranch, branchCard, branchesWithoutTree, loadBranches, onPlacesChanged } from "./branchcard";
+import { boardBranch, boardRepo, branchBusy, branchCharge, loadBranches, mayCheck,
+  chooseLandForm, onPlacesChanged, restartSession, startCheck, startSession } from "./branchcard";
+import { GS_CSS, GS_WORD, distanceLine, gitModel, gitStructure, headWords, mergeCheckLine, rowOf, type GsCard, type GsHead, type GsModel, type GsWord } from "./gitstruktur";
 import type { BranchView } from "./protocol";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
@@ -808,7 +810,6 @@ export async function pollOutline(slot: number): Promise<{ prompts: string[]; er
   return { prompts: c.prompts, err: c.err };
 }
 
-
 // --- the verify gate, at the top of the board ---------------------------------------------
 // Suites are serial on this machine (a machine-wide mkdir mutex, e2e-stage.sh) and until now that
 // serialization was invisible: a run could sit in a 15s poll loop, or die under a neighbour, with
@@ -1256,7 +1257,6 @@ export function errorsSection(): HTMLElement | null {
   return sec;
 }
 
-
 let fxAfterPaint: (() => void) | null = null;
 export function takeFxAfterPaint(): (() => void) | null {
   const fn = fxAfterPaint;
@@ -1412,63 +1412,7 @@ function boardFocusKey(a: HTMLElement): string {
   const cls = (a.getAttribute("class") ?? "").split(" ").filter((c) => c && c !== "on").join(" ");
   return `${a.tagName}\u0000${cls}\u0000${a.getAttribute("aria-label") ?? ""}\u0000${(a.textContent ?? "").slice(0, 40)}`;
 }
-// THE PAINT THAT DRAWS A NEW LIVE LANE'S ROW (#liveArrive) moves the column instead of jumping it: every
-// lane row (by its worktree), every block of the Arbeitsorte after the projects and every section under
-// them starts where it stood and slides to where it now is — the new row from the bar under the field,
-// the lines a moment after. Measured before the swap (top in the viewport), played after it.
-type LiveFlip = { path: string; from: Map<string, number>; ghost: number | null };
-function flipKeyed(root: HTMLElement): [string, HTMLElement][] {
-  const out: [string, HTMLElement][] = [];
-  for (const rk of root.querySelectorAll<HTMLElement>(".ranke .rk")) {
-    // an opened row's lines go with their row: the key of the row before them
-    let row = "";
-    for (const k of rk.children) {
-      if (!(k instanceof HTMLElement) || k.tagName === "svg") continue;
-      if (k.classList.contains("zr") && k.dataset.id) row = `row:${k.dataset.id}`;
-      if (row) out.push([k.classList.contains("zr") && k.dataset.id ? row : `${row}>${out.filter(([x]) => x.startsWith(`${row}>`)).length}`, k]);
-    }
-  }
-  for (const b of root.querySelectorAll<HTMLElement>(".ranke > .rkblock:not(.rk-proj)")) out.push([`blk:${b.className}`, b]);
-  const ranke = root.querySelector<HTMLElement>(":scope > .ranke");
-  for (let n = ranke?.nextElementSibling; n; n = n.nextElementSibling) if (n instanceof HTMLElement) out.push([`sec:${n.className}`, n]);
-  return out;
-}
-function liveFlipBefore(next: HTMLElement[]): LiveFlip | null {
-  const a = liveArrive;
-  if (!a?.path) return null;
-  const sel = `.ranke .rk > .zr[data-id="${CSS.escape(a.path)}"]`;
-  if (!next.some((n) => n.querySelector(sel))) return null;
-  liveArrive = null;
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
-  const from = new Map(flipKeyed(boardBody).map(([k, e]) => [k, e.getBoundingClientRect().top]));
-  const ghost = boardBody.querySelector<HTMLElement>(`.live-ghost[data-for="${CSS.escape(a.repo)}"]`)?.getBoundingClientRect().top ?? null;
-  return { path: a.path, from, ghost };
-}
-let boardAnimUntil = 0;
-let boardAnimTimer: ReturnType<typeof setTimeout> | null = null;
-function liveFlipAfter(f: LiveFlip): void {
-  const opts: KeyframeAnimationOptions = { duration: LIVE_ARRIVE_MS, easing: "cubic-bezier(.2,.7,.2,1)" };
-  const mine = `row:${f.path}`;
-  for (const [k, e] of flipKeyed(boardBody)) {
-    const to = e.getBoundingClientRect().top;
-    const own = k === mine || k.startsWith(`${mine}>`);
-    const was = own ? f.ghost : f.from.get(k) ?? null;
-    if (was === null) { if (own) e.animate([{ opacity: 0 }, { opacity: 1 }], opts); continue; }
-    if (Math.abs(was - to) < 1) continue;
-    e.animate(own ? [{ transform: `translateY(${was - to}px)`, opacity: k === mine ? 0.7 : 0 }, { transform: "none", opacity: 1 }]
-      : [{ transform: `translateY(${was - to}px)` }, { transform: "none" }], opts);
-  }
-  // the lines are drawn where the rows end up: they come in once the rows are there
-  for (const svg of boardBody.querySelectorAll<SVGElement>(".ranke .rk > svg"))
-    svg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: LIVE_ARRIVE_MS - 100, fill: "backwards" });
-  boardAnimUntil = Date.now() + LIVE_ARRIVE_MS;
-}
 export async function renderBoard() {
-  // a lane on its way in (#liveFlipAfter) finishes its way before the column is built anew
-  if (Date.now() < boardAnimUntil) {
-    boardAnimTimer ??= setTimeout(() => { boardAnimTimer = null; void renderBoard(); }, boardAnimUntil - Date.now() + 30);
-    return;
-  }
   // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
@@ -1495,11 +1439,8 @@ export async function renderBoard() {
       boardPop = null;
       perfRebuild("renderBoard");
       const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen.")];
-      const flip0 = liveFlipBefore(next);
       boardBody.replaceChildren(...next);
       boardBody.scrollTop = y0;
-      drawRankeLines(boardBody);
-      if (flip0) liveFlipAfter(flip0);
       return;
     }
     const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
@@ -1633,17 +1574,11 @@ export async function renderBoard() {
       }
     }
     perfRebuild("renderBoard");
-    const flip = liveFlipBefore(nodes);
     boardBody.replaceChildren(...nodes);
-    drawRankeLines(boardBody);
     boardBody.scrollTop = y;
-    // the worktree field asked to be shown: bring its row into view once, then leave the scroll alone
-    const flashed = rankeScroll ? boardBody.querySelector<HTMLElement>(".zr.flash") : null;
-    if (flashed) { rankeScroll = false; flashed.scrollIntoView({ block: "nearest" }); }
     const opened = popScroll && !isMobile() ? boardBody.querySelector<HTMLElement>(".bpop") : null;
     if (opened) { popScroll = false; opened.scrollIntoView({ block: "nearest" }); }
     if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
-    if (flip) liveFlipAfter(flip);
     if (focusKey) {
       // inputs too (K5): a branch card's "Punkt hinzufügen" keeps the focus over the write's repaints,
       // so the second point typed after Enter lands in the field (Critic B4)
@@ -2646,6 +2581,20 @@ const rankeRepos: Map<string, boolean> = (() => {
   return m;
 })(); // a hand-edited or foreign value is "nothing chosen", not a crash
 const rankeFoldOpen = new Set<string>();
+// the card on a circle of the git structure: the name the bar shows, the role, agent · model (src/gitstruktur.ts)
+const GS_ROLE: Record<string, string> = { "program-main": "Program-MAIN", orchestrator: "Orchestrator" };
+const GS_AGENT: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+function gsCard(s: SlotInfo): GsCard {
+  const model = s.paneModel ?? s.model ?? null;
+  return { name: nameWithoutModel(s), role: s.role ? GS_ROLE[s.role] ?? s.role : s.worktree ? "Lane" : s.spawn?.role === "main" ? "MAIN" : null,
+    agent: GS_AGENT[s.harness ?? "claude"] ?? s.harness ?? "Claude Code", model: model ? modelLabel(model) : null };
+}
+// whether the git structure's legend is open — a look, not a choice; open or closed per repo is rankeRepos above
+let gsInfo = false;
+// the selected head or diamond and its opened word (src/gitstruktur.ts#GsUi); gsDrawn is what the last paint showed, so
+// only what differs unfolds — the poll's repaint leaves an open menu standing still
+let gsSel: { repo: string; key: string; word: GsWord | null } | null = null;
+let gsDrawn = "";
 // the projects without running work behind their one row: open or not is a look, like the fold above
 let rankeQuietOpen = false;
 // the settings window resets the two (src/client.ts#PREF_APPLY): read them again and repaint
@@ -2658,11 +2607,8 @@ export function reloadRankePrefs(): void {
 }
 // ONE open line under a row: `wt:<path>` (a worktree without a session) or `ti:<path>` (its test instance)
 let rankeOpen: string | null = null;
-let rankeFlash: { path: string; until: number } | null = null;
-// the worktree field under the composer: show this worktree in Info and mark it for a moment
-let rankeScroll = false;
+// the worktree field under the composer: show this worktree in Info
 export function flashWorkplace(path: string | null): void {
-  if (path) { rankeFlash = { path, until: Date.now() + 1600 }; rankeScroll = true; }
   loadWorkplaces(true);
   void renderBoard();
 }
@@ -2699,10 +2645,10 @@ export const LIVE_SESSION_NOTE = [
 // ): the four steps of #startLiveSession and
 // #doLand, behind the field's ⓘ
 const LIVE_HOW = [
-  "Starten legt eine Lane an: ein eigener Worktree auf einem Branch fleet/live-…, darin eine neue Session wie in jeder Lane.",
-  "Dein Satz geht wörtlich als erste Nachricht an diese Session, darunter ein fester Absatz, wie live gebaut wird — die Session liest ihn als ihren Auftrag, kein anderes Modell schreibt ihn vorher um.",
-  "Ihre Testinstanz startet von selbst und läuft vier Stunden; Öffnen steht an der Lane. Du sprichst in der Pane der Session, sie baut, committet und frischt ihre Testinstanz auf.",
-  "Am Ende drückst du an der Lane „Mergen“: erst die Rückfrage mit dem Diff, dann prüft der Server die Lane und landet sie auf ihrem Ziel.",
+  "Start creates a lane: its own worktree on a branch fleet/live-…, with a new session in it as in every lane.",
+  "Your sentence goes word for word as the first message to that session, followed by a fixed paragraph on how live building works — the session reads it as its task, no other model rewrites it first.",
+  "Its test instance starts by itself and runs for four hours; Open stands at the lane. You talk in the session's pane, it builds, commits and refreshes its test instance.",
+  "At the end you press “Merge” at the lane: first the question with the diff, then the server checks the lane and lands it on its target.",
 ];
 let liveHowOpen = false;
 // the branch of a new live lane: the prefix, a minute stamp, the sentence's first words, a hex tail
@@ -2722,11 +2668,9 @@ const liveErr = new Map<string, string>();
 // THE NEW LANE'S WAY IN (owner 2026-10-09: „[Zitat entfernt]“
 // 
 // ): from Starten until the lane's own row is drawn, the field holds its
-// sentence and a bar stands under it (#liveGhost); the paint that draws the row moves every row and
-// block from where it stood — the new row from the bar (#liveFlipBefore, #liveFlipAfter). `path` is
-// the lane's worktree once it exists; past `until` the bar gives up and the row simply appears.
+// sentence and a bar stands under it (#liveGhost) until the git structure draws the lane. `path` is
+// the lane's worktree once it exists; past `until` the bar gives up and the lane simply appears.
 let liveArrive: { repo: string; sentence: string; path: string | null; until: number } | null = null;
-const LIVE_ARRIVE_MS = 520;
 function liveArriving(repo: string, rows: WorkplaceRow[]): NonNullable<typeof liveArrive> | null {
   const a = liveArrive;
   return a && a.repo === repo && a.until > Date.now() && !rows.some((w) => w.path === a.path) ? a : null;
@@ -2754,7 +2698,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
     if (!r.ok || !j.slot || !j.cwd) throw new Error(await errText(r));
     slot = j.slot; cwd = j.cwd;
   } catch (error) {
-    liveErr.set(repo, `Die Live-Session wurde nicht gestartet: ${error instanceof Error ? error.message : String(error)}.`);
+    liveErr.set(repo, `The live session did not start: ${error instanceof Error ? error.message : String(error)}.`);
     liveBusy.delete(repo);
     liveArrive = null;
     void renderBoard();
@@ -2779,7 +2723,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
     const r = await post("/send", { slot, text: `${sentence}\n\n${LIVE_SESSION_NOTE}`, whenFree: true, ...(openedAt ? { openedAt } : {}) });
     if (!r.ok) throw new Error(await errText(r));
   } catch (error) {
-    liveErr.set(cwd, `Der Auftrag kam nicht in der Session an (${error instanceof Error ? error.message : String(error)}) — die Lane steht, schreib ihn in ihre Session.`);
+    liveErr.set(cwd, `The task did not reach the session (${error instanceof Error ? error.message : String(error)}) — the lane stands, write it into its session.`);
   }
   // 3 — its own test instance, once more after the session had time for `bun install`
   tiBusy.add(cwd);
@@ -2793,7 +2737,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
     }
     if (!r.ok) throw new Error(await errText(r));
   } catch (error) {
-    liveErr.set(cwd, `${liveErr.get(cwd) ? `${liveErr.get(cwd)} ` : ""}Die Testinstanz startete nicht (${error instanceof Error ? error.message : String(error)}) — die Lane steht, ihre Testinstanz-Zeile startet sie neu.`);
+    liveErr.set(cwd, `${liveErr.get(cwd) ? `${liveErr.get(cwd)} ` : ""}The test instance did not start (${error instanceof Error ? error.message : String(error)}) — the lane stands, its test instance line starts it again.`);
   } finally {
     tiBusy.delete(cwd);
     loadWorkplaces(true);
@@ -2812,14 +2756,13 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
 // none. A MAIN's land door never sees a choice kept in this browser. The field says so behind its ⓘ
 // (owner 2026-10-09: „[Zitat entfernt]“).
 type LandForm = "commits" | "squash";
-const LAND_FORM_WORD: Record<LandForm, string> = { commits: "alle Commits", squash: "ein Commit" };
+const LAND_FORM_WORD: Record<LandForm, string> = { commits: "all commits", squash: "one commit" };
 // what "ein Commit" means since d5657b56: the land is one commit S described from the accepted report, a
 // lane of one commit too; the series stays under the lane's history ref, a series with a merge commit lands as it is
-const LAND_FORM_SAY: Record<LandForm, string> = { commits: "Die Commits landen so, wie sie gemacht wurden",
-  squash: "Die Lane landet als ein Commit, neu beschrieben aus dem angenommenen Report — auch eine Lane mit nur einem Commit; ihre Reihe bleibt im Verlauf der Lane erhalten, eine Reihe mit Merge-Commit landet unverändert" };
-const LAND_FORM_NOTE = "Gilt nur, wenn du hier auf „Mergen“ drückst: „ein Commit“ fasst die Arbeit der Lane zu einem Commit zusammen, „alle Commits“ übernimmt jeden einzeln — landet eine MAIN die Lane, wird sie davon unabhängig ein Commit.";
+const LAND_FORM_SAY: Record<LandForm, string> = { commits: "The commits land as they were made",
+  squash: "The lane lands as one commit, described anew from the accepted report — a lane of one commit too; its series stays in the lane's history, a series with a merge commit lands unchanged" };
+const LAND_FORM_NOTE = "Holds only when you press “Merge” here: “one commit” folds the lane's work into one commit, “all commits” takes each one — when a MAIN lands the lane, it becomes one commit regardless.";
 type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
-let landFormOpen: string | null = null;
 // the sentence on where the choice holds, open behind the field's ⓘ; closing the gear closes it too
 let landFormInfo = false;
 function landForms(): LandForms {
@@ -2842,16 +2785,6 @@ function setLandForm(kind: keyof LandForms, key: string, form: LandForm | null):
   prefSet("fleet.board.landform", JSON.stringify(next));
   void renderBoard();
 }
-function landFormButton(openKey: string, title: string): HTMLButtonElement {
-  const b = el("button", `rk-btn quiet ib lf-btn${landFormOpen === openKey ? " on" : ""}`) as HTMLButtonElement;
-  b.type = "button";
-  b.appendChild(icon("gear"));
-  b.title = title;
-  b.setAttribute("aria-label", b.title);
-  b.setAttribute("aria-expanded", String(landFormOpen === openKey));
-  b.onclick = (e) => { e.stopPropagation(); landFormOpen = landFormOpen === openKey ? null : openKey; landFormInfo = false; void renderBoard(); };
-  return b;
-}
 // the choice under the Projekte head (one line per project shown) or the opened lane: a lane may also
 // follow its project; an ⓘ after the last choice opens the one sentence on where it holds
 function landFormField(kind: keyof LandForms, key: string, repo: string, label: string, note: boolean): HTMLElement {
@@ -2867,14 +2800,14 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
     c.onclick = (e) => { e.stopPropagation(); setLandForm(kind, key, form); };
     return c;
   };
-  if (kind === "lane") box.appendChild(choice("wie das Projekt", `Wie das Projekt: ${LAND_FORM_WORD[landFormOf(repo, null).form]}`, !now.own, null));
+  if (kind === "lane") box.appendChild(choice("like the project", `Like the project: ${LAND_FORM_WORD[landFormOf(repo, null).form]}`, !now.own, null));
   for (const form of ["commits", "squash"] as const) box.appendChild(choice(LAND_FORM_WORD[form], LAND_FORM_SAY[form], now.own && now.form === form, form));
   if (note) {
     const i = el("button", `rk-btn quiet ib lf-i${landFormInfo ? " on" : ""}`) as HTMLButtonElement;
     i.type = "button";
     i.appendChild(icon("info"));
-    i.title = landFormInfo ? "Erklärung schließen" : "Wo diese Wahl gilt";
-    i.setAttribute("aria-label", "Wo diese Wahl gilt");
+    i.title = landFormInfo ? "Close the explanation" : "Where this choice holds";
+    i.setAttribute("aria-label", "Where this choice holds");
     i.setAttribute("aria-expanded", String(landFormInfo));
     i.onclick = (e) => { e.stopPropagation(); landFormInfo = !landFormInfo; void renderBoard(); };
     box.appendChild(i);
@@ -2882,15 +2815,35 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
   }
   return box;
 }
+// A BOARD BRANCH'S LAND FORM, kept on the server (K16): one commit, or every commit as the merge check built
+// them; a repo without a merge check offers only the one commit
+function branchLandFormField(repo: string, b: BranchView, repaint: () => void): HTMLElement {
+  const box = el("div", "zd lf-set branch");
+  box.dataset.for = b.branch;
+  box.appendChild(el("span", "lf-k", "On land"));
+  for (const form of ["commits", "squash"] as const) {
+    const off = form === "commits" && b.check === null;
+    const on = !off && b.landForm === form;
+    const c = el("button", `rk-btn quiet lf-c${on ? " on" : ""}`, LAND_FORM_WORD[form]) as HTMLButtonElement;
+    c.type = "button";
+    c.disabled = off;
+    c.title = off ? "All commits only with a merge check — this repo has none"
+      : form === "commits" ? "The commits land one by one, as the merge check set them onto main" : "The commits since the last batch land as one commit";
+    c.setAttribute("aria-pressed", String(on));
+    c.onclick = (e) => { e.stopPropagation(); if (!on) void chooseLandForm(repo, b, form, repaint); };
+    box.appendChild(c);
+  }
+  return box;
+}
 // the bar under the field while the lane is made: the sentence as the lane will be called, Live, and
-// what is happening; the paint that draws the lane's own row moves that row from here (#liveFlipAfter)
+// what is happening
 function liveGhost(a: NonNullable<typeof liveArrive>): HTMLElement {
   const g = el("div", "zd live-ghost");
   g.dataset.for = a.repo;
   const tx = el("span", "tx", a.sentence.length > LIVE_LABEL_MAX ? `${a.sentence.slice(0, LIVE_LABEL_MAX - 1).trimEnd()}…` : a.sentence);
   tx.appendChild(el("span", "livetag", "Live"));
-  g.append(el("span", "nd"), tx, el("span", "st", a.path ? "Lane steht" : "wird angelegt…"));
-  g.title = "Die Lane wird angelegt — gleich steht sie in der Reihe ihres Projekts";
+  g.append(el("span", "nd"), tx, el("span", "st", a.path ? "lane stands" : "being created…"));
+  g.title = "The lane is being created — in a moment it stands in its project's structure";
   return g;
 }
 // under a project's head while its field is open: the sentence, Starten, and what failed before a lane existed
@@ -2901,56 +2854,32 @@ function liveField(repo: string, arrive: NonNullable<typeof liveArrive> | null):
   const busy = liveBusy.has(repo) || !!arrive;
   const f = el("input", "live-in") as HTMLInputElement;
   f.type = "text";
-  f.placeholder = "Auftrag in einem Satz";
-  f.setAttribute("aria-label", "Auftrag in einem Satz");
+  f.placeholder = "Task in one sentence";
+  f.setAttribute("aria-label", "Task in one sentence");
   f.value = arrive ? arrive.sentence : liveDraft?.repo === repo ? liveDraft.text : "";
   f.disabled = busy;
   f.oninput = () => { liveDraft = { repo, text: f.value }; go.disabled = busy || !f.value.trim(); };
   f.onkeydown = (e) => { if (e.key === "Enter" && f.value.trim()) { e.preventDefault(); void startLiveSession(repo, f.value); } };
   f.onclick = (e) => e.stopPropagation();
-  const go = el("button", "rk-btn primary", busy ? "startet…" : "Starten") as HTMLButtonElement;
+  const go = el("button", "rk-btn primary", busy ? "starting…" : "Start") as HTMLButtonElement;
   go.type = "button";
-  go.title = "Eine Lane anlegen, ihr den Satz geben und ihre Testinstanz starten";
+  go.title = "Create a lane, give it the sentence and start its test instance";
   go.disabled = busy || !f.value.trim();
   go.onclick = (e) => { e.stopPropagation(); void startLiveSession(repo, f.value); };
   const how = el("button", `rk-btn quiet ib live-i${liveHowOpen ? " on" : ""}`) as HTMLButtonElement;
   how.type = "button";
   how.appendChild(icon("info"));
-  how.title = liveHowOpen ? "Erklärung schließen" : "Was Starten tut, vom Satz bis zum Mergen";
-  how.setAttribute("aria-label", "Was Starten tut");
+  how.title = liveHowOpen ? "Close the explanation" : "What Start does, from the sentence to the merge";
+  how.setAttribute("aria-label", "What Start does");
   how.setAttribute("aria-expanded", String(liveHowOpen));
   how.onclick = (e) => { e.stopPropagation(); liveHowOpen = !liveHowOpen; void renderBoard(); };
   box.append(f, go, how);
   // what this start is, beside the + that opens the founding window: one line, not a manual
-  box.appendChild(el("div", "hint live-hint", "Eine Lane mit eigener Testinstanz · am Ende Mergen"));
+  box.appendChild(el("div", "hint live-hint", "A lane with its own test instance · merge at the end"));
   if (liveHowOpen) box.appendChild(LIVE_HOW.reduce((ol, t) => { ol.appendChild(el("li", "", t)); return ol; }, el("ol", "hint live-how")));
   const err = liveErr.get(repo);
   if (err) box.appendChild(el("div", "err", err));
   return box;
-}
-// the opened live lane (owner 2026-10-09: „[Zitat entfernt]“
-// ): its test instance with Öffnen and Mergen
-function liveLines(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, standOf: Map<string, WorkplaceStand>): HTMLElement[] {
-  const out: HTMLElement[] = [];
-  const ti = tiLook(w).cls !== "tpl" ? tiLine(R.repo, w, s ? s.id : null, standOf) : null;
-  if (ti) out.push(ti);
-  if (s?.worktree && w.target.landed !== "yes") {
-    const b = el("button", "rk-btn live-merge-btn", mergePending.has(s.id) ? "wird gemergt…" : "Mergen") as HTMLButtonElement;
-    b.type = "button";
-    b.title = `${w.branch} nach ${w.target.branch} mergen — zuerst die Rückfrage mit dem Diff`;
-    b.disabled = mergePending.has(s.id);
-    b.onclick = (e) => { e.stopPropagation(); void doLand(s.id); };
-    // in the instance's row of buttons, after Öffnen and Stoppen; a repo without an instance gets a line
-    const acts = ti?.querySelector<HTMLElement>(":scope > .r");
-    if (acts) acts.appendChild(b);
-    else {
-      const line = el("div", "zd live-merge");
-      line.dataset.for = w.path;
-      line.appendChild(b);
-      out.push(line);
-    }
-  }
-  return out;
 }
 // what failed while a live session started stands under its lane, opened or not: it is the one
 // sentence that says why the lane has no instance or never got its sentence
@@ -3019,61 +2948,10 @@ const RANKE_CSS = `
   #board .zd.mx.inst { padding-left: calc(2 * var(--rk-rail) + 4px); font-size: 0.93em; }
   #board .rklegend .lgl .zs .q { color: var(--chat-faint); font-weight: 400; }
   #board .zd.run .w .nw { white-space: nowrap; }
-  /* THE WAY BACK (#drawRankeLines): a margin right of the rows for the rails; the lines lie over a
-     row's ground (an opened or focused row has one) and under its node */
-  #board .ranke { --rk-ret: 18px; }
-  #board .ranke .rk { padding-right: var(--rk-ret); }
-  /* a stem whose check after the land is open keeps room right of its words for the dashed line that
-     ends in its diamond (#stemLine) — without it the words ran up to the diamond and no line showed */
-  #board .ranke .rk > .zr.base[data-audit="run"], #board .ranke .rk > .zr.base[data-audit="queue"] { padding-right: 24px; }
-  #board .ranke .rk > svg { z-index: 1; }
-  #board .ranke .zr > .nd { z-index: 2; }
-  #board .ranke .rk > svg path.rail { stroke: var(--c-edge-hi); }
-  #board .ranke .rk > svg path.back { stroke: var(--chat-mute); }
-  #board .ranke .rk > svg path.back.wait { stroke-dasharray: 3 2.5; }
-  #board .ranke .rk > svg path.ink { stroke: var(--chat-ink); }
-  /* THE BAR OF A ROW (#drawRankeLines): from its point over its words and marks to where its way back
-     begins, under the lines and the points; the row's words and marks stand over it — the surface where
-     you stand or opened, the hover tone under the pointer. No fade: every repaint builds the row anew
-     until the bar is measured */
-  #board .ranke .rk > .zr.zw, #board .ranke .rk > .zr.base { transition: none; }
-  #board .ranke .rk > .zr[data-bar] { background: none; }
-  #board .ranke .rk > .zr[data-bar]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--zb-l); width: var(--zb-w);
-    border-radius: 4px; pointer-events: none; }
-  #board .ranke .rk > .zr.zw[data-bar]:hover::before, #board .ranke .rk > .zr[data-bar].flash::before { background: var(--c-hover); }
-  #board .ranke .rk > .zr[data-bar].here::before, #board .ranke .rk > .zr[data-bar].open::before { background: var(--chat-surface); }
-  #board .ranke .rk > .zr[data-bar] > :not(.nd):not(.lgate):not(.zhead) { position: relative; }
-  /* the head of a target: the dot its rail hangs from — a ring while lanes wait to land there */
-  #board .zr > .zhead { position: absolute; z-index: 2; width: 7px; height: 7px; border-radius: 50%; transform: translate(-50%, -50%);
-    background: var(--chat-mute); pointer-events: none; }
-  #board .zr > .zhead.next { background: var(--chat-void); box-shadow: inset 0 0 0 1.25px var(--chat-mute); }
-  /* THE DIAMOND on a lane's way back, beside the row's last mark: filled ink while a check runs, an
-     ink ring while one waits, filled green or red for the minutes after its runs ended, an amber
-     ring when they ended without a result (G0.2's exception for checks) */
-  #board .zr > .lgate { position: absolute; z-index: 2; width: 26px; height: 26px; padding: 0; border: 0; background: none;
-    left: 0; top: 50%; transform: translate(-50%, -50%); display: grid; place-items: center; cursor: pointer; border-radius: var(--r1); }
-  #board .zr > .lgate:not([data-placed]) { visibility: hidden; }
-  #board .zr > .lgate > i { display: block; width: 8px; height: 8px; border-radius: 1px; transform: rotate(45deg);
-    background: var(--chat-void); box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
-  #board .zr > .lgate[data-gate="run"] > i { background: var(--chat-ink); box-shadow: none; }
-  #board .zr > .lgate[data-gate="ok"] > i { background: var(--q-live); box-shadow: none; }
-  #board .zr > .lgate[data-gate="bad"] > i { background: var(--danger); box-shadow: none; }
-  #board .zr > .lgate[data-gate="unk"] > i { box-shadow: inset 0 0 0 1.5px var(--amber); }
-  #board .zr > .lgate[aria-expanded="true"] > i { outline: 1px solid var(--chat-ink); outline-offset: 2px; }
-  #board .zr > .lgate:focus-visible { outline: 1px solid var(--chat-mute); outline-offset: -2px; }
-  /* what the diamond says: under the lane on a tap, beside it at once on hover (.gnote) */
+  /* what a lane's check says, under it on a tap */
   #board .zd.gate { display: block; min-height: 0; margin: 2px 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); padding: 6px 9px;
     border-radius: var(--r1); background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-prose);
     line-height: 1.45; white-space: normal; }
-  #board .zr > .lgate > .gnote { display: none; position: absolute; top: calc(50% + 10px); right: 4px; z-index: 6; width: max-content;
-    max-width: min(330px, var(--gn-room, 330px)); padding: 7px 10px; border-radius: var(--r1); background: var(--chat-raised);
-    border: 1px solid var(--c-edge-hi); box-shadow: 0 6px 18px rgba(0, 0, 0, .45); color: var(--chat-prose); font: inherit;
-    line-height: 1.45; text-align: left; white-space: normal; cursor: default; pointer-events: none; }
-  @media (hover: hover) {
-    #board .zr > .lgate:hover, #board .zr > .lgate:focus-visible { z-index: 6; }
-    #board .zr > .lgate:hover > .gnote, #board .zr > .lgate:focus-visible > .gnote { display: block; }
-    #board .zr > .lgate[aria-expanded="true"] > .gnote { display: none; }
-  }
   #board .gl { display: grid; grid-template-columns: 13px minmax(0, 1fr); align-items: baseline; }
   #board .gl > .gx { min-width: 0; }
   #board .gl .gx > * + * { margin-left: 6px; }
@@ -3107,11 +2985,8 @@ const RANKE_CSS = `
   #board .gw i.old { background: transparent; }
   #board .gw i.ok.old { box-shadow: inset 0 0 0 1.25px var(--q-live); }
   #board .gw i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
-  /* THE CHECKS STAND WITH THE PROJECTS (owner 2026-10-09: „[Zitat entfernt]“
-     
-     ): no rule between the two, a small gap; the devices keep theirs */
-  #board .rkblock.rk-proj + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }
   /* THE CHECKS FOLD (#runsSummary): the block's head opens and closes it; closed, one line */
+  #board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }
   #board .rk-runs > .rkbh.fold { cursor: pointer; border-radius: var(--r1); }
   #board .rk-runs > .rkbh.fold > .ico { margin-left: auto; width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }
   #board .rk-runs > .rkbh.fold[aria-expanded="true"] > .ico { transform: none; }
@@ -3134,8 +3009,6 @@ const RANKE_CSS = `
     #board .zd.live-new .live-in { min-height: 40px; font-size: 16px; }
     #board .zd.live-merge { justify-content: flex-start; }
     /* the margin stays narrow: a lane's name keeps its width and wraps no sooner (G0.7: a tap is 40 px high) */
-    #board .ranke { --rk-ret: 26px; }
-    #board .zr > .lgate { width: 28px; height: 40px; }
     #board .zd.gate { margin-left: calc(var(--rk-rail) + 4px); }
   }
 `;
@@ -3164,6 +3037,9 @@ export function branchDay(branch: string): string | null {
 }
 // the board speaks German, so its clock does too — "14:26", never "02:26 PM" from a browser's English locale
 const clockOf = (ms: number): string => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+// the same span in the git structure's English (owner Z87: „[Zitat entfernt]“)
+const agoEn = (ms: number): string => ms < 60_000 ? "a moment" : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min`
+  : ms < 86_400_000 ? `${Math.round(ms / 3_600_000)} h` : `${Math.round(ms / 86_400_000)} d`;
 export function agoDe(ms: number): string {
   const min = Math.round(Math.max(0, ms) / 60_000);
   if (min < 1) return "gerade eben";
@@ -3172,28 +3048,21 @@ export function agoDe(ms: number): string {
   return h < 36 ? `vor ${h} Std.` : `vor ${Math.round(h / 24)} Tagen`;
 }
 
-// the five beads, in the order a lane goes through them
-const CHECK_STAGES: { stage: keyof WorkplaceChecks; word: string }[] = [
-  { stage: "local", word: "Lokale Beweise" },
-  { stage: "preview", word: "Vorschau" },
-  { stage: "gate", word: "Land-Prüfung" },
-  { stage: "audit", word: "Check nach dem Land" },
-];
 const CHECK_WORD: Record<WorkplaceCheck["state"], string> = {
-  green: "grün", red: "rot", running: "läuft", waiting: "wartet auf einen Lauf", skipped: "ausgelassen",
+  green: "green", red: "red", running: "running", waiting: "waiting for a run", skipped: "skipped",
 };
 // one stage's state in words, for the lane's title: what the five beads said, now read aloud
 function stageSay(w: WorkplaceRow, stage: keyof WorkplaceChecks, word: string): string {
   const c = w.checks?.[stage] ?? null;
   if (!c) {
     const why = w.reasons.find((r) => r.field === `checks.${stage}`)?.reason ?? "";
-    return `${word}: ${/unreadable|malformed|capped|unmeasured/.test(why) ? "unbekannt — die Aufzeichnung ist nicht lesbar" : "noch keiner bekannt"}`;
+    return `${word}: ${/unreadable|malformed|capped|unmeasured/.test(why) ? "unknown — the record is not readable" : "none known yet"}`;
   }
   // the check after the land names the INTEGRATION commit, never this worktree's HEAD: "stale" there
   // says nothing about the lane and is not said
   const bits = [`${word}: ${CHECK_WORD[c.state]}`];
-  if (c.at) bits.push(agoDe(Date.now() - c.at));
-  if (stage !== "audit" && c.stale === true) bits.push("auf einem älteren Stand als dieser Worktree");
+  if (c.at) bits.push(`${agoEn(Date.now() - c.at)} ago`);
+  if (stage !== "audit" && c.stale === true) bits.push("on an older state than this worktree");
   if (c.fails.length) bits.push(c.fails.slice(0, 3).join(", "));
   return bits.join(" · ");
 }
@@ -3202,10 +3071,10 @@ function stageSay(w: WorkplaceRow, stage: keyof WorkplaceChecks, word: string): 
 // without one say "no", everything else is unknown or nothing to land
 function landedSay(w: WorkplaceRow): string {
   const t = w.target;
-  if (t.landed === "yes") return `gelandet als ${sha7(t.landedAs) ?? "unbekannt"} in ${t.branch}`;
-  if (t.landed === "no") return `noch nicht auf ${t.branch}`;
-  if (w.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land")) return `nichts zu landen — keine eigenen Commits über ${t.branch}`;
-  return `unbekannt, ob auf ${t.branch} gelandet`;
+  if (t.landed === "yes") return `landed as ${sha7(t.landedAs) ?? "unknown"} in ${t.branch}`;
+  if (t.landed === "no") return `not on ${t.branch} yet`;
+  if (w.reasons.some((r) => r.field === "target.landed" && r.reason === "nothing-to-land")) return `nothing to land — no own commits over ${t.branch}`;
+  return `unknown whether landed on ${t.branch}`;
 }
 // THE LANE'S WAY AS FOUR POINTS (owner 2026-10-08: „[Zitat entfernt]“
 // 
@@ -3220,8 +3089,8 @@ function landedSay(w: WorkplaceRow): string {
 // than the worktree. The words, in order, are the title (hover), the held word (a finger,
 // src/board.ts#holdTip) and the aria-label; the title ends with where the land stands.
 const WAY: { key: keyof WorkplaceChecks; word: string }[] = [
-  { key: "local", word: "Beweis" }, { key: "preview", word: "Vorschau" }, { key: "gate", word: "Landprüfung" },
-  { key: "audit", word: "Nachprüfung" },
+  { key: "local", word: "Proof" }, { key: "preview", word: "Preview" }, { key: "gate", word: "Land check" },
+  { key: "audit", word: "Check after land" },
 ];
 // THE CHECK AFTER A LAND, while it is not through (server.ts#postLandAuditLiveView): "run" while the
 // running audit covers this branch's land, "queue" while the land waits for the next run — read by
@@ -3242,12 +3111,12 @@ function wayPoint(w: WorkplaceRow, key: keyof WorkplaceChecks, word: string, min
   const c = w.checks?.[key] ?? null;
   // the land's own check after the land, while the server's audit covers it or still waits for it
   const after = key === "audit" && w.target.landed === "yes" && c?.state !== "running" && c?.state !== "waiting" ? auditOf(w.branch) : null;
-  if (after) return { cls: after, say: `${word}: ${after === "run" ? "läuft" : "wartet auf den nächsten Lauf"} · für das Land nach ${w.target.branch}` };
+  if (after) return { cls: after, say: `${word}: ${after === "run" ? "running" : "waiting for the next run"} · for the land into ${w.target.branch}` };
   const run = c?.state === "running" || c?.state === "waiting" ? undefined
     : mine.find((b) => b.station !== "done" && RUN_POINT[b.kind] === key);
-  if (run) return { cls: run.station === "wait" ? "queue" : "run", say: `${word}: ${run.station === "wait" ? "wartet" : "läuft"}${run.what ? ` · ${run.what}` : ""}` };
+  if (run) return { cls: run.station === "wait" ? "queue" : "run", say: `${word}: ${run.station === "wait" ? "waiting" : "running"}${run.what ? ` · ${run.what}` : ""}` };
   const say = stageSay(w, key, word);
-  if (!c) return { cls: /unbekannt/.test(say) ? "unk" : "none", say };
+  if (!c) return { cls: /unknown/.test(say) ? "unk" : "none", say };
   return { cls: `${WAY_CLASS[c.state]}${key !== "audit" && c.stale === true ? " old" : ""}`, say };
 }
 function laneWay(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
@@ -3262,7 +3131,7 @@ function laneWay(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
   });
   says.push(`Land: ${landedSay(w)}`);
   box.setAttribute("role", "img");
-  box.setAttribute("aria-label", `Weg nach ${w.target.branch}: ${says.join(". ")}`);
+  box.setAttribute("aria-label", `Way to ${w.target.branch}: ${says.join(". ")}`);
   box.title = says.join("\n");
   box.dataset.hold = box.title;
   return box;
@@ -3310,9 +3179,9 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
     const at = runMachine(b);
     const dv = el("span", "dv");
     if (at) {
-      dv.append(icon(at.glyph), `auf ${at.name}`);
+      dv.append(icon(at.glyph), `on ${at.name}`);
       dv.dataset.machine = at.name;
-    } else dv.append(el("span", "q", b.station === "wait" ? "noch auf keinem Gerät" : `Ort: ${b.where || "nicht gemeldet"}`));
+    } else dv.append(el("span", "q", b.station === "wait" ? "on no device yet" : `place: ${b.where || "not reported"}`));
     gx.appendChild(dv);
     line.append(el("span", "gd"), gx);
     line.title = `${meterKind(b.kind).label} · ${b.branch ?? "Branch nicht gemeldet"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
@@ -3324,14 +3193,14 @@ function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLEl
     const line = el("span", "gl");
     line.dataset.gate = c.state === "running" ? "run" : "queue";
     const gx = el("span", "gx");
-    gx.appendChild(el("b", "", `${word} ${c.state === "running" ? "läuft" : "wartet"}`));
-    gx.appendChild(el("span", "q", "Ort nicht gemeldet"));
+    gx.appendChild(el("b", "", `${word} ${c.state === "running" ? "running" : "waiting"}`));
+    gx.appendChild(el("span", "q", "place not reported"));
     line.append(el("span", "gd"), gx);
     out.push(line);
   }
   // the way: the four points as the opened lane draws them, each with its word, its state on hover
   const way = el("span", "gw");
-  way.appendChild(el("span", "gwt", `Weg nach ${w.target.branch}`));
+  way.appendChild(el("span", "gwt", `Way to ${w.target.branch}`));
   for (const { key, word } of WAY) {
     const p = wayPoint(w, key, word, mine);
     const st = el("span", `gp ${p.cls}`);
@@ -3375,57 +3244,11 @@ function stemAudit(R: WorkplaceRepo, stem: string): StemAudit | null {
     more: waits.map((x) => laneTail(x.branch)).join(", ") });
   return lines.length ? { look: run ? "run" : "queue", lines, balls } : null;
 }
-function stemAuditSay(au: StemAudit): HTMLElement[] {
-  return au.lines.map((l) => {
-    const line = el("span", "gl");
-    line.dataset.gate = l.look;
-    const gx = el("span", "gx");
-    gx.appendChild(el("b", "", l.head));
-    if (l.more) gx.appendChild(el("span", "q", l.more));
-    line.append(el("span", "gd"), gx);
-    return line;
-  });
-}
-function stemAuditButton(key: string, au: StemAudit, stem: string): HTMLButtonElement {
-  const gb = el("button", "lgate stem") as HTMLButtonElement;
-  gb.type = "button";
-  gb.dataset.gate = au.look;
-  gb.appendChild(el("i", ""));
-  gb.setAttribute("aria-label", `${au.lines.map((l) => `${l.head}${l.more ? ` · ${l.more}` : ""}`).join(". ")} — Nachprüfung von ${stem}, Klick zeigt sie`);
-  gb.setAttribute("aria-expanded", String(rankeOpen === key));
-  const note = el("span", "gnote");
-  note.setAttribute("aria-hidden", "true");
-  note.append(...stemAuditSay(au));
-  gb.appendChild(note);
-  gb.onclick = (e) => { e.stopPropagation(); rankeOpen = rankeOpen === key ? null : key; void renderBoard(); };
-  for (const b of au.balls) placedRuns.add(b.key);
-  return gb;
-}
 function gateLines(forKey: string, w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLElement {
   const box = el("div", "zd gate");
   box.dataset.for = forKey;
   box.append(...gateSay(w, mine, ended));
   return box;
-}
-function gateButton(gateKey: string, gate: GateLook, w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLButtonElement {
-  const gb = el("button", "lgate") as HTMLButtonElement;
-  gb.type = "button";
-  gb.dataset.gate = gate;
-  gb.appendChild(el("i", ""));
-  const lead = mine.find((b) => b.station !== "done") ?? (gate === "run" || gate === "queue" ? undefined : ended[0]);
-  const at = lead ? runMachine(lead) : null;
-  // no title: the NOTE shows at once on hover or a keyboard focus where the device can hover (a title
-  // waits a second, says one line, and would stand over it); it is the picture of the button's
-  // label, so a screen reader hears the label once
-  gb.setAttribute("aria-label", `${lead ? runSentence(lead) : gate === "run" ? "Eine Prüfung läuft" : "Eine Prüfung wartet"}${at ? ` · auf ${at.name}` : ""} — Klick zeigt Stand und Gerät`);
-  gb.setAttribute("aria-expanded", String(rankeOpen === gateKey));
-  const note = el("span", "gnote");
-  note.setAttribute("aria-hidden", "true");
-  note.append(...gateSay(w, mine, ended));
-  gb.appendChild(note);
-  gb.onclick = (e) => { e.stopPropagation(); rankeOpen = rankeOpen === gateKey ? null : gateKey; void renderBoard(); };
-  for (const b of mine) placedRuns.add(b.key);
-  return gb;
 }
 // THE OPENED LANE'S CHECKS: "Weg nach <Ziel>" and the four points, and what is red in words — or "Noch
 // keine Prüfung" where no check has a result (owner 2026-10-08: never a row of empty points)
@@ -3435,56 +3258,16 @@ function wayLine(w: WorkplaceRow, mine: MeterBall[] = []): HTMLElement {
   const tx = el("span", "tx");
   const any = WAY.some(({ key, word }) => wayPoint(w, key, word, mine).cls !== "none");
   if (!any) {
-    tx.appendChild(el("span", "w none", "Noch keine Prüfung"));
+    tx.appendChild(el("span", "w none", "No check yet"));
   } else {
     // "Weg nach main", as the diamond's note says it: "Prüfungen" is the block below, one word, one thing
-    tx.append(el("span", "w", `Weg nach ${w.target.branch}`), laneWay(w, mine));
+    tx.append(el("span", "w", `Way to ${w.target.branch}`), laneWay(w, mine));
     const [first] = redStages(w);
     const c = first ? w.checks?.[first.key] : null;
-    if (first && c) tx.appendChild(el("span", "wr", [`${first.word} rot`, ...c.fails.slice(0, 1)].join(" · ")));
+    if (first && c) tx.appendChild(el("span", "wr", [`${first.word} red`, ...c.fails.slice(0, 1)].join(" · ")));
   }
   line.appendChild(tx);
   return line;
-}
-// WHAT RUNS FOR IT, AND WHERE (owner 2026-10-08: „[Zitat entfernt]“
-// ): the machine's glyph, green while a run of it runs, amber while one waits; the run's
-// sentence ("Landprüfung 3:21 von ~8:00 auf mac") is its title and its held word
-function runSign(balls: MeterBall[]): HTMLElement | null {
-  if (!balls.length) return null;
-  const rank: Record<MeterStation, number> = { run: 0, helper: 0, wait: 1, done: 2 };
-  const lead = [...balls].sort((x, y) => rank[x.station] - rank[y.station])[0];
-  for (const b of balls) placedRuns.add(b.key);
-  const at = runMachine(lead);
-  const e = el("span", "act");
-  e.dataset.tone = lead.station === "wait" ? "wait" : "live";
-  e.appendChild(icon(at?.glyph ?? (lead.station === "wait" ? "clock" : "shield")));
-  const says = balls.map((b) => { const m = runMachine(b); return `${runSentence(b)}${m ? ` · auf ${m.name}` : ""}`; });
-  e.title = says.join("\n");
-  e.dataset.hold = e.title;
-  e.setAttribute("role", "img");
-  e.setAttribute("aria-label", says.join(". "));
-  return e;
-}
-// THE LANE'S GIT STAND (owner 2026-10-08: „[Zitat entfernt]“): the
-// commits not on its target yet as "↑3", the files without a commit as a pencil and their count —
-// nothing where there is nothing
-function gitSign(w: WorkplaceRow, s: SlotInfo | undefined): HTMLElement {
-  const g = el("span", "gs");
-  const ahead = w.target.landed === "yes" ? 0 : w.distance?.ahead ?? 0, dirty = s?.git?.dirty ?? 0;
-  if (ahead) g.appendChild(el("span", "ah", `↑${ahead}`));
-  if (dirty) {
-    const d = el("span", "dt");
-    d.append(icon("pencil"), String(dirty));
-    g.appendChild(d);
-  }
-  const words = [ahead ? `${ahead} ${ahead === 1 ? "Commit" : "Commits"} noch nicht auf ${w.target.branch}` : "",
-    dirty ? `${dirty} ${dirty === 1 ? "Datei" : "Dateien"} ohne Commit` : ""].filter(Boolean);
-  if (words.length) {
-    g.title = words.join("\n");
-    g.dataset.hold = g.title;
-    g.setAttribute("aria-label", words.join(", "));
-  }
-  return g;
 }
 // THE TEST INSTANCE as a square in its worktree's row. "läuft" only where the server measured it up
 // (process identity AND an answer over HTTP, docs/self-api.md, Testinstanz) — never from a pid.
@@ -3492,13 +3275,13 @@ type TiLook = { cls: string; state: string; word: string; expiresAt: number | nu
 function tiLook(w: WorkplaceRow): TiLook {
   const inst = w.testinstanz?.instance as { expiresAt?: number | null } | undefined;
   const expiresAt = typeof inst?.expiresAt === "number" ? inst.expiresAt : null;
-  if (w.template === "missing") return { cls: "tpl", state: "no-template", word: "keine Testinstanz-Vorlage in diesem Repo", expiresAt };
+  if (w.template === "missing") return { cls: "tpl", state: "no-template", word: "no test instance template in this repo", expiresAt };
   const st = w.testinstanz?.state ?? null;
-  if (st === "up") return { cls: "up", state: "up", word: `Testinstanz läuft${expiresAt ? ` bis ${clockOf(expiresAt)}` : ""}`, expiresAt };
-  if (st === "expired") return { cls: "exp", state: "expired", word: `Testinstanz abgelaufen${expiresAt ? ` ${agoDe(Date.now() - expiresAt)}` : ""}`, expiresAt };
-  if (st === "not-running") return { cls: "off", state: "not-running", word: "keine Testinstanz", expiresAt };
-  if (st === "http-failed" || st === "http-timeout") return { cls: "bad", state: st, word: "Testinstanz antwortet nicht", expiresAt };
-  return { cls: "unk", state: "unknown", word: "Testinstanz: unbekannt", expiresAt };
+  if (st === "up") return { cls: "up", state: "up", word: `Test instance running${expiresAt ? ` until ${clockOf(expiresAt)}` : ""}`, expiresAt };
+  if (st === "expired") return { cls: "exp", state: "expired", word: `Test instance expired${expiresAt ? ` ${agoEn(Date.now() - expiresAt)} ago` : ""}`, expiresAt };
+  if (st === "not-running") return { cls: "off", state: "not-running", word: "no test instance", expiresAt };
+  if (st === "http-failed" || st === "http-timeout") return { cls: "bad", state: st, word: "Test instance does not answer", expiresAt };
+  return { cls: "unk", state: "unknown", word: "Test instance: unknown", expiresAt };
 }
 const tiRoute = (repo: string, w: WorkplaceRow, slot: number | null): string => slot !== null
   ? `/api/slots/${slot}/testinstanz`
@@ -3519,7 +3302,7 @@ async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action:
     // a live lane's failed start is answered once its instance comes up (src/board.ts#startLiveSession)
     if (action === "up") liveErr.delete(w.path);
     if (action === "open") {
-      if (!j.url) throw new Error("der Server hat keinen Link geliefert");
+      if (!j.url) throw new Error("the server gave no link");
       if (tab) tab.location.href = j.url; else window.open(j.url, "_blank", "noopener");
     }
   } catch (error) {
@@ -3547,45 +3330,6 @@ function tiPortOf(w: WorkplaceRow): number | null {
   const port = (w.testinstanz?.instance as { port?: unknown } | undefined)?.port;
   return typeof port === "number" ? port : null;
 }
-function tiPort(w: WorkplaceRow): HTMLElement[] {
-  const port = tiPortOf(w);
-  return port === null ? [] : [el("span", "tiport", `:${port}`)];
-}
-function tiSquare(w: WorkplaceRow, here: boolean): HTMLElement {
-  const look = tiLook(w);
-  const box = el("button", `ti ${look.cls}${here ? " mine" : ""}${rankeOpen === `ti:${w.path}` ? " open" : ""}`) as HTMLButtonElement;
-  box.type = "button";
-  box.dataset.ti = look.state;
-  box.append(...tiPort(w), el("span", "sq"));
-  const verb = look.cls === "up" ? "Klick: Öffnen, Stoppen" : look.cls === "off" ? "Klick: Starten"
-    : look.cls === "exp" ? "Klick: neu starten" : look.cls === "tpl" ? "" : "Klick: neu lesen";
-  box.title = verb ? `${look.word} — ${verb}` : look.word;
-  box.setAttribute("aria-label", box.title);
-  if (look.cls === "tpl") { box.disabled = true; return box; }
-  if (mirroredWorktree(w)) { box.disabled = true; box.title = `${look.word} — gespiegelt, hier nur lesbar`; return box; }
-  box.onclick = (e) => {
-    e.stopPropagation();
-    rankeOpen = rankeOpen === `ti:${w.path}` ? null : `ti:${w.path}`;
-    void renderBoard();
-  };
-  return box;
-}
-// the square at a closed lane while its instance runs: a sign, not a button — a tap on the row opens
-// the lane, and the instance's line there carries Öffnen and Stoppen. Its port stands in the title and
-// in that line, not in the row: the row keeps 24 px, and a lane's name wraps rather than end in …
-function tiSign(w: WorkplaceRow): HTMLElement {
-  const look = tiLook(w);
-  const box = el("span", `ti ${look.cls}`);
-  box.dataset.ti = look.state;
-  box.appendChild(el("span", "sq"));
-  const port = tiPortOf(w);
-  const word = port === null ? look.word : `${look.word} · :${port}`;
-  box.title = word;
-  box.dataset.hold = word;
-  box.setAttribute("role", "img");
-  box.setAttribute("aria-label", word);
-  return box;
-}
 function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
   const look = tiLook(w);
   const line = el("div", "zd ti");
@@ -3599,15 +3343,15 @@ function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map
   const inst = w.testinstanz?.instance as { recordedSource?: { before?: { head?: string | null } | null } | null; port?: number | null } | undefined;
   const from = sha7(inst?.recordedSource?.before?.head ?? null);
   const port = tiPortOf(w);
-  const word = busy ? "wird ausgeführt…" : look.cls === "up" ? `läuft${look.expiresAt ? ` bis ${clockOf(look.expiresAt)}` : ""}${port === null ? "" : ` · :${port}`}`
-    : look.cls === "exp" ? "abgelaufen" : look.cls === "off" ? "aus" : look.cls === "bad" ? "antwortet nicht" : "unbekannt";
-  tx.appendChild(el("span", "w", `Testinstanz ${word}`));
+  const word = busy ? "working…" : look.cls === "up" ? `running${look.expiresAt ? ` until ${clockOf(look.expiresAt)}` : ""}${port === null ? "" : ` · :${port}`}`
+    : look.cls === "exp" ? "expired" : look.cls === "off" ? "off" : look.cls === "bad" ? "does not answer" : "unknown";
+  tx.appendChild(el("span", "w", `Test instance ${word}`));
   // WHERE IT COMES FROM: the commit the copy was taken from, as recorded at the copy — not proof of
   // what runs in it (copyHead stays null on the wire, docs/self-api.md)
   const stand = standOf.get(`test-instance:${w.path}`);
   tx.title = [look.word,
-    from ? `kopiert von ${from} — welcher Stand in der Kopie läuft, ist nicht belegt` : "Stand der Kopie nicht belegt",
-    stand && stand.head === null ? "läuft auf: unbekannt" : ""].filter(Boolean).join(" · ");
+    from ? `copied from ${from} — which state runs in the copy is not proven` : "state of the copy not proven",
+    stand && stand.head === null ? "runs on: unknown" : ""].filter(Boolean).join(" · ");
   line.appendChild(tx);
   const acts = el("span", "r");
   const act = (label: string, title: string, action: "up" | "down" | "open" | "refresh", primary = false) => {
@@ -3619,13 +3363,13 @@ function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map
     acts.appendChild(b);
   };
   if (look.cls === "up") {
-    act("Öffnen", `Die Testinstanz in einem neuen Tab öffnen${typeof inst?.port === "number" ? ` (Port ${inst.port})` : ""}`, "open", true);
-    act("Stoppen", "Die Testinstanz beenden — die Kopie läuft dann nicht mehr", "down");
-  } else if (look.cls === "off") act("Starten", "Eine Testinstanz dieses Worktrees starten — eigene Kopie, eigener Port, für 4 Std.", "up", true);
+    act("Open", `Open the test instance in a new tab${typeof inst?.port === "number" ? ` (port ${inst.port})` : ""}`, "open", true);
+    act("Stop", "Stop the test instance — the copy no longer runs", "down");
+  } else if (look.cls === "off") act("Start", "Start a test instance of this worktree — its own copy, its own port, for 4 h", "up", true);
   else if (look.cls === "exp") {
-    act("Neu starten", "Die abgelaufene Testinstanz neu starten — für 4 Std.", "up", true);
-    act("Stoppen", "Die abgelaufene Testinstanz aufräumen", "down");
-  } else act("Neu lesen", "Den Zustand der Testinstanz neu messen — startet nichts", "refresh");
+    act("Restart", "Restart the expired test instance — for 4 h", "up", true);
+    act("Stop", "Clean up the expired test instance", "down");
+  } else act("Read again", "Measure the test instance's state again — starts nothing", "refresh");
   line.appendChild(acts);
   if (err) line.appendChild(el("span", "err", err));
   return line;
@@ -3638,10 +3382,10 @@ function tiLine(repo: string, w: WorkplaceRow, slot: number | null, standOf: Map
 function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
   const out: HTMLElement[] = [];
   const row = el("div", "rk-acts");
-  const open = el("button", "rk-btn primary", w.review ? "Wieder aufnehmen" : "Öffnen") as HTMLButtonElement;
+  const open = el("button", "rk-btn primary", w.review ? "Resume" : "Open") as HTMLButtonElement;
   open.title = w.review
-    ? `Prüf-Kandidat ${w.review.id} in einem freien Slot wieder aufnehmen — seine Aufträge binden zurück, Beweise von vor dem Parken gelten als veraltet`
-    : "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
+    ? `Resume review candidate ${w.review.id} in a free slot — its tasks bind back, proofs from before shelving count as outdated`
+    : "Open this worktree in a free slot and jump there";
   open.onclick = async (e) => {
     e.stopPropagation();
     if (laneReqBusy) return;
@@ -3658,10 +3402,10 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
     }
   };
   row.appendChild(open);
-  const close = el("button", "rk-btn del", "Schließen…") as HTMLButtonElement;
+  const close = el("button", "rk-btn del", "Close…") as HTMLButtonElement;
   close.title = w.empty
-    ? "Diesen Worktree schließen — sauber, nichts geht verloren"
-    : "Dieser Worktree hat ungesicherte oder nicht gelandete Arbeit — zeigt zuerst, was verloren ginge";
+    ? "Close this worktree — clean, nothing is lost"
+    : "This worktree has unsaved or unlanded work — shows first what would be lost";
   close.onclick = async (e) => {
     e.stopPropagation();
     if (w.empty) {
@@ -3696,8 +3440,8 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
     crow.appendChild(el("span", "sweepvreason",
       `head ${c.head.slice(0, 10)} · base ${c.base ?? "unknown"}${c.baseSha ? ` @ ${c.baseSha.slice(0, 10)}` : ""}`
       + ` · report ${c.reportId.slice(0, 8)} · tasks ${c.taskIds.join(", ")}`
-      + (c.expired ? ` · Frist abgelaufen ${new Date(c.expiresAt).toLocaleString()} — Entscheidung fällig`
-        : ` · Frist ${new Date(c.expiresAt).toLocaleString()}`)));
+      + (c.expired ? ` · deadline passed ${new Date(c.expiresAt).toLocaleString()} — decision due`
+        : ` · deadline ${new Date(c.expiresAt).toLocaleString()}`)));
     out.push(crow);
   }
   out.push(notepadBlock(wts.repo, w));
@@ -3917,27 +3661,6 @@ function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   row.querySelector(":scope > .fx")?.replaceChildren(el("span", "sq up"));
   return asInstance(rows);
 }
-// THE INSTANCE'S OWN LANE AS A PROJECT (owner 2026-10-08: „[Zitat entfernt]“
-// ): a snapshot rewrites the machine's worktrees
-// into fixtures, so the lane it runs from is not among them — it stands here from what the instance
-// knows of itself (instance.source), with its runs under it, until a real row carries the branch
-function sourceBlock(src: InstanceSource): HTMLElement {
-  const g = el("div", "grp proj src");
-  const band = instanceBandText(src, clockOf);
-  // MARKED AS WHAT IT IS (owner 2026-10-08: „[Zitat entfernt]“
-  // ): the test instance's one sign — the green square the lane's instance line and
-  // the composer's foot draw — and its word; the lane's name between them. The branch, the start
-  // commit and what is not on the target yet are the title's.
-  const row = el("div", "zr mach self");
-  row.dataset.tone = "live";
-  const fx = el("span", "fx");
-  fx.appendChild(el("span", "sq up"));
-  const nm = el("span", "nm", src.branch ? laneWords(src.branch) : "Zweig unbekannt");
-  row.append(fx, nm, stateChip({ tone: "live", word: "Testinstanz · hier", title: "Diese Seite ist die Testinstanz dieser Lane" }));
-  row.title = `${band.text}\n${band.title}`;
-  g.append(row, ...runLines(src.branch ? runsHere.byBranch.get(src.branch) ?? [] : []));
-  return g;
-}
 function machineHead(kind: MachineKind, name: string, sub: string, state: MachineState, title: string): HTMLElement {
   const row = el("div", "zr mach");
   row.dataset.tone = state.tone;
@@ -4125,14 +3848,6 @@ function rowTarget(row: HTMLElement, act: () => void): void {
   };
 }
 
-// one row of the Ranke: the node, the address, the name, ↑•, the beads and the square
-function rowCells(row: HTMLElement, node: string, ref: string, hue: number, name: HTMLElement): void {
-  row.appendChild(el("span", `nd ${node}`));
-  const r = el("span", "ref", ref);
-  r.style.setProperty("--proj-h", String(hue));
-  row.append(r, name);
-}
-
 export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null): HTMLElement {
   loadWorkplaces();
   // NO HEAD OF ITS OWN (owner 2026-10-09: „[Zitat entfernt]“
@@ -4145,7 +3860,6 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   }
   if (workplacesErr) sec.appendChild(el("div", "bstale", `Stand von ${clockOf(wp.measuredAt)} — neu lesen ging nicht: ${workplacesErr}`));
   const focus = focusSlot ? fleet[focusSlot - 1] : undefined;
-  const bands = laneBandNames(stacksOf());
   // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
   // the machines — each under its own small head, so the eye finds a kind of thing, not a row. The
   // machine rows are built first (the here-row needs the stands) and placed last.
@@ -4156,7 +3870,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     b.appendChild(h);
     return b;
   };
-  const projects = block("proj", "Projekte"), checks = block("runs", "Prüfungen"), devices = block("dev", "Geräte");
+  const checks = block("runs", "Prüfungen"), devices = block("dev", "Geräte");
   // the checks block's head opens and closes it (#runsSummary)
   const runsHead = checks.firstElementChild as HTMLElement;
   runsHead.classList.add("fold");
@@ -4267,33 +3981,22 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;
   const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));
   const shown = (focusR ? [focusR] : wp.repos).filter((R) => !quiet.includes(R));
-  // HOW ITS LANES LAND, over the whole view (#landFormField): the projects' default, one line each
-  if (shown.length) {
-    const says = shown.map((R) => `${baseName(R.repo)}: ${LAND_FORM_WORD[landFormOf(R.repo, null).form]}`).join(" · ");
-    projects.firstElementChild!.appendChild(landFormButton("projects", `Beim Land der Lanes — ${says}`));
-    if (landFormOpen === "projects") shown.forEach((R, i) => projects.appendChild(landFormField("repo", R.repo, R.repo,
-      shown.length === 1 ? "Beim Land jeder Lane" : `Beim Land jeder Lane in ${baseName(R.repo)}`, i === shown.length - 1)));
-  }
-  for (const R of shown) projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+  // THE GIT STRUCTURE IS THE PROJECTS NOW (owner Z83: „[Zitat entfernt]“
+  // ; src/gitstruktur.ts): each project its heads, sessions and checks,
+  // and what the Projekte block could do in the menus of its heads (Bestandsaufnahme 3db17b9a, Ja 3e75a836)
+  const git = el("div", "rkblock rk-git");
+  for (const R of shown) git.appendChild(gitBlock(R, true, wts, standOf));
   if (quiet.length) {
-    const g = el("div", "grp");
-    const f = el("div", `zr zq ${rankeQuietOpen ? "auf" : "zu"}`);
-    const fx = el("span", "fx");
-    fx.appendChild(icon("chevron"));
-    f.appendChild(fx);
-    f.appendChild(el("span", "nm", `${quiet.length} ${quiet.length === 1 ? "ruhiges Projekt" : "ruhige Projekte"}`));
-    f.title = `${quiet.map((R) => baseName(R.repo)).join(", ")} — keine Lane, keine arbeitende Session, kein Land unterwegs · ${rankeQuietOpen ? "zuklappen" : "aufklappen"}`;
-    rowTarget(f, () => { rankeQuietOpen = !rankeQuietOpen; void renderBoard(); });
+    const f = el("button", `gsquiet ${rankeQuietOpen ? "auf" : "zu"}`) as HTMLButtonElement;
+    f.type = "button";
+    f.appendChild(icon("chevron"));
+    f.appendChild(el("span", "", `${quiet.length} ${quiet.length === 1 ? "quiet project" : "quiet projects"}`));
+    f.title = `${quiet.map((R) => baseName(R.repo)).join(", ")} — no lane, no working session, no land on its way · ${rankeQuietOpen ? "collapse" : "expand"}`;
     f.setAttribute("aria-expanded", String(rankeQuietOpen));
-    g.appendChild(f);
-    projects.appendChild(g);
-    if (rankeQuietOpen) for (const R of quiet) projects.appendChild(repoGroup(R, focusSlot, focusRepo, wts, bands, standOf));
+    f.onclick = () => { rankeQuietOpen = !rankeQuietOpen; void renderBoard(); };
+    git.appendChild(f);
+    if (rankeQuietOpen) for (const R of quiet) git.appendChild(gitBlock(R, false, wts, standOf));
   }
-  // until the instance carries the machine's real worktrees, its own lane stands as a project of its
-  // own; once a real row has that branch, the row is marked instead (laneRow) and this block is gone
-  // — and only in the overview: with one project shown, the page's top band names the lane
-  if (!focusR && instanceSource?.branch && !wp.repos.some((R) => R.worktrees?.some((w) => w.branch === instanceSource!.branch)))
-    projects.prepend(projects.firstElementChild!, sourceBlock(instanceSource));
   // the checks are drawn after the projects: what found its lane is not said twice
   checks.appendChild(runRows(focusSlot === null));
 
@@ -4357,266 +4060,210 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   why.onclick = () => { machinesLegendOpen = !machinesLegendOpen; void renderBoard(); };
   devices.firstElementChild!.appendChild(why);
   if (machinesLegendOpen) devices.appendChild(machinesLegend());
-  sec.append(projects, checks, devices);
+  sec.append(...(shown.length || quiet.length ? [git] : []), checks, devices);
   return sec;
 }
 
-function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string | null, wts: WtInfo | null,
-  bands: Map<number, string>, standOf: Map<string, WorkplaceStand>): HTMLElement {
-  const g = el("div", "grp proj");
-  g.dataset.repo = R.repo;
-  const hue = projectHue(R.repo);
+// A PROJECT'S HEAD (owner 2026-10-08, round 2: „[Zitat entfernt]“): its state as dot and
+// word — waiting for you first, then working, then a land check that runs, else quiet — and where it comes from: the
+// remotes as the local refs know them (no fetch), as a tag only where the copies differ
+function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { state: MachineState; remote: HTMLElement | null; facts: string[] } {
   const rows = R.worktrees ?? [];
-  const primary = rows.find((w) => w.primary) ?? null;
-  const branchOf = (name: string) => R.branches?.find((b) => b.branch === name) ?? null;
-  const targetOf = (w: WorkplaceRow) => w.target?.branch ?? w.base?.branch ?? "main";
-  // EVERY TARGET IS A STEM (owner 2026-10-08: „[Zitat entfernt]“
-  // ): main, overhaul when it exists, and any other branch a lane lands in —
-  // each drawn under main with its lanes under it, so where a lane lands is where it hangs
-  const stems = [...new Set([...(branchOf("overhaul") ? ["overhaul"] : []),
-    ...rows.filter((w) => !w.primary).map(targetOf).filter((t) => t !== "main")])];
-  // A BRANCH STANDS ONCE (owner 2026-10-07): a worktree checked out on a branch the Ranke draws as a
-  // stem IS that stem — its session and its test instance hang on the stem row, not on a second one
-  const stemWt = new Map<string, WorkplaceRow>();
-  for (const w of rows) if (!w.primary && w.branch && (w.branch === "main" || stems.includes(w.branch))) stemWt.set(w.branch, w);
-  const lanes = rows.filter((w) => !w.primary && !(w.branch && stemWt.get(w.branch) === w));
-  const isOpen = rankeRepos.get(R.repo) ?? (R.repo === focusRepo || repoAtWork(R));
-  const slotOf = workSlot;
-  // the repo's head: chevron, name, how many branches, where it comes from, + Lane
-  const head = el("div", `zr repo ${isOpen ? "auf" : "zu"}`);
-  const fx = el("span", "fx");
-  fx.appendChild(icon("chevron"));
-  head.appendChild(fx);
-  const nm = el("span", "nm", baseName(R.repo));
-  const active = lanes.filter((w) => { const s = slotOf(w); return s && sessionActive(s.id); }).length;
-  const waiting = lanes.filter((w) => slotOf(w)?.awaiting === "owner").length;
-  head.appendChild(nm);
-  // THE PROJECT'S STATE (owner 2026-10-08, round 2: „[Zitat entfernt]“):
-  // at the head's right end as dot and word, the machines' grammar — waiting for you first (amber),
-  // then working (green), then a land check that runs, else quiet
+  const lanes = rows.filter((w) => !w.primary);
+  const active = lanes.filter((w) => { const s = workSlot(w); return s && sessionActive(s.id); }).length;
+  const waiting = lanes.filter((w) => workSlot(w)?.awaiting === "owner").length;
   const checking = rows.some((w) => w.checks.gate?.state === "running" || w.checks.gate?.state === "waiting");
-  const pstate: MachineState = waiting ? { tone: "wait", word: `${waiting} ${waiting === 1 ? "wartet" : "warten"} auf dich`, title: "Lanes dieses Projekts warten auf deine Antwort" }
-    : active ? { tone: "live", word: `${active} ${active === 1 ? "arbeitet" : "arbeiten"}`, title: "Sessions in Lanes dieses Projekts arbeiten gerade" }
-    : checking ? { tone: "live", word: "wird geprüft", title: "Ein Land-Check dieses Projekts läuft oder wartet" }
-    : { tone: "still", word: "ruhig", title: "Keine Lane arbeitet, keine wartet auf dich" };
-  head.dataset.tone = pstate.tone;
-  // FEWER WORDS (owner 2026-10-08: „[Zitat entfernt]“): the count of
-  // branches and the remote are the head's title; the head shows a remote only when the local copy
-  // and the remote's image differ — that alone is something to act on
-  const facts = [`${lanes.length} ${lanes.length === 1 ? "Zweig" : "Zweige"}`];
-  // WHERE IT COMES FROM: the repo's remotes as the local refs know them (no fetch, no network)
+  const state: MachineState = waiting ? { tone: "wait", word: `${waiting} waiting for you`, title: "Lanes of this project wait for your answer" }
+    : active ? { tone: "live", word: `${active} working`, title: "Sessions in lanes of this project are working right now" }
+    : checking ? { tone: "live", word: "being checked", title: "A land check of this project runs or waits" }
+    : { tone: "still", word: "quiet", title: "No lane works, none waits for you" };
+  const facts = [`${lanes.length} ${lanes.length === 1 ? "branch" : "branches"}`];
+  const primary = rows.find((w) => w.primary);
   const pst = primary ? standOf.get(`worktree:${primary.path}`) : undefined;
-  if (pst?.remote === "none") facts.push("ohne Remote — ein eigener Zustand, kein Fehler");
+  let remote: HTMLElement | null = null;
+  if (pst?.remote === "none") facts.push("no remote — a state of its own, not an error");
   else if (Array.isArray(pst?.remote) && pst.remote.length) {
     const r0 = pst.remote[0];
     const d = r0.distance;
-    facts.push(...pst.remote.map((r) => `${r.ref === null ? "unbekannt" : refShort(r.ref)}: ${r.head ? sha7(r.head) : "kein lokales Abbild"}`
-      + (r.distance ? ` · ${r.distance.ahead} vor, ${r.distance.behind} hinter` : "")
-      + (r.refAgeMs !== null ? ` · zuletzt abgeglichen ${agoDe(r.refAgeMs)}` : "")), "— aus den lokalen Abbildern, ohne Netz");
+    facts.push(...pst.remote.map((r) => `${r.ref === null ? "unknown" : refShort(r.ref)}: ${r.head ? sha7(r.head) : "no local image"}`
+      + (r.distance ? ` · ${r.distance.ahead} ahead, ${r.distance.behind} behind` : "")
+      + (r.refAgeMs !== null ? ` · last synced ${agoEn(r.refAgeMs)} ago` : "")), "— from the local images, without the network");
     if (d && (d.ahead || d.behind)) {
-      const tag = el("span", "cnt", `${r0.name ?? ""}${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}`.trim());
-      tag.dataset.remote = r0.name ?? "";
-      nm.appendChild(tag);
+      remote = el("span", "cnt gsremote", `${r0.name ?? ""}${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}`.trim());
+      remote.dataset.remote = r0.name ?? "";
     }
   }
-  const add = el("button", "rk-btn quiet ib") as HTMLButtonElement;
+  return { state, remote, facts };
+}
+
+// ONE PROJECT AS ITS GIT STRUCTURE with what the Projekte block could do (owner Z83; src/gitstruktur.ts#headWords decides
+// which head offers which word): the head with the project's state and „[Zitat entfernt]“, the menu of the selected head or diamond,
+// and under the structure what must stay in sight — a live start on its way or failed, the fold of many quiet worktrees
+function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
+  const repaint = () => void renderBoard();
+  const rows = R.worktrees ?? [];
+  // MORE THAN 12 WORKTREES WITHOUT A SESSION wait behind one line, as they did in the Ranke
+  const idle = rows.filter((w) => !w.primary && !workSlot(w) && !boardBranch(R.repo, w.branch));
+  const folded = idle.length > 12 && !rankeFoldOpen.has(R.repo) ? idle : [];
+  const runsOf = (w: WorkplaceRow) => {
+    const s = workSlot(w);
+    return { mine: (w.branch ? runsHere.byBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id),
+      ended: (w.branch ? runsHere.doneByBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id) };
+  };
+  const board = boardRepo(R.repo);
+  const integration = board?.integration ?? "main";
+  const audit = stemAudit(R, integration);
+  const m = gitModel(folded.length ? { ...R, worktrees: rows.filter((w) => !folded.includes(w)) } : R, board, fleet, sessionActive,
+    (x) => gsCard(x as SlotInfo), { live: isLiveLane, run: (w) => {
+      const { mine, ended } = runsOf(w);
+      const g = gateLook(w, mine, ended);
+      return g === "run" ? "running" : g === "queue" ? "waiting" : null;
+    } });
+  const head = projectHead(R, standOf);
+  const add = el("button", "rk-btn quiet ib gsadd") as HTMLButtonElement;
   add.type = "button";
   add.appendChild(icon("plus"));
-  add.title = "Neue Session in diesem Repo — eine Lane, eine Branch-Session oder eine andere Rolle";
+  add.title = "New session in this repo — a lane, a branch session or another role";
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo: R.repo }); };
-  // THE LIVE SESSION (src/board.ts#startLiveSession): a sentence under the head, a lane from it
+  const sel = gsSel?.repo === R.repo ? gsSel : null;
+  const panel = sel ? gsPanel(R, m, sel.key, sel.word, wts, standOf, audit, runsOf, repaint) : null;
+  const drawn = sel ? `${R.repo}\n${sel.key}\n${sel.word ?? ""}` : "";
+  const fresh = !panel || gsDrawn === drawn ? null : gsDrawn.startsWith(`${R.repo}\n${sel?.key}\n`) ? "step2" : "step1";
+  if (sel) gsDrawn = drawn;
   const arriving = liveArriving(R.repo, rows);
-  const liveOpen = liveDraft?.repo === R.repo || liveBusy.has(R.repo) || liveErr.has(R.repo) || !!arriving;
-  const live = el("button", `rk-btn quiet live-btn${liveOpen ? " on" : ""}`) as HTMLButtonElement;
-  // the phone shows "Live" only: beside the state word the whole name crowded the project's name
-  live.append(el("span", "", "Live"), el("span", "lx", "-Session"));
-  live.type = "button";
-  live.title = "Eine Live-Session in diesem Repo starten — eine Lane mit eigener Testinstanz, am Ende Mergen";
-  live.setAttribute("aria-label", "Live-Session");
-  live.setAttribute("aria-expanded", String(liveOpen));
-  live.onclick = (e) => {
-    e.stopPropagation();
-    if (liveBusy.has(R.repo)) return;
-    if (liveOpen) { liveDraft = null; liveErr.delete(R.repo); } else liveDraft = { repo: R.repo, text: "" };
-    void renderBoard();
-    if (!liveOpen) requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`#board .zd.live-new[data-for="${CSS.escape(R.repo)}"] .live-in`)?.focus());
-  };
-  const addAt = el("span", "rt");
-  addAt.append(stateChip(pstate), live, add);
-  head.appendChild(addAt);
-  head.title = `${R.repo} · ${facts.join("\n")}\n${isOpen ? "zuklappen" : "aufklappen"}`;
-  rowTarget(head, () => {
-    rankeRepos.set(R.repo, !isOpen);
-    prefSet("fleet.ranke.repos", JSON.stringify(Object.fromEntries(rankeRepos)));
-    void renderBoard();
+  const below: HTMLElement[] = [];
+  if (arriving) below.push(liveGhost(arriving));
+  const repoErr = liveErr.get(R.repo);
+  if (repoErr && !(sel?.word === "live")) below.push(Object.assign(el("div", "zd live-err"), { textContent: repoErr }));
+  for (const w of rows) { const e = liveErrLine(w); if (e) below.push(e); }
+  if (folded.length) {
+    const f = el("button", "gsquiet zu") as HTMLButtonElement;
+    f.type = "button";
+    f.appendChild(icon("chevron"));
+    f.appendChild(el("span", "", `${folded.length} worktrees without a session`));
+    f.title = "Show the worktrees without a session";
+    f.onclick = () => { rankeFoldOpen.add(R.repo); repaint(); };
+    below.push(f);
+  }
+  for (const b of below) b.classList.add("gsbelow");
+  const open = rankeRepos.get(R.repo) ?? openByDefault;
+  const box = gitStructure(m, {
+    open, toggle: () => { rankeRepos.set(R.repo, !open); prefSet("fleet.ranke.repos", JSON.stringify(Object.fromEntries(rankeRepos))); repaint(); }, info: gsInfo, toggleInfo: () => { gsInfo = !gsInfo; repaint(); },
+    side: [...(head.remote ? [head.remote] : []), stateChip(head.state), add],
+    sel: sel?.key ?? null, select: (key) => { gsSel = key ? { repo: R.repo, key, word: null } : null; if (!key) gsDrawn = ""; repaint(); },
+    jump: jumpTo, panel, fresh, below,
   });
-  head.setAttribute("aria-expanded", String(isOpen));
-  g.appendChild(head);
-  if (liveOpen) g.appendChild(liveField(R.repo, arriving));
-  if (arriving) g.appendChild(liveGhost(arriving));
-  if (!isOpen) return g;
-  if (R.worktrees === null) {
-    g.appendChild(el("div", "bstate", `Die Worktrees dieses Repos konnten nicht gelesen werden — ${R.reasons.map((r) => r.reason).join(", ") || "ohne Grund"}.`));
-    return g;
+  const fold = box.querySelector<HTMLElement>(".gsf");
+  if (fold) fold.title = `${fold.title}\n${head.facts.join("\n")}`;
+  return box;
+}
+
+// THE MENU of a selected head or diamond (owner Z86 „[Zitat entfernt]“): step 1 begins with the head's test
+// instance — its state, port and Starten/Öffnen/Beenden — then at most three facts in one line, a lane's land form, and
+// quiet words; a word acts at once or opens step 2 under it, built by the functions the Projekte block used
+function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null, wts: WtInfo | null, standOf: Map<string, WorkplaceStand>,
+  audit: StemAudit | null, runsOf: (w: WorkplaceRow) => { mine: MeterBall[]; ended: MeterBall[] }, repaint: () => void): HTMLElement | null {
+  const rk = rowOf(key), dia = key.startsWith("dia:");
+  const rows = R.worktrees ?? [];
+  const primary = rows.find((w) => w.primary);
+  const isMain = rk === `main:${m.integration}`;
+  const branch = isMain ? m.integration : rk.replace(/^(branch|lane):/, "");
+  const item = m.items.find((i) => `${i.kind}:${i.branch}` === rk) ?? m.items.flatMap((i) => i.lanes).find((l) => `lane:${l.branch}` === rk);
+  if (!isMain && !item) return null;
+  const w = isMain ? primary : rows.find((x) => !x.primary && x.branch === branch) ?? (primary?.branch === branch ? primary : undefined);
+  const bb = isMain ? undefined : boardBranch(R.repo, branch);
+  const slot = item?.sessions[0]?.slot ?? null;
+  const s = slot ? fleet[slot - 1] : undefined;
+  const lane = rk.startsWith("lane:");
+  const at: GsHead["at"] = isMain ? "main" : lane ? (dia ? "lane-check" : "lane") : dia ? "branch-check" : "branch";
+  const facts: GsHead = { at, board: !!bb, slot, hung: !!s && (s.stalled || s.agent === "no-agent" || s.agent === "no-pane"),
+    worktree: !!w, landed: lane ? w?.target?.landed === "yes" : !!item?.merged, mirror: !!w && mirroredWorktree(w), live: isLiveLane(branch) };
+  const words = headWords(facts);
+  // a head with one word that only opens (a lane's checks) opens it at once
+  const open = word ?? (words.length === 1 && !GS_WORD[words[0]].acts ? words[0] : null);
+  const box = el("div", "");
+  const s1 = el("div", "gsm1");
+  // 0 — WHOSE MENU THIS IS (owner Z87: „[Zitat entfernt]“
+  // ): its first line names the element it opened from
+  const name = item?.name ?? branch;
+  s1.appendChild(el("div", "gshd", isMain ? `${m.integration} · ${sha7(m.head) ?? "tip unknown"}`
+    : dia ? `${lane ? "Land check" : "Merge check"} of ${name}` : `${lane ? "Lane" : "Branch"} ${name}${name !== branch ? ` · ${branch}` : ""}`));
+  // 1 — THE TEST INSTANCE of this head's own checkout (owner Z86: „[Zitat entfernt]“); a repo
+  // without the script says so in the same place
+  if (words.includes("testinstanz") && w) s1.appendChild(tiLook(w).cls === "tpl"
+    ? el("div", "zd ti gsnoti", "Test instance · no template in this repo (testinstanz.sh is missing)") : tiLine(R.repo, w, slot, standOf));
+  // 2 — AT MOST THREE FACTS: the session (a click jumps to it), the distance to main, the last check; main the check after
+  // its last land in words (owner Z86: the double diamond went) and how many sessions work on it
+  const said: (string | HTMLElement)[] = [];
+  if (isMain && !dia) {
+    const pla = postLandAudit && (postLandAudit.repo === R.repo || postLandAudit.repo === baseName(R.repo)) ? postLandAudit : null;
+    said.push(audit ? (audit.look === "run" ? "check after land running" : "check after land waits for the next run")
+      : pla ? `check after land ${pla.result === "green" ? "green" : pla.result === "red" ? "red" : "without a result"} · ${fmtTs(pla.at)}` : "no check after land open");
+    if (m.sessions.length) said.push(`${m.sessions.length} ${m.sessions.length === 1 ? "session" : "sessions"} on ${m.integration}`);
+  } else if (at === "branch-check") {
+    said.push(!bb ? "Not a board branch — it has no merge check"
+      : item?.merged ? `Landed ${bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
+  } else if (at === "lane-check") said.push(`Way to ${w?.target?.branch ?? m.integration}`);
+  else {
+    if (s) {
+      const b = el("button", "gsfact", `Slot ${s.id} · ${sessionActive(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
+        : s.lastOutput > 0 ? `quiet for ${agoEn(Date.now() - s.lastOutput)}` : "quiet"}`) as HTMLButtonElement;
+      b.type = "button";
+      b.title = `Go to the session in slot ${s.id}`;
+      b.onclick = (e) => { e.stopPropagation(); jumpTo(s.id); };
+      said.push(b);
+    } else said.push("no session");
+    const dist = w ? distanceLine(w) : null;
+    if (dist) said.push(dist);
+    const gate = w?.checks.gate;
+    said.push(bb ? (item?.merged ? `landed${bb.lands.at(-1)?.checked ? ", check green" : ", no check"}` : mergeCheckLine(bb.check))
+      : lane && w?.target?.landed === "yes" ? `landed in ${w.target.branch}`
+      : gate ? `land check ${gate.state === "green" ? "green" : gate.state === "red" ? "red" : gate.state === "running" ? "running" : gate.state === "waiting" ? "waiting" : "skipped"}`
+      : "no check yet");
   }
-  const rk = el("div", "rk");
-  const focusSession = focusSlot ? fleet[focusSlot - 1] : undefined;
-  const ownPath = focusSession?.worktree ? rows.find((w) => slotOf(w)?.id === focusSlot)?.path ?? null : null;
-  const onMain = lanes.filter((w) => !stems.includes(targetOf(w)));
-  // how many branches want to land on a stem is said by its lanes' own words, not again on the stem
-  const wantsHere = (list: WorkplaceRow[]) => list.filter((w) => w.target.landed !== "yes").length;
-  // the stem: main, its tip, the sessions in the main checkout as addresses, its test instance
-  const main = branchOf("main");
-  const mainHere = !!focusSession?.cwd && !focusSession.worktree && (focusSession.repo ?? focusSession.cwd) === R.repo;
-  const mrow = el("div", `zr base${mainHere ? " here path" : ownPath ? " path" : ""}`);
-  mrow.dataset.id = `${R.repo}#main`;
-  mrow.style.setProperty("--d", "0");
-  mrow.appendChild(el("span", "nd"));
-  mrow.appendChild(el("span", "nm", "main"));
-  const mrt = el("span", "rt");
-  const nMain = wantsHere(onMain) + stems.filter((t) => branchOf(t)?.distance?.ahead).length;
-  // the tip's commit only where the column asks for stands (as overhaul does): beside the landing
-  // count and the sessions it crowded the row into two lines (owner 2026-10-08); the title keeps it
-  const msha = sha7(main?.head);
-  if (!msha) {
-    mrt.appendChild(el("span", "mono", "?"));
-    (mrt.lastChild as HTMLElement).title = "Spitze von main nicht lesbar";
-  }
-  mrow.title = `main · Spitze ${msha ?? "nicht lesbar"}${nMain ? ` · ${nMain} ${nMain === 1 ? "Zweig will" : "Zweige wollen"} hierher landen` : ""}`;
-  const stemSession = (b: string) => { const w = stemWt.get(b); const s = w ? slotOf(w) : undefined; return s ? [s] : []; };
-  // THE SESSIONS ON MAIN BY WHAT THEY ARE (owner 2026-10-08: „[Zitat entfernt]“ said nothing): the
-  // Orchestratorin, the MAINs, the rest as a count — one button; a tap lists them, each a jump
-  const onStem = [...fleet.filter((x) => x.cwd && !x.worktree && (x.repo ?? x.cwd) === R.repo), ...stemSession("main")];
-  const stemOpen = rankeOpen === `main:${R.repo}`;
-  if (onStem.length) {
-    const orch = onStem.filter((x) => x.role === "orchestrator").length, mains = onStem.filter((x) => x.role === "program-main").length;
-    const rest = onStem.length - orch - mains;
-    const b = el("button", `msess${stemOpen ? " on" : ""}`, [orch ? "Orchestratorin" : "", mains ? `${mains} ${mains === 1 ? "MAIN" : "MAINs"}` : "",
-      rest ? `${rest} ${rest === 1 ? "Session" : "Sessions"}` : ""].filter(Boolean).join(" · ")) as HTMLButtonElement;
+  const line = el("div", "gscap");
+  said.slice(0, 3).forEach((x, i) => { if (i) line.append(" · "); line.append(x); });
+  s1.appendChild(line);
+  // 3 — THE LAND FORM in step 1 (owner Z86: „[Zitat entfernt]“): a lane's in this browser, a board
+  // branch's on the server
+  if (!dia && words.includes("landform") && lane && w) s1.appendChild(landFormField("lane", w.path, R.repo, "On land", false));
+  else if (!dia && words.includes("landform") && bb) s1.appendChild(branchLandFormField(R.repo, bb, repaint));
+  // 4 — THE QUIET WORDS: what acts at once, and what opens step 2
+  const rest = words.filter((id) => id !== "testinstanz" && id !== "landform");
+  const row = el("div", "gswords");
+  for (const id of rest) {
+    const acts = GS_WORD[id].acts;
+    const label = id === "session" && bb && branchBusy(R.repo, bb) ? "starting …" : GS_WORD[id].label;
+    const b = el("button", `gsword${acts ? " acts" : ""}${open === id ? " on" : ""}`, label) as HTMLButtonElement;
     b.type = "button";
-    b.title = `Sessions im Haupt-Checkout: ${onStem.map((x) => nameWithoutModel(x)).join(", ")} — Klick zeigt sie`;
-    b.setAttribute("aria-expanded", String(stemOpen));
-    b.onclick = (e) => { e.stopPropagation(); rankeOpen = stemOpen ? null : `main:${R.repo}`; void renderBoard(); };
-    mrt.appendChild(b);
+    if (!acts) b.setAttribute("aria-expanded", String(open === id));
+    b.disabled = (id === "pruefen" && !(bb && mayCheck(bb))) || (id === "mergen" && slot !== null && mergePending.has(slot));
+    b.title = id === "pruefen" ? (bb?.check ? `Check ${branch} against ${bb.chargeBase ?? "its base"} — the tree main would have after it` : "This repo has no merge check")
+      : id === "mergen" ? `Merge ${branch} into ${w?.target?.branch ?? m.integration} — first the question with the diff` : label;
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (!acts) { gsSel = { repo: R.repo, key, word: open === id ? null : id }; repaint(); return; }
+      if (id === "session" && bb) void startSession(R.repo, bb, repaint);
+      else if (id === "neustart" && bb && slot) void restartSession(R.repo, bb, slot, repaint);
+      else if (id === "pruefen" && bb) void startCheck(R.repo, bb, repaint);
+      else if (id === "mergen" && slot) void doLand(slot);
+    };
+    row.appendChild(b);
   }
-  mrow.appendChild(mrt);
-  if (primary) mrow.appendChild(tiSquare(primary, false));
-  // the check after the land of THIS repo measures main: its diamond on main's line to its head
-  const mainAudit = stemAudit(R, "main"), mainAuditKey = `audit:${R.repo}#main`;
-  if (mainAudit) mrow.appendChild(stemAuditButton(mainAuditKey, mainAudit, "main"));
-  mrow.dataset.audit = mainAudit?.look ?? "";
-  rk.appendChild(mrow);
-  if (mainAudit && rankeOpen === mainAuditKey) {
-    const box = el("div", "zd gate");
-    box.dataset.for = mainAuditKey;
-    box.append(...stemAuditSay(mainAudit));
-    rk.appendChild(box);
-  }
-  if (stemOpen) for (const x of onStem) {
-    const ln = el("div", `zd msl${x.id === focusSlot ? " on" : ""}`);
-    ln.appendChild(el("span", "tx", nameWithoutModel(x)));
-    ln.title = `Zu ${nameWithoutModel(x)} springen`;
-    rowTarget(ln, () => jumpTo(x.id));
-    rk.appendChild(ln);
-  }
-  if (primary && rankeOpen === `ti:${primary.path}`) rk.appendChild(tiLine(R.repo, primary, null, standOf));
-  const sortKey = (w: WorkplaceRow): string => {
-    const s = slotOf(w);
-    const ref = s ? bands.get(s.id) ?? String(s.id) : "";
-    return s ? `0${ref.padStart(6, "0")}` : `1${w.branch ?? w.path}`;
-  };
-  // NO ROW WITHOUT A STATEMENT, NO TWO ROWS ALIKE: a worktree without a session shows the words of
-  // its branch — a detached one first THAT it is detached (the phone cuts the end), then its
-  // directory's words — and words two such rows would share lead with what tells them apart
-  const words = new Map<string, string>();
-  for (const w of lanes) if (!slotOf(w)) words.set(w.path, w.branch ? laneWords(w.branch) : `losgelöst · ${laneWords(baseName(w.path))}`);
-  // the part that tells them apart goes FIRST (a narrow column cuts the end): the day the branch was
-  // cut where the days differ, else its hex tail, else the commit it stands on
-  const plain = new Map(words);
-  for (const mine of new Set(plain.values())) {
-    const alike = lanes.filter((w) => plain.get(w.path) === mine);
-    if (alike.length < 2) continue;
-    const days = alike.map((w) => (w.branch ? branchDay(w.branch) : null));
-    const byDay = days.every((d) => d) && new Set(days).size === alike.length;
-    alike.forEach((w, i) => words.set(w.path,
-      `${byDay ? days[i] : (w.branch ? /[-_/]([0-9a-f]{4,})$/.exec(w.branch)?.[1] : null) ?? sha7(w.head) ?? w.path} · ${mine}`));
-  }
-  const fold = lanes.length > 12 && !rankeFoldOpen.has(R.repo) ? lanes.filter((w) => !slotOf(w)) : [];
-  const branchRows = (list: WorkplaceRow[], d: number, parent: string) => {
-    for (const w of [...list].filter((x) => !fold.includes(x)).sort((a, b) => sortKey(a).localeCompare(sortKey(b))))
-      rk.append(...laneRow(R, w, slotOf(w), d, parent, focusSlot, bands, hue, standOf, wts, words.get(w.path)));
-  };
-  branchRows(onMain, 1, `${R.repo}#main`);
-  for (const b of branchesWithoutTree(R.repo)) rk.append(...looseBranchRow(R, b, hue));
-  for (const t of stems) {
-    const tip = branchOf(t);
-    const onT = lanes.filter((w) => targetOf(w) === t);
-    const orow = el("div", `zr base${ownPath && onT.some((w) => w.path === ownPath) ? " path" : ""}`);
-    orow.dataset.id = `${R.repo}#${t}`;
-    orow.dataset.p = `${R.repo}#main`;
-    orow.style.setProperty("--d", "1");
-    orow.appendChild(el("span", "nd"));
-    orow.appendChild(el("span", "nm", t));
-    const ort = el("span", "rt");
-    const d = tip?.distance;
-    if (d) {
-      const v = el("span", "", d.ahead || !d.behind ? `${d.ahead} vor main` : `${d.behind} hinter main`);
-      v.title = `${t}: ${d.ahead} Commits vor main, ${d.behind} hinter · Spitze ${sha7(tip?.head) ?? "unbekannt"}`;
-      ort.appendChild(v);
-    }
-    // the tip's commit only where no distance answers
-    if (!d) ort.appendChild(el("span", "mono", sha7(tip?.head) ?? "?"));
-    const ow = stemWt.get(t);
-    const os = ow ? slotOf(ow) : undefined;
-    if (os) {
-      const r = el("button", `ref${os.id === focusSlot ? " on" : ""}`, bands.get(os.id) ?? String(os.id)) as HTMLButtonElement;
-      r.type = "button";
-      r.title = `Zu Session ${os.id} · ${laneLabel(os)} im Worktree auf ${t} springen`;
-      r.onclick = (e) => { e.stopPropagation(); jumpTo(os.id); };
-      ort.appendChild(r);
-    }
-    orow.appendChild(ort);
-    const stAudit = stemAudit(R, t), stAuditKey = `audit:${R.repo}#${t}`;
-    if (stAudit) orow.appendChild(stemAuditButton(stAuditKey, stAudit, t));
-    orow.dataset.audit = stAudit?.look ?? "";
-    rk.appendChild(orow);
-    if (stAudit && rankeOpen === stAuditKey) {
-      const box = el("div", "zd gate");
-      box.dataset.for = stAuditKey;
-      box.append(...stemAuditSay(stAudit));
-      rk.appendChild(box);
-    }
-    if (ow) {
-      orow.appendChild(tiSquare(ow, os?.id === focusSlot));
-      orow.title = `${t} · ausgecheckt in ${ow.path}${os ? "" : " — Klick zeigt Öffnen und Schließen"}`;
-      const open = !os && rankeOpen === `wt:${ow.path}`;
-      if (!os) {
-        rowTarget(orow, () => { rankeOpen = open ? null : `wt:${ow.path}`; void renderBoard(); });
-        orow.setAttribute("aria-expanded", String(open));
-        orow.classList.toggle("open", open);
-        orow.style.cursor = "pointer";
-      }
-      if (open) rk.append(...wtLines(R, ow, wts));
-      if (rankeOpen === `ti:${ow.path}`) rk.appendChild(tiLine(R.repo, ow, os ? os.id : null, standOf));
-    } else orow.title = `${t} — ${onT.length} ${onT.length === 1 ? "Lane landet" : "Lanes landen"} hier`;
-    branchRows(onT, 2, `${R.repo}#${t}`);
-  }
-  if (fold.length) {
-    const f = el("div", "zr zf");
-    f.dataset.id = `${R.repo}#fold`;
-    f.dataset.p = `${R.repo}#main`;
-    f.style.setProperty("--d", "1");
-    f.append(el("span", "nd leer"), el("span", ""), el("span", "nm leer", `${fold.length} ohne Session`));
-    const chev = el("span", "fc");
-    chev.appendChild(icon("chevron"));
-    f.appendChild(chev);
-    f.title = "Worktrees ohne Session aufklappen";
-    rowTarget(f, () => { rankeFoldOpen.add(R.repo); void renderBoard(); });
-    rk.appendChild(f);
-  }
-  g.appendChild(rk);
-  return g;
+  if (rest.length) s1.appendChild(row);
+  box.appendChild(s1);
+  if (!open) return box;
+  const s2 = el("div", "gsm2");
+  const runs = w ? runsOf(w) : { mine: [], ended: [] };
+  if (open === "live") s2.appendChild(liveField(R.repo, liveArriving(R.repo, rows)));
+  else if (open === "landform") s2.appendChild(landFormField("repo", R.repo, R.repo, "On land, every lane", true));
+  else if (open === "charge" && bb) s2.appendChild(branchCharge(R.repo, bb));
+  else if (open === "worktree" && w) s2.append(...wtLines(R, w, wts));
+  else if (open === "pruefungen" && w) s2.append(wayLine(w, runs.mine), gateLines(`gs:${w.path}`, w, runs.mine, runs.ended), ...runLines(runs.mine));
+  if (!s2.childElementCount) return box;
+  box.appendChild(s2);
+  return box;
 }
 
 function jumpTo(slot: number): void {
@@ -4634,10 +4281,10 @@ function wtLines(R: WorkplaceRepo, w: WorkplaceRow, wts: WtInfo | null): HTMLEle
   const line = el("div", "zd zx");
   line.dataset.for = w.path;
   const tx = el("span", "tx");
-  tx.appendChild(el("span", "mono", w.branch ?? "losgelöst"));
+  tx.appendChild(el("span", "mono", w.branch ?? "detached"));
   const wr = wts && wts.repo === R.repo ? wts.worktrees.find((x) => x.path === w.path) : undefined;
   // the commits ahead stand in the row above (src/board.ts#gitSign) — not said twice
-  if (wr) tx.appendChild(document.createTextNode(` · ${wr.dirty ? `${wr.dirty} ungesichert` : "nichts ungesichert"}`));
+  if (wr) tx.appendChild(document.createTextNode(` · ${wr.dirty ? `${wr.dirty} unsaved` : "nothing unsaved"}`));
   tx.title = w.path;
   line.appendChild(tx);
   out.push(line);
@@ -4649,8 +4296,8 @@ function wtLines(R: WorkplaceRepo, w: WorkplaceRow, wts: WtInfo | null): HTMLEle
     // only the focused session's repo carries the risk facts closing needs; opening works anywhere
     const box = el("div", "zd zx2");
     const acts = el("div", "rk-acts");
-    const ob = el("button", "rk-btn primary", "Öffnen") as HTMLButtonElement;
-    ob.title = "Diesen Worktree in einem freien Slot öffnen und dorthin springen";
+    const ob = el("button", "rk-btn primary", "Open") as HTMLButtonElement;
+    ob.title = "Open this worktree in a free slot and jump there";
     ob.onclick = async (e) => {
       e.stopPropagation();
       if (laneReqBusy) return;
@@ -4666,287 +4313,14 @@ function wtLines(R: WorkplaceRepo, w: WorkplaceRow, wts: WtInfo | null): HTMLEle
     };
     acts.appendChild(ob);
     box.appendChild(acts);
-    box.appendChild(el("div", "hint", "Schließen und die Notiz: in einer Session dieses Repos, dort steht, was verloren ginge."));
+    box.appendChild(el("div", "hint", "Close and the note: in a session of this repo, where it says what would be lost."));
     out.push(box);
   }
   return out;
 }
 
-// A BOARD BRANCH WITHOUT A WORKTREE (K5): its points, charges and "passt" outlive the tree, so it keeps
-// its row; "Session starten" in its card checks it out again
-function looseBranchRow(R: WorkplaceRepo, b: BranchView, hue: number): HTMLElement[] {
-  const key = `br:${R.repo}\n${b.branch}`;
-  const open = rankeOpen === key;
-  const row = el("div", `zr zw${open ? " open" : ""}`);
-  row.dataset.id = key;
-  row.dataset.p = `${R.repo}#main`;
-  row.dataset.node = "still";
-  row.style.setProperty("--d", "1");
-  const name = el("span", "nm leer", b.name);
-  const tag = el("span", "livetag", "Branch");
-  tag.title = `Ein Branch des Boards (${b.branch}) ohne Worktree — „Session starten“ checkt ihn wieder aus`;
-  name.appendChild(tag);
-  rowCells(row, "leer", "", hue, name);
-  const rt = el("span", "lr");
-  rt.appendChild(el("span", "", "ohne Worktree"));
-  row.appendChild(rt);
-  row.title = `${b.branch} · ohne Worktree — ${open ? "Klick klappt zu" : "Klick klappt auf"}`;
-  rowTarget(row, () => { rankeOpen = open ? null : key; void renderBoard(); });
-  row.setAttribute("aria-expanded", String(open));
-  return open ? [row, branchCard(R.repo, b, null, () => void renderBoard())] : [row];
-}
-function laneRow(R: WorkplaceRepo, w: WorkplaceRow, s: SlotInfo | undefined, d: number, parent: string,
-  focusSlot: number | null, bands: Map<number, string>, hue: number, standOf: Map<string, WorkplaceStand>,
-  wts: WtInfo | null, words?: string): HTMLElement[] {
-  const here = !!s && s.id === focusSlot;
-  const ref = s ? bands.get(s.id) ?? String(s.id) : "";
-  const working = !!s && sessionActive(s.id);
-  const broken = !!s && (s.stalled || s.agent === "no-agent" || s.agent === "no-pane");
-  const node = !s ? "leer" : broken ? "bad" : s.awaiting === "owner" ? "wait" : working ? "live" : "";
-  const word = !s ? "kein Gespräch in diesem Worktree" : broken ? "hängt"
-    : s.awaiting === "owner" ? "wartet auf dich" : s.awaiting === "main" ? "wartet auf MAIN"
-    : working ? "arbeitet" : s.lastOutput > 0 ? `still seit ${agoDe(Date.now() - s.lastOutput).replace(/^vor /, "")}` : "still";
-  // EVERY LANE OPENS IN PLACE (owner 2026-10-08, decided by the UI-MAIN: „[Zitat entfernt]“
-  // ) — with or without a session, the same key
-  const open = rankeOpen === `wt:${w.path}`;
-  const flash = rankeFlash && rankeFlash.path === w.path && rankeFlash.until > Date.now();
-  // THE WORKTREE THIS TEST INSTANCE RUNS FROM (owner 2026-10-08, round 2), read off the stand the
-  // instance knows of itself (instance.source.branch) — marked, and said in the row's title
-  const self = !!instanceSource && !!w.branch && w.branch === instanceSource.branch;
-  const mirror = mirroredWorktree(w);
-  const row = el("div", `zr zw${here ? " here path" : ""}${open ? " open" : ""}${flash ? " flash" : ""}${self ? " self" : ""}${mirror ? " mirror" : ""}`);
-  row.dataset.id = w.path;
-  row.dataset.p = parent;
-  row.dataset.node = node || "still";
-  if (s) row.dataset.slot = String(s.id);
-  row.style.setProperty("--d", String(d));
-  const stand = standOf.get(`worktree:${w.path}`);
-  const headSha = sha7(w.head) ?? sha7(stand?.head);
-  // without a session the ring of the node says so; the words of the branch tell such worktrees
-  // apart. A label's "⎇ " is cut: under a stem every row is a branch, the sign says nothing there
-  // a label that is only its branch ("live-2610091226-die-zeitleiste-…-51b8") reads as the branch's
-  // words, as a worktree without a session does — a live lane's "live" is its tag beside the name
-  const label = s ? laneLabel(s).replace(/^⎇\s*/, "") : "";
-  const bare = !!w.branch && (label === w.branch || label === w.branch.replace(/^fleet\//, ""));
-  const said = bare ? laneWords(w.branch).replace(isLiveLane(w.branch) ? /^live\s+/ : /$^/, "") : label;
-  // a branch of the board (K5) carries its Board-Name with or without a session
-  const bb = boardBranch(R.repo, w.branch);
-  const name = el("span", `nm${s ? "" : " leer"}`, bb?.name ?? (s ? said : words ?? laneWords(w.branch)));
-  if (bare) name.title = w.branch ?? "";
-  rowCells(row, node, ref, hue, name);
-  // a run that names its slot must name THIS lane's session too — a branch alone is not enough then
-  const mine = (w.branch ? runsHere.byBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id);
-  // THE CLOSED ROW IS QUIET (owner 2026-10-08: „[Zitat entfernt]“
-  // ): its git stand and the test
-  // instance's square only while that runs. NO FLAG (owner 2026-10-10: „[Zitat entfernt]“
-  // 
-  // ): what its checks came to stands at the four points of the opened lane (#wayLine).
-  // A check that runs or waits, and for a few minutes how a run ended, is the DIAMOND on the lane's
-  // way back to its target (#gateLook, placed by #drawRankeLines), open or closed.
-  const rt = el("span", "lr");
-  rt.appendChild(gitSign(w, s));
-  if (tiLook(w).cls === "up") rt.appendChild(tiSign(w));
-  row.appendChild(rt);
-  // every lane lands somewhere: its way back is dashed until it has landed AND the check after that
-  // land is through (owner 2026-10-09: „[Zitat entfernt]“
-  // ) — solid only once nothing of its way is open
-  row.dataset.land = w.target.landed === "yes" && !auditOf(w.branch) ? "yes" : "wait";
-  const ended = (w.branch ? runsHere.doneByBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id);
-  const gate = gateLook(w, mine, ended);
-  const gateKey = `gate:${w.path}`;
-  if (gate) row.appendChild(gateButton(gateKey, gate, w, mine, ended));
-  const dist = w.distance ? `${w.distance.ahead} Commits vor ${w.base?.branch ?? "der Basis"}, ${w.distance.behind} hinter` : "Abstand zur Basis unbekannt";
-  const where = `${w.branch ?? "losgelöst, auf keinem Zweig"} · läuft auf ${headSha ?? "unbekannt"}${w.target ? ` · landet in ${w.target.branch}` : ""} · ${dist}${s?.git?.dirty ? ` · ${s.git.dirty} ungesicherte Dateien` : ""}`;
-  const verb = open ? "Klick klappt zu" : "Klick klappt auf";
-  row.title = (self ? "Aus diesem Worktree läuft diese Testinstanz · " : "") + (mirror ? "Gespiegelt vom echten Rechner, hier nur lesbar · " : "") + (!s ? `Kein Gespräch in diesem Worktree · ${where} — ${verb}`
-    : `${ref} · ${laneLabel(s)} · ${word}${here ? " — diese Session" : ""} · ${where} — ${verb}`);
-  rowTarget(row, () => { rankeOpen = open ? null : `wt:${w.path}`; void renderBoard(); });
-  row.setAttribute("aria-expanded", String(open));
-  const out: HTMLElement[] = [row];
-  if (gate && rankeOpen === gateKey) out.push(gateLines(gateKey, w, mine, ended));
-  // a live lane says so beside its name; what failed at its start stays in sight, the rest opens on a tap
-  const liveLane = isLiveLane(w.branch);
-  if (bb) {
-    const tag = el("span", "livetag", "Branch");
-    tag.title = `Ein Branch des Boards (${w.branch}): Punkte, Diff, passt, Session — er bleibt, auch wenn die Session endet`;
-    name.appendChild(tag);
-  }
-  if (liveLane) {
-    const tag = el("span", "livetag", "Live");
-    tag.title = "Live-Session: der Owner arbeitet in ihrer Testinstanz mit, am Ende Mergen";
-    name.appendChild(tag);
-    const err = liveErrLine(w);
-    if (err) out.push(err);
-  }
-  if (!open) return out;
-  if (bb) out.push(branchCard(R.repo, bb, s ? s.id : null, () => void renderBoard(), broken));
-  // THE OPENED LANE: its checks as the four points (or the plain word that there is none yet — never
-  // a row of empty points), each run of it as its sentence with its machine, its test instance as a
-  // line with Öffnen or Starten, and for a worktree no session holds: its controls
-  const wl = wayLine(w, mine);
-  // a lane that has not landed chooses how it lands: the gear at the end of its way
-  if (w.target.landed !== "yes" && !mirror) {
-    wl.classList.add("lf");
-    const lf = landFormOf(R.repo, w.path);
-    wl.appendChild(landFormButton(`lane:${w.path}`, `Beim Land dieser Lane: ${LAND_FORM_WORD[lf.form]}${lf.own ? "" : " (wie das Projekt)"}`));
-  }
-  out.push(wl);
-  if (landFormOpen === `lane:${w.path}`) out.push(landFormField("lane", w.path, R.repo, "Beim Land dieser Lane", true));
-  out.push(...runLines(mine));
-  if (liveLane) out.push(...liveLines(R, w, s, standOf));
-  else if (tiLook(w).cls !== "tpl") out.push(tiLine(R.repo, w, s ? s.id : null, standOf));
-  // a branch of the board starts its session from its card — no second way in as a lane here (K5)
-  if (!s && !mirror && !bb) out.push(...wtLines(R, w, wts));
-  return out;
-}
-
-// The Ranke's lines, 1 px: only vertical in the parent's column and horizontal to the node. The own
-// path (main → overhaul → the focused lane) in ink, everything else in the quiet edge. THE WAY BACK
-// (owner 2026-10-09: „[Zitat entfernt]“; drawn first in 954fd904): every lane
-// runs on past its row's end into the right margin and joins its target's RAIL there, which climbs to
-// the target's own row and ends in its head — dashed while the lane waits to land, solid once it has
-// landed; the diamond of a running check sits ON it (.lgate). The focused lane's way back is ink.
-// Drawn after the column is in the document, since it needs the rows' positions.
-// how far right of the row's last mark the diamond's centre stands: two dashes of the way back
-// (3 + 2.5 each, path.back.wait) and the diamond's own half — and how close to its rail at most: the
-// diamond's box is 28 px wide on the phone, and at 7 px from a rail on the column's edge it stood 1 px
-// past the column (viele at 390 scrolled sideways)
-const GATE_DASHES = 16, GATE_RAIL = 9;
-export function drawRankeLines(root: HTMLElement): void {
-  for (const rk of root.querySelectorAll<HTMLElement>(".rk")) {
-    rk.querySelector(":scope > svg")?.remove();
-    rk.querySelectorAll(":scope > .zr > .zhead").forEach((e) => e.remove());
-    const tb = rk.getBoundingClientRect();
-    if (!tb.height) continue;
-    const mid = (row: Element): [number, number] | null => {
-      const n = row.querySelector(":scope > .nd")?.getBoundingClientRect();
-      return n ? [Math.round(n.left + n.width / 2 - tb.left) + 0.5, Math.round(n.top + n.height / 2 - tb.top)] : null;
-    };
-    // the right edge of what a row says (its git stand, square, chevron), where its way back starts
-    const end = (row: Element): number => Math.max(...[...row.querySelectorAll(":scope > .lr, :scope > .nm, :scope > .rt, :scope > .ti, :scope > .fc")]
-      .map((e) => e.getBoundingClientRect().right - tb.left), 0);
-    // one rail per target, in the margin right of the rows; a nested target's rail stands one step in
-    const railX = (par: HTMLElement) => Math.round(tb.width - 6 - 6 * Number(par.style.getPropertyValue("--d") || 0)) + 0.5;
-    const rails = new Map<string, { x: number; top: number; low: number; inkLow: number | null; waiting: number }>();
-    const paths: { cls: string; d: string; id?: string }[] = [];
-    let quiet = "", ink = "";
-    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr[data-p]")) {
-      const par = [...rk.querySelectorAll<HTMLElement>(":scope > .zr[data-id]")].find((x) => x.dataset.id === row.dataset.p);
-      const a = par ? mid(par) : null, b = mid(row);
-      if (!par || !a || !b) continue;
-      const own = row.classList.contains("path") && par.classList.contains("path");
-      const d = `M${a[0]} ${a[1] + 4}V${b[1]}H${b[0] - 4}`;
-      if (own) ink += d; else quiet += d;
-      // the way back: only a row that lands somewhere — a stem does not
-      if (!row.dataset.land) continue;
-      const rx = railX(par);
-      const rl = rails.get(row.dataset.p!) ?? { x: rx, top: a[1], low: b[1], inkLow: null, waiting: 0 };
-      rl.low = Math.max(rl.low, b[1]);
-      if (row.dataset.land === "wait") rl.waiting += 1;
-      if (own) rl.inkLow = Math.max(rl.inkLow ?? a[1], b[1]);
-      rails.set(row.dataset.p!, rl);
-      // drawn FROM the rail, so a dashed way back begins with a dash where it joins (no gap at the rail)
-      const x0 = Math.round(end(row)) + 4;
-      paths.push({ cls: `back ${row.dataset.land === "wait" ? "wait" : "land"}${own ? " ink" : ""}`, d: `M${rx} ${b[1]}H${x0}`, id: row.dataset.id });
-      // the diamond sits ON that line a few dashes after the row's last mark (the test instance's
-      // square, its git stand — owner 2026-10-09: „[Zitat entfernt]“
-      // ), its centre on the line's own coordinates —
-      // placed from the same numbers, never guessed by CSS, never on the rail (GATE_RAIL)
-      const gb = row.querySelector<HTMLElement>(":scope > .lgate");
-      if (gb) {
-        const rb = row.getBoundingClientRect();
-        const gx = Math.min(x0 + GATE_DASHES, rx - GATE_RAIL);
-        gb.style.left = `${gx - (rb.left - tb.left)}px`;
-        // the note opens leftwards from the diamond and never past the column's left edge
-        gb.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
-        gb.style.top = `${b[1] - (rb.top - tb.top)}px`;
-        gb.dataset.placed = "1";
-      }
-    }
-    // A STEM'S LINE TO THE RIGHT (#stemAudit): from the end of what its row says, plain to its head —
-    // and while the check after its land is open, dashed like a way back and ENDING in its diamond just
-    // before the head, the rest of the way plain; a stem no lane comes back to has no head, so its
-    // dashed line ends in the diamond where the head would stand
-    const stemLine = (par: HTMLElement, y: number, headX: number, head: boolean): void => {
-      const x = Math.round(end(par)) + 5;
-      const sg = par.querySelector<HTMLElement>(":scope > .lgate.stem");
-      if (!sg) {
-        if (head && headX - 4 > x) paths.push({ cls: "rail", d: `M${x} ${y}H${headX - 4}` });
-        return;
-      }
-      const gx = headX - GATE_RAIL;
-      if (gx - 6 > x) paths.push({ cls: "rail back wait audit", d: `M${x} ${y}H${gx - 6}` });
-      if (head && headX - 4 > gx + 6) paths.push({ cls: "rail", d: `M${gx + 6} ${y}H${headX - 4}` });
-      const pb0 = par.getBoundingClientRect();
-      sg.style.left = `${gx - (pb0.left - tb.left)}px`;
-      sg.style.setProperty("--gn-room", `${Math.max(160, Math.round(gx - 6))}px`);
-      sg.style.top = `${y - (pb0.top - tb.top)}px`;
-      sg.dataset.placed = "1";
-    };
-    for (const par of rk.querySelectorAll<HTMLElement>(":scope > .zr.base")) {
-      const p = mid(par);
-      if (p && !rails.has(par.dataset.id ?? "")) stemLine(par, p[1], railX(par), false);
-    }
-    // THE TARGET'S HEAD: from the end of what the target's row says to the rail, and the dot the rail
-    // hangs from — a ring while lanes wait to land there, filled once all have
-    for (const [pk, rl] of rails) {
-      const par = [...rk.querySelectorAll<HTMLElement>(":scope > .zr[data-id]")].find((x) => x.dataset.id === pk);
-      if (!par) continue;
-      stemLine(par, rl.top, rl.x, true);
-      paths.push({ cls: "rail", d: `M${rl.x} ${rl.top + 4}V${rl.low}` });
-      if (rl.inkLow !== null) paths.push({ cls: "rail ink", d: `M${rl.x} ${rl.top + 4}V${rl.inkLow}` });
-      const pb = par.getBoundingClientRect();
-      const target = (par.querySelector(":scope > .nm")?.textContent ?? "").trim() || "diesem Zweig";
-      const hd = el("span", `zhead${rl.waiting ? " next" : ""}`);
-      hd.style.left = `${rl.x - (pb.left - tb.left)}px`;
-      hd.style.top = `${rl.top - (pb.top - tb.top)}px`;
-      hd.title = rl.waiting
-        ? `Nach ${target} ${rl.waiting === 1 ? "ist eine Lane" : `sind ${rl.waiting} Lanes`} noch unterwegs — gestrichelt, bis Land und Nachprüfung durch sind`
-        : `Alles, was an ${target} hängt, ist gelandet`;
-      par.appendChild(hd);
-    }
-    // THE BAR OF THE ROW YOU STAND IN (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
-    // 
-    // 
-    // funktioniert"): the focused row's ground runs from its own point on — and the lines of the Ranke
-    // run on beside it. SHORTER, AND THE SAME UNDER THE POINTER (owner, the same day: „[Zitat entfernt]“
-    // 
-    // 
-    // kürzer werden"): every row of the Ranke carries the bar, the focused and the opened one in the
-    // surface, the hovered one in the hover tone. THE MARKS STAND INSIDE IT (owner, the same day: „[Zitat entfernt]“
-    // ; then "dass der grüne
-    // Button der Testinstanz innerhalb des grau hinterlegten Objekts sich befindet"): it holds everything
-    // the row says — words, git stand (↑n), the test instance's square — and ends where the
-    // row's way back begins, so the dashes to the diamond leave from its end
-    const hasMark = (row: Element): boolean =>
-      [...row.querySelectorAll(":scope > .ti, :scope > .lr > :not(.gs)")].some((e) => e.getClientRects().length > 0);
-    for (const row of rk.querySelectorAll<HTMLElement>(":scope > .zr.zw, :scope > .zr.base")) {
-      const p = mid(row);
-      if (!p) continue;
-      const off = row.getBoundingClientRect().left - tb.left;
-      row.style.setProperty("--zb-l", `${p[0] - off}px`);
-      row.style.setProperty("--zb-w", `${Math.max(0, Math.round(end(row)) + 4 - p[0])}px`);
-      row.dataset.bar = hasMark(row) ? "mark" : "end";
-    }
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("aria-hidden", "true");
-    const draw = (cls: string, d: string, id?: string) => {
-      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      p.setAttribute("d", d);
-      p.setAttribute("class", cls);
-      if (id) p.dataset.for = id;
-      svg.appendChild(p);
-    };
-    // quiet first, ink last: an ink stretch lies over the quiet line it shares
-    for (const [d, cls] of [[quiet, "q"], [ink, "i"]] as const) if (d) draw(cls, d);
-    for (const p of [...paths].sort((x, y) => Number(x.cls.endsWith(" ink")) - Number(y.cls.endsWith(" ink")))) draw(p.cls, p.d, p.id);
-    rk.prepend(svg);
-  }
-}
-
 // the board's own 3s interval used to live here — it is armed by the poll pump now (grep
 // armPolls), together with refresh(), so document.hidden is handled in exactly one place.
-
 
 // --- verification tier 2 on the board: the post-land check alarm ------------------------------
 // The server runs the full suite AFTER every land that moves main and gates NOTHING on the outcome
@@ -5185,7 +4559,7 @@ export function initBoard(): void {
   if (!document.getElementById("rankecss")) {
     const st = document.createElement("style");
     st.id = "rankecss";
-    st.textContent = RANKE_CSS;
+    st.textContent = RANKE_CSS + GS_CSS;
     document.head.appendChild(st);
   }
   // the close box is the ℹ itself, pressed; closing hands the focus back to the pane's ℹ, which

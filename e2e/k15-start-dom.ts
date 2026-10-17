@@ -560,10 +560,10 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           && canon(s[0]!.body) === canon({ repo: REPO, parent: { slot: 1, openedAt: 1000 }, branch: "", ...d, plan: { hash: h, role: "lane" } });
       });
 
-      // 5 · the + of a repo in the board's Projekte
+      // 5 · the + in a repo's head of the git structure (K16: the Ranke's Projekte are gone)
       await caseOf("plus", async () => {
         await fresh({ board: true });
-        const add = `document.querySelector('#boardbody .grp.proj[data-repo="${REPO}"] .rk-btn.ib')`;
+        const add = `document.querySelector('#boardbody .gs[data-repo="${REPO}"] .gsh .gsadd')`;
         if (!await wait(`!!${add}`, 10000)) throw new Error("the board never showed the repo's +: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no board'"));
         await click(add);
         if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("the repo's + did not open the window");

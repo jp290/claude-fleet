@@ -17,7 +17,7 @@ const program = (id: string, main: { slot: number; openedAt: number } | null, st
 const branches = (...pairs: [string, number, number][]): BranchesView => ({ repos: [{ repo: "/r", integration: "main",
   others: [], othersTotal: 0, reasons: [], branches: pairs.map(([branch, s, openedAt]) => ({ branch, name: `Name ${branch}`,
     base: null, head: "h", text: "", rev: 1, seen: null, path: null, session: { slot: s, openedAt }, distance: null,
-    lands: [], chargeBase: null, chargeCommits: null, check: null })) }] });
+    lands: [], landForm: "squash", chargeBase: null, chargeCommits: null, check: null })) }] });
 const ids = (t: KTree) => flatten(t).map((n) => n.slot.id);
 const where = (t: KTree) => Object.fromEntries(t.groups.map((g) => [g.key, g.nodes.map((n) => n.slot.id)]));
 

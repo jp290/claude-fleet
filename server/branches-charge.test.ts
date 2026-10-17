@@ -101,6 +101,35 @@ describe("Charge mergen ohne Merge-Check (ein Repo ohne ci/merge-check.ts)", () 
   }, LIFE_DEADLINE_MS);
 });
 
+// K16 Runde 4 (Owner: „[Zitat entfernt]“; Bauleitung e194d4b3): die Wahl liegt
+// am Branch (POST /api/branches/note, Feld landForm), die Route nimmt body.squash, sonst diese Wahl.
+// „Alle Commits“ gibt es nur mit Merge-Check: main springt dann auf dessen Kandidaten.
+describe("Land-Form ohne Merge-Check: alle Commits geht nicht", () => {
+  test("squash:false oder die Wahl „alle Commits“ ohne Merge-Check: 409, main bleibt; ein Commit geht weiter", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Ohne Check" })]);
+    commitIn(String(made?.body.path), "a.txt", "Arbeit");
+    const before = sh(f.repo, "rev-parse", "main");
+    const [explicit, bad, set, chosen, view] = await life(f, [
+      land(f.repo, "branch/ohne-check", "Reihe", { unchecked: true, squash: false }),
+      post("/api/branches/note", { repo: f.repo, branch: "branch/ohne-check", landForm: "alles" }),
+      post("/api/branches/note", { repo: f.repo, branch: "branch/ohne-check", landForm: "commits" }),
+      land(f.repo, "branch/ohne-check", "Reihe", { unchecked: true }),
+      get("/api/branches")]);
+    expect(explicit?.status).toBe(409);
+    expect(String(explicit?.body.error)).toContain("alle Commits nur mit Merge-Check");
+    expect(bad?.status).toBe(400);
+    expect(set).toMatchObject({ status: 200, body: { ok: true, landForm: "commits" } });
+    expect(chosen?.status).toBe(409);
+    expect(String(chosen?.body.error)).toContain("alle Commits nur mit Merge-Check");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(before);
+    expect(rowsOf(view!, f.repo).branches[0]?.landForm).toBe("commits");
+    const [one] = await life(f, [land(f.repo, "branch/ohne-check", "Ein Commit", { unchecked: true, squash: true })]);
+    expect(one).toMatchObject({ status: 200, body: { form: "squash" } });
+    expect(mainLog(f.repo)).toEqual(["Ein Commit", "start"]);
+  }, LIFE_DEADLINE_MS);
+});
+
 describe("Charge mergen mit Merge-Check: genau der geprüfte Baum", () => {
   // ein Repo mit ci/merge-check.ts; die Zeile des Merge-Checks pflanzt der Test, wie ci/merge-check.ts sie schreibt
   function checkedFixture() {
@@ -143,6 +172,45 @@ describe("Charge mergen mit Merge-Check: genau der geprüfte Baum", () => {
     expect(sh(f.repo, "rev-parse", "main^{tree}")).toBe(c.tree);
     expect(sh(f.repo, "log", "-1", "--format=%s", "main")).toBe("Geprüft: x");
     expect(rowsOf(after!, f.repo).branches[0]?.check).toMatchObject({ state: "stale" }); // die nächste Charge zählt ab dem Tip
+  }, LIFE_DEADLINE_MS);
+
+  test("alle Commits: ohne body.squash gilt die Wahl am Branch, main springt per Fast-Forward auf den Kandidaten", async () => {
+    const f = checkedFixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Reihe" })]);
+    const path = String(made?.body.path);
+    const k1 = commitIn(path, "k1.txt", "erster Commit"), k2 = commitIn(path, "k2.txt", "zweiter Commit");
+    const main = sh(f.repo, "rev-parse", "main");
+    const c = candidate(f.repo, main, k1, k2);
+    plantCheck(f, { at: 1, branch: "branch/reihe", base: "main", tip: k2, main, ...c, verdict: "green", mergeable: true, why: "main grün" });
+    const [set, landed, view] = await life(f, [
+      post("/api/branches/note", { repo: f.repo, branch: "branch/reihe", landForm: "commits" }),
+      land(f.repo, "branch/reihe", "Reihe"),
+      get("/api/branches")]);
+    expect(set?.status).toBe(200);
+    expect(landed).toMatchObject({ status: 200, body: { ok: true, sha: c.candidate, commits: 2, checked: true, form: "commits" } });
+    expect(sh(f.repo, "rev-parse", "main")).toBe(c.candidate);
+    expect(sh(f.repo, "rev-parse", "main~2")).toBe(main); // zwei Commits auf main, kein Charge-Commit
+    expect(readFileSync(join(f.repo, "k2.txt"), "utf8")).toBe("zweiter Commit\n"); // der Haupt-Checkout zog mit
+    const row = rowsOf(view!, f.repo).branches[0];
+    expect(row?.lands.map((l) => [l.sha, l.form])).toEqual([[c.candidate, "commits"]]);
+    expect(row?.chargeBase).toBe(k2); // die nächste Charge zählt ab dem Tip, wie bei einem Commit
+  }, LIFE_DEADLINE_MS);
+
+  test("body.squash:true schlägt die Wahl „alle Commits“: ein Charge-Commit mit dem geprüften Baum", async () => {
+    const f = checkedFixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Doch einer" })]);
+    const path = String(made?.body.path);
+    const k1 = commitIn(path, "k1.txt", "erster Commit"), k2 = commitIn(path, "k2.txt", "zweiter Commit");
+    const main = sh(f.repo, "rev-parse", "main");
+    const c = candidate(f.repo, main, k1, k2);
+    plantCheck(f, { at: 1, branch: "branch/doch-einer", base: "main", tip: k2, main, ...c, verdict: "green", mergeable: true, why: "main grün" });
+    const [, landed] = await life(f, [
+      post("/api/branches/note", { repo: f.repo, branch: "branch/doch-einer", landForm: "commits" }),
+      land(f.repo, "branch/doch-einer", "Doch einer", { squash: true })]);
+    expect(landed).toMatchObject({ status: 200, body: { form: "squash" } });
+    expect(sh(f.repo, "rev-parse", "main^")).toBe(main);
+    expect(sh(f.repo, "rev-parse", "main^{tree}")).toBe(c.tree);
+    expect(sh(f.repo, "log", "-1", "--format=%s", "main")).toBe("Doch einer");
   }, LIFE_DEADLINE_MS);
 
   // Bauleitung 13.10.: was der Owner sieht, wird gemergt. Die Basis ist ein Ref-Name; wandert er nach dem
@@ -220,6 +288,13 @@ describe("ein Land überdauert den Neustart", () => {
     await life(f, [land(f.repo, "branch/bleibt", "Bleibt", { unchecked: true })]);
     const books = persisted(f).branches as { lands: { subject: string }[] }[];
     expect(books[0]?.lands.map((l) => l.subject)).toEqual(["Bleibt"]);
+  }, LIFE_DEADLINE_MS);
+  test("die Land-Form des Branches steht nach dem Neustart noch da", async () => {
+    const f = fixture();
+    await life(f, [post("/api/branches", { repo: f.repo, name: "Form bleibt" }),
+      post("/api/branches/note", { repo: f.repo, branch: "branch/form-bleibt", landForm: "commits" })]);
+    const [view] = await life(f, [get("/api/branches")]);
+    expect(rowsOf(view!, f.repo).branches[0]?.landForm).toBe("commits");
   }, LIFE_DEADLINE_MS);
 });
 

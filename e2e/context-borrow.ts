@@ -68,8 +68,8 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       const errors: string[] = [];
       for (const root of roots) try {
         const founding = readFileSync(join(root, "src/founding.ts"), "utf8");
-        const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// THE FOUR GROUPS"));
-        const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// whether this start"));
+        const validators = founding.slice(founding.indexOf("const strs ="), founding.indexOf("// validPlan ends here"));
+        const fixed = founding.slice(founding.indexOf("const partFixed ="), founding.indexOf("// partFixed ends here"));
         const client = new Function(new Bun.Transpiler({ loader: "ts" }).transformSync(
           `${validators}\n${fixed}\nreturn { validPlan, partFixed };`))() as {
           validPlan: (value: unknown) => boolean; partFixed: (value: unknown) => string | null;

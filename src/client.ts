@@ -69,7 +69,6 @@ import {
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
-import { openLaneFounding, openPicker } from "./founding";
 import { openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
 
@@ -700,15 +699,11 @@ export interface TaskInfo { id: string; source: ServerTask["source"];
 interface DispatchInfo { available: boolean; on: boolean; maxLanes: number; repo: string; waveBudget?: number;
   lanes?: number; quiet?: boolean }
 export let fleet: SlotInfo[] = [];
-// the harness catalogue, fetched ONCE (it is a server constant) the first time the founding window opens.
+// the harness catalogue, fetched ONCE (it is a server constant) the first time a reader needs it.
 // Empty until then, and every reader treats empty as "only the default exists" — so a failed or
 // pending fetch degrades to exactly the pre-harness UI rather than to a broken one.
 export let harnesses: HarnessInfo[] = [];
 let harnessesLoaded = false;
-// this fleet's box defaults, from the same fetch — shown as the container fields' placeholders so
-// the owner sees what leaving them empty gets. Never hardcoded here: they are server constants
-// (FLEET_CONTAINER / FLEET_CONTAINER_CONTEXT), and a second copy would drift silently.
-export let containerDefaults: { container: string; containerContext: string } | null = null;
 // what a null model launches on the DEFAULT adapter, from the same fetch. Shown as the model
 // field's placeholder so "leave it empty" is a visible choice rather than a guess. Claude-only by
 // construction (the server says so): a foreign adapter keeps its own implicit default, and the
@@ -729,13 +724,10 @@ export async function loadHarnesses(): Promise<void> {
     const res = await api("/api/harnesses");
     if (!res.ok) return;
     const cat = (await res.json()) as { harnesses: HarnessInfo[]; defaultModel?: string;
-      modelRegistry?: (ModelEntry & { availability: ModelAvailability })[];
-      containerDefaults?: { container: string; containerContext: string } };
+      modelRegistry?: (ModelEntry & { availability: ModelAvailability })[] };
     defaultModel = typeof cat.defaultModel === "string" ? cat.defaultModel : null;
     modelRegistry = cat.modelRegistry ?? [];
     harnesses = cat.harnesses;
-    containerDefaults = cat.containerDefaults ?? null; // absent against an older server: the fields
-    // then carry no placeholder, which is a missing hint and not a broken control
     harnessesLoaded = true;
   } catch { /* leave it empty: the picker then offers the default only, which always works */ }
 }
@@ -5943,7 +5935,7 @@ LANDSCAPE_MQ.addEventListener("change", () => {
 // not left yet never covers it); Sessions is the glass island's LEFT SIDE since its build — from
 // the left edge, 86 % wide, the visible screen tall (insel-glas-notiz.md §7: the form changed, not
 // the content), opened by the button, ← or a swipe (sideTo). Like the island it invents no way of its own — every row hands over
-// to what the board already has: the drawer's head buttons, showSlot, openPicker, the instance
+// to what the board already has: the drawer's head buttons, showSlot, openK15Entwurf, the instance
 // menu's own rows, the tray, the pane's corner group, the composer's switches, openSettings. A
 // conditional control stays conditional: its row shows exactly when its source does. Every row
 // closes the sheet before it acts (the island's rule); only a model/effort press stays, because it
@@ -6087,9 +6079,9 @@ function sessionsSheet(): HTMLElement[] {
     if (s.id === cur) r.setAttribute("aria-current", "true");
     list.appendChild(r);
   }
-  // a new session starts in the first free place — the same founding window an empty drawer row opens
+  // a new session starts in the first free place — the same window „Neue Session“ an empty drawer row opens (src/k15-entwurf.ts)
   const free = fleet.find((s) => s.id <= 16 && !isActive(s));
-  const neu = sheetRow("mshrow mshnew", "plus", "Neue Session", () => { if (free) openPicker(free.id); });
+  const neu = sheetRow("mshrow mshnew", "plus", "Neue Session", () => { if (free) openK15Entwurf({ slot: free.id }); });
   neu.dataset.tool = "new";
   neu.disabled = !free;
   neu.title = free ? `Eine Session in Slot ${free.id} gründen` : "Alle 16 Plätze sind belegt";
@@ -6250,11 +6242,6 @@ export function labelled(text: string, control: HTMLElement): HTMLElement {
   wrap.appendChild(control);
   return wrap;
 }
-
-// the options a founding sends with the slot's /open door. Absent fields mean "the default", which
-// is exactly what the server reads them as. src/founding.ts builds it.
-// `branch` only on the worktree doors (/open-worktree, /api/lanes): the owner's named lane
-export interface SpawnBody { permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" }; harness?: string; model?: string; effort?: string; container?: string; containerContext?: string; packs?: string[]; branch?: string }
 
 // --- the file view: one renderer for every file list in the app ---------------------------------
 //
@@ -6493,61 +6480,6 @@ export async function revealStartedSlot(slot: number): Promise<boolean> {
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
   return false;
-}
-
-// `via` is the founding window (src/founding.ts), the one caller: it names its own slot and sends
-// its own body, and every refusal is said through onError where the click was. `ok` = the
-// session stands and shows; the window then shows its start receipt, if it is still the one that asked
-export interface SpawnVia { slot: number; body: SpawnBody }
-export type StartResult = { ok: true; slot: number; packsDelivered?: boolean; reason?: string } | { ok: false };
-export async function startSession(path: string, label: string | undefined, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
-  const slot = via.slot;
-  // the label is the ROLE at founding time: the server keys its one role card and the steward
-  // token export off exactly this string, so the founding window sends it here and nowhere else
-  const res = await post(`/api/slots/${slot}/open`, { cwd: path, ...(label ? { label } : {}), ...via.body });
-  const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
-  if (!res.ok) {
-    // the options row can make this fail for a reason the folder is not at fault for (an unknown
-    // harness, a model the chosen harness rejects) — say which
-    onError(j.error ?? `the server answered ${res.status}`);
-    return { ok: false };
-  }
-  if (j.packsDelivered === false) {
-    // The session stands; the delivery refusal stays visible in its start receipt.
-    onError(j.reason ?? "the packs were not delivered");
-  }
-  if (!await revealStartedSlot(slot)) {
-    onError(`Session opened, but slot ${slot} did not appear within 5 seconds.`);
-    return { ok: false };
-  }
-  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
-}
-
-export async function startWorktree(repo: string, onError: (msg: string) => void, via: SpawnVia): Promise<StartResult> {
-  const { slot, body } = via;
-  const chosen = harnesses.find((h) => h.id === body.harness)
-    ?? harnesses.find((h) => h.default);
-  if (chosen?.allowsLanes === false) {
-    onError(`${chosen.id} runs as a main session only, not as a lane.`);
-    return { ok: false };
-  }
-  // branch names are plumbing, not something to type: the server auto-names the lane
-  // (fleet/<stamp>-<rand>) and the slot label is what you actually rename
-  const res = await post(`/api/slots/${slot}/open-worktree`, { repo, branch: "", ...body });
-  const j = (await res.json().catch(() => ({}))) as { error?: string; packsDelivered?: boolean; reason?: string };
-  if (!res.ok) {
-    onError(j.error ?? `the server answered ${res.status}`);
-    return { ok: false };
-  }
-  if (j.packsDelivered === false) {
-    // The lane stands; the delivery refusal stays visible in its start receipt.
-    onError(j.reason ?? "the packs were not delivered");
-  }
-  if (!await revealStartedSlot(slot)) {
-    onError(`Lane opened, but slot ${slot} did not appear within 5 seconds.`);
-    return { ok: false };
-  }
-  return { ok: true, slot, packsDelivered: j.packsDelivered, reason: j.reason };
 }
 
 // --- sidebar ---
@@ -7328,7 +7260,7 @@ function emptyRow(s: SlotInfo): HTMLElement {
   markItems.push({ el: mk, facts: null }); // bare soil: the place holds the column's axis
   r1.append(mk, el("span", "n", String(s.id)), el("span", "lbl dim", "free · start a session"));
   row.appendChild(r1);
-  row.onclick = () => openPicker(s.id);
+  row.onclick = () => openK15Entwurf({ slot: s.id });
   // The ⎇+ quick-lane chip used to hang here, on EVERY empty row — twelve identical chips the
   // moment a repo session had focus, none of them saying which repo they meant. It lives on the
   // stack anchor now (see slotRow), where the repo is named right next to it.
@@ -7365,12 +7297,12 @@ function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
   return row;
 }
 
-// ⎇+ opens the founding window as a lane founding (owner 2026-10-01): the repo and the lane preset
-// are set, the name, profile and packs are still the owner's — the one-click lane had none of them
+// ⎇+ opens the window „Neue Session“ for a lane under this session (owner 2026-10-01; since K15 Runde 5 the new window): the repo
+// and a lane are chosen, agent, model and what she gets are still the owner's — the one-click lane had none of them
 function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
   const q = el("span", "quicklane", "⎇+");
-  q.title = `Neue Lane in ${baseName(repo)} — Name, Profil und Kontext im Gründungsfenster`;
-  q.onclick = (e) => { e.stopPropagation(); openLaneFounding(repo, parent); };
+  q.title = `Neue Lane in ${baseName(repo)} — Agent, Modell und was sie bekommt im Fenster „Neue Session“`;
+  q.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo, ...(parent ? { parent } : {}) }); };
   return q;
 }
 

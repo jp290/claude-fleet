@@ -3,7 +3,7 @@
 // Every check of the suite that starts a browser runs HERE, so a run can leave them out by its
 // module choice (`FLEET_E2E_MODULES` without `dom`, or a shard without the unit `dom`) and still run
 // every other check. The probes themselves stay where their family lives — the rigs are libraries:
-//   · e2e/slots.ts        runFoundingFocusDom … runRightsDom (the board, the composer, the islands),
+//   · e2e/slots.ts        runSettingsDom … runRightsDom (the board, the composer, the islands),
 //                         runActivityDom (the Activity window's type and loading states)
 //   · e2e/lanes-lifecycle.ts  instanceBandDom, snapshotBoardDom (the Testinstanz band and board)
 //   · e2e/drops.ts        runDropChatDom (the chat view's pictures)
@@ -30,7 +30,7 @@ import { dirname, resolve } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check } from "./harness";
 import {
   ACTIVITY_MUTANTS, ARBEITSORTE_MUTANTS, ArbeitsorteVerdictsIn, KEEP_MUTANTS, STRIP_MUTANTS, runActivityDom, runArbeitsorteDom, runBundleChatDom,
-  runComposerKeepDom, runComposerTargetDom, runFoundingFocusDom, runGlassIslandDom, runHeldDeliveriesDom,
+  runComposerKeepDom, runComposerTargetDom, runGlassIslandDom, runHeldDeliveriesDom,
   runPhoneIslandDom, runRightsDom, runSettingsDom, runStripDom, runTermFindDom, startArbeitsorteBrowser,
   type ArbeitsorteBrowser, type ArbeitsorteDomResult,
 } from "./slots";
@@ -40,6 +40,8 @@ import { TIMELINE_MUTANTS, runTimelineDom } from "./timeline-ui";
 import { runPostfachDom } from "./role-address";
 import { KONST_CLAIM, KONST_MUTANTS, runKonstellationDom } from "./konstellation";
 import { UEB_MUTANTS, runUebergabeDom } from "./uebergabe";
+import { K15_START_LIVE_MUTANTS, runK15StartLiveDom } from "./k15-start";
+import { K15_START_MUTANTS, runK15StartDom } from "./k15-start-dom";
 
 // THE CUT OF e897fa95 (docs/messungen/2026-10-10-ci-inventur.md, card 5; the verdicts per call site in
 // its .tsv). This unit was the suite's most expensive one (1606 s in the full preview of 2026-10-11),
@@ -54,8 +56,7 @@ const DOM_MUTANTS = process.env.FLEET_E2E_DOM_MUTANTS === "1";
 
 // ONE PROBE LINE. A rig whose browser cannot run is still fenced by its own try, so it cannot take its
 // neighbours down, but it reports into ONE line per run (the rig and its error in the detail) instead
-// of 21 lines that all said "Chromium did not run". The founding focus PROBE keeps its own line: it
-// caught a real fault (4799236d).
+// of 21 lines that all said "Chromium did not run".
 let probeFailures: string[] = [];
 const probeFailed = (rig: string, error: unknown): void => {
   probeFailures.push(`${rig}: ${error instanceof Error ? error.message : String(error)}`);
@@ -90,27 +91,14 @@ export async function run(): Promise<void> {
   await postfachDom(sourceRoot);
   await konstellationDom(sourceRoot);
   await uebergabeDom(sourceRoot);
+  await k15StartDom(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
 }
 
-// --- from e2e/slots.ts: the founding window, settings, composer, chat, terminal search, Arbeitsorte,
-// the phone islands, the strip, the glass island and the rights of a session
+// --- from e2e/slots.ts: settings, composer, chat, terminal search, Arbeitsorte, the phone islands, the strip, the glass
+// island and the rights of a session (the old start window's rig left with the window, K15 Runde 5: e2e/k15-start*.ts)
 async function slotsDom(sourceRoot: string): Promise<void> {
-  try {
-    const focusCases = await runFoundingFocusDom(sourceRoot);
-    for (const result of focusCases) {
-      const atWidth = `${result.width}x${result.height}`;
-      for (const [claim, ok] of Object.entries(result.g))
-        check(`founding DOM ${atWidth}: ${claim}`, ok, JSON.stringify(result.detail).slice(0, 600));
-      for (const [claim, ok] of Object.entries(result.g2))
-        check(`founding G2 DOM ${atWidth}: ${claim}`, ok, claim);
-    }
-  } catch (error) {
-    check("founding focus DOM — PROBE: Chromium runs the isolated fixture", false,
-      error instanceof Error ? error.message : String(error));
-  }
-
   // THE SETTINGS WINDOW, measured in a real browser on the real client bundle (card 3e6342e2):
   // every claim is its own line, so a dropped name, a wrong choice state or a focus that escapes
   // the window turns exactly that line red. A browser that cannot run is the PROBE line — red,
@@ -428,6 +416,41 @@ async function uebergabeDom(sourceRoot: string): Promise<void> {
         JSON.stringify(hit?.facts ?? null).slice(0, 600));
     } catch (error) {
       probeFailed(`uebergabe DOM mutant — ${m.name}`, error);
+    }
+  }
+}
+
+// --- e2e/k15-start.ts: a start from the window „Neue Session“ against THIS instance (K15 Runde 5): a free place opens it, the start
+// gives a session with the chosen repo, agent, model and effort. Like the rights rig it opens a lane on FLEET_E2E_REPO and removes it.
+async function k15StartDom(sourceRoot: string): Promise<void> {
+  // PER ROLE, behind a fixture origin: which door, which body, which sentence (what the old start window's rig checked)
+  try {
+    for (const [result, claim, ok] of atOneViewport(await runK15StartDom(sourceRoot), 1200))
+      check(`k15 start DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("k15 start DOM (fixture)", error);
+  }
+  for (const m of DOM_MUTANTS ? K15_START_MUTANTS : []) {
+    try {
+      const hit = (await runK15StartDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false, JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
+    }
+  }
+  // AGAINST THIS INSTANCE: the start gives a session with the chosen repo, agent, model and effort
+  try {
+    const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot });
+    for (const [claim, ok] of Object.entries(r.claims)) check(`k15 start DOM: ${claim}`, ok, JSON.stringify(r.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("k15 start DOM", error);
+  }
+  for (const m of DOM_MUTANTS ? K15_START_LIVE_MUTANTS : []) {
+    try {
+      const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot, mutate: m });
+      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim}`, r.claims[m.claim] === false, JSON.stringify(r.facts).slice(0, 600));
+    } catch (error) {
+      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
     }
   }
 }

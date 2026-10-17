@@ -1,7 +1,7 @@
 // K15 · SPALTE 4, DIE CONTEXT PACKS: was der Plan dieser Rolle an Packs wählt, deine Entwürfe und der Editor für einen neuen Pack
 // (Modell: src/k15-kontextpack.ts). Ein Entwurf hat Name, Text und je Rolle einen Ort: als Text, auf Abruf oder nicht. Wo er dann
 // landet, sagt der Plan jeder Rolle im gewählten Repo. Fleet legt heute keinen Pack an; der Entwurf liegt im Speicher des Fensters (src/k15-speicher.ts).
-import { el, OMIT_SAY, PACK_WORDS } from "./k15-haupt";
+import { el, OMIT_SAY, PACK_WORDS, partFixed } from "./k15-haupt";
 import { icon } from "./icons";
 import type { Answer } from "./founding";
 import { DU, ORTE, tokVon, undListe } from "./k15-entwurf-modell";
@@ -168,7 +168,7 @@ export function packsAnsicht(s: St, a: Answer | null, ohnePlan: () => HTMLElemen
       body.append(el("div", "k15qd", PACK_WORDS[id]?.say ?? sel?.useWhen ?? b.satz));
       for (const part of sel?.parts ?? []) {
         body.append(el("div", "k15qp", `${part.path ?? ""}${part.anchor ? ` · ${part.anchor}` : ""}`));
-        body.append(el("pre", "k15pre", part.content ?? (part.privateSourceId ? "Privat: der Text kommt nie in die Datei, nur sein Hinweis." : part.ort === "ausleihe" ? "Auf Abruf: dort steht nur der Hinweis." : "Text an diesem Stand nicht lesbar.")));
+        body.append(el("pre", "k15pre", part.content ?? partFixed(part) ?? (part.ort === "ausleihe" ? "Auf Abruf: dort steht nur der Hinweis." : "Text an diesem Stand nicht lesbar.")));
       }
       r.append(body);
     }

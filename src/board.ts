@@ -2,7 +2,7 @@ import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autos
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
-import { openLaneFounding } from "./founding";
+import { openK15Entwurf } from "./k15-lader";
 import { boardBranch, branchCard, branchesWithoutTree, loadBranches, onPlacesChanged } from "./branchcard";
 import type { BranchView } from "./protocol";
 import { askRisk } from "./dialog";
@@ -4422,9 +4422,9 @@ function repoGroup(R: WorkplaceRepo, focusSlot: number | null, focusRepo: string
   const add = el("button", "rk-btn quiet ib") as HTMLButtonElement;
   add.type = "button";
   add.appendChild(icon("plus"));
-  add.title = "Neu in diesem Repo — eine Session, ein Branch oder ein Task im Startfenster";
+  add.title = "Neue Session in diesem Repo — eine Lane, eine Branch-Session oder eine andere Rolle";
   add.setAttribute("aria-label", add.title);
-  add.onclick = (e) => { e.stopPropagation(); openLaneFounding(R.repo); };
+  add.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo: R.repo }); };
   // THE LIVE SESSION (src/board.ts#startLiveSession): a sentence under the head, a lane from it
   const arriving = liveArriving(R.repo, rows);
   const liveOpen = liveDraft?.repo === R.repo || liveBusy.has(R.repo) || liveErr.has(R.repo) || !!arriving;

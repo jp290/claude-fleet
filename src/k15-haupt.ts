@@ -3,4 +3,5 @@
 import type { K15Haupt } from "./k15-lader";
 
 const h = (globalThis as unknown as { k15Haupt: K15Haupt }).k15Haupt;
-export const { el, api, baseName, copyText, flotte, bausteinName, validAnswer, OMIT_SAY, PACK_WORDS, agoDe } = h;
+export const { el, api, baseName, copyText, flotte, bausteinName, validAnswer, OMIT_SAY, PACK_WORDS, partFixed, agoDe,
+  starte, liesPrograms, liesAndere, waehlbar, progSagt, zeigeSlot, meldung } = h;

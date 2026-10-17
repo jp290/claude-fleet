@@ -1,5 +1,39 @@
-/* K15 ENTWURF D (wegwerfbar, src/k15-entwurf.ts): die Neue-Session-UI in vier Spalten, links grob, rechts genau. Geladen beim ersten
-   Öffnen von #k15 (src/k15-lader.ts), nicht mit index.html */
+/* K15 · DAS FENSTER „NEUE SESSION“ (src/k15-entwurf.ts, seit Runde 5 das einzige Startfenster): vier Spalten, links grob, rechts genau.
+   Geladen beim ersten Öffnen (src/k15-lader.ts), nicht mit index.html */
+/* DAS FENSTER SELBST (src/shell.ts mit id „found“): Grund, Kopf, Fuß und Knöpfe. Bis Runde 5 (17.10.) stand das im Block des alten
+   Startfensters in public/index.html; seit das neue Fenster es abgelöst hat, gehört es hierher */
+#shell-found { background: color-mix(in srgb, var(--chat-void) 60%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
+#shell-found .shellwin { position: relative; width: min(760px, calc(100vw - 32px)); height: min(600px, calc(100vh - 32px));
+  background: var(--chat-void); border: 1px solid var(--chat-edge); border-radius: var(--r3);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--chat-void) 80%, transparent); }
+#shell-found .chatflakes { display: block; z-index: 0; }
+#shell-found .shellhead, #shell-found .shellbody, #shell-found .shellfoot { position: relative; z-index: 1; }
+#shell-found .shellhead { padding: 16px 16px 10px 22px; border-bottom: 0; }
+#shell-found .shellhead h2 { font-size: 17px; font-weight: 600; color: var(--chat-ink); }
+#shell-found .shellsub { font-size: var(--chat-ui-fs); color: var(--chat-faint); }
+#shell-found .shelllist, #shell-found .shelltools { display: none; }
+#shell-found .shelldetail { display: block; padding: 4px 22px 14px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--chat-edge) transparent; }
+#shell-found .shelldetail:focus { outline: none; }
+:where(#shell-found button) { appearance: none; border: 0; background: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer; }
+:where(#shell-found button:disabled) { cursor: default; }
+#shell-found :where(button):focus-visible { outline: none; box-shadow: 0 0 0 1px var(--chat-mute); }
+#shell-found .shellclose { display: grid; place-items: center; color: var(--chat-mute); }
+#shell-found .shellclose svg { width: 18px; height: 18px; }
+#shell-found svg { flex: none; }
+#shell-found .shellfoot { display: flex; align-items: center; gap: 16px; padding: 14px 22px 18px; border-top: 1px solid var(--chat-edge-soft); }
+#shell-found .fdglyph { display: grid; place-items: center; color: var(--chat-mute); }
+#shell-found .fdglyph svg { width: 22px; height: 22px; }
+#shell-found .fddot { flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: hsl(var(--proj-h, 220) var(--proj-s) var(--proj-l)); }
+@media (prefers-reduced-motion: reduce) { #shell-found * { animation: none !important; transition: none !important; } }
+@media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
+  #shell-found .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; border: 0; }
+  #shell-found .shellhead { padding: 10px 8px 6px 16px; }
+  #shell-found .shelldetail { display: block; padding: 4px 16px 12px; }
+  #shell-found .shellfoot { flex-wrap: wrap; gap: 10px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); }
+}
 #shell-found.k15 .shellwin { width: min(1480px, calc(100vw - 40px)); height: min(900px, calc(100vh - 40px)); }
 #shell-found.k15 .shellhead { padding: 14px 14px 12px 22px; border-bottom: 1px solid var(--chat-edge-soft); }
 #shell-found.k15 .shelldetail { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
@@ -382,6 +416,25 @@
 .k15 .k15sayk { color: var(--chat-ink); font-weight: 600; }
 .k15 .k15go { flex: none; min-height: 44px; padding: 0 26px; border-radius: 12px; background: var(--chat-ink); color: var(--chat-void); font-size: 15px; font-weight: 600; }
 .k15 .k15go:hover { background: #fff; }
+.k15 .k15go:disabled { opacity: .4; cursor: default; }
+.k15 .k15go:disabled:hover { background: var(--chat-ink); }
+/* DER START (src/k15-start.ts): der Satz neben dem Knopf, warum er (noch) nicht geht oder was er nicht kann, und die Felder, die nur
+   der Start braucht, oben in Spalte 3 unter dem Kopf der Session, die startet */
+.k15 .k15sayc { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.k15 .k15stsatz { font-size: 12.5px; line-height: 1.4; color: var(--chat-mute); max-width: 90ch; }
+.k15 .k15stsatz.warn { color: var(--amber); }
+.k15 .k15start { display: flex; flex-direction: column; gap: 12px; margin: 2px 0 14px; padding: 12px 14px; border: 1px solid var(--chat-edge); border-radius: 12px; }
+.k15 .k15stf { display: flex; flex-direction: column; gap: 6px; }
+.k15 .k15stl { font-size: 12px; font-weight: 600; color: var(--chat-mute); }
+.k15 .k15stl2 { display: flex; flex-direction: column; }
+.k15 .k15stopt { min-height: 40px; }
+.k15 .k15stopt .k15optw { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; }
+.k15 .k15stsub { font-size: 12px; color: var(--chat-faint); }
+.k15 .k15stopt.grau { opacity: .5; cursor: default; }
+.k15 .k15stin { min-height: 36px; padding: 0 10px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-void); font: inherit; font-size: 13.5px; color: var(--chat-ink); }
+.k15 .k15stta { padding: 8px 10px; min-height: 64px; resize: vertical; line-height: 1.45; }
+.k15 .k15stin:focus { outline: none; border-color: var(--chat-mute); }
+.k15 .k15stwarn { font-size: 12.5px; color: var(--amber); }
 /* K15 Owner 16.10.: „[Zitat entfernt]“ im Kopf, darunter klein der Stand des Repos; die Auswahl (Z32: sehen, wählen,
    hinzufügen, aus der Auswahl nehmen) liegt darunter im Fenster */
 #shell-found.k15 .shelltitles { min-width: 0; }

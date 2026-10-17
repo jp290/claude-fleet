@@ -17,6 +17,8 @@ import { packsImport, type PackEntwurf } from "./k15-kontextpack";
 import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, profilAus } from "./k15-import";
 import { SPEICHER_ROUTE } from "./k15-speicher";
 import type { Ablauf } from "./k15-agentmd";
+import type { Eingang } from "./k15-lader";
+import type { StartStand } from "./k15-start";
 
 export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
 // DER DETAILGRAD (Owner 12:3x) zeigt die Gruppen zu oder auf; was sonst erst beim Darüberfahren erscheint, zeigt „[Zitat entfernt]“
@@ -45,6 +47,8 @@ export interface St {
   fassungen: Map<string, TextFassung>; bearbeite: string | null; bearbeiteText: string | null; packs: PackEntwurf[]; packEdit: PackEntwurf | null;
   // der Ablauf „Deine Agent-MD“ (src/k15-agentmd.ts), null = zu; wann zuletzt vor ungesichertem Text gewarnt wurde (k15-repo.ts#menueZu)
   ablauf: Ablauf | null; warnAm: number; speicher: "laedt" | "da" | { fehler: string };
+  // woher das Fenster kam (ein freier Platz, das + eines Repos, ⎇+ an einer Session; null = #k15) und was der Start braucht
+  eingang: Eingang | null; start: StartStand;
 }
 export let S: St | null = null;
 export const setzeS = (s: St | null): void => { S = s; };
@@ -446,9 +450,12 @@ export function eigeneBytes(a: Answer): Map<string, number> {
 // lehnte sie beim Start ab. Der Standard der Rolle gilt nur für ihren eigenen Agenten; ein anderer nimmt sein eigenes. `herkunft` steht
 // vorne in Menschenworten, `quelle` (Datei und Funktion) nur im Title.
 export type WahlFeld = "agent" | "modell" | "effort";
-export interface Wahl { wert: string; wort: string; herkunft: string; quelle: string; gesetzt: boolean }
+// `rolle`: der Wert ist der Standard der Rolle aus dem Modell-Register (der Plan nennt ihn); ein Start schickt ihn ausdrücklich mit
+export interface Wahl { wert: string; wort: string; herkunft: string; quelle: string; gesetzt: boolean; rolle?: true }
 // der Standard der Rolle aus ihrem Plan ohne Agent und Schalter (jeder Plan nennt ihn für alle Rollen gleich); null = ohne Rolle
 const rollenStd = (s: St, p: Profil) => s.repo ? antwort(hole(s, planUrl(s.repo, p.rolle, {})))?.rollen.find((r) => r.id === p.rolle)?.standard ?? null : null;
+// ob der Plan, der den Standard der Rolle nennt, schon da ist: vorher schickte ein Start ihn nicht mit (#dreier)
+export const rollenStandardGelesen = (s: St, p: Profil): boolean => !!s.repo && antwort(hole(s, planUrl(s.repo, p.rolle, {}))) !== null;
 export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): Wahl {
   const std = rollenStd(s, p), kat = s.katalog ?? null;
   const gesetzt = (v: unknown, gilt: (x: string) => boolean) => typeof v === "string" && v !== "" && gilt(v);
@@ -461,7 +468,8 @@ export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): W
         : { wert: { v: kat ? standardAgent(kat) : null, quelle: "GET /api/harnesses (default) · server.ts CLAUDE_HARNESS" }, herkunft: "ohne Rolle: der Agent, mit dem Fleet jede Session startet" },
     });
     const v = w?.wert.v ?? null;
-    return { wert: v ?? "", wort: v ? agentWort(v) : "unbekannt", herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil" };
+    return { wert: v ?? "", wort: v ? agentWort(v) : "unbekannt", herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil",
+      ...(w?.rang === "standard" && std ? { rolle: true as const } : {}) };
   }
   const agent = wahlVon(s, p, q, "agent").wert;
   const ka = kat ? agentVon(kat, agent) : undefined;
@@ -485,12 +493,16 @@ export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): W
   const v = w?.wert.v ?? null;
   const wort = v !== null ? (feld === "modell" ? modelLabel(v) : EFFORT_WORT[v] ?? v)
     : standard.quelle.startsWith("FLEET_MODEL") ? "unbekannt" : `Standard von ${agentWort(agent)}`;
-  return { wert: v ?? "", wort, herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil" };
+  return { wert: v ?? "", wort, herkunft: w?.herkunft ?? "", quelle: w?.wert.quelle ?? "", gesetzt: w?.rang === "position" || w?.rang === "profil",
+    ...(w?.rang === "standard" && std && std.harness === agent && v !== null ? { rolle: true as const } : {}) };
 }
-// was der Plan einer Position über ihren Agenten wissen muss: nur was gesetzt ist und passt
+// was der Plan einer Position über ihren Agenten wissen muss und ein Start mitschickt: was gesetzt ist und passt, und der Standard der
+// Rolle (Runde 5): ohne ihn startete der Server mit seinem eigenen Standard, nicht mit dem, den das Fenster zeigt (das alte Fenster schickte
+// ihn ebenso, founding.ts#applyStandard bis Runde 5). Was keine Rolle vorgibt (Nur Ordner), bleibt dem Agenten
 export function dreier(s: St, p: Profil, q: Position | null): Dreier {
   const a = wahlVon(s, p, q, "agent"), m = wahlVon(s, p, q, "modell"), e = wahlVon(s, p, q, "effort");
-  return { ...(a.gesetzt ? { harness: a.wert } : {}), ...(m.gesetzt ? { model: m.wert } : {}), ...(e.gesetzt ? { effort: e.wert } : {}) };
+  const mit = (w: Wahl) => w.wert !== "" && (w.gesetzt || w.rolle === true);
+  return { ...(mit(a) ? { harness: a.wert } : {}), ...(mit(m) ? { model: m.wert } : {}), ...(mit(e) ? { effort: e.wert } : {}) };
 }
 // DIE SUCCESSION-SCHWELLE: ist die Succession auf der ganzen Instanz aus (FLEET_MIGRATE_PCT 0), wirkt kein eigener Wert; der Server prüft
 // den Hauptschalter vor dem Wert der Session (server.ts#succeedAtThreshold)

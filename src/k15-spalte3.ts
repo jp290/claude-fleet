@@ -13,6 +13,7 @@ import {
   S, antwort, bausteineVon, dreier, eigeneBytes, fehltWeil, gehe, gewaehlt, kommtAn, lage, lies, planUrl, plural, render, schwelleWahl, toast, wahlVon, wegVon, werPlan, zeige,
   type Detail, type Lage, type QuelleId, type St,
 } from "./k15-zustand";
+import { startFelder } from "./k15-start";
 import { chip, istSchalter, kennzeichen, kopfzeile, nachZahl, schalt, waehle, type Option } from "./k15-teile";
 import { agentOptionen, agentWort, effortVon, modelleVon, passtEffort, passtModell } from "./k15-agent";
 import { werBestimmt } from "./k15-wer";
@@ -127,6 +128,11 @@ export async function setzeBaustein(s: St, q: Position | null, p: Profil, b: Bau
     if ("fehler" in st) { toast(`${bausteinName(b)}: ${st.fehler}`); return; }
     s.plaene.set(z.url, st);
     if (ziel()?.url !== z.url) continue;
+    // WAS KEINE TÜR LIEFERT, BLEIBT AUS (Runde 4, Befund „Konzept“: server.ts#planDoorRow liefert es bei keinem Start): angeschaltet stünde
+    // es im Plan, käme aber nicht an; der Schalter wird nicht übernommen, der Grund der Tür steht im Satz
+    const neuB = an ? st.a.plan.bausteine.find((x) => x.id === b.id) : undefined;
+    const fehlt = neuB ? fehltWeil(st.a, neuB) : null;
+    if (fehlt !== null) { toast(`${bausteinName(b)} bleibt aus: ${fehlt}.`); return; }
     if (q) { if (Object.keys(z.neu).length) q.schalter = z.neu; else delete q.schalter; s.konstNeu.add(s.k.id); }
     else { p.schalter = z.neu; s.profilNeu.add(p.id); }
     if (b.id.startsWith("pack:")) s.quelle = "packs"; else { s.quelle = "bst"; s.bst = b.id; }
@@ -154,6 +160,9 @@ export function spalteSession(): HTMLElement {
   head.append(g, t);
   if (!q) head.append(chip(s.profilNeu.has(p.id) ? `v${p.v} ●` : p.v, `Version ${p.v} des Profils ${p.name}`));
   col.append(head);
+  // was nur der Start dieser Session braucht (Program, Branch, Worktree), direkt unter ihrem Kopf
+  const sf = q ? startFelder(s, q, p) : null;
+  if (sf) col.append(sf);
   // bei einer Session mit eigener Agent-MD ist die Datei das Erste, was sie bekommt: direkt unter dem Kopf, vor der Autonomie
   if (p.id === "eigen" || p.glyph === "file") {
     const cta = el("button", "k15mdcta");

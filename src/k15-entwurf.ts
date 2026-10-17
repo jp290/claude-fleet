@@ -1,4 +1,5 @@
-// K15 ENTWURF D (wegwerfbar, Starten nicht verdrahtet): die Neue-Session-UI in vier Spalten von links nach rechts, jede genauer als die
+// K15 · DAS FENSTER „NEUE SESSION“ (seit Runde 5, 17.10., das einzige Startfenster: jeder freie Platz, das + eines Repos, ⎇+ und „Neue
+// Session“ am Handy öffnen es; src/founding.ts hält nur noch den Plan und seine Wörter). Vier Spalten von links nach rechts, jede genauer als die
 // davor: 1 Konstellation (src/k15-spalte1.ts) · 2 Aufbau (k15-spalte2.ts) · 3 Session (k15-spalte3.ts) · 4 Quelle (k15-spalte4.ts). Der
 // Kopf liest sich „Neue Session in [Repo ▾]“ (k15-repo.ts). Satz → Element steht in docs/neuaufbau/befunde/k15-anforderungen.md, das
 // Datenmodell in src/k15-entwurf-modell.ts, der Zustand in src/k15-zustand.ts. Spalten 3 und 4 lesen den echten Gründungsplan
@@ -6,8 +7,9 @@
 // Start. Owner 16.10.: Merkstellen zurückgebaut, fehlt ein Thema, legt man einen Kontextpack an (k15-kontextpack.ts); Tokens und
 // Einstellungen erst beim Darüberfahren, „[Zitat entfernt]“ blendet sie überall ein. Öffnen: #k15; #k15-eine (Konstellation „[Zitat entfernt]“
 // ), #k15-export (Export offen), #k15-profil (ein Profil statt einer Position), #k15-minimal (MAIN + Session mit minimaler
-// Anbindung), dazu -t0…-t3 für die Spalte am Handy und @<Pfad> für ein Repo ohne laufende Session. Was man hier ändert, lebt nur im
-// Browser; nur „Repo hinzufügen“ pinnt den Ordner in Fleet (POST /api/pins). Dieses Modul ist der Einstieg von public/k15.js, das
+// Anbindung), dazu -t0…-t3 für die Spalte am Handy und @<Pfad> für ein Repo ohne laufende Session. Starten startet die gewählte Session
+// über die Tür ihrer Rolle (src/k15-start.ts, src/start-tuer.ts); „Repo hinzufügen“ pinnt den Ordner in Fleet (POST /api/pins), eigene
+// Fassungen und Packs liegen als Entwurf auf dem Server (src/k15-speicher.ts). Dieses Modul ist der Einstieg von public/k15.js, das
 // Haupt-Bundle lädt es beim ersten Öffnen nach (src/k15-lader.ts).
 import { el, api, baseName } from "./k15-haupt";
 import { icon } from "./icons";
@@ -28,6 +30,8 @@ import { ablaufNimmt, ablaufPanel } from "./k15-agentmd";
 import { anatomieKurz, anatomieVon } from "./k15-anatomie-ui";
 import { startZahl } from "./k15-startzahl";
 import { katalogAus } from "./k15-agent";
+import { beimFuss, startKnopf, startStand0 } from "./k15-start";
+import type { Eingang } from "./k15-lader";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -41,7 +45,7 @@ function setzeAlles(s: St, an: boolean): void {
   render();
 }
 
-export function openK15Entwurf(): void {
+export function openK15Entwurf(eingang?: Eingang): void {
   if (S) return;
   // was das Fenster an document und matchMedia hängt, löst es beim Schließen wieder (Prüfung Punkt 11)
   const zu = new AbortController();
@@ -52,20 +56,25 @@ export function openK15Entwurf(): void {
   const h = location.hash.match(/^#k15(?:-(eine|export|profil|minimal))?(?:-t([0-3]))?(?:@(\/[^#]+))?/);
   const konst = structuredClone(KONST0);
   const k = konst.find((x) => x.id === (h?.[1] === "eine" ? "eine" : h?.[1] === "minimal" ? "main-eigen" : "orch")) ?? konst[0];
-  let repo: string | null = null;
-  try { repo = h?.[3] ? decodeURIComponent(h[3]) : null; } catch { repo = null; }
+  let repo: string | null = eingang && "repo" in eingang ? eingang.repo : null;
+  try { repo ??= h?.[3] ? decodeURIComponent(h[3]) : null; } catch { repo = null; }
+  // VOM BOARD GEÖFFNET (ein Platz, ein Repo, ⎇+) ist die erste Lane des Aufbaus gewählt, die startet, wie das alte Fenster mit der Lane
+  // begann; #k15 ohne Eingang zeigt weiter Lane 2 mit ihren Abweichungen
+  const lane = eingang ? alle(k.wurzeln).find((x) => x.profil === "lane") : undefined;
   const s: St = { shell, konst, profile: structuredClone(PROFILE0), k,
-    sel: h?.[1] === "eine" ? { art: "pos", id: "s" } : h?.[1] === "profil" ? { art: "profil", id: "lane" } : h?.[1] === "minimal" ? { art: "pos", id: "e" } : { art: "pos", id: "l2" },
+    sel: lane ? { art: "pos", id: lane.id } : h?.[1] === "eine" ? { art: "pos", id: "s" } : h?.[1] === "profil" ? { art: "profil", id: "lane" } : h?.[1] === "minimal" ? { art: "pos", id: "e" } : { art: "pos", id: "l2" },
     quelle: h?.[1] === "profil" ? "einst" : "landet",
     offen: new Set<string>(),
     exp: h?.[1] === "export", ebene: "konst", voll: false, tief: Number(h?.[2] ?? 0), neuAb: 4, profilNeu: new Set(), konstNeu: new Set(), toastT: 0,
     aktiv: h?.[1] ? 2 : 0, bst: null, tour: rundgangGesehen() ? null : 0, detail: gemerktesDetail(), alles: gemerktesAlles(),
     repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(), katalog: undefined,
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
-    fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt" };
+    fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt",
+    eingang: eingang ?? null, start: startStand0() };
   setzeS(s);
   ladeEigenes(s);
   beimZeichnen(render);
+  beimFuss(() => { if (S === s) fuss(s); });
   void liesPins(s);
   void api("/api/machine-settings").then((r) => r.ok ? r.json() : null).then((j: unknown) => {
     const liste = j && typeof j === "object" && "settings" in j && Array.isArray(j.settings) ? j.settings : null;
@@ -213,24 +222,32 @@ function render(): void {
   }
   const ziel = s.quelle === "bst" ? cols[3].querySelector<HTMLElement>(".k15bst.ziel") : s.quelle === "packs" && s.packEdit ? cols[3].querySelector<HTMLElement>(".k15packed") : null;
   if (ziel) requestAnimationFrame(() => ziel.scrollIntoView({ block: s.quelle === "bst" ? "center" : "nearest" }));
-  const f = s.shell.foot;
-  f.replaceChildren();
-  f.classList.add("k15foot");
-  const n = alle(s.k.wurzeln).length;
-  const say = el("span", "k15say");
-  // Herkunft und Version stehen über dem Aufbau (Spalte 2); hier nur, ob er geändert ist (Runde 4, Z60)
-  say.append(el("span", "k15sayk", s.k.name), ...(s.konstNeu.has(s.k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []),
-    el("span", "", ` ${plural(n, "Session", "Sessions")} · ${s.repo ? baseName(s.repo) : "kein Repo"} · neuer Branch aus main`));
-  const go = el("button", "k15go", n === 1 ? "Starten" : `${n} Sessions starten`);
-  go.title = "Entwurf: Starten ist hier nicht verdrahtet";
-  go.onclick = () => toast("Entwurf: Starten ist hier nicht verdrahtet.");
-  const rechts = el("div", "k15footr");
-  rechts.append(tokenSumme(s), go);
-  f.append(say, rechts);
+  fuss(s);
   const menue = repoMenue(s);
   if (menue) legeMenue(s, menue);
   s.shell.root.querySelector(".k15tour")?.remove();
   if (s.tour !== null) requestAnimationFrame(() => rundgang(s));
+}
+
+// DER FUSS: was der Aufbau ist, wo gestartet wird, ein Satz, warum der Start (noch) nicht geht oder was er nicht kann, und der Knopf. Er
+// zeichnet sich auch allein neu, wenn man in ein Startfeld tippt (k15-start.ts#beimFuss)
+function fuss(s: St): void {
+  const f = s.shell.foot;
+  const hatte = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("k15go") && f.contains(document.activeElement);
+  f.replaceChildren();
+  f.classList.add("k15foot");
+  const n = alle(s.k.wurzeln).length;
+  const links = el("div", "k15sayc");
+  const say = el("span", "k15say");
+  // Herkunft und Version stehen über dem Aufbau (Spalte 2); hier nur, ob er geändert ist (Runde 4, Z60)
+  say.append(el("span", "k15sayk", s.k.name), ...(s.konstNeu.has(s.k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []),
+    el("span", "", ` ${plural(n, "Session", "Sessions")} · ${s.repo ? baseName(s.repo) : "kein Repo"}`));
+  const { knopf, satz } = startKnopf(s);
+  links.append(say, ...(satz ? [satz] : []));
+  const rechts = el("div", "k15footr");
+  rechts.append(tokenSumme(s), knopf);
+  f.append(links, rechts);
+  if (hatte && !knopf.disabled) knopf.focus({ preventScroll: true });
 }
 
 // DIE TOKEN-SUMME UNTEN (Owner 11:1x: „[Zitat entfernt]“): je Session die Start-Summe ihres
@@ -266,7 +283,7 @@ const RUNDGANG: readonly { spalte: number; ziel: string; titel: string; text: st
   { spalte: 3, ziel: ".k15c4 .k15vseg", titel: "Wo es landet",
     text: "Hier steht, wo jeder Baustein ankommt: im Systemprompt, in einer Datei, die Claude Code lädt, in der Session-Datei oder in der ersten Nachricht. „Wortlaut“ zeigt den Text; fehlt ein Thema, legst du unter „Packs“ einen Kontextpack an." },
   { spalte: -1, ziel: ".k15foot .k15tok", titel: "Starten",
-    text: "Unten steht, wie viele Tokens alle Sessions zusammen beim Start mitladen. Starten öffnet sie." },
+    text: "Unten steht, wie viele Tokens alle Sessions zusammen beim Start mitladen. Starten öffnet die Session, die du im Aufbau gewählt hast; geht das nicht, steht der Grund daneben." },
 ];
 function rundgangGesehen(): boolean {
   try { return localStorage.getItem(RUNDGANG_KEY) === "1"; } catch { return false; }

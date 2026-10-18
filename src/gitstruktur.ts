@@ -10,12 +10,14 @@
 // lane named by its label, else its goal, else its board name, a landed charge with the check it landed with.
 // Runde 5 (Bauleitung 345f671f, owner Z87): circles at about half their size, the slot on the card instead of in the
 // circle; dashed up to the diamond too until the land; the legend a quiet line under the structure; all English.
+// Runde 6 (owner Z118, 18.10.): green only where something runs or waits to land — a landed head has a quiet diamond and
+// no part in next; a lane only where Fleet runs one; a circle reads the bar's own state.
 // gitModel and gitLayout are pure (bun test reads them); gitStructure draws. Data: GET /api/worktrees (rows, lane parents,
 // land checks), GET /api/branches (board branches, their merge-check), /api/sessions (cwd, git.branch, worktree).
 import type { BranchCheckView, BranchesRepoView, WorkplaceRepo, WorkplaceRow } from "./protocol";
 import { shortTitle } from "./suitemeter";
 
-export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "stale" | "skipped";
+export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "stale" | "skipped" | "landed";
 export interface GsSlot {
   id: number; cwd: string | null; label: string | null; openedAt?: number; repo?: string | null; taskTitle?: string;
   git?: { branch: string } | null; worktree?: { repo: string; branch: string } | null;
@@ -58,13 +60,13 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
     const b = board?.branches.find((x) => x.branch === branch);
     // merged: it landed before and has no commit since that charge (chargeCommits; the land writes a new commit with the
     // same tree, so „ahead of main“ never drops to 0) — a branch without a land has not arrived above
-    // A LANDED CHARGE shows the check it landed with (owner Z83: the dashed „[Zitat entfernt]“ diamond after a land read as an
-    // accident): green when it went through its merge-check, skipped when it landed without one. The branch's own check
+    // A LANDED CHARGE has a quiet diamond of its own (owner Z83: the dashed „[Zitat entfernt]“ one after a land read as an accident;
+    // Z118: a green one read as a check running) — which check it landed with stands in its batch. The branch's own check
     // goes stale at the land, so it speaks again only once the branch has commits since
     const last = b?.lands.at(-1);
     const merged = !!last && b?.chargeCommits === 0;
     const made: GsItem = { kind, branch, name: b?.name || branch, named: !!b?.name, sessions: [],
-      check: merged ? (last.checked ? "green" : "skipped") : b?.check?.state ?? "none", merged, lanes: [], ti: null, live: false, path: null };
+      check: merged ? "landed" : b?.check?.state ?? "none", merged, lanes: [], ti: null, live: false, path: null };
     items.set(branch, made);
     return made;
   };
@@ -98,16 +100,21 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
     if (w.primary || !w.branch) continue;
     const s = slotIn(w);
     if (s) placed.add(s.id);
+    // A LANE only where Fleet runs one (owner Z118: „[Zitat entfernt]“): a lane session (its
+    // slot has a worktree), a task's row, or a branch Fleet named for a lane — any other worktree is a branch
+    const lane = s?.worktree ? true : boardNames.has(w.branch) ? false : !!w.session?.taskId || w.branch.startsWith("fleet/");
     if (w.branch === integration) {
       if (s) mainSessions.push(sessionOf(s, `on ${integration}`));
-    } else if (boardNames.has(w.branch) && !s?.worktree) {
-      if (s) item(w.branch, "branch").sessions.push(sessionOf(s, `directly on ${w.branch}`));
+    } else if (!lane) {
+      const it = item(w.branch, "branch");
+      if (s) it.sessions.push(sessionOf(s, `directly on ${w.branch}`));
     } else {
       const parent = w.target?.branch ?? w.base?.branch ?? integration;
       const ses = s ? sessionOf(s, `in lane ${w.branch}`) : null;
       const name = laneName(s, ses?.card, w.branch);
       const lane: GsLane = { branch: w.branch, name: name ?? (w.branch.split(/[/-]/).pop() || w.branch), named: name !== null,
-        sessions: ses ? [ses] : [], check: opts.run?.(w) ?? w.checks.gate?.state ?? "none", merged: w.target?.landed === "yes",
+        sessions: ses ? [ses] : [], check: w.target?.landed === "yes" ? "landed" : opts.run?.(w) ?? w.checks.gate?.state ?? "none",
+        merged: w.target?.landed === "yes",
         ti: tiOf(w), live: opts.live?.(w.branch) ?? false, path: w.path };
       lanesOn.set(parent, [...(lanesOn.get(parent) ?? []), lane]);
     }
@@ -172,7 +179,7 @@ const fit = (text: string, width: number): string => {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 };
 const CHECK_WORD: Record<Diamond, string> = { none: "not checked yet", running: "check running", waiting: "check waiting",
-  green: "check passed", red: "check failed", stale: "an older state was checked", skipped: "no check" };
+  green: "check passed", red: "check failed", stale: "an older state was checked", skipped: "no check", landed: "landed" };
 
 // THE GEOMETRY, pure: every shape with its place, so a check reads where a circle stands against its head.
 // gap: a selected row opens its menu under it (owner Z83 „[Zitat entfernt]“) — every row below moves down by h
@@ -330,13 +337,13 @@ export function headWords(h: GsHead): GsWord[] {
 // under the structure (Z87: the i was „[Zitat entfernt]“): the signs this drawing uses, one line each
 // — a sign one line cannot explain does not belong in the drawing
 export type GsSign = "rect" | "rect-live" | "circle" | "circle-on" | "diamond-none" | "diamond-running" | "diamond-green" | "diamond-red"
-  | "diamond-stale" | "diamond-skipped" | "line-open" | "line" | "ti" | "point";
+  | "diamond-stale" | "diamond-skipped" | "diamond-landed" | "line-open" | "line" | "ti" | "point";
 export const GS_LEGEND: Record<GsSign, string> = {
   rect: "Git head: main, a branch or a lane", "rect-live": "Lane of a live session",
   circle: "Slot with a session, resting (its card on hover)", "circle-on": "Slot with a session, working right now",
   "diamond-none": "Check on the way up: none yet", "diamond-running": "Check running or waiting",
   "diamond-green": "Check passed", "diamond-red": "Check failed", "diamond-stale": "An older state was checked",
-  "diamond-skipped": "Landed without a check", "line-open": "Dashed: not landed yet", line: "Solid: landed, or where a head branches off",
+  "diamond-skipped": "Check skipped", "diamond-landed": "Landed", "line-open": "Dashed: not landed yet", line: "Solid: landed, or where a head branches off",
   ti: "Test instance running, its port beside it", point: "Commit point: where main stands",
 };
 export function signOf(p: GsShape): GsSign {
@@ -389,7 +396,9 @@ export function gitStructure(m: GsModel, ui: GsUi): HTMLElement {
   fold.className = "gsf";
   fold.setAttribute("aria-expanded", String(open));
   const name = m.repo.split("/").filter(Boolean).pop() ?? m.repo;
-  fold.append(Object.assign(document.createElement("span"), { className: "gsv", textContent: "‹" }),
+  // „› repo ‹“ while folded, the name bold (owner Z121: „[Zitat entfernt]“);
+  // opening turns the front bracket down by 90° (Z122: „[Zitat entfernt]“)
+  fold.append(Object.assign(document.createElement("span"), { className: "gsv", textContent: "›" }),
     Object.assign(document.createElement("span"), { className: "gsn", textContent: name }),
     Object.assign(document.createElement("span"), { className: "gsc", textContent: "‹" }));
   // A REAL FOLD SWITCH (owner Z83: the brackets were „[Zitat entfernt]“):
@@ -469,7 +478,7 @@ export function gitStructure(m: GsModel, ui: GsUi): HTMLElement {
         g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ui.jump(ses.slot); } });
         s.appendChild(g);
       } else if (p.t === "diamond") {
-        const word = `${CHECK_WORD[p.d]}${p.merged ? " · landed" : " · not landed yet"}`;
+        const word = p.d === "landed" ? CHECK_WORD.landed : `${CHECK_WORD[p.d]}${p.merged ? " · landed" : " · not landed yet"}`;
         const g = svg("g", { class: "gsdg", "data-of": p.of }, `${p.of}: ${word}`);
         g.append(svg("rect", { x: p.x - 11, y: p.y - 11, width: 22, height: 22, class: "gshit" }),
           svg("path", { d: `M${p.x} ${p.y - p.r} L${p.x + p.r} ${p.y} L${p.x} ${p.y + p.r} L${p.x - p.r} ${p.y} Z`,
@@ -560,8 +569,9 @@ export const GS_CSS = `
   #board .gsf:hover { background: var(--chat-surface); border-color: var(--chat-edge); }
   #board .gsf:focus-visible, #board .gslegbtn:focus-visible { outline: 2px solid var(--chat-ink); outline-offset: 2px; }
   #board .gsf .gsv, #board .gsf .gsc { color: var(--chat-mute); display: inline-block; font-size: 1.35em; line-height: 1; font-weight: 400; transition: transform 160ms ease; }
-  #board .gs.open .gsf .gsv { transform: rotate(-90deg); }
+  #board .gs.open .gsf .gsv { transform: rotate(90deg); }
   @media (prefers-reduced-motion: reduce) { #board .gsf .gsv { transition: none; } }
+  #board .gsf .gsn { font-weight: 700; }
   #board .gslegbtn { display: block; min-height: 32px; margin: 2px 0 0; padding: 0 4px; border: 0; border-radius: 6px; background: none;
     color: var(--chat-faint); font: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .gslegbtn:hover, #board .gslegbtn.on { color: var(--chat-mute); }
@@ -595,6 +605,7 @@ export const GS_CSS = `
   #board .gss .gsd.running, #board .gss .gsd.waiting { stroke: var(--q-live); }
   #board .gss .gsd.stale { stroke-dasharray: 2 2; }
   #board .gss .gsd.skipped { fill: var(--chat-mute); stroke: var(--chat-mute); }
+  #board .gss .gsd.landed { fill: var(--chat-faint); stroke: var(--chat-faint); }
   #board .gss .gsdg.sel .gsd, #board .gss .gsdg:focus-visible .gsd { stroke: var(--chat-ink); stroke-width: 2.2; }
   #board .gss .gst rect { fill: var(--q-live); }
   #board .gss .gst text { fill: var(--chat-mute); font-size: inherit; font-family: var(--mono, monospace); }

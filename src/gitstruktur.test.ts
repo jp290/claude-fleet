@@ -89,12 +89,12 @@ describe("heads, checks and colour", () => {
   test("green is an active session; a quiet one is not", () => {
     expect([circleOf(L1.shapes, 1)!.ses.active, circleOf(L1.shapes, 2)!.ses.active, circleOf(L1.shapes, 3)!.ses.active]).toEqual([true, false, true]);
   });
-  test("the branch diamond is its merge-check, the lane diamond its land check; dashed until merged", () => {
+  test("the branch diamond is its merge-check, the lane diamond its land check; dashed until merged, quiet once landed", () => {
     const m = gitModel(repo(R1, [row(R1, "main", { primary: true }), row("/w/wt/l", "fleet/l", { ...on("bau/a", 9, "yes"),
       checks: { local: null, preview: null, gate: { state: "green", head: null, at: null, fails: [], stale: null }, audit: null } })]),
       board(R1, [bv("bau/a", { check: { state: "red", at: 1, why: null } })]), [], () => false, card);
     const d = gitLayout(m).shapes.filter((p): p is Extract<GsShape, { t: "diamond" }> => p.t === "diamond").map((p) => [p.of, p.d, p.merged]);
-    expect(d).toEqual([["branch:bau/a", "red", false], ["lane:fleet/l", "green", true]]);
+    expect(d).toEqual([["branch:bau/a", "red", false], ["lane:fleet/l", "landed", true]]);
   });
   test("a branch is merged only after a land with no commit since; a fresh one stays dashed", () => {
     const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: true, form: "squash" as const };
@@ -193,13 +193,15 @@ describe("round 3: lane names, the landed diamond, the card", () => {
       [slot(41, "/w/wt/l41", { label: "⎇ testrepo 4f41", worktree: { repo: R1, branch: "fleet/l41" } })], () => false, card);
     expect(m.items.find((i) => i.branch === "bau/a")!.lanes.map((l) => [l.name, l.named])).toEqual([["Kachelraster", true]]);
   });
-  test("a landed charge shows the check it landed with — never stale; stale only with commits since", () => {
+  // Runde 6 (owner Z118: „[Zitat entfernt]“): a landed charge is quiet,
+  // checked or not — the check it landed with stands in its batch
+  test("a landed charge has the quiet landed diamond, checked or not — never stale; stale only with commits since", () => {
     const land = (checked: boolean) => ({ sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked, form: "squash" as const });
     const stale = { state: "stale" as const, at: 1, why: "geprüft war b5de40e4 gegen main" };
     const m = gitModel(repo(R1, []), board(R1, [bv("checked", { chargeCommits: 0, lands: [land(true)], check: stale }),
       bv("unchecked", { chargeCommits: 0, lands: [land(false)], check: stale }),
       bv("moved", { chargeCommits: 2, lands: [land(true)], check: stale })]), [], () => false, card);
-    expect(m.items.map((i) => [i.branch, i.check, i.merged])).toEqual([["checked", "green", true], ["unchecked", "skipped", true], ["moved", "stale", false]]);
+    expect(m.items.map((i) => [i.branch, i.check, i.merged])).toEqual([["checked", "landed", true], ["unchecked", "landed", true], ["moved", "stale", false]]);
   });
   test("the card on a circle speaks English (owner Z87: „[Zitat entfernt]“)", () => {
     const lane = circleOf(L1.shapes, 3)!.ses, branch = circleOf(L1.shapes, 2)!.ses, main = circleOf(L1.shapes, 1)!.ses;
@@ -314,7 +316,8 @@ describe("round 4: one diamond size, every sign in the legend", () => {
     const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: false, form: "squash" as const };
     const rows = [row(R1, "main", { primary: true, testinstanz: { state: "up", instance: { port: 8970 } } }),
       row("/w/wt/l1", "fleet/l1", { ...on("bau/a", 51), checks: { local: null, preview: null, gate: { state: "running", head: null, at: null, fails: [], stale: null }, audit: null } }),
-      row("/w/wt/l2", "fleet/l2", { ...on("main", 52, "yes"), checks: { local: null, preview: null, gate: { state: "red", head: null, at: null, fails: [], stale: null }, audit: null } }),
+      row("/w/wt/l2", "fleet/l2", { ...on("main", 52), checks: { local: null, preview: null, gate: { state: "red", head: null, at: null, fails: [], stale: null }, audit: null } }),
+      row("/w/wt/l3", "fleet/l3", { ...on("main", 54), checks: { local: null, preview: null, gate: { state: "skipped", head: null, at: null, fails: [], stale: null }, audit: null } }),
       row("/w/wt/live", "live-2610171200-x", on("main", 53))];
     const m = gitModel(repo(R1, rows), board(R1, [bv("bau/a", { check: green }), bv("bau/s", { check: { state: "stale", at: 1, why: null } }),
       bv("bau/u", { chargeCommits: 0, lands: [land] })]), [...slots, slot(51, "/w/wt/l1", { worktree: { repo: R1, branch: "fleet/l1" } }),
@@ -375,5 +378,38 @@ describe("round 5: small circles, dashed until the land, English", () => {
     expect(distanceLine(w)).toBe("1 ahead, 1 behind bau/oberflaeche");
     expect(distanceLine({ ...w, target: { ...w.target, behind: null } })).toBe("1 ahead, 0 behind bau/oberflaeche");
     expect(distanceLine({ ...w, distance: null })).toBeNull();
+  });
+});
+
+// Runde 6 (owner Z118, 18.10.): „[Zitat entfernt]“ green with nothing to land; „[Zitat entfernt]“
+//  — the Bauleitung's own branch, on no board and in no Fleet lane, stood as a lane
+describe("round 6: next only for what waits to land, a lane only where Fleet runs one", () => {
+  const green = { state: "green" as const, at: 1, why: null };
+  const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: true, form: "squash" as const };
+  test("a landed branch is no part of next, even when it landed with a green check", () => {
+    const m = gitModel(repo(R1, []), board(R1, [bv("landed", { chargeCommits: 0, lands: [land], check: green }), bv("waits", { check: green })]), [], () => false, card);
+    expect(m.next).toEqual(["waits"]);
+    const only = gitModel(repo(R1, []), board(R1, [bv("a", { chargeCommits: 0, lands: [land] }), bv("b", { chargeCommits: 0, lands: [land] })]), [], () => false, card);
+    expect(only.next).toBeNull();
+    expect(gitLayout(only).shapes.filter((p) => p.t === "diamond" && p.d === "green")).toEqual([]);
+  });
+  test("a worktree on no board and in no Fleet lane is a branch, its session behind it", () => {
+    const m = gitModel(repo(R1, [row(R1, "main", { primary: true }), row("/w/wt/plan", "bau/plan", { session: { slot: 8, openedAt: 8, taskId: null } })]),
+      board(R1, []), [slot(8, "/w/wt/plan", { label: "Bauleitung", repo: "/w/wt/plan", git: { branch: "bau/plan" } })], () => true, card);
+    expect(m.items.map((i) => [i.kind, i.branch])).toEqual([["branch", "bau/plan"]]);
+    const L = gitLayout(m), c = circleOf(L.shapes, 8)!, r = rectOf(L.shapes, "branch:bau/plan")!;
+    expect([c.at, c.y === r.y, c.x > r.x + r.w]).toEqual(["branch:bau/plan", true, true]);
+  });
+  test("still a lane: a lane session's worktree, a task's row, a Fleet-named lane without a session", () => {
+    const m = gitModel(repo(R1, [row(R1, "main", { primary: true }),
+      row("/w/wt/own", "bau/own", { session: { slot: 9, openedAt: 9, taskId: null } }),
+      row("/w/wt/task", "bau/task", { session: { slot: 10, openedAt: 10, taskId: "t1" } }),
+      row("/w/wt/idle", "fleet/2610180900-ab12")]), board(R1, []),
+      [slot(9, "/w/wt/own", { worktree: { repo: R1, branch: "bau/own" } }), slot(10, "/w/wt/task")], () => false, card);
+    expect(m.items.map((i) => [i.kind, i.branch])).toEqual([["lane", "bau/own"], ["lane", "bau/task"], ["lane", "fleet/2610180900-ab12"]]);
+  });
+  test("a plain worktree without a session is a branch row too, not checked and not landed", () => {
+    const m = gitModel(repo(R1, [row(R1, "main", { primary: true }), row("/w/wt/old", "bau/old")]), board(R1, []), [], () => false, card);
+    expect(m.items.map((i) => [i.kind, i.branch, i.check, i.merged, i.sessions.length])).toEqual([["branch", "bau/old", "none", false, 0]]);
   });
 });

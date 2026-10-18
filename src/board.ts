@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
@@ -521,6 +521,13 @@ export async function doCommit(slot: number, mode: "quick" | "agent", activeConf
 export function sessionActive(slot: number): boolean {
   const s = fleet[slot - 1];
   return !!s && s.cwd !== null && serverNow - s.lastOutput < RECENT_MS;
+}
+
+// a circle of the git structure reads the bar's own state (owner Z118: Slot 5 green in the bar, grey in the structure) —
+// the bar counts a slot the viewer has open as working (src/client.ts#outputState)
+function slotWorks(slot: number): boolean {
+  const s = fleet[slot - 1];
+  return !!s?.cwd && slotState(s, serverNow, panes.some((p) => p.slot === slot)) === "work";
 }
 
 // mid-run guard for the commit action: the session is producing output, so a commit now would
@@ -4070,7 +4077,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
 function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { state: MachineState; remote: HTMLElement | null; facts: string[] } {
   const rows = R.worktrees ?? [];
   const lanes = rows.filter((w) => !w.primary);
-  const active = lanes.filter((w) => { const s = workSlot(w); return s && sessionActive(s.id); }).length;
+  const active = lanes.filter((w) => { const s = workSlot(w); return s && slotWorks(s.id); }).length;
   const waiting = lanes.filter((w) => workSlot(w)?.awaiting === "owner").length;
   const checking = rows.some((w) => w.checks.gate?.state === "running" || w.checks.gate?.state === "waiting");
   const state: MachineState = waiting ? { tone: "wait", word: `${waiting} waiting for you`, title: "Lanes of this project wait for your answer" }
@@ -4113,7 +4120,7 @@ function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, 
   const board = boardRepo(R.repo);
   const integration = board?.integration ?? "main";
   const audit = stemAudit(R, integration);
-  const m = gitModel(folded.length ? { ...R, worktrees: rows.filter((w) => !folded.includes(w)) } : R, board, fleet, sessionActive,
+  const m = gitModel(folded.length ? { ...R, worktrees: rows.filter((w) => !folded.includes(w)) } : R, board, fleet, slotWorks,
     (x) => gsCard(x as SlotInfo), { live: isLiveLane, run: (w) => {
       const { mine, ended } = runsOf(w);
       const g = gateLook(w, mine, ended);
@@ -4207,7 +4214,7 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   } else if (at === "lane-check") said.push(`Way to ${w?.target?.branch ?? m.integration}`);
   else {
     if (s) {
-      const b = el("button", "gsfact", `Slot ${s.id} · ${sessionActive(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
+      const b = el("button", "gsfact", `Slot ${s.id} · ${slotWorks(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
         : s.lastOutput > 0 ? `quiet for ${agoEn(Date.now() - s.lastOutput)}` : "quiet"}`) as HTMLButtonElement;
       b.type = "button";
       b.title = `Go to the session in slot ${s.id}`;

@@ -209,11 +209,14 @@
   #instbtn .devsign[data-tone="link"] { color: var(--chat-ink); }
   #instbtn .devsign[data-tone="off"] { color: var(--q-wait); opacity: .7; }
   .instnote { padding: 6px 7px 3px; border-top: 1px solid var(--chat-edge); margin-top: 2px; }
-  /* Layout choices use the tab row; the function controls keep their two-row grouping. */
+  /* Layout choices use the tab row's states; the four of them stand as a 2×2 square whose two rows
+     are the two function rows beside it (owner 18.10.: „[Zitat entfernt]“).
+     No display here: the `display: flex` this rule carried from f2084049 laid the square out as one
+     row, and an id rule with a display outranks the phone's `#layouts { display: none }`. */
   #sidetools { --queue-scale: 1.48; display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
   #layouts { flex: none; display: grid; grid-template-columns: 23px 23px; grid-auto-rows: 23px; gap: 2px; }
-  #sidetools #layouts.tabrow { display: flex; align-items: center; padding: 0; border: 0; background: none; }
-  #sidetools #layouts.tabrow button { border: 0; background: transparent; }
+  #sidetools #layouts.tabrow { padding: 0; border: 0; background: none; overflow: visible; }
+  #sidetools #layouts.tabrow button { min-height: 0; border: 0; background: transparent; }
   #sidetools #layouts.tabrow button.on { color: var(--chat-ink); background: var(--c-hover);
     box-shadow: inset 0 0 0 1px var(--chat-edge); }
   #toolrows { margin-left: auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -257,20 +260,19 @@
      decision; line 2 (.r2) carries the two facts the row used to say only in colour and brightness
      — which checkout, and how long since it last spoke. `flex: none` stays: a row that can be
      squeezed is a row whose label vanishes first, and the phone drawer depends on it too. */
-  /* The inner spacing was set on air, not on legibility: 8/9 above and below a line whose own
-     height is already fixed by the reserved gutter, and 2px between the two lines of a row that
-     reads as one object. 5/6/1 keeps the rows apart (the 2px gap in #slots does that) and hands
-     the difference back to the axis. What it CANNOT reach is the 26px gutter itself: the mark's
-     reservation is the floor under line 1, and it is not this cut's to move — see the report. */
-  .slot { position: relative; flex: none; display: block; padding: 6px 8px 6px 6px;
+  /* THE ROW IS AS TALL AS ITS MARK, plus 2px of air (owner 18.10.: „[Zitat entfernt]“
+     ; 16 of them have to fit the bar of a 1024×768 screen). The 2px gap in #slots keeps the
+     rows apart; the 26px gutter of the mark stays the floor under line 1, so the plant is drawn
+     whole and at its size. */
+  .slot { position: relative; flex: none; display: block; padding: 2px 8px 2px 6px;
     border-radius: 12px; border: 1px solid transparent; cursor: pointer; font-size: var(--chat-fs);
     color: var(--chat-prose); user-select: none; -webkit-user-select: none; --rb: var(--c-hover); }
   .slot:hover, .slot:focus-within { background: var(--c-hover); }
   .slot.shown { background: var(--chat-surface); border-color: var(--chat-edge-soft); --rb: var(--chat-surface); }
   .slot.current { background: var(--chat-raised); border-color: var(--chat-edge); --rb: var(--chat-raised); }
   /* ONE LINE, ON A 4px RHYTHM. The row is the owner's five things on one axis (src/client.ts,
-     slotRow): a session row is 26 + 2×6 + 2 = 40px, a lane 22 + 12 + 2 = 36, a free place
-     20 + 2×5 + 2 = 32 (20 is its number chip's own height). The minimum heights are what make that true whatever a chip's own line
+     slotRow): a session row is 26 + 2×2 + 2 = 32px, a lane 22 + 4 + 2 = 28, a free place
+     20 + 4 + 2 = 26 (20 is its number chip's own height). The minimum heights are what make that true whatever a chip's own line
      box says, and every chip on the line is centred on the same axis by the flex, never by a
      baseline — a mono number and a sans word do not share a baseline, they share a centre.
      The gap is 4, not 6: seven children share 227px, and every 2px of gap is 12px of name. */
@@ -312,7 +314,6 @@
      900px window at place 15. The gutter's WIDTH stays (the numbers of free and occupied places
      must keep standing on one left edge); only its height gives way, and only where there is no
      session for a mark to stand for. */
-  .slot.empty { padding: 5px 8px 5px 6px; }
   .slot.empty .mark { height: 16px; }
   /* THE THREE SUCCESSION FASSUNGEN — scaffolding behind #band=a|b|c (src/client.ts, BAND_VARIANT).
      No new colour, no new edge, no new family: .succ is the same mono-on-faint the other readings of
@@ -334,7 +335,7 @@
     color: var(--chat-faint); font-variant-numeric: tabular-nums; }
   .slot .pastcell .ctxfill { color: var(--chat-faint); }
   /* the hint, Fassung A "Kante": one 2px sliver — left while the present shows, right on a past */
-  .slot.pull::before { content: ""; position: absolute; left: 2px; top: 9px; bottom: 9px; width: 2px;
+  .slot.pull::before { content: ""; position: absolute; left: 2px; top: 7px; bottom: 7px; width: 2px;
     border-radius: 1px; background: var(--chat-edge); pointer-events: none; z-index: 1; }
   .slot.pull:hover::before, .slot.pull:focus-within::before, .slot.pull.dragging::before { background: var(--chat-faint); }
   .slot.pull.back::before { left: auto; right: 2px; background: var(--chat-faint); }
@@ -393,10 +394,10 @@
      And it covers LINE 1 ONLY — the row's top padding + the line's min-height: down to bottom:0 it
      laid its surface over the right end of every line under the row, and the Codex sentence read
      "choose which convers…" on hover (owner screenshot 2026-09-21). */
-  .slotact { position: absolute; right: 6px; top: 0; height: calc(6px + 26px); display: none; align-items: center;
+  .slotact { position: absolute; right: 6px; top: 0; height: calc(2px + 26px); display: none; align-items: center;
     justify-content: flex-end;
     gap: 2px; padding-left: 6px; background: var(--rb); }
-  .slot.lane .slotact { height: calc(6px + 22px); }
+  .slot.lane .slotact { height: calc(2px + 22px); }
   .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
   .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act,
   .slot:hover .r1 .lc, .slot:focus-within .r1 .lc { visibility: hidden; }
@@ -1147,7 +1148,7 @@
   /* small on purpose: the sidebar is 228px and a lane label is already tight, so the indent buys
      "belongs to the row above" with the least width it can be read at */
   .slot.stacked { margin-left: 10px; }
-  .slot.repohead { cursor: pointer; padding-top: 4px; padding-bottom: 4px; }
+  .slot.repohead { cursor: pointer; }
   .slot.repohead .lbl { font-size: var(--chat-code-fs); letter-spacing: 0.02em; }
   /* the 50px rail centres its rows and has no width to spend on hierarchy — drop the indent and
      the text chips there; the fold arrow stays, so a stack is still openable from the rail */
@@ -3503,13 +3504,39 @@
   #gatein:focus { outline: none; border-color: var(--focus); }
   #gatein.bad { border-color: var(--danger); }
 
-  /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow */
+  /* touch devices: hover-revealed controls have no hover to reveal them — pin them in flow. ON LINE 1,
+     as the phone drawer does (row 69bdf591): as a line of its own under every row the strip made a
+     tablet's rows 52px and put ✕ one tap away on each of them (owner 18.10.: „[Zitat entfernt]“
+     , the scrollbar „[Zitat entfernt]“). ✕ goes behind ⋯ with the row's other actions
+     (client.ts#toggleRowMenu); the menu opens at the foot of the bar. The phone block below sets its
+     own finger sizes over these. */
   @media (hover: none) {
-    .slotact, .slot.lane .slotact { display: flex; position: static; height: auto; padding-left: 0; background: none; }
+    .slot { display: flex; align-items: center; flex-wrap: wrap; }
+    .slot > .r1, .slot > .bandview { flex: 1 1 0; min-width: 0; }
+    .slot > .needline { order: 1; flex: 0 0 calc(100% - var(--mark-size, 26px) - 28px); }
+    .slotact, .slot.lane .slotact { display: flex; position: static; height: auto; padding-left: 0; background: none;
+      align-self: stretch; }
     /* the strip is IN FLOW here, beside the readings — nothing to hide them for (same selectors as
        the hover rule, later in the sheet, so this wins) */
     .slot:hover .r1 .ctxfill, .slot:hover .r1 .act,
     .slot:focus-within .r1 .ctxfill, .slot:focus-within .r1 .act { visibility: visible; }
+    .slotact .kill { display: none; }
+    .rowmore { display: flex; flex: none; align-self: stretch; align-items: center; justify-content: center;
+      width: 32px; margin: -2px -8px -2px 0; padding: 0; border: 0; border-radius: var(--r1);
+      background: none; color: var(--chat-mute); cursor: pointer; }
+    .rowmore .ico { width: 16px; height: 16px; }
+    .rowmore:active { background: var(--c-hover); color: var(--chat-ink); }
+    #side { position: relative; }
+    .rowmenu.open { display: flex; flex-direction: column; gap: 2px; position: absolute; z-index: 40;
+      left: 0; right: 0; bottom: 0; padding: 6px; border-top: 1px solid var(--chat-edge);
+      border-radius: var(--r2) var(--r2) 0 0; background: var(--chat-raised);
+      box-shadow: 0 -8px 22px color-mix(in srgb, var(--chat-void) 70%, transparent); }
+    .rowmenuhead { padding: 4px 10px 6px; font-size: var(--chat-ui-fs); color: var(--chat-mute);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rowmenuitem { min-height: 40px; padding: 0 10px; border: 0; border-radius: var(--r1); background: none;
+      color: var(--chat-prose); font-family: inherit; font-size: var(--chat-fs); text-align: left; cursor: pointer; }
+    .rowmenuitem:active, .rowmenuitem:focus-visible { background: var(--c-hover); color: var(--chat-ink); outline: none; }
+    .rowmenuitem.danger { color: var(--danger); }
   }
 
   /* --- mobile: phones in any orientation (short landscape counts too) --- */

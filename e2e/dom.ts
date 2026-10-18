@@ -11,6 +11,7 @@
 //   · e2e/role-address.ts runPostfachDom (a session's Postfach tab, K13)
 //   · e2e/konstellation.ts runKonstellationDom (the constellation window, K16 E2b)
 //   · e2e/uebergabe.ts    runUebergabeDom (the session's „Handover“ block, K16 uebergabe-b)
+//   · e2e/leiste.ts       runLeisteDom (the left bar: views square, rows, band, fit, highlight)
 // This file only drives them, with the very check lines they had in their old modules — the names
 // are unchanged, only the module that emits them moved (suite-modules.ts#PROBE_HOSTS maps a change
 // in a host file to this module too, so a narrowed preview still runs the probe it touched).
@@ -40,6 +41,7 @@ import { TIMELINE_MUTANTS, runTimelineDom } from "./timeline-ui";
 import { runPostfachDom } from "./role-address";
 import { KONST_CLAIM, KONST_MUTANTS, runKonstellationDom } from "./konstellation";
 import { UEB_MUTANTS, runUebergabeDom } from "./uebergabe";
+import { LEISTE_MUTANTS, runLeisteDom } from "./leiste";
 import { K15_START_LIVE_MUTANTS, runK15StartLiveDom } from "./k15-start";
 import { K15_START_MUTANTS, runK15StartDom } from "./k15-start-dom";
 
@@ -91,6 +93,7 @@ export async function run(): Promise<void> {
   await postfachDom(sourceRoot);
   await konstellationDom(sourceRoot);
   await uebergabeDom(sourceRoot);
+  await leisteDom(sourceRoot);
   await k15StartDom(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
@@ -416,6 +419,26 @@ async function uebergabeDom(sourceRoot: string): Promise<void> {
         JSON.stringify(hit?.facts ?? null).slice(0, 600));
     } catch (error) {
       probeFailed(`uebergabe DOM mutant — ${m.name}`, error);
+    }
+  }
+}
+
+// --- from e2e/leiste.ts: the left bar (auftraege/leiste-aufraeumen.md, Mangel 126) and its mutants. Every claim at every
+// width it is measured at: the fit and the views square are what differs between the desktop, the tablets and the phone.
+async function leisteDom(sourceRoot: string): Promise<void> {
+  try {
+    for (const [result, claim, ok] of atOneViewport(await runLeisteDom(sourceRoot), 1440, { alsoAt: () => true }))
+      check(`leiste DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+  } catch (error) {
+    probeFailed("leiste DOM", error);
+  }
+  for (const m of DOM_MUTANTS ? LEISTE_MUTANTS : []) {
+    try {
+      const hit = (await runLeisteDom(sourceRoot, undefined, { widths: [m.width ?? 1440], mutate: m }))[0];
+      check(`leiste DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`leiste DOM mutant — ${m.name}`, error);
     }
   }
 }

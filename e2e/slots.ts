@@ -3202,8 +3202,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const laneActCss = cssBody(".slot.lane .slotact");
       check("client: the Codex sentence and ⎇+ are not cut at rest or on hover — the strip covers line 1 only and hides the readings it replaces",
         needCss !== "" && !/nowrap|overflow|text-overflow|max-height|-webkit-line-clamp/.test(needCss)
-          && !/bottom:\s*0/.test(slotactCss) && /height:\s*calc\(6px \+ 26px\)/.test(slotactCss)
-          && /height:\s*calc\(6px \+ 22px\)/.test(laneActCss)
+          && !/bottom:\s*0/.test(slotactCss) && /height:\s*calc\(2px \+ 26px\)/.test(slotactCss)
+          && /height:\s*calc\(2px \+ 22px\)/.test(laneActCss)
           && /\.slotact, \.slot\.lane \.slotact \{[^}]*position: static; height: auto/.test(indexSrc)
           // …and the readings under it are HIDDEN in place, never overpainted by a guessed width (⎇+ was cut)
           && indexSrc.includes(".slot:hover .r1 .ctxfill, .slot:hover .r1 .act,") && !/min-width/.test(slotactCss)

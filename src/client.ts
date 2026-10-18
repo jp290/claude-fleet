@@ -6677,12 +6677,20 @@ function setStackOpen(g: Stack, on: boolean) {
 // the pane is the terminal (or chat) it was.
 //  · THE HINT is one 2px sliver on the row's edge (Fassung A, "Kante"): left while the present
 //    shows — a past lies under it — right while a past session shows. Nothing else is permanent.
+//  · ONE STROKE, ONE SESSION (owner 18.10.: „[Zitat entfernt]“):
+//    press to release goes at most one session, and nothing moves without a pressed button.
 //  · THE MOUSE ("weich") never carries the row: it leans, damped and capped at 28 % of the row, and
-//    past 40 px of pull the next session snaps in with a soft overshoot, button still down.
+//    past 40 px of pull the next session snaps in with a soft overshoot; after that the stroke is
+//    spent and the row rests until the button comes up.
 //  · TRACKPAD AND FINGER (round 5): a 7 px dead zone, then horizontal or vertical is decided once;
-//    the row follows 1:1; release switches by distance OR speed; a swipe commits a third across
-//    and swallows the rest of its momentum (one swipe, one session); a press grabs the row where
-//    the eye sees it; no click fires after a drag. ← → Home End Esc Enter on focus.
+//    the row follows 1:1 up to one cell; release switches by distance OR speed; a swipe commits a
+//    third across and swallows the rest of its momentum; a press grabs the row where the eye sees
+//    it; no click fires after a drag. ← → Home End Esc Enter on focus.
+//  · THE HOLD is the pointer capture: it starts when the row takes the capture and ends exactly once,
+//    when the browser takes it away (after pointerup, pointercancel or anything else). A second
+//    finger while one holds is ignored — it used to replace the first, whose release was then
+//    dropped, and the sidebar never rebuilt again (Mangel 126: the highlight stood on a slot the
+//    owner had long left).
 //  · THE DOTS show only on hover, focus, while pulling and for a moment after a step; past eight
 //    sessions they are a window of seven with a small end dot.
 //  · DEPTH is how far back a row reaches, read in ONE place (bandReach) — the device setting
@@ -6790,10 +6798,11 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   // where the eye sees the band right now, relative to the resting cell — a press mid-spring grabs
   // it THERE, not at the target
   const seen = (): number => new DOMMatrix(getComputedStyle(track).transform).m41 + idx * W;
-  // past either end the band gives, but less and less
+  // past either end, and past one cell anywhere, the band gives, but less and less
   const resist = (d: number): number => {
-    const over = (idx === n - 1 && d < 0) || (idx === 0 && d > 0);
-    return over ? Math.sign(d) * W * 0.18 * (1 - Math.exp(-Math.abs(d) / (W * 0.5))) : d;
+    const free = (idx === n - 1 && d < 0) || (idx === 0 && d > 0) ? 0 : W;
+    return Math.abs(d) <= free ? d
+      : Math.sign(d) * (free + W * 0.18 * (1 - Math.exp(-(Math.abs(d) - free) / (W * 0.5))));
   };
   const paintDepth = () => {
     depth.replaceChildren();
@@ -6820,13 +6829,10 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     paint(moved);
     if (moved) openBandSession(s.id, idx === n - 1 ? null : first + idx);
   };
-  // distance OR speed: more than half a row counts whole rows; less than that, a fifth of a row or
-  // a flick of BAND_FLICK px/ms goes one step in the direction of travel
-  const decide = (d: number, v: number): number => {
-    if (Math.abs(d) > W / 2) return -Math.round(d / W);
-    if (Math.abs(d) > W * BAND_COMMIT || (Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(d))) return d > 0 ? -1 : 1;
-    return 0;
-  };
+  // distance OR speed: a fifth of a row or a flick of BAND_FLICK px/ms goes one step in the direction
+  // of travel — one step, however far the stroke went
+  const decide = (d: number, v: number): number =>
+    Math.abs(d) > W * BAND_COMMIT || (Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(d)) ? (d > 0 ? -1 : 1) : 0;
   const speed = (smp: [number, number][]): number => {
     const now = smp[smp.length - 1], old = smp.find((x) => now[0] - x[0] <= 80) ?? smp[0];
     return now[0] > old[0] ? (now[1] - old[1]) / (now[0] - old[0]) : 0;
@@ -6837,10 +6843,11 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   };
 
   let g: { id: number; x0: number; y0: number; from: number; dir: "x" | "y" | null; mouse: boolean;
-    s: [number, number][]; rearm?: boolean } | null = null;
+    s: [number, number][]; stepped?: boolean } | null = null;
+  let held = false;
   let swallowClick = false;
   view.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || held) return;
     W = view.clientWidth;
     const mouse = e.pointerType === "mouse";
     // a finger grabs the band where the eye sees it; the mouse lets a running snap land first
@@ -6848,19 +6855,24 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     if (!mouse) put(from, false);
     g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, mouse, s: [[e.timeStamp, e.clientX]] };
   });
-  // the mouse leans the row, it never carries it: past T px the next session snaps in, and the pull
-  // counts again from wherever the pointer is once that snap has landed
+  // the mouse leans the row, it never carries it: past T px the next session snaps in, and the stroke
+  // is spent. A press during a running snap counts its pull from where that snap lands.
   const lean = (cx: number) => {
-    if (!g) return;
-    if (performance.now() < snapEnd) { g.rearm = true; return; }
-    if (g.rearm) { g.x0 = cx; g.rearm = false; }
+    if (!g || g.stepped) return;
+    if (performance.now() < snapEnd) { g.x0 = cx; return; }
     const raw = cx - g.x0, can = raw > 0 ? idx > 0 : idx < n - 1;
-    if (can && Math.abs(raw) >= BAND_MOUSE.T) { g.rearm = true; go(idx + (raw > 0 ? -1 : 1), true); return; }
+    if (can && Math.abs(raw) >= BAND_MOUSE.T) { g.stepped = true; go(idx + (raw > 0 ? -1 : 1), true); return; }
     const cap = W * BAND_MOUSE.cap * (can ? 1 : 0.35);
     put(Math.sign(raw) * cap * (1 - Math.exp(-BAND_MOUSE.k * Math.abs(raw) / cap)), false);
   };
   view.addEventListener("pointermove", (e) => {
     if (!g || e.pointerId !== g.id) return;
+    // a release the band never heard of (outside the window, a menu that ate it) ends the stroke here
+    if (g.mouse && e.buttons === 0) {
+      end(e, true);
+      if (view.hasPointerCapture(e.pointerId)) view.releasePointerCapture(e.pointerId);
+      return;
+    }
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
     if (!g.dir) {
       if (Math.hypot(dx, dy) < BAND_SLOP) return;
@@ -6868,6 +6880,8 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
       if (g.dir === "y") { put(0, true); g = null; return; }
       if (!g.mouse) g.x0 += Math.sign(dx) * BAND_SLOP; // the mouse counts its pull from the press
       view.setPointerCapture(e.pointerId);
+      if (!view.hasPointerCapture(e.pointerId)) { put(0, true); g = null; return; }
+      held = true;
       row.classList.add("dragging");
       bandGesture++;
     }
@@ -6881,20 +6895,28 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     const was = g;
     g = null;
     if (!was.dir) { put(0, true); return; } // a plain click: the row's own onclick handles it
-    row.classList.remove("dragging");
     swallowClick = true;
     setTimeout(() => { swallowClick = false; }, 0);
     if (cancelled) put(0, true, was.mouse);
     else if (was.mouse) {
-      // under the threshold only a flick still switches; otherwise the lean springs back
+      // a stroke that stepped is spent; under the threshold only a flick still switches, otherwise
+      // the lean springs back
       const v = speed(was.s), raw = e.clientX - was.x0;
-      const flick = !was.rearm && Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(raw);
-      if (performance.now() >= snapEnd || flick) go(idx + (flick ? (raw > 0 ? -1 : 1) : 0), true);
+      const flick = !was.stepped && Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(raw);
+      if (flick || (!was.stepped && performance.now() >= snapEnd)) go(idx + (flick ? (raw > 0 ? -1 : 1) : 0), true);
     } else go(idx + decide(was.from + e.clientX - was.x0, speed(was.s)));
-    release();
   };
   view.addEventListener("pointerup", (e) => end(e, false));
   view.addEventListener("pointercancel", (e) => end(e, true));
+  view.addEventListener("lostpointercapture", (e) => {
+    // a finger's implicit capture sits on the cell under it and is lost the moment the view takes it
+    if (e.target !== view) return;
+    if (g && e.pointerId === g.id) end(e, true);
+    if (!held) return;
+    held = false;
+    row.classList.remove("dragging");
+    release();
+  });
   view.addEventListener("click", (e) => { if (swallowClick) { e.stopPropagation(); e.preventDefault(); } }, true);
 
   // a sideways trackpad swipe: the row follows the fingers; it commits the moment it is a third
@@ -6906,8 +6928,7 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     const d = w.d, v = speed(w.s.length ? w.s : [[0, 0]]);
     w = null;
     lockUntil = performance.now() + BAND_MOMENTUM_GAP;
-    go(idx + decide(d, v));
-    release();
+    try { go(idx + decide(d, v)); } finally { release(); }
   };
   view.addEventListener("wheel", (e) => {
     const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.5 && Math.abs(e.deltaX) >= 1;

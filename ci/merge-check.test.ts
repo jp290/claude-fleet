@@ -18,12 +18,29 @@ describe("mainVerdict: ist main bekannt rot?", () => {
   test("ein späteres Grün auf main hebt ein älteres Rot auf, egal in welcher Reihenfolge die Zeilen kommen", () => {
     expect(mainVerdict([row(3, "green", "m3"), row(2, "red", "m2")], onMain).red).toBe(false);
   });
-  test("ein Rot, das als flake beurteilt ist, hält main nicht rot", () => {
-    expect(mainVerdict([row(2, "red", "m2", { verdict: "flake", at: 3, by: "owner" })], onMain).red).toBe(false);
+  // dieselben Urteile wie der Server (server.ts#acceptByLandReading): flake, stale-test und unknowable
+  // sagen „jemand hat hingesehen, keine Regression“ — Mangel 129: der Merge-Check ließ nur flake gelten
+  for (const verdict of ["flake", "stale-test", "unknowable"]) {
+    test(`ein Rot, das als ${verdict} beurteilt ist, hält main nicht rot (Objekt- und Textform)`, () => {
+      const obj = mainVerdict([row(1, "green", "m1"), row(2, "red", "m2", { verdict, at: 3, by: "owner" })], onMain);
+      expect(obj).toEqual({ red: false, why: `main grün: Audit m2 vom ${new Date(2).toISOString()} (rot, Urteil ${verdict})` });
+      expect(mainVerdict([row(2, "red", "m2", verdict)], onMain).red).toBe(false);
+    });
+  }
+  test("ein Rot, das als real beurteilt ist, bleibt rot (Objekt- und Textform), und der Grund nennt das Urteil", () => {
+    const obj = mainVerdict([row(2, "red", "m2", { verdict: "real", at: 3, by: "owner" })], onMain);
+    expect(obj).toEqual({ red: true, why: `main ist rot: Audit m2 vom ${new Date(2).toISOString()} (Urteil real)` });
+    expect(mainVerdict([row(2, "red", "m2", "real")], onMain).red).toBe(true);
   });
-  test("ein Rot, das als real oder stale-test beurteilt ist, bleibt rot (Objekt- und Textform)", () => {
-    expect(mainVerdict([row(2, "red", "m2", { verdict: "real", at: 3, by: "owner" })], onMain).red).toBe(true);
-    expect(mainVerdict([row(2, "red", "m2", "stale-test")], onMain).red).toBe(true);
+  test("ein unbeurteiltes Rot und ein Urteil, das keins ist, bleiben rot", () => {
+    expect(mainVerdict([row(2, "red", "m2")], onMain).red).toBe(true);
+    expect(mainVerdict([row(2, "red", "m2", null)], onMain).red).toBe(true);
+    expect(mainVerdict([row(2, "red", "m2", { at: 3, by: "owner" })], onMain).red).toBe(true);
+    expect(mainVerdict([row(2, "red", "m2", "Flake")], onMain).red).toBe(true);
+    expect(mainVerdict([row(2, "red", "m2", { verdict: "passt", at: 3 })], onMain).red).toBe(true);
+  });
+  test("ein beurteiltes älteres Rot hebt ein jüngeres unbeurteiltes nicht auf", () => {
+    expect(mainVerdict([row(1, "red", "m1", "stale-test"), row(2, "red", "m2")], onMain).red).toBe(true);
   });
   test("unknown ist keine Messung: zählt wird die letzte grüne oder rote Zeile davor", () => {
     expect(mainVerdict([row(1, "red", "m1"), row(2, "unknown", "m2")], onMain).red).toBe(true);

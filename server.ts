@@ -191,6 +191,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
   UNMEASURED_DIFF, type VariantCompareVariant, type VariantDecidedAt, type VariantDiffStat,
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
 import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
+import { ADJUDICATION_CLEARS_RED, ADJUDICATION_VERDICTS, type AdjudicationVerdict } from "./server/adjudication";
 import { STATE_DIR } from "./server/state-dir";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
@@ -16016,7 +16017,7 @@ function fleetReportOwnerView(): (FleetReport & { liveness: ReportReceiverLivene
 // Program f170dc46 on 2026-09-15: 24 undecided reports, 22 of them landed, 12 held open by nothing
 // but this. Program reports are pruned only after a decision, so the list grew with the red rate.
 // Two facts DO arrive after a red, and neither was read:
-//  · THE ADJUDICATION (server.ts#ADJUDICATION_VERDICTS). `flake`, `stale-test` and `unknowable` all
+//  · THE ADJUDICATION (server/adjudication.ts). `flake`, `stale-test` and `unknowable` all
 //    say somebody LOOKED and this is not a regression of this land; that is exactly the question the
 //    rule was waiting on. `real` and an UNJUDGED red still block — the first is a human saying the
 //    land broke something, the second is the ambiguity the adjudication rail exists to resolve.
@@ -16024,7 +16025,6 @@ function fleetReportOwnerView(): (FleetReport & { liveness: ReportReceiverLivene
 //    passed. `real` is not superseded by it: a regression that was fixed afterwards is still a
 //    question the MAIN owes an answer to, and the human already said so.
 const ACCEPT_BY_LAND_MS = Math.max(0, Number(process.env.FLEET_ACCEPT_BY_LAND_MS ?? 60_000) | 0);
-const ADJUDICATION_CLEARS_RED: readonly AdjudicationVerdict[] = ["flake", "stale-test", "unknowable"];
 // DOES A LATER AUDIT'S TIP CONTAIN THIS LAND. CACHED, and the cache is not an optimisation: this
 // rule runs on every tick over every undecided report, so an uncached probe would be one `git`
 // spawn per candidate per report per POLL. A pair of commit ids is immutable, so a proven answer
@@ -35091,12 +35091,10 @@ async function handleHelperRoute(req: Request, url: URL): Promise<Response | nul
 // ("a death inside it re-audits the same tip once more after boot") means two rows can name one
 // tip, and a row that never resolved a tip carries `mainSha: ""` — while `at` is stamped once per
 // row by a globally serialized drain loop, is present on every row including the unmeasurable ones,
-// and is already the sort key of every reader.
-const ADJUDICATION_VERDICTS = ["real", "flake", "stale-test", "unknowable"] as const;
+// and is already the sort key of every reader. The verdicts are server/adjudication.ts's.
 // Immediate in-process claim beside the durable rail. A tick re-checks this after canDeliver, so an
 // accepted adjudication cannot race its still-queued append and be mistaken for an open red.
 const auditAdjudicationClaims = new Set<number>();
-type AdjudicationVerdict = typeof ADJUDICATION_VERDICTS[number];
 // the WHY with room for its evidence — the red check's name, the rerun's transcript line, the fix sha
 // (0c190377). 300 held one sentence, and an adjudication with no room for its proof is an opinion;
 // the cap is the comment rail's, the one other place a human writes a reasoned text into this server.

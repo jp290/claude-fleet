@@ -3,33 +3,38 @@
 # Prüfgeräte“): Die Bänder 5 und 6 gehören den Handläufen der Bau-Sessions, und ein Lauf gilt nur,
 # wenn er sein Band für sich hatte. Ein zweiter Start auf demselben Band wartet und sagt es sofort.
 # Auf dem Mac, im Worktree des Commits:
-#   sh ci/band-run.sh <commit> <band 5|6> <laufname> units=<unit,…>|skip=<unit,…>
+#   sh ci/band-run.sh <commit> <band 5|6> <laufname> units=<unit,…>|skip=<unit,…> [mutants=1]
 # units= fährt genau diese Units aus e2e/ctx.ts#SHARD_UNITS, skip= alle außer diesen
-# (FLEET_E2E_SKIP_UNITS). Der Laufname besteht nur aus [A-Za-z0-9._-], höchstens 32 Zeichen: Er
-# steht in jedem Fixture-Pfad (server.ts#WORKER_CMD_RE verwirft z. B. ein „+“), und Vergleichsläufe
+# (FLEET_E2E_SKIP_UNITS); mutants=1 fährt die dom-Unit mit ihren Mutanten wie der Nachtlauf
+# (FLEET_E2E_DOM_MUTANTS=1, e2e/dom.ts). Der Laufname besteht nur aus [A-Za-z0-9._-], höchstens
+# 32 Zeichen: Er steht in jedem Fixture-Pfad (server.ts#WORKER_CMD_RE verwirft z. B. ein „+“), und Vergleichsläufe
 # brauchen gleich lange Namen (paneEnv, NOTIZ K1 Befund B).
 # Der Mac schiebt den Commit nach ~/ci/repo.git und ruft dieses Skript auf dem Helfer auf
 # (--on-helper). Dort: Klon und bun install, dann die Sperre ~/ci/band-<n>.lock (flock), dann
 # ./e2e-isolated.sh mit FLEET_E2E_BAND=<n> und TMPDIR=/var/tmp/<lauf>, nie unter $HOME (Befund A).
 # Lauf = <MMTThhmmss>-<laufname>; Log unter ~/ci/hand/<lauf>/. Ein SSH-Abbruch beendet den Lauf NICHT
 # (ohne Terminal kommt kein HUP an, Mängel 71/87): er wartet, läuft bis zum Ende oder zur Zeitgrenze
-# und hält so lange sein Band; rc und run.log liest danach, wer will.
+# und hält so lange sein Band; rc und run.log liest danach, wer will. Die Zeitgrenze ist
+# BAND_RUN_TIMEOUT_S (Sekunden, Default 2400); auf dem Mac gesetzt, reicht band-run sie an den Helfer
+# durch (die dom-Unit mit mutants=1 braucht mehr als 2400 s).
 # Ausgabe: Zeitstempel (start, wartet, band frei, ende), eine Zeile
 # `<laufname> rc= s= PASS= FAIL= QUAR=`, die FAIL/QUAR-Zeilen und `path <laufpfad>`.
 # Exit: rc der Suite · 2 falsche Eingabe · 3 der Lauf kam nicht bis zur Suite.
 set -u
-usage() { echo "sh ci/band-run.sh <commit> <band 5|6> <laufname> units=<unit,…>|skip=<unit,…>" >&2; exit 2; }
+usage() { echo "sh ci/band-run.sh <commit> <band 5|6> <laufname> units=<unit,…>|skip=<unit,…> [mutants=1]" >&2; exit 2; }
 check() {
   case "$1" in 5|6) ;; *) echo "Band '$1': Handläufe nur auf 5 oder 6 (0–4 Helfer-Daemon, 7–9 Merge-Check)" >&2; exit 2 ;; esac
   case "$2" in ""|*[!A-Za-z0-9._-]*) echo "Laufname '$2': nur [A-Za-z0-9._-]" >&2; exit 2 ;; esac
   [ "${#2}" -le 32 ] || { echo "Laufname '$2': höchstens 32 Zeichen" >&2; exit 2; }
   case "$3" in units=?*|skip=?*) ;; *) usage ;; esac
   case "${3#*=}" in *[!a-z0-9,-]*) echo "Units '${3#*=}': Namen aus e2e/ctx.ts#SHARD_UNITS, mit Komma getrennt" >&2; exit 2 ;; esac
+  case "${4:-}" in ""|mutants=1) ;; *) usage ;; esac
 }
 
 if [ "${1:-}" != "--on-helper" ]; then
-  [ $# -eq 4 ] || usage
-  check "$2" "$3" "$4"
+  [ $# -eq 4 ] || [ $# -eq 5 ] || usage
+  check "$2" "$3" "$4" "${5:-}"
+  case "${BAND_RUN_TIMEOUT_S:-}" in *[!0-9]*) echo "BAND_RUN_TIMEOUT_S '$BAND_RUN_TIMEOUT_S': Sekunden als Zahl" >&2; exit 2 ;; esac
   SHA=$(git rev-parse --verify -q "${1}^{commit}") || { echo "Commit '$1' gibt es hier nicht" >&2; exit 2; }
   HOST="${MERGE_CHECK_HOST:-$(git remote get-url hub 2>/dev/null | sed -n 's#^ssh://\([^/]*\)/.*#\1#p')}"
   [ -n "$HOST" ] || { echo "kein Helfer: MERGE_CHECK_HOST fehlt, und das Remote hub ist keine ssh://-URL" >&2; exit 3; }
@@ -40,13 +45,14 @@ if [ "${1:-}" != "--on-helper" ]; then
   out=$(git push -q "ssh://${HOST}/~/ci/repo.git" "${SHA}:refs/hand/${SHA}" 2>&1) \
     || ssh "$HOST" git --git-dir=ci/repo.git cat-file -e "${SHA}^{commit}" \
     || { printf '%s\n' "$out" >&2; echo "der Commit ließ sich nicht zum Helfer $HOST schieben" >&2; exit 3; }
-  exec ssh "$HOST" sh -s -- --on-helper "$SHA" "$2" "$3" "$4" < "$0"
+  exec ssh "$HOST" ${BAND_RUN_TIMEOUT_S:+BAND_RUN_TIMEOUT_S=$BAND_RUN_TIMEOUT_S} sh -s -- --on-helper "$SHA" "$2" "$3" "$4" ${5:+"$5"} < "$0"
 fi
 
 shift
-[ $# -eq 4 ] || usage
-SHA=$1; BAND=$2; NAME=$3; SPEC=$4
-check "$BAND" "$NAME" "$SPEC"
+[ $# -eq 4 ] || [ $# -eq 5 ] || usage
+SHA=$1; BAND=$2; NAME=$3; SPEC=$4; MUTANTS=0
+check "$BAND" "$NAME" "$SPEC" "${5:-}"
+[ "${5:-}" = mutants=1 ] && MUTANTS=1
 case "$SHA" in ""|*[!0-9a-f]*) echo "Commit '$SHA': volle SHA erwartet" >&2; exit 2 ;; esac
 CI_HOME="${CI_HOME:-$HOME/ci}"
 KEEP_RUNS=10
@@ -95,7 +101,7 @@ done
 echo "$(ts) band $BAND frei"
 
 s=$(date +%s)
-TMPDIR="$T" FLEET_SUITE_LOCK="$R/suite.lock" FLEET_E2E_BAND=$BAND FLEET_E2E_SKIP_UNITS="$SKIP" \
+TMPDIR="$T" FLEET_SUITE_LOCK="$R/suite.lock" FLEET_E2E_BAND=$BAND FLEET_E2E_SKIP_UNITS="$SKIP" FLEET_E2E_DOM_MUTANTS=$MUTANTS \
   timeout -k 15 "${BAND_RUN_TIMEOUT_S:-2400}" ./e2e-isolated.sh < /dev/null > "$R/run.log" 2>&1
 rc=$?
 echo "$rc" > "$R/rc"

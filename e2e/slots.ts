@@ -11673,9 +11673,11 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
   { name: "a machine silent for days stands among the others", state: "lane", claim: "a machine silent for days is taken back",
     needle: "const MACHINE_STILL_MS = 3 * 24 * 3600_000;", with: "const MACHINE_STILL_MS = 365 * 24 * 3600_000;" },
+  // K16: the lane rows (.zr.zw) left Info, the git structure cuts a lane's name with … by the owner's word
+  // (src/gitstruktur.ts#fit) — the lane's name in HTML is the session head's now
   { name: "a lane's name cut under an ellipsis", state: "lane", claim: "nothing in the top of Info is cut", file: "public/index.html",
-    needle: "  #board .zr.zw .nm:not(.mono) { white-space: normal; overflow-wrap: anywhere; line-height: 1.3; padding: 3px 0; }",
-    with: "  #board .zr.zw .nm:not(.mono) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40px; }" },
+    needle: "  #board .bheadname { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--chat-ink);\n    white-space: normal; overflow-wrap: anywhere; padding: calc((var(--b-hit) - 18px) / 2) 6px 0 0; }",
+    with: "  #board .bheadname { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--chat-ink);\n    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40px; }" },
   // WHO HAS THE ALARM (owner 2026-10-08): what a session holds recedes, what needs the owner says what to do
   { name: "the owner card loses its sentence what to do", state: "alarm", claim: "an alarm nobody holds is a tinted card at the top",
     needle: `  if (owner) sec.appendChild(el("div", "plad", plaHolderLine(holder, a, al.tone)));`, with: "" },
@@ -11696,8 +11698,10 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // THE LANE VIEW, OWNER ROUND 2026-10-09 (UI-MAIN: „[Zitat entfernt]“)
   { name: "every project beside the focused one", state: "lane", claim: "only the focused session's project stands",
     needle: "const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;", with: "const focusR: WorkplaceRepo | undefined = undefined;" },
+  // K16: a lane's runs are its diamond in the git structure (runsHere.byBranch, src/board.ts#gitBlock), no longer
+  // lines that mark placedRuns — only an opened Prüfungen menu marks those now
   { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
-    needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !placedRuns.has(b.key)).sort(` },
+    needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !runsHere.byBranch.has(b.branch ?? "")).sort(` },
   { name: "a run line names no session", state: "land", claim: "the Prüfungen block says every run in one line",
     needle: "    const who = s?.cwd ? runWho(", with: "    const who = false ? runWho(" },
   { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from says so in its state",
@@ -11741,8 +11745,8 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  const sec = el(\"div\", \"bsec ranke\");\n  const wp = workplaces;", with: "  const sec = el(\"div\", \"bsec ranke\");\n  sec.appendChild(sectionHead(\"Arbeitsorte\", \"fleet\"));\n  const wp = workplaces;" },
   { name: "the files stand under History only", state: "mehr", claim: "Changes carries what the lane changes",
     needle: "  if (brief.files.length) work.appendChild(footprintBlock(slot, brief));", with: "" },
-  { name: "an icon button's focus key has no label", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
-    needle: "\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}", with: "" },
+  // ("an icon button's focus key has no label" left with K16: the project's + is "rk-btn quiet ib gsadd" now
+  // (src/board.ts#gitBlock), its class alone tells it from the Geräte ⓘ, so this claim has no witness for the label)
   { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Start does",
     needle: "  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce(", with: "  if (false) box.appendChild(LIVE_HOW.reduce(" },
   // round 10: the new live lane's way in

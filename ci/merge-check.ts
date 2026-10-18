@@ -15,6 +15,7 @@
 // Helfer: MERGE_CHECK_HOST=user@host, sonst Nutzer und Host des git-Remotes `hub`.
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { ADJUDICATION_CLEARS_RED } from "../server/adjudication";
 
 const RUNNER = join(import.meta.dir, "merge-check-run.sh");
 const REPO_DIR = join(import.meta.dir, "..");
@@ -88,7 +89,8 @@ function helperHost(): string {
 }
 
 // Bekannt rot heißt: die jüngste gemessene Audit-Zeile (grün oder rot) auf einem Stand von main ist
-// rot, und keine Adjudikation nennt sie flake. Nicht lesbar heißt nicht grün.
+// rot, und kein Urteil hebt sie auf — dieselben Urteile wie im Server (server/adjudication.ts: flake,
+// stale-test, unknowable). Nicht lesbar heißt nicht grün.
 function mainState(main: string): MainState {
   const r = Bun.spawnSync(["./ctl.sh", "get", "/api/post-land-audits?limit=50", "--json"], { cwd: REPO_DIR });
   let audits: Record<string, unknown>[];
@@ -112,7 +114,7 @@ export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: 
   const verdict = typeof adj === "string" ? adj : adj?.verdict;
   const at = new Date(Number(last.at)).toISOString();
   const sha = String(last.mainSha).slice(0, 8);
-  if (last.result === "red" && verdict !== "flake")
+  if (last.result === "red" && !(ADJUDICATION_CLEARS_RED as readonly (string | undefined)[]).includes(verdict))
     return { red: true, why: `main ist rot: Audit ${sha} vom ${at}${verdict ? ` (Urteil ${verdict})` : ""}` };
   return { red: false, why: `main grün: Audit ${sha} vom ${at}${verdict ? ` (rot, Urteil ${verdict})` : ""}` };
 }

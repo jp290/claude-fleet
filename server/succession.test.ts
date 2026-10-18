@@ -8,7 +8,7 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
+import { actDecision, agoText, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
   orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
   thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
   type ThresholdChoice, type WarmFacts } from "./succession";
@@ -353,10 +353,14 @@ describe("der Hinweis", () => {
     expect(compact).toContain("Ab 49 % oder kurz bevor dein Cache kalt wird tippt Fleet `/compact`, sobald du ruhst");
     expect(compact).toContain("POST /api/self/handover");
     expect(compact).not.toContain("Fleet übergibt nicht selbst");
+    // Owner 07.08. und 18.10.: die Session gibt selbst weiter, Fleets neue Session ist nur der Rückfall
     const succeed = hintText(facts("session", 46, "warm", "succeed"));
-    expect(succeed).toContain("öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst");
-    expect(succeed).toContain("in deine Pane wird dafür nichts getippt");
+    expect(succeed).toContain("Gib selbst weiter");
+    expect(succeed).toContain("POST /api/self/succeed");
     expect(succeed).toContain("POST /api/self/handover");
+    expect(succeed).toContain("Nur wenn du das nicht tust, öffnet Fleet ab 49 % oder kurz bevor dein Cache kalt wird selbst eine neue Session");
+    expect(succeed.indexOf("POST /api/self/succeed")).toBeLessThan(succeed.indexOf("öffnet Fleet"));
+    expect(hintText(facts("session", 49, "warm", "succeed"))).toContain("öffnet Fleet jetzt oder kurz bevor");
     expect(hintText(facts("lane", 46, "warm", "compact"))).toContain("Committe vorher deinen Stand.");
   });
   test("kurz vor kalt sagt er es", () => {
@@ -385,9 +389,19 @@ describe("kurz vor kalt", () => {
 });
 
 describe("die Wahl an der Schwelle", () => {
-  test("Owner 07.08.: „[Zitat entfernt]“ — ab Werk eine neue Session, die Lane bleibt beim Hinweis", () => {
-    for (const kind of ["orchestrator", "program-main", "bau", "session"] as const) expect(fleetChoiceOf(kind)).toBe("succeed");
-    expect(fleetChoiceOf("lane")).toBe("hint");
+  test("Owner 07.08. und 18.10. (Z132): Fleet stößt nur an und ersetzt keine Session selbst — ab Werk der Hinweis, für jede Art", () => {
+    for (const kind of ["orchestrator", "program-main", "bau", "session", "lane"] as const) expect(fleetChoiceOf(kind)).toBe("hint");
+  });
+  test("Claude Codes eigene Kompaktierung bleibt der Rückfall, wo Fleet an der Obergrenze nicht handelt", () => {
+    expect(autoCompactOff(40, fleetChoiceOf("bau"))).toBe(false);
+    // die Lane (37 %): Fleet ersetzt sie nie, also bleibt ihr Claude Codes Kompaktierung (Board-Check fa54eed9, e2e auto-compact)
+    expect(autoCompactOff(37, fleetChoiceOf("lane"))).toBe(false);
+    expect(autoCompactOff(40, "hint")).toBe(false);
+    // nur wer „succeed“ oder Compact wählt, bekommt Fleets Handlung an der Obergrenze, und nur dann ist sie aus
+    expect(autoCompactOff(40, "succeed")).toBe(true);
+    expect(autoCompactOff(37, "compact")).toBe(true);
+    // „Aus“ (Schwelle 0): Fleet tut nichts, Claude Code kompaktiert selbst
+    expect(autoCompactOff(0, "succeed")).toBe(false);
   });
   test("ab Werk nur Hinweis; eine Lane wählt Hinweis oder Compact, jede andere Art auch neue Session", () => {
     expect(choicesFor("lane")).toEqual(["hint", "compact"]);

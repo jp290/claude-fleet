@@ -1920,8 +1920,8 @@ interface MemoryGrantOccupant { slot: number; openedAt: number }
 // ); null = the fleet's own text, server.ts#KEEP_CACHE_TEXT. A record written before
 // the field existed reads null.
 // `atThreshold` is what Fleet does once the threshold's action is due (K9 S3b, server/succession.ts#actDecision):
-// `hint`, `compact` or `succeed`; null = the fleet's value for the kind (server/succession.ts#fleetChoiceOf: a
-// new session, a lane the hint; K9 S3b-2). A record written before the field existed reads null.
+// `hint`, `compact` or `succeed`; null = the fleet's value for the kind (server/succession.ts#fleetChoiceOf: since
+// 18.10. the hint for every kind; K9 S3b-2 had a new session). A record written before the field existed reads null.
 type ThresholdAct = "hint" | "compact" | "succeed";
 const thresholdActOk = (v: unknown): v is ThresholdAct => v === "hint" || v === "compact" || v === "succeed";
 interface HandoverSetting { thresholdPct: number | null; nudge: boolean; keepCache: boolean | null; keepCacheIdleMin: number;
@@ -2015,8 +2015,9 @@ const compactionFrom = (raw: unknown, openedAt: number): SlotCompaction | null =
     preTokens: r.preTokens as number | null, postTokens: r.postTokens as number | null, idle: r.idle, ledgerId: r.ledgerId };
 };
 // WHAT CLAUDE CODE'S OWN COMPACTION WAS TOLD AT THIS OCCUPATION'S NEWEST SPAWN (server/session-start.ts#startAspects,
-// K16 E10a + Teil 2): `autoCompact` false = the line carried `autoCompactEnabled: false` (the handover is on, so Fleet hands
-// over and Claude Code compacts neither at the window's end nor while idle, befunde/18 §5.1); true = the line carried no such
+// K16 E10a + Teil 2): `autoCompact` false = the line carried `autoCompactEnabled: false` (Fleet acts at the cap — a threshold
+// over 0 and the choice succeed or compact, server/succession.ts#autoCompactOff — so Claude Code compacts neither at the
+// window's end nor while idle, befunde/18 §5.1); true = the line carried no such
 // key and Claude Code's own setting applies (on by default). Claude Code writes neither into its transcript, so the spawn is
 // the only witness. Bound to the occupation like a compaction; null = not a Claude line, or spawned before this was recorded.
 interface SlotStartCompact { openedAt: number; autoCompact: boolean }

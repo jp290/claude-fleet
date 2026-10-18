@@ -96,7 +96,7 @@ export interface BriefSuccession {
   kind?: "orchestrator" | "program-main" | "bau" | "lane" | "session"; capPct?: number | null;
   thresholdFrom?: "session" | "env" | "fleet";
   atThreshold?: "hint" | "compact" | "succeed"; choices?: ("hint" | "compact" | "succeed")[];
-  // K9 S3b-2: the fleet's value for this session (a new session, a lane the hint); a server before S3b-2 sends none
+  // K9 S3b-2: the fleet's value for this session (since 18.10. the hint for every kind); a server before S3b-2 sends none
   fleetChoice?: "hint" | "compact" | "succeed";
   act?: { at: number; act: "compact" | "succeed"; outcome: string } | null;
 }

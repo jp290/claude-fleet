@@ -232,7 +232,8 @@ check("the live claude stand-in starts in auto mode, with Fleet's classifier env
   claudeArgv.join(" | ") || "no claude argv observed");
 // …and the other half: this instance leaves FLEET_MIGRATE_PCT unset, which reads as 0 (server.ts#MIGRATE_PCT),
 // so a non-lane session has its handover OFF — Claude Code's compaction stays the last hold (owner 10:4x
-// „[Zitat entfernt]“). The lane half, handover on, is in e2e/slots.ts (auto-compact).
+// „[Zitat entfernt]“). The lane half is in e2e/slots.ts (auto-compact): on the fleet's value (the hint) a lane
+// keeps it too, and only a lane that chose Compact at the cap starts with it off.
 check("the live claude stand-in, whose handover is off, keeps Claude Code's own compaction — no autoCompactEnabled on its line",
   claudeArgv.length > 0 && claudeArgv.every((argv) => !argv.includes("autoCompactEnabled")),
   claudeArgv.join(" | ") || "no claude argv observed");

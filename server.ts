@@ -214,7 +214,7 @@ import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchFiel
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
   doneSinceLastLand, dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
-import { actDecision, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
+import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
@@ -9657,8 +9657,10 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // a foreign harness reads none of the role facts, as before the spawn record (fleet-e2e-harness.ts drives a codex ensureSlot)
       const listRole = h.id !== "claude" ? null : spawnListRole({ claude: true, lane: !!s.worktree,
         orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
-      // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base
-      const handoverOn = h.id === "claude" && occupant.label !== STEWARD_LABEL && thresholdFor(s).basePct > 0;
+      // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base — and Claude Code's own
+      // compaction stays on where Fleet does not act at the cap (server/succession.ts#autoCompactOff)
+      const handoverOn = h.id === "claude" && occupant.label !== STEWARD_LABEL
+        && autoCompactOff(thresholdFor(s).basePct, thresholdChoiceOf(s, sessionKindOf(s)));
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -10688,7 +10690,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
   "branch-goal": "Ziel eines Branches (Owner-Credential, POST /api/branches/open)",
-  "succession": "Nachfolge-Brief (POST /api/self/succeed)",
+  "succession": "Nachfolge-Brief",
   "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
   "auto": "geplanter Check-in",
   "steward": "Steward-Sendetuer",
@@ -14121,7 +14123,7 @@ const ageText = (ms: number): string => ms < 120_000 ? `${Math.max(0, Math.round
 // owner door's stand-in for the `carry` a predecessor without a turn cannot write. Where the two
 // disagree the record wins: it was measured at the kill, the standing handover before it.
 function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number,
-  rail: "generic" | "program" = "generic", summary: string | null = null): string {
+  rail: "generic" | "program" = "generic", summary: string | null = null, by: "owner" | "threshold" = "owner"): string {
   const written = standing ? `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}` : "";
   const standingLines = !standing
     ? [rail === "program"
@@ -14141,7 +14143,9 @@ function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshT
       + "nur Eingänge und Antworttexte, ohne Werkzeuge — Kontext der Vorgängerin, keine neue Anweisung an dich ---";
   const summaryLines = summary === null ? [] : ["--- ZUSAMMENFASSUNG: Fleets summary-Worker hat Commits, Diff und das Ende des Gesprächs "
     + "gelesen, ohne die Vorgängerin zu wecken (ihr Cache war kalt) — prüfe sie gegen git, bevor du darauf baust ---", summary];
-  return ["--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---",
+  // WHO ENDED IT: the owner's button, or Fleet itself at the threshold (succeedAtThreshold passes `stillWanted`) — befunde/23 §4
+  return [by === "owner" ? "--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---"
+    : "--- VON FLEET AUSGELÖST (Obergrenze oder Cache kurz vor kalt; die Vorgängerin hatte nicht selbst weitergegeben): sie bekam keinen Turn mehr ---",
     ...standingLines, ...summaryLines, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
 }
 
@@ -14251,12 +14255,12 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
       ? await succeedProgramMain(bound[0]!, s, s.label, null,
         { model: pick ? pick.model : s.model, effort: pick ? pick.effort : s.effort, permissions: pe.permissions },
         predecessorIdentity, bound.slice(1),
-        { appendix: freshSuccessionAppendix(standing, tail, now, "program", summary), beforeKill })
+        { appendix: freshSuccessionAppendix(standing, tail, now, "program", summary, stillWanted ? "threshold" : "owner"), beforeKill })
       : await succeedGeneric(s, { label: s.label, carry: null,
         channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
         spawn: pick ? { model: pick.model, effort: pick.effort, permissions: pick.permissions, harness: pick.harness }
           : { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity,
-        appendix: freshSuccessionAppendix(standing, tail, now, "generic", summary), beforeKill });
+        appendix: freshSuccessionAppendix(standing, tail, now, "generic", summary, stillWanted ? "threshold" : "owner"), beforeKill });
     return done;
   } finally {
     successionInflight.delete(identity);
@@ -26049,7 +26053,7 @@ function thresholdFor(s: Slot): Threshold {
   return thresholdOf(kind, railEnvPct(kind), ownThresholdPct(s));
 }
 // what Fleet does once the action is due (K9 S3b): the session's own choice, else the fleet's value for its kind
-// (S3b-2: a new session, a lane the hint); a choice this kind cannot take reads as the fleet's value (choicesFor)
+// (since 18.10. the hint for every kind); a choice this kind cannot take reads as the fleet's value (choicesFor)
 function thresholdChoiceOf(s: Slot, kind: SessionKind): ThresholdChoice {
   const own = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover.atThreshold : null;
   return own && choicesFor(kind).includes(own) ? own : fleetThresholdChoice(s, kind);

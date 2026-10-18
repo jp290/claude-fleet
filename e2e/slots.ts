@@ -4937,7 +4937,8 @@ async function runThresholdAct(): Promise<void> {
   const Q = await openFree(mkRepo("act-compact-repo"), "act-compact");
   const R = await openFree(mkRepo("act-working-repo"), "act-working");
   const O = await openFree(mkRepo("act-off-repo"), "act-off");
-  const all = [P, Q, R, O];
+  const H = await openFree(mkRepo("act-hint-repo"), "act-hint");
+  const all = [P, Q, R, O, H];
   const statePath = `${ROOT}/fleet.json`;
   const cleanup = async (): Promise<void> => {
     for (const x of all) if (x.slot) await post(`/api/slots/${x.slot}/kill`, {});
@@ -4946,17 +4947,17 @@ async function runThresholdAct(): Promise<void> {
       rmSync(`${process.env.HOME}/.claude/projects/${r.replace(/[^a-zA-Z0-9]/g, "-")}`, { recursive: true, force: true });
     }
   };
-  check("threshold act setup: four plain sessions open on private checkouts",
-    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 4,
+  check("threshold act setup: five plain sessions open on private checkouts",
+    all.every((x) => x.slot > 0 && x.openedAt > 0) && new Set(all.map((x) => x.slot)).size === 5,
     JSON.stringify(all.map((x) => ({ slot: x.slot, openedAt: x.openedAt }))));
   if (!all.every((x) => x.slot > 0 && x.openedAt > 0)) { await cleanup(); return; }
 
   // the panes before the plant: P and Q record what is typed (the owner door's no-turn proof, as in the
   // keepCache fixture) and ECHO it — after the restart a pane is observed only by its output, and a pane
-  // never observed does not rest (server.ts#thresholdResting); R prints every 200 ms; O records like P, so a hint
-  // or an act on it would be seen
+  // never observed does not rest (server.ts#thresholdResting); R prints every 200 ms; O and H record like P, so a hint
+  // or an act on them would be seen
   const rec = (x: typeof P): string => `${ROOT}/act-recorder-${x.slot}`;
-  for (const x of [P, Q, O]) {
+  for (const x of [P, Q, O, H]) {
     rmSync(rec(x), { force: true });
     await tmuxOut("send-keys", "-t", `=s${x.slot}:`, `cat > '${rec(x)}'`, "Enter");
   }
@@ -4966,8 +4967,9 @@ async function runThresholdAct(): Promise<void> {
     standingHandover?: unknown }> };
   const sid = (i: number): string => `e2e0feed-0000-4000-8000-0000000004${String(i).padStart(2, "0")}`;
   const plantAt = Date.now();
-  // only Q chose; P, R and O take the fleet's value (null); O switched the handover off
-  const choice = new Map([[Q, "compact"]]);
+  // Owner 18.10. (Z132): the fleet's value is the hint — Fleet replaces no session it was not told to. So P and R CHOSE
+  // a new session (the door stays tested), Q chose Compact, H takes the fleet's value (null); O switched the handover off
+  const choice = new Map([[P, "succeed"], [Q, "compact"], [R, "succeed"]]);
   const STANDING = "ACT-STANDING-MARK Absicht: den Schnitt zu Ende bringen, dann landen.";
   for (const [i, x] of all.entries()) {
     const row = state.slots?.[String(x.slot)];
@@ -4996,10 +4998,10 @@ async function runThresholdAct(): Promise<void> {
     sessionPct: number | null };
   const facts = async (slot: number): Promise<Succ | null> =>
     ((await (await get(`/api/slots/${slot}/handover`)).json()) as { succession?: Succ }).succession ?? null;
-  const f0 = await Promise.all([P, Q, R].map((x) => facts(x.slot)));
-  check("threshold act setup: P, Q and R stand at 50 % against 44/49 — P and R on the fleet's value, a new session, Q on its own Compact",
-    f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49 && f.fleetChoice === "succeed")
-      && f0.map((f) => f?.atThreshold).join(",") === "succeed,compact,succeed"
+  const f0 = await Promise.all([P, Q, R, H].map((x) => facts(x.slot)));
+  check("threshold act setup: P, Q, R and H stand at 50 % against 44/49 — the fleet's value is the hint; P and R chose a new session, Q Compact, H none",
+    f0.every((f) => f?.fill?.pct === 50 && f.thresholdPct === 44 && f.capPct === 49 && f.fleetChoice === "hint")
+      && f0.map((f) => f?.atThreshold).join(",") === "succeed,compact,succeed,hint"
       && JSON.stringify(f0[0]?.choices) === JSON.stringify(["hint", "compact", "succeed"]),
     JSON.stringify(f0));
   const fO = await facts(O.slot);
@@ -5028,12 +5030,14 @@ async function runThresholdAct(): Promise<void> {
   const pBrief = await briefOf(P.slot, pNew);
   // K9 S3b-2, the owner's sentence via the Bauleitung: „[Zitat entfernt]“
   //  — and the act hands over the standing handover where one stands
-  check("new session at the threshold, the fleet's value: P without a choice of its own gets the hint naming the act, then — resting — a new occupant on the same slot whose brief hands over P's standing handover; the old pane got nothing but that one hint",
+  check("new session at the threshold, chosen: P with its own choice „succeed“ gets the hint naming the act, then — resting — a new occupant on the same slot whose brief hands over P's standing handover; the old pane got nothing but that one hint",
     !!pNew && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
-      && pTyped[0]!.text.includes("öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst")
-      && pRecorded.includes("öffnet Fleet in diesem Slot eine neue Session") && !pRecorded.includes("/compact")
+      && pTyped[0]!.text.includes("Gib selbst weiter") && pTyped[0]!.text.includes("selbst eine neue Session, sobald du ruhst")
+      && pRecorded.includes("POST /api/self/succeed") && !pRecorded.includes("/compact")
       && pRecorded.split(HINT).length === 2
-      && pBrief.includes("Stehende Übergabe: `intent` im Linien-Record") && !pBrief.includes("Keine stehende Übergabe"),
+      && pBrief.includes("Stehende Übergabe: `intent` im Linien-Record") && !pBrief.includes("Keine stehende Übergabe")
+      // befunde/23 §4: Fleet ended it, not the owner
+      && pBrief.includes("VON FLEET AUSGELÖST") && !pBrief.includes("VOM OWNER AUSGELÖST"),
     JSON.stringify({ old: P.openedAt, now: pNew, typed: pTyped.map((e) => e.text.slice(0, 80)), recorded: pRecorded.length,
       brief: pBrief.split("\n").filter((l) => /tehende Übergabe/.test(l)).map((l) => l.slice(0, 90)) }));
 
@@ -5067,7 +5071,17 @@ async function runThresholdAct(): Promise<void> {
     rWorking === R.openedAt && !!rNew && rNew !== R.openedAt
       && rBrief.includes("Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben."),
     JSON.stringify({ old: R.openedAt, working: rWorking, now: rNew, brief: rBrief.split("\n").filter((l) => /tehende Übergabe/.test(l)).map((l) => l.slice(0, 90)) }));
-  // O rested through every tick that hinted and replaced P and R — over its cap like them, on the same fleet's value
+  // H rested through every tick that hinted and replaced P and R — over its cap like them, on the fleet's value: the one hint
+  // that asks it to hand over itself, and no new occupant (Owner 18.10., Z132: „[Zitat entfernt]“ — „[Zitat entfernt]“)
+  const hTyped = await typed(H);
+  const hRecorded = existsSync(rec(H)) ? readFileSync(rec(H), "utf8") : "";
+  const hFacts = await facts(H.slot);
+  check("the fleet's value is the hint: H, resting at 50 % over its cap, gets exactly the one hint naming POST /api/self/succeed and no act — the same occupant after P and R were replaced",
+    pNew !== P.openedAt && rNew !== R.openedAt && hTyped.length === 1 && hTyped[0]!.text.startsWith(HINT)
+      && hTyped[0]!.text.includes("POST /api/self/succeed") && !hTyped[0]!.text.includes("öffnet Fleet")
+      && hRecorded.split(HINT).length === 2 && (await openedAtOf(H)) === H.openedAt && hFacts?.act === null && hFacts.atThreshold === "hint",
+    JSON.stringify({ typed: hTyped.map((e) => e.text.slice(0, 80)), recorded: hRecorded.length, now: await openedAtOf(H), act: hFacts?.act }));
+  // O rested through the same ticks — over its cap like them, with its handover switched off
   const oTyped = await typed(O);
   const oRecorded = existsSync(rec(O)) ? readFileSync(rec(O), "utf8") : "";
   const oFacts = await facts(O.slot);
@@ -13747,11 +13761,29 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
         && healArgv.includes('"autoMemoryEnabled":false'),
       restartArgv.slice(-400) || "no claude argv");
     // K16 E10a (server/session-start.ts), owner 15.10.: „[Zitat entfernt]“
-    //  — a lane's handover is on by default (37 %), so Claude Code's own compaction is off on every cause
-    check("auto-compact: a lane's claude, whose handover is on, starts with autoCompactEnabled false in its --settings, once",
-      restartArgv.split('"autoCompactEnabled":false').length === 2 && openArgv.includes('"autoCompactEnabled":false')
-        && healArgv.includes('"autoCompactEnabled":false'),
+    //  — and since 18.10. (Z132, Bauleitung option b, server/succession.ts#autoCompactOff): Claude Code's own
+    // compaction is off only where Fleet acts at the cap. A lane on the fleet's value (the hint) keeps it on every cause:
+    // Fleet never replaces it, and without compaction it would have no hold at the window's end
+    check("auto-compact: a lane's claude on the fleet's value (the hint) keeps Claude Code's compaction — no autoCompactEnabled false on open, heal or restart",
+      !!openArgv && !!healArgv && !!restartArgv && !openArgv.includes('"autoCompactEnabled":false')
+        && !healArgv.includes('"autoCompactEnabled":false') && !restartArgv.includes('"autoCompactEnabled":false'),
       restartArgv.slice(-400) || "no claude argv");
+    // …and the switch-off side: the lane CHOOSES Compact at the cap (PATCH …/handover), so Fleet acts there and the next
+    // spawn of the same occupant (↻ restart keeps the slot) carries autoCompactEnabled false, once
+    const lOpenedAt = ((await (await get("/api/sessions")).json()) as { slots: { id: number; openedAt?: number }[] }).slots
+      .find((x) => x.id === L)?.openedAt;
+    const chose = await fetch(`${BASE}/api/slots/${L}/handover`, { method: "PATCH",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ expectedOpenedAt: lOpenedAt, atThreshold: "compact" }) });
+    const rs2 = chose.ok ? await post(`/api/slots/${L}/restart`, {}) : null;
+    let compactArgv = "";
+    for (let until = Date.now() + 10_000; rs2?.ok && Date.now() < until; await Bun.sleep(150)) {
+      compactArgv = (await argvOf(`=s${L}:`)).join(" | ");
+      if (compactArgv.includes('"autoCompactEnabled":false')) break;
+    }
+    check("auto-compact: a lane that chose Compact at the cap starts (↻ restart) with autoCompactEnabled false in its --settings, once",
+      chose.ok && !!rs2?.ok && compactArgv.split('"autoCompactEnabled":false').length === 2,
+      `${chose.status} ${rs2?.status ?? "-"} ${compactArgv.slice(-400) || "no claude argv"}`);
     // THE ROLE'S BUILT-IN TOOLS (server.ts#SESSION_TOOLS): an allowlist takes the schemas out, a deny rule does not
     check("session tools: a lane's claude starts with exactly the lane allowlist on --tools, once",
       restartArgv.includes("--tools Bash,Read,Edit,Write,ToolSearch,Agent,WebFetch,Skill,TaskStop,WebSearch,ScheduleWakeup,Artifact,Monitor,SendFeedback")

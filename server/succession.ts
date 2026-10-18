@@ -326,11 +326,19 @@ export type ThresholdChoice = "hint" | "compact" | "succeed";
 export function choicesFor(kind: SessionKind): readonly ThresholdChoice[] {
   return kind === "lane" ? ["hint", "compact"] : ["hint", "compact", "succeed"];
 }
-// DER FLEET-WERT (S3b-2, Bauleitung 14.10. für den Owner; Owner 07.08.: „[Zitat entfernt]“
-// , 14.10.: „[Zitat entfernt]“): an der Obergrenze eine neue Session
-// für jede Art außer der Lane, die beim Hinweis bleibt. „[Zitat entfernt]“ und Compact wählt eine Session selbst.
-export function fleetChoiceOf(kind: SessionKind): ThresholdChoice {
-  return kind === "lane" ? "hint" : "succeed";
+// DER FLEET-WERT: NUR DER HINWEIS, für jede Art (Owner 07.08.: „[Zitat entfernt]“
+// ; 18.10., Z132: „[Zitat entfernt]“ auf „[Zitat entfernt]“
+// ). Fleet stößt an, die Session gibt selbst weiter. Bis zum Rückfall-Umbau (befunde/23, Vorschlag „[Zitat entfernt]“
+// ) ersetzt Fleet eine Session nur, wenn sie oder der Owner „[Zitat entfernt]“ ausdrücklich wählt; Compact ebenso.
+export function fleetChoiceOf(_kind: SessionKind): ThresholdChoice {
+  return "hint";
+}
+// CLAUDE CODES EIGENE KOMPAKTIERUNG IST DER RÜCKFALL, wo Fleet an der Obergrenze nicht selbst handelt (Bauleitung 18.10.,
+// Option b): aus nur bei einer Schwelle über 0 UND einer Wahl, mit der Fleet dort handelt (succeed, compact). Bei „hint“
+// bleibt sie an, sonst liefe eine Session, die den einen Hinweis überhört, bis ans Fensterende. Gelesen beim Start der
+// Session (server.ts#ensureSlot, session-start.ts#startAspects): eine laufende Session behält ihre Startzeile.
+export function autoCompactOff(basePct: number, choice: ThresholdChoice): boolean {
+  return basePct > 0 && choice !== "hint";
 }
 // null = der Fleet-Wert, er wird nicht gespeichert; jede andere Wahl, auch „hint“, gilt nur für diese Session
 export type ChoiceInput = { ok: true; choice: ThresholdChoice | null } | { ok: false; refusal: "bad-at-threshold" | "lane-succeed" };
@@ -444,9 +452,13 @@ export function hintText(f: HintFacts): string {
   if (f.choice === "compact")
     return `${head}${when} tippt Fleet \`/compact\`, sobald du ruhst: Claude fasst das Gespräch zusammen, und du arbeitest `
       + `weiter. ${lane ? "Committe vorher deinen Stand." : `Was die Zusammenfassung nicht verlieren darf, schreib vorher in ${handover}.`}`;
+  // DIE SESSION GIBT SELBST WEITER (Owner 07.08.: „[Zitat entfernt]“; 18.10.: die
+  // Session ruft die Übergabe auf, nicht das System): Fleets neue Session ist nur der Rückfall
   if (f.choice === "succeed")
-    return `${head}${when} öffnet Fleet in diesem Slot eine neue Session, sobald du ruhst; in deine Pane wird dafür nichts `
-      + `getippt. Sie bekommt deine stehende Übergabe und den Transkript-Rest danach. Schreib jetzt ${handover} und halte sie aktuell.`;
+    return `${head}Gib selbst weiter: Schreib jetzt ${handover} und halte sie aktuell; am Ende deines laufenden Schritts, `
+      + `wenn nichts mehr läuft, rufst du POST /api/self/succeed (ohne Body nimmt sie deine stehende Übergabe). `
+      + `Nur wenn du das nicht tust, öffnet Fleet ${f.threshold.capPct > f.fillPct ? `ab ${f.threshold.capPct} %` : "jetzt"} `
+      + `oder kurz bevor dein Cache kalt wird selbst eine neue Session, sobald du ruhst.`;
   const opening = `${head}Fleet übergibt nicht selbst, du wählst den Punkt`;
   if (lane)
     return `${opening}: Bring den laufenden Schnitt zu Ende und committe, file einen fleet-report mit status \`handoff\` `

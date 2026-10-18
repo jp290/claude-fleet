@@ -11,7 +11,7 @@ import { OFF_WHY, flowSteps, laterText, nowText, nudgedText, planOf, planWrite, 
 const NOW = new Date(2026, 9, 16, 14, 0).getTime();
 const MIN = 60_000;
 const fill = (pct: number) => ({ usedTokens: pct * 10_000, windowTokens: 1_000_000, pct });
-// a Bau-Session with the fleet's values: nudged at 40, a new session at 45 (server/succession.ts#fleetChoiceOf)
+// a Bau-Session nudged at 40 that chose a new session at 45 (since 18.10. the fleet's value is the hint, server/succession.ts#fleetChoiceOf)
 const bau = (o: Partial<BriefSuccession> = {}): BriefSuccession => ({
   rail: "handoff", kind: "bau", fill: fill(30), thresholdPct: 40, capPct: 45, thresholdOff: null, defaultPct: 40, pctFrom: "fleet",
   sessionPct: null, nudgeOn: true, nudges: 0, nudgedAt: null, nudgedPct: null, gaveUp: false, maxNudges: 1, session: 1, taken: null,

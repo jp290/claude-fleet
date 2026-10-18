@@ -4,6 +4,7 @@ import {
   withoutSkipPermissions, type ClaudeStartRole, type StartFacts,
 } from "./session-start";
 import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
+import { autoCompactOff, fleetChoiceOf } from "./succession";
 
 const ROLES: ClaudeStartRole[] = ["lane", "main", "orchestrator", "generic"];
 const HUB = { remote: "hub", url: "ssh://helper@10.1.2.3/~/git/fleet.git", host: "helper@10.1.2.3" };
@@ -38,6 +39,15 @@ describe("Owner 15.10.: „[Zitat entfernt]“", () => {
   test("handover off → the key is absent, so Claude Code's compaction stays the last hold", () => {
     const s = startAspects(facts({ handoverOn: false })).settings;
     expect("autoCompactEnabled" in s).toBe(false);
+  });
+
+  // Bauleitung 18.10. (b), after the owner's „[Zitat entfernt]“ (Z132): the fleet's value is the hint, so the start line keeps Claude
+  // Code's compaction; only a session that chose Fleet's act at the cap starts with it off
+  test("the fleet's value (hint) → the start line keeps Claude Code's compaction; a chosen new session turns it off", () => {
+    const at = (choice: "hint" | "compact" | "succeed") => startAspects(facts({ handoverOn: autoCompactOff(40, choice) })).settings;
+    expect("autoCompactEnabled" in at(fleetChoiceOf("session"))).toBe(false);
+    expect(at("succeed").autoCompactEnabled).toBe(false);
+    expect(at("compact").autoCompactEnabled).toBe(false);
   });
 });
 

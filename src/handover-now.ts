@@ -26,8 +26,8 @@ export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, strin
 export const lockedGate = (sc: BriefSuccession): boolean =>
   !!sc.thresholdOff && sc.thresholdOff !== "rail" && sc.thresholdOff !== "session";
 
-// what Fleet does at the cap (server/succession.ts#fleetChoiceOf: a new session for every kind but the lane — the brake
-// at the cap stays, Bauleitung 16.10.); „[Zitat entfernt]“ with the asking off leaves Fleet nothing to do at all
+// what Fleet does at the cap (server/succession.ts#fleetChoiceOf: since 18.10. only the nudge for every kind, a new session
+// only where it is chosen); „hint“ with the asking off leaves Fleet nothing to do at all
 export const choiceOf = (sc: BriefSuccession): Choice => sc.atThreshold ?? sc.fleetChoice ?? "hint";
 export const handoverDoesNothing = (sc: BriefSuccession): boolean => sc.thresholdPct !== null && !sc.nudgeOn && choiceOf(sc) === "hint";
 

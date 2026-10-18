@@ -695,11 +695,15 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
 - **Die Wahl an der Schwelle (K9 S3b, `server/succession.ts#actDecision`):** `PATCH /api/slots/:id/handover`
   nimmt `atThreshold`: `null` (der Fleet-Wert, wird nicht gespeichert), `hint`, `compact` oder `succeed`; eine
   Lane nimmt nur `hint` oder `compact` (`succeed` = 409 `lane-succeed`, sie gibt mit ihrem handoff-Report
-  weiter), anderes = 400 `bad-at-threshold`. **Der Fleet-Wert ist seit K9 S3b-2 `succeed`** für jede Art außer
-  der Lane (`hint`) und einer Game-Maker-Program-MAIN (`hint`, die Owner-Tür verweigert sie namentlich):
-  `server/succession.ts#fleetChoiceOf`, Bauleitung 14.10. für den Owner (Owner 07.08.: „[Zitat entfernt]“
-  ; „[Zitat entfernt]“
-  ). Die neue Session nimmt die stehende Übergabe, wenn eine steht, sonst den
+  weiter), anderes = 400 `bad-at-threshold`. **Der Fleet-Wert ist seit 18.10. `hint` für jede Art**
+  (`server/succession.ts#fleetChoiceOf`; Owner 07.08.: „[Zitat entfernt]“,
+  18.10. Z132: „[Zitat entfernt]“ auf „[Zitat entfernt]“).
+  Fleet ersetzt eine Session nur, wenn sie oder der Owner `succeed` (oder `compact`) ausdrücklich wählt; vorher war
+  der Fleet-Wert seit K9 S3b-2 `succeed` außer für die Lane. **Claude Codes eigene Kompaktierung** ist beim Start nur
+  dann aus, wenn Fleet an der Obergrenze selbst handelt (Schwelle > 0 und Wahl `succeed`/`compact`,
+  `server/succession.ts#autoCompactOff`); bei `hint` bleibt sie der Rückfall. Gelesen wird das beim Start: Eine
+  laufende Session behält ihre Startzeile, und eine Nachfolgerin startet auf dem Fleet-Wert, weil die Einstellung
+  ihrer Linie erst nach dem Start auf sie übergeht. Die neue Session nimmt die stehende Übergabe, wenn eine steht, sonst den
   Fleet-Nachfolge-Brief mit dem Ende der Unterhaltung (`freshSuccessionAppendix`). Ist die Handlung fällig (Obergrenze, kalter
   Cache, oder „kurz vor kalt“: ab 10 min vor dem Ende der Cache-Stufe, `cacheCooling`, vor Claudes eigener
   Leerlauf-Kompaktierung nach 53 min; nicht, solange der Warmhalte-Schalter der Session an ist — dann kommt
@@ -708,7 +712,9 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   nichts in Claudes Warteschlange) und erst nach dem Hinweis, der die Handlung nennt (außer `nudge: false`):
   `compact` tippt `/compact` ohne Zustell-Kopf (Pfad `threshold-compact`), `succeed` geht durch die Owner-Tür
   ohne Turn an die Vorgängerin (`handleOwnerSucceed` mit `stillWanted`; Audit `main_succession`
-  „threshold-triggered“). Je Gespräch eine Handlung je 15 min, Audit `threshold_act`. Die succession facts
+  „threshold-triggered“; ihr Brief sagt „VON FLEET AUSGELÖST“, der des Owner-Knopfs „[Zitat entfernt]“). Der
+  Hinweis bei `succeed` bittet die Session, selbst weiterzugeben (stehende Übergabe, dann am Ende ihres Schritts
+  `POST /api/self/succeed`); Fleets neue Session ist der Rückfall (Owner 18.10.). Je Gespräch eine Handlung je 15 min, Audit `threshold_act`. Die succession facts
   tragen `atThreshold` (die wirksame Wahl), `fleetChoice` (der Fleet-Wert dieser Session), `choices` und
   `act {at, act, outcome}`.
 - **Schwelle und Hinweis je Session setzt der Owner** (Owner-Route, seit 2026-10-06, die Übergabe-Zeile

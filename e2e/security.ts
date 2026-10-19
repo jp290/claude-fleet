@@ -471,8 +471,9 @@ const PRE_AUTH_ROUTES = [
 // an empty page: exactly the split `/` + `/app.js` already have.
 // `/k15.js` and `/k15.css` joined it 2026-10-16: the window „Neue Session“ split out of app.js and index.html so it loads on first
 // open (src/k15-lader.ts). Same class as `/app.js`: a bundle and a stylesheet, no secret; every byte the window shows arrives over
-// owner-gated /api routes.
-const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/k15.js", "/k15.css", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
+// owner-gated /api routes. `/sitzung.css` joined it 2026-10-19 (Fassung 3 of the window, loaded next to `/k15.css`): the
+// same class, a stylesheet with no url() and no secret.
+const STATIC_ROUTES = ["/", "/hub", "/app.js", "/hub.js", "/share.js", "/helper.js", "/k15.js", "/k15.css", "/sitzung.css", "/xterm.css", "/manifest.webmanifest", "/icon.svg", "/icon-180.png"];
 // The steward token bypasses the owner gate entirely (server.ts ~4499), so its route set is a
 // second pre-auth surface — pinned for the same reason.
 const STEWARD_ROUTES = [

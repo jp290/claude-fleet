@@ -1948,9 +1948,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       && !failedLandVerdict({ status: "merged", landed: false })
       && !failedLandVerdict({ status: "error", landed: true })
 , "failedLandVerdict");
-  check("B4: both alarm cards keep their detail one gesture away — the check after the land behind Ansehen, the land under one summary",
+  check("B4: both alarm cards keep their detail one gesture away — the check after the land behind Look, the land under one summary",
     /el\("div", `plasec \$\{al\.tone\}\$\{owner \? "" : " held"\}`\)/.test(cliSrc)
-      && /el\("button", "plaack", plaOpen \? "Weniger" : "Ansehen"\)/.test(cliSrc) && /if \(plaOpen\) \{/.test(cliSrc)
+      && /el\("button", "plaack", plaOpen \? "Less" : "Look"\)/.test(cliSrc) && /if \(plaOpen\) \{/.test(cliSrc)
       && /el\("details", `bmergenote/.test(cliSrc)
       && /class="plasummary"/.test(indexSrc) === false
       && /\.plasec \.plafoot \{/.test(indexSrc), "audit card and land details");
@@ -1960,8 +1960,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // what found its lane is not said twice
   // MINIMAL (owner 2026-10-09: „[Zitat entfernt]“): the
   // block says every run that runs or waits in one line; at its lane the run is the diamond on the way back
-  check("B5: the checks are the block Prüfungen of the Arbeitsorte — one line per run that runs or waits; at its lane the run is the diamond on its way back",
-    /checks = block\("runs", "Prüfungen"\)/.test(cliSrc)
+  check("B5: the checks are the block Checks of the Arbeitsorte — one line per run that runs or waits; at its lane the run is the diamond on its way back",
+    /checks = block\("runs", SECTION\.checks\)/.test(cliSrc)
       && /const open = \[\.\.\.m\.balls\]\.filter\(\(b\) => b\.station !== "done"\)\.sort\(/.test(cliSrc)
       && /for \(const b of open\.slice\(0, METER_ROWS_MAX\)\)/.test(cliSrc)
       // K16 git-Struktur: the diamond at the lane and the block's place under Projekte are runArbeitsorteDom's claims
@@ -2114,25 +2114,25 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // one-sentence tooltip that explains it. "Rail"→"Kind", "Suites"→"Checks", „[Zitat entfernt]“→
   // "offered check run", "queued suite"→"queued check run", "suite gate · held by pid N"→
   // "check run busy · pid N" are MAIN-derived (Slot 13, aus audit→check) — owner sighting open.
-  // since 2026-10-08 the strip's head and its panel are gone: the block head says "Prüfungen", a run
-  // speaks one German sentence, the lock gets a row only when it needs someone (src/board.ts#runRows)
-  check("G0.5 suite stretch: the block reads Prüfungen, its run lines and the lock's words carry no suite/audit/gate",
-    cliSrc.includes('checks = block("runs", "Prüfungen")') && !cliSrc.includes('"smtitle", "Suites"')
+  // since 2026-10-08 the strip's head and its panel are gone: the block head says "Checks", a run
+  // speaks one sentence, the lock gets a row only when it needs someone (src/board.ts#runRows)
+  check("G0.5 suite stretch: the block reads Checks, its run lines and the lock's words carry no suite/audit/gate",
+    cliSrc.includes('checks = block("runs", SECTION.checks)') && !cliSrc.includes('"smtitle", "Suites"')
     && !cliSrc.includes("suite gate ·") && cliSrc.includes("check run busy · ")
-    && cliSrc.includes('const kind = b.kind === "queued check run" ? "Prüflauf" : meterKind(b.kind).label;')
+    && cliSrc.includes('const kind = b.kind === "queued check run" ? CHECK_KIND.run : meterKind(b.kind).label;')
     && !cliSrc.includes("⏳ post-land audit · ") && !cliSrc.includes("waiting for an audit · ")
-    && cliSrc.includes("Angefragt, nicht gestartet") && !cliSrc.includes("asked for, not started")
-    && cliSrc.includes('word: "Sperre belegt"') && cliSrc.includes('word: "Sperre frei"') && cliSrc.includes("Dieser Server schickt keine Lesung der Sperre")
+    && cliSrc.includes("Asked for, not started — ")
+    && cliSrc.includes('word: "Lock taken"') && cliSrc.includes('word: "Lock free"') && cliSrc.includes("This server sends no reading of the lock")
     && !cliSrc.includes("nothing on the gate") && !cliSrc.includes("click to open the lane"),
     "runRows, runSentence and lockState in src/board.ts");
   // since card R4 the due restart is the Arbeitsorte's Live row itself, not a line of its own; since
   // 2026-10-08 that row says what it means in a sentence, the chain opens behind a tap
   check("G0.5 deploy due: consequence + action in owner words, the command and srv/bundle live in the tooltip",
-    cliSrc.includes('const due = restartDue || live.target?.codeBehind === true;') && cliSrc.includes('lead = { label: due ? "Neustart fällig" : "Live", st: live, due,')
-    && cliSrc.includes('if (lead.due) say.append("Läuft auf älterem Server-Code.");')
+    cliSrc.includes('const due = restartDue || live.target?.codeBehind === true;') && cliSrc.includes('lead = { label: due ? "Restart due" : "Live", st: live, due,')
+    && cliSrc.includes('if (lead.due) say.append("Running older server code.");')
     && !cliSrc.includes("srv is running") && !cliSrc.includes("restart srv")
-    && cliSrc.includes('nm.append(el("b", "", "Seite neu bauen"), " — der Browser zeigt einen älteren Stand.");')
-    && cliSrc.includes("im Terminal `bun run build` ausführen") && !cliSrc.includes("client bundle")
+    && cliSrc.includes('nm.append(el("b", "", "Rebuild the page"), " — the browser shows an older state.");')
+    && cliSrc.includes("run `bun run build` in the terminal") && !cliSrc.includes("client bundle")
     && !cliSrc.includes("export function deploySection("),
     "the Live row in src/board.ts#arbeitsorteSection");
   check("G0.5 slotact strip: the hover actions explain in German, not in internal verbs",
@@ -2257,8 +2257,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // fact each one was standing in for asserted beside it, so a re-added copy trips this.
   check("client: the session's KIND is said once — the head's state line, not a second Setup row",
     !/row\("Type",/.test(setupSrc)
-    // a failed read names no kind: "Repo-Session" over a folder that is gone would invent a git fact
-    && /const kind = brief\?\.worktree \? "Lane" : noGit \? "Ordner-Session" : brief \? "Repo-Session" : "Session";/.test(boardSrc)
+    // a failed read names no kind: "Repo session" over a folder that is gone would invent a git fact
+    && /const kind = brief\?\.worktree \? "Lane" : noGit \? "Folder session" : brief \? "Repo session" : "Session";/.test(boardSrc)
     && /`\$\{word\} · \$\{kind\} in Slot \$\{slot\}`/.test(boardSrc),
     "the Type row vs the head's state line");
   check("client: a session with no packs draws no `none` row — absence is the ordinary case",
@@ -2284,9 +2284,9 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: every board section head names its reach — session · repo · machine · fleet — on hover",
     !/appendChild\(el\("h3", "",/.test(boardSrc) && !/el\("h3", "", "Setup"\)/.test(cliSrc)
     && /h\.dataset\.scope = scope;\n  h\.title = SCOPE_TITLE\[scope\];/.test(cliSrc)
-    && /sectionHead\("Changes", "session"\)/.test(boardSrc) && /sectionHead\("Notizblock", "repo"\)/.test(boardSrc)
-    && /sectionHead\("History", "repo"\)/.test(boardSrc) && !/sectionHead\("Arbeitsorte"/.test(cliSrc)
-    && /sectionHead\("Mehr zu dieser Session", "session"\)/.test(boardSrc)
+    && /sectionHead\(SECTION\.changes, "session"\)/.test(boardSrc) && /sectionHead\(SECTION\.notepad, "repo"\)/.test(boardSrc)
+    && /sectionHead\(SECTION\.history, "repo"\)/.test(boardSrc) && !/sectionHead\("Arbeitsorte"/.test(cliSrc)
+    && /sectionHead\(SECTION\.more, "session"\)/.test(boardSrc)
     && /boardHead\("helper devices", "fleet"\)/.test(cliSrc),
     "the section heads in src/board.ts");
   check("client: the scope vocabulary is CLOSED — four words, each with a sentence saying what it covers",
@@ -2296,17 +2296,17 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // …and what this server CANNOT see is said where it would be missed: a linked fleet is only a link
   // (FLEET_INSTANCES is a link list, not a federation), so its machine row says that its repos and
   // runs are not read here instead of letting a quiet row read as a quiet fleet
-  check("client: Geräte names what it CANNOT see — a linked fleet's repos and runs are not read here",
-    cliSrc.includes('if (st.basis === "link-only") return "Ihre Repos liest dieser Server nicht.";')
-    && cliSrc.includes('{ tone: "link", word: "verlinkt", title: "Ein Link auf diese Fleet — dieser Server misst sie nicht" }')
-    && cliSrc.includes("Dieser Server misst sie nicht;"),
+  check("client: Devices names what it CANNOT see — a linked fleet's repos and runs are not read here",
+    cliSrc.includes('if (st.basis === "link-only") return "This server does not read its repos.";')
+    && cliSrc.includes('{ tone: "link", word: "verlinkt", title: "A link to this Fleet — this server does not measure it" }')
+    && cliSrc.includes("This server does not measure it;"),
     "standSay + machineState + MACHINE_LEGEND in src/board.ts");
   // …and the place is the part a run line may NEVER lose. Since 2026-10-08 a run is one sentence and
   // its machine is the glyph Geräte draws for it, behind the sentence, never shrinking — its name on
   // hover and to VoiceOver. The STATE is not a column of words either: it is the line's tone and
   // station, drawn as the colour of its glyph (clock while it waits, shield while it runs).
   check("client: a run line names its PLACE as the machine's own glyph, and that glyph never shrinks",
-    /const at = runMachine\(b\);\n    if \(at\) \{/.test(cliSrc) && /d\.title = `läuft auf \$\{at\.name\}`;/.test(cliSrc)
+    /const at = runMachine\(b\);\n    if \(at\) \{/.test(cliSrc) && /d\.title = `running on \$\{at\.name\}`;/.test(cliSrc)
     && /d\.setAttribute\("aria-label", d\.title\);/.test(cliSrc)
     && /#board \.zd\.run \.dv \{ display: inline-grid;/.test(indexSrc) && /#board \.zd\.run \.g \{ flex: none;/.test(indexSrc),
     "runLines + its CSS");
@@ -2365,12 +2365,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // the opened History. Lanes and the advisory agents are NOT among them (the lanes are the Arbeitsorte).
   // The Postfach tab (K13, 14.10.) stands between Rechte and Files, only for a session with mail.
   const tabOrder = [...boardSrc.matchAll(/boardTab\("(\w+)"/g)].map((m) => m[1]);
-  check("client: Setup · Rechte · Postfach · Files · Your prompts are the tabs under \"Mehr\", and 'already in main' the one fold in History",
+  check("client: Setup · Rights · Messages · Files · Your prompts are the tabs under \"More\", and 'already in main' the one fold in History",
     tabOrder.join(",") === "setup,rechte,postfach,files,prompts" && foldOrder.join(",") === "repoCommits"
     && /prefSet\("fleet\.board\.folds", JSON\.stringify\(\[\.\.\.boardFolds\]\)\)/.test(boardSrc),
     JSON.stringify({ tabOrder, foldOrder }));
   check("client: the file tree is the Files tab, with the scroll box that keeps it in place and the explorer one glyph away",
-    /const fx = fileTreeSection\(slot, cwd\);/.test(boardSrc) && /glyphBtn\("folder", "Explorer öffnen", /.test(boardSrc)
+    /const fx = fileTreeSection\(slot, cwd\);/.test(boardSrc) && /glyphBtn\("folder", "Open explorer", /.test(boardSrc)
     && /#board \.fxtree \{[^}]*max-height/.test(indexSrc) && /\.fxtree \{[^}]*overflow-y: auto/.test(indexSrc),
     "the Files tab in src/board.ts + #board .fxtree");
   // …and both long lists are shown WHOLE. A silent client-side cut is the one thing they must not
@@ -2380,12 +2380,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     !/brief\.uncommittedFiles\.slice\(/.test(boardSrc)
     // the changed files stand under Changes since Owner-Runde 9 („[Zitat entfernt]“
     // ): five, like History's three on purpose, the whole list one button away
-    && /all \? brief\.files : brief\.files\.slice\(0, FILES_SHOWN\)/.test(boardSrc) && /`Alle \$\{total\} Dateien`/.test(boardSrc)
+    && /all \? brief\.files : brief\.files\.slice\(0, FILES_SHOWN\)/.test(boardSrc) && /`All \$\{total\} files`/.test(boardSrc)
     && /brief\.uncommitted > brief\.uncommittedFiles\.length/.test(boardSrc)
     && /the server reads at most 200 status lines/.test(boardSrc)
     && /ahead > brief\.commits\.length/.test(boardSrc) && /the brief carries the newest \$\{brief\.commitsCap\}/.test(boardSrc)
     // History shows three on purpose (card R2) — with the full list one button away, never silently
-    && /all \? brief\.commits : brief\.commits\.slice\(0, HISTORY_SHOWN\)/.test(boardSrc) && /`Alle \$\{total\} \$\{total === 1 \? "Commit" : "Commits"\}`/.test(boardSrc),
+    && /all \? brief\.commits : brief\.commits\.slice\(0, HISTORY_SHOWN\)/.test(boardSrc) && /`All \$\{total\} commits`/.test(boardSrc),
     "the changes + history sections in src/board.ts");
   // EVERY number the column prints is compared against a total the SERVER measured — never
   // against a length the client derived from the very list it is describing. The "and N more"
@@ -2412,11 +2412,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // A FAILED READ IS NOT AN EMPTY SESSION — each of the four reads behind this column says so in
   // its own words, where its content would have been.
   check("client: a failed brief, lane map, transcript or error read is NAMED, not rendered as empty",
-    /Der Session-Brief konnte nicht gelesen werden/.test(boardSrc)
+    /The session brief could not be read/.test(boardSrc)
     && /The lane map could not be read/.test(boardSrc)
     && /The transcript could not be read/.test(boardSrc)
     && /The error list could not be read/.test(cliSrc)
-    && /Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung/.test(boardSrc),
+    && /This is a failed read, not an empty session/.test(boardSrc),
     "the failure sections in renderBoard");
   check("client: the errors fetch can no longer end in an unhandled rejection",
     /void api\("\/api\/errors"\)[\s\S]{0,700}?\}\)\.catch\(\(\) => \{/.test(cliSrc),
@@ -3524,11 +3524,11 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const boardSrc = cut("function sessionSection(c: BoardCtx)", "\nconst landBall = (slot");
       const expSrc = cut("type ExportPart = ", "async function killSlot(");
       const bmenuSrc = boardSrc.slice(boardSrc.indexOf("function kopfItems("));
-      check("session actions: Umbenennen, Teilen and Exportieren are visible glyph buttons in the Info tab's head, not behind ⋯",
-        boardSrc.includes('glyphBtn("pencil", "Umbenennen", ') && boardSrc.includes('glyphBtn("share", s.share ? "Geteilt" : "Teilen", ')
-          && boardSrc.includes('glyphBtn("export", "Exportieren", ') && boardSrc.includes("void openExportDlg(slot, sessName)")
+      check("session actions: Rename, Share and Export are visible glyph buttons in the Info tab's head, not behind ⋯",
+        boardSrc.includes('glyphBtn("pencil", "Rename", ') && boardSrc.includes('glyphBtn("share", s.share ? "Shared" : "Share", ')
+          && boardSrc.includes('glyphBtn("export", "Export", ') && boardSrc.includes("void openExportDlg(slot, sessName)")
           && boardSrc.includes("startRename(row, s)") && boardSrc.includes("() => openShareDlg(slot)")
-          && !/popItem\("(Umbenennen|Teilen|Exportieren|Rename|Export)/.test(bmenuSrc) && bmenuSrc.includes('popItem("Session zurückholen"')
+          && !/popItem\("(Umbenennen|Teilen|Exportieren|Rename|Share|Export)/.test(bmenuSrc) && bmenuSrc.includes('popItem("Bring the session back"')
           && menuSrc.includes('item("Export…", ') && menuSrc.includes("void openExportDlg(s.id, "),
         "sessionSection head + its ⋯ + row menu");
       const parts = [...expSrc.matchAll(/\["(\w+)", "[^"]+", "[^"]+"\],/g)].map((m) => m[1]);
@@ -4004,7 +4004,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("client: the board tells a plain folder (git:none) from a failed brief read",
       /const noGit = !briefRes\.ok && briefBody\?\.git === "none" \? briefBody : null;/.test(boardSrc)
         && /const briefErr = briefRes\.ok \|\| noGit \? null :/.test(boardSrc)
-        && /Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository\./.test(boardSrc),
+        && /No git in this folder — changes, history and lanes exist only in a repository\./.test(boardSrc),
       "renderBoard's brief read");
     // the window's own read (src/client.ts#loadGit) makes the SAME kind decision the board makes:
     // a plain folder is drawn calmly — the board noGit card's very sentence — while gone,
@@ -4020,7 +4020,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         if (!ternary) return null;
         try { return new Function(`return (e) => (${ternary});`)() as (e: { error?: string; git?: string } | null) => string; } catch { return null; }
       })();
-      const calm = "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.";
+      const calm = "No git in this folder — changes, history and lanes exist only in a repository.";
       check("client: the file window's loadGit draws git:none with the board's calm sentence and keeps the server's named error for every other kind",
         pick !== null
           && pick({ git: "none", error: "not a git repository" }) === calm
@@ -6897,7 +6897,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         facts.meter = { rowUp, ...meter };
         claims["Checks at the board's real width (≤ 360 px): a titled lane's run names the lane in full — its Kurztitel whole, in calm case, wrapped not cut — and its machine stays in the line"] =
           !!meter && meter.board <= 360 && !meter.cut && /^\d+[A-Z]$/.test(meter.ref ?? "") && meter.name === shortTitle(LANE_TITLE)
-          && meter.glyphInside && meter.glyph === "auf Dieser Rechner";
+          && meter.glyphInside && meter.glyph === "on This computer";
         fx.meterLane = false;
       }
 
@@ -8753,8 +8753,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
             btns: [...c.querySelectorAll('button')].map((x) => x.textContent), hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
       facts.infoCard = card;
       await shot(`${W}-alarm-in-info`);
-      const cardClaim = "…and Info on the island opens Info with the alarm as its first card: \"Der Check nach dem Land in alpha ist rot\", Gesehen · Ansehen under a finger";
-      claims[cardClaim] = !!card && card.first && card.t === "Der Check nach dem Land in alpha ist rot" && JSON.stringify(card.btns) === JSON.stringify(["Gesehen", "Ansehen"]) && card.hit;
+      const cardClaim = "…and Info on the island opens Info with the alarm as its first card: \"The check after the land in alpha is red\", Seen · Look under a finger";
+      claims[cardClaim] = !!card && card.first && card.t === "The check after the land in alpha is red" && JSON.stringify(card.btns) === JSON.stringify(["Seen", "Look"]) && card.hit;
       detail[cardClaim] = card;
       await escape();
       facts.infoClosed = await evaluate<boolean>("!window.__fx.shown(document.querySelector('#board'))");
@@ -9975,7 +9975,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       // mid-spring — a click aimed at ℹ while the glass still widened landed on the free glass under load and closed it
       await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: phone ? "reduce" : "no-preference" }] });
       await navigate(`${o.base}/?token=${encodeURIComponent(o.token)}`);
-      // the rights block is the tab "Rechte" under "Mehr zu dieser Session" since card R2: opened, as after a click
+      // the rights block is the tab "Rights" under "More about this session" since card R2: opened, as after a click
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [${slot}], focused: 0 }));
         localStorage.setItem('fleet.board.folds', JSON.stringify(['rechte']));
         localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); })()`);
@@ -9992,7 +9992,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
       }
       // the Arbeitsorte above the tabs draw after their own read and push the column down by their
       // height: a click aimed before that lands on whatever moved under it
-      await wait(`!!document.querySelector('#boardbody .ranke .rk') || !/lese die Arbeitsorte/.test(document.querySelector('#boardbody .ranke')?.innerText ?? 'lese die Arbeitsorte')`, 10000);
+      await wait(`!!document.querySelector('#boardbody .ranke .rk') || !/reading the workplaces/.test(document.querySelector('#boardbody .ranke')?.innerText ?? 'reading the workplaces')`, 10000);
       return wait(`${RB}`, 10000);
     };
     const startVideo = async (name: string) => {
@@ -10020,8 +10020,8 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
           return { keys: [...r.querySelectorAll('.rgkey')].map((k) => k.textContent),
             afterSetup: tabs.indexOf('setup') >= 0 && tabs.indexOf('setup') < tabs.indexOf('rechte') && !!r.closest('.btab[data-tab="rechte"]') }; })()`);
         facts.order = order;
-        claims["board: the block \"Rechte\" is the tab after Setup under \"Mehr\" and names Eigene Arbeit · Ausführung · Deine Sicht"] =
-          order.afterSetup && order.keys.join("|") === "Eigene Arbeit|Ausführung|Deine Sicht";
+        claims["board: the block \"Rights\" is the tab after Setup under \"More\" and names Own work · Execution · Your view"] =
+          order.afterSetup && order.keys.join("|") === "Own work|Execution|Your view";
         await shot(width, "frei");
         // a repaint keeps the reading position: the column scrolled to its end stays there
         // (src/board.ts#renderBoard reads the position before the first section is built).
@@ -10037,7 +10037,7 @@ export async function runRightsDom(o: { base: string; token: string; repo: strin
         // --- a lane
         claims["PROBE: the Info opens on the lane"] = await openOn(width, height, lane.slot);
         const laneBlock = await evaluate<string>(`${RB}?.innerText ?? ''`);
-        claims["board: a hand-opened lane's own work reads \"Keinen Auftrag\""] = laneBlock.includes("Keinen Auftrag");
+        claims["board: a hand-opened lane's own work reads \"No task\""] = laneBlock.includes("No task");
         await shot(width, "lane");
         await stopVideo();
         facts.missing = missing.slice(0, 12);
@@ -11656,16 +11656,47 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "nameless helpers folded into one machine", state: "doppelt", claim: "every machine stands once as one row",
     needle: String.raw`const key = st.name ? machineKey(st.name) : ` + "`\\0${st.kind}${i}`;", with: String.raw`const key = st.name ? machineKey(st.name) : ` + "`\\0${st.kind}`;" },
   { name: "this server's own link read as a foreign one", state: "doppelt", claim: "this server's own link says",
-    needle: `{ label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null }`, with: `{ label: "Fleet-Instanz", text: null, st }` },
+    needle: `{ label: "Fleet instance", text: "linked — that is this server", st: null }`, with: `{ label: "Fleet instance", text: null, st }` },
   { name: "a tap shows no other carrier", state: "doppelt", claim: "a tap on workhorse opens its instance",
     needle: "for (const f of facts) {", with: "for (const f of [] as MachineFact[]) {" },
-  { name: "every project shown, none behind the row", state: "leer", width: 1200, claim: "with no running work every project waits behind one line",
-    needle: "const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));", with: "const quiet: WorkplaceRepo[] = [];" },
-  // ("a session merely sitting in a checkout counts as work" left with the owner's 2026-10-09 word: a focused
-  // session shows its project alone, so repoAtWork decides only the overview — whose fixture, `leer`, has no
-  // session at all to sit anywhere; the statement has no witness until a state carries one)
-  { name: "the quiet projects' row opens nothing", state: "leer", width: 1200, claim: "with no running work every project waits behind one line",
-    needle: "if (rankeQuietOpen) for (const R of quiet)", with: "if (false) for (const R of quiet)" },
+  // ONE REPO, THE SELECTED SESSION'S (owner Z131, 18.10.): no session, no structure — the overview of every project left
+  { name: "with no session the overview comes back", state: "leer", width: 1200, claim: "with no session selected Info draws no git structure",
+    needle: "const focusR = focus ? sessionRepo(focus, wp.repos) : undefined;", with: "const focusR = focus ? sessionRepo(focus, wp.repos) : wp.repos[0];" },
+  { name: "a rule above Geräte with nothing over it", state: "leer", width: 1200, claim: "with no session selected Info draws no git structure",
+    needle: "  #board .rk-runs:first-child:not(:has(.rkruns > *)) + .rkblock { margin-top: 0; padding-top: 0; border-top: 0; }\n", with: "" },
+  { name: "a branch session's repo looked up by its own top alone", state: "lane", width: 1200, claim: "Info shows exactly one repo, the selected session's",
+    file: "src/gitstruktur.ts", needle: "for (const R of repos) for (const p of [R.repo, ...(R.worktrees ?? []).map((w) => w.path)])", with: "for (const R of repos) for (const p of [R.repo])" },
+  // NEXT ALWAYS STANDS (rechts-7 B, Ja 19.10. 03:38): gone again while nothing is green, drawn like a ready one, or quiet when ready
+  { name: "next gone while nothing is ready", state: "lane", width: 1200, claim: "with no branch green on main, next still stands",
+    file: "src/gitstruktur.ts", needle: "quiet: !ready });", with: "quiet: !ready }); if (!ready) shapes.splice(shapes.length - 4, 4);" },
+  { name: "the quiet next drawn like a ready one", state: "lane", width: 1200, claim: "with no branch green on main, next still stands",
+    file: "src/gitstruktur.ts", needle: "class: `gsr ${p.kind}${p.live ? \" live\" : \"\"}${p.quiet ? \" quiet\" : \"\"}`", with: "class: `gsr ${p.kind}${p.live ? \" live\" : \"\"}`" },
+  { name: "a ready next drawn quiet", state: "lane", width: 1200, claim: "with a branch green on main, next is ready",
+    file: "src/gitstruktur.ts", needle: "quiet: !ready });", with: "quiet: true });" },
+  // an empty word keeps its margin beside the live server's name (rechts-7: on Linux it cut "Live server" at 390)
+  { name: "an empty word beside a name keeps its margin", state: "alarm", width: 390, claim: "an empty word beside a device's name takes no room",
+    file: "public/index.html", needle: "  #board .zr .cnt:empty { display: none; }\n", with: "" },
+  // the phone's Info after a reload with Info open (rechts-7): the tap toggles the remembered fleet.board again
+  { name: "the phone's Info tap toggles the remembered state", state: "branch", width: 390, claim: "after a reload with Info open, the first tap on Info opens it",
+    file: "src/client.ts", needle: "setBoard(isMobile() ? !boardShell?.isOpen() : !boardOpen);", with: "setBoard(!boardOpen);" },
+  { name: "main drawn bold again", state: "lane", width: 1200, claim: "main and next are drawn at every head's line width",
+    file: "src/gitstruktur.ts", needle: "  #board .gss .gsr.main rect { stroke: var(--chat-mute); }", with: "  #board .gss .gsr.main rect { stroke: var(--chat-mute); stroke-width: 1.8; }" },
+  { name: "main white like a selection again", state: "lane", width: 1200, claim: "main and next are drawn at every head's line width",
+    file: "src/gitstruktur.ts", needle: "  #board .gss .gsr.main rect { stroke: var(--chat-mute); }", with: "  #board .gss .gsr.main rect { stroke: var(--chat-ink); }" },
+  { name: "a check of an older tip dashed again", state: "lane", width: 1200, claim: "a merge check of an older tip draws the hollow diamond",
+    file: "src/gitstruktur.ts", needle: "check: merged ? \"landed\" : st === \"stale\" ? \"none\" : st,", with: "check: merged ? \"landed\" : st," },
+  { name: "the older check's commit left out of the hover", state: "lane", width: 1200, claim: "a merge check of an older tip draws the hollow diamond",
+    file: "src/gitstruktur.ts", needle: "const older = p.older === undefined || p.older === null ? \"\" :", with: "const older = true ? \"\" :" },
+  { name: "the gear opens nothing", state: "lane", width: 1200, claim: "the gear in the head opens three switches",
+    needle: "settings: gsSetOpen ? gsSettings(R.repo) : null,", with: "settings: null," },
+  { name: "the gear's switches reach nothing", state: "lane", width: 1200, claim: "the gear in the head opens three switches",
+    needle: "    }, hide: { landed: !gsView.landed, idle: !gsView.idle } });", with: "    } });" },
+  { name: "Looks good sends nothing", state: "lane", width: 1200, claim: "a board branch's menu says which tip the owner looked at",
+    file: "src/branchcard.ts", needle: "const r = await post(\"/api/branches/seen\", { repo, branch: b.branch, head }).catch(() => null);", with: "const r = null as Response | null;" },
+  { name: "a commit after Looks good still reads as looked at", state: "lane", width: 1200, claim: "a board branch's menu says which tip the owner looked at",
+    file: "src/branchcard.ts", needle: "const tip = sha7(b.head), at = b.seen?.head ?? null;", with: "const tip = sha7(b.head), at = b.seen ? b.head : null;" },
+  { name: "Info keeps one session's repo whatever is picked", state: "lane", width: 1200, claim: "Info shows exactly one repo, the selected session's",
+    needle: "const focusR = focus ? sessionRepo(focus, wp.repos) : undefined;", with: "const focusR = sessionRepo(fleet[4]?.cwd ? fleet[4] : focus ?? fleet[8], wp.repos);" },
   // THE CLOSED ROW AND THE OPENED LANE (owner 2026-10-08; the flag left 2026-10-10): the closed row
   // quiet, a tap opens in place
   // the flag back where a check came to green or red (owner 2026-10-10: „[Zitat entfernt]“)
@@ -11683,7 +11714,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  if (!paintHandover(c)) void renderBoard();\n};", with: "  void renderBoard();\n};" },
   // THE TEST INSTANCE AT THE PHONE (K19): the opened lane without its instance line
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
-  { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live-Server says in one sentence how it runs",
+  { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live server says in one sentence how it runs",
     needle: "else say.append(standSay(lead.st));", with: "else say.append(...standSentence(lead.st).text);" },
   { name: "a machine silent for days stands among the others", state: "lane", claim: "a machine silent for days is taken back",
     needle: "const MACHINE_STILL_MS = 3 * 24 * 3600_000;", with: "const MACHINE_STILL_MS = 365 * 24 * 3600_000;" },
@@ -11711,19 +11742,19 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "liveErr.set(cwd, `${liveErr.get(cwd)", with: "void (`${liveErr.get(cwd)" },
   // THE LANE VIEW, OWNER ROUND 2026-10-09 (UI-MAIN: „[Zitat entfernt]“)
   { name: "every project beside the focused one", state: "lane", claim: "only the focused session's project stands",
-    needle: "const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;", with: "const focusR: WorkplaceRepo | undefined = undefined;" },
+    needle: "  if (focusR) git.appendChild(gitBlock(focusR, wts, standOf));", with: "  for (const R of wp.repos) git.appendChild(gitBlock(R, wts, standOf));" },
   // K16: a lane's runs are its diamond in the git structure (runsHere.byBranch, src/board.ts#gitBlock), no longer
   // lines that mark placedRuns — only an opened Prüfungen menu marks those now
-  { name: "the checks block keeps only what found no lane", state: "land", claim: "the Prüfungen block says every run in one line",
+  { name: "the checks block keeps only what found no lane", state: "land", claim: "the Checks block says every run in one line",
     needle: `const open = [...m.balls].filter((b) => b.station !== "done").sort(`, with: `const open = [...m.balls].filter((b) => b.station !== "done" && !runsHere.byBranch.has(b.branch ?? "")).sort(` },
-  { name: "a run line names no session", state: "land", claim: "the Prüfungen block says every run in one line",
+  { name: "a run line names no session", state: "land", claim: "the Checks block says every run in one line",
     needle: "    const who = s?.cwd ? runWho(", with: "    const who = false ? runWho(" },
   { name: "the Live-Server this page comes from is not marked", state: "lane", claim: "the server this page comes from says so in its state",
     needle: "      markHere(rows[0]);", with: "" },
   // THE OWNER'S SECOND ROUND 2026-10-09 (in the test instance): the diamond beside the square, its colours, its note
-  { name: "the checks block opens by default", state: "land", claim: "closed by default, the Prüfungen block is one line",
+  { name: "the checks block opens by default", state: "land", claim: "closed by default, the Checks block is one line",
     needle: "  const unfolded = boardFolds.has(RUNS_FOLD);", with: "  const unfolded = !boardFolds.has(RUNS_FOLD);" },
-  { name: "the checks block's head opens nothing", state: "land", claim: "the Prüfungen block says every run in one line",
+  { name: "the checks block's head opens nothing", state: "land", claim: "the Checks block says every run in one line",
     needle: "  rowTarget(runsHead, toggleRuns);", with: "  void runsHead;" },
   // round 6: the check after a land on the board, a label that is only its branch, the live field's line
   // round 8: "Mehr zu dieser Session" above the notepad and History
@@ -11741,12 +11772,12 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "⏏ carries the land form too", state: "live", width: 1200, claim: "Merge asks first",
     needle: "    const direct = await post(`/api/slots/${slot}/land`, {});", with: "    const direct = await post(`/api/slots/${slot}/land`, commits ? { squash: false } : {});" },
   { name: "a device that reports says läuft again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
-    needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\" };" },
+    needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\", still: \"quiet\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\", still: \"quiet\" };" },
   { name: "the test instance's row says nothing in its chip", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
-    needle: "    { ...HERE_STATE, title: \"Diese Seite kommt von dieser Testinstanz\" }, null,", with: "    { ...HERE_STATE, word: \"\", title: \"Diese Seite kommt von dieser Testinstanz\" }, null," },
+    needle: "    { ...HERE_STATE, title: \"This page comes from this test instance\" }, null,", with: "    { ...HERE_STATE, word: \"\", title: \"This page comes from this test instance\" }, null," },
   { name: "the test instance's row opens nothing", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
-    needle: "    [{ label: \"Stand\", text: band.text, st: null }, { label: \"Hinweis\", text: band.title, st: null }],", with: "    [],"},
-  { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live-Server stands under Mac",
+    needle: "    [{ label: \"State\", text: band.text, st: null }, { label: \"Note\", text: band.title, st: null }],", with: "    [],"},
+  { name: "the Live-Server stays a machine of its own", state: "lane", width: 1200, claim: "as a test instance: the Live server stands under Mac",
     needle: "    if (live) {\n      const [key, list] = live;", with: "    if (live && false) {\n      const [key, list] = live;" },
   // THE OWNER'S ROUND 9 2026-10-09 (in the test instance): every device with its instances, a device online
   // or offline, no head over the Arbeitsorte, the files under Changes, the gear's sentence behind its ⓘ, and a
@@ -11754,7 +11785,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "an instance stands flush with its device", state: "lane", claim: "each device carries its instances one rail in",
     needle: "  for (const r of rows) r.classList.add(\"inst\");", with: "" },
   { name: "a linked instance says verlinkt again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
-    needle: "        [], null, { label: null, st }, [], \"Eine verlinkte Fleet-Instanz", with: "        [], machineState([st]), { label: null, st }, [], \"Eine verlinkte Fleet-Instanz" },
+    needle: "        [], null, { label: null, st }, [], \"A linked Fleet instance", with: "        [], machineState([st]), { label: null, st }, [], \"A linked Fleet instance" },
   { name: "the Arbeitsorte carry their own head again", state: "lane", claim: "the Arbeitsorte are the first section of Info after the alarms",
     needle: "  const sec = el(\"div\", \"bsec ranke\");\n  const wp = workplaces;", with: "  const sec = el(\"div\", \"bsec ranke\");\n  sec.appendChild(sectionHead(\"Arbeitsorte\", \"fleet\"));\n  const wp = workplaces;" },
   { name: "the files stand under History only", state: "mehr", claim: "Changes carries what the lane changes",
@@ -11764,7 +11795,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "the live field's ⓘ explains nothing", state: "live", width: 1200, claim: "the field's ⓘ says in four steps what Start does",
     needle: "  if (liveHowOpen) box.appendChild(LIVE_HOW.reduce(", with: "  if (false) box.appendChild(LIVE_HOW.reduce(" },
   // round 10: the new live lane's way in
-  { name: "the focus restore scrolls to its button again", state: "lane", claim: "a real click on the Geräte ⓘ opens its legend in place",
+  { name: "the focus restore scrolls to its button again", state: "lane", claim: "a real click on the Devices ⓘ opens its legend in place",
     needle: "  return `${a.tagName}\\u0000${cls}\\u0000${a.getAttribute(\"aria-label\") ?? \"\"}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;",
     with: "  return `${a.tagName}\\u0000${a.className}\\u0000${(a.textContent ?? \"\").slice(0, 40)}`;" },
   // THE GIT STRUCTURE (K16, auftraege/k16-git-struktur*.md, owner Z79–Z87): each of its claims against one swap in
@@ -11787,7 +11818,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "main's menu does not say which tip it is", state: "lane", claim: "a click on a head opens its menu, whose first line names it",
     needle: "isMain ? `${m.integration} · ${sha7(m.head) ?? \"tip unknown\"}`", with: "isMain ? m.integration" },
   { name: "a lane's diamond opens as a merge check", state: "lane", claim: "3A's diamond opens its checks",
-    needle: "dia ? `${lane ? \"Land check\" : \"Merge check\"} of ${name}`", with: "dia ? `${lane ? \"Merge check\" : \"Land check\"} of ${name}`" },
+    needle: "dia ? `${lane ? CHECK_KIND.landCheck : \"Merge check\"} of ${name}`", with: "dia ? `${lane ? \"Merge check\" : CHECK_KIND.landCheck} of ${name}`" },
   { name: "the menu says Starten again", state: "lane", claim: "the menus carry no Diff, Passt or Landen and no German word",
     needle: "} else if (look.cls === \"off\") act(\"Start\", \"Start a test instance", with: "} else if (look.cls === \"off\") act(\"Starten\", \"Start a test instance" },
   { name: "Stop stops nothing", state: "modell", width: 1200, claim: "Open asks the slot's route for the opening link",
@@ -11795,10 +11826,10 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "Open opens the branch instead of the worktree", state: "tippen", claim: "Open there reopens the worktree in a free slot",
     needle: "      const r = await post(\"/api/lanes\", { repo: wts.repo, attach: w.path });", with: "      const r = await post(\"/api/lanes\", { repo: wts.repo, attach: w.branch });" },
   { name: "the worktrees without a session never fold", state: "viele30", claim: "from 13 on, the worktrees without a session wait behind one line",
-    needle: "const folded = idle.length > 12 &&", with: "const folded = idle.length > 99 &&" },
+    needle: "const folded = gsView.idle && idle.length > 12 &&", with: "const folded = gsView.idle && idle.length > 99 &&" },
   { name: "a project closed by hand opens again on a reload", state: "branch", width: 1200, claim: "a project closed by hand stays closed across a reload",
     needle: "rankeRepos.set(R.repo, !open); prefSet(\"fleet.ranke.repos\", JSON.stringify(Object.fromEntries(rankeRepos)));", with: "rankeRepos.set(R.repo, !open);" },
-  { name: "a rule stands between the git structure and Prüfungen again", state: "land", claim: "no rule between the git structure and Prüfungen",
+  { name: "a rule stands between the git structure and Prüfungen again", state: "land", claim: "no rule between the git structure and Checks",
     needle: "#board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }", with: "#board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; }" },
   { name: "a refused lane goes unsaid in the field", state: "live", width: 1200, claim: "a refused lane is said in the field",
     needle: "  const err = liveErr.get(repo);\n  if (err) box.appendChild(el(\"div\", \"err\", err));", with: "  const err = liveErr.get(repo);\n  if (false) box.appendChild(el(\"div\", \"err\", err));" },
@@ -11806,6 +11837,16 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "  for (const w of rows) { const e = liveErrLine(w); if (e) below.push(e); }", with: "" },
   { name: "the live field says nothing of what it makes", state: "live", width: 1200, claim: "main's \"Live session\" opens one field",
     needle: "box.appendChild(el(\"div\", \"hint live-hint\", \"A lane with its own test instance · merge at the end\"));", with: "" },
+  // THE WHOLE TAB SPEAKS ENGLISH (rechts-7 F01): a word back in German — in a section head, a value row, the rights block
+  // and in a hover alone — turns the scan red
+  { name: "the notepad's head says Notizblock again", state: "lane", claim: "Info speaks English", file: "src/board-words.ts",
+    needle: 'notepad: "Notepad"', with: 'notepad: "Notizblock"' },
+  { name: "the session's values say Gehört zu again", state: "lane", claim: "Info speaks English",
+    needle: 'kvRow("Belongs to", links, "lks")', with: 'kvRow("Gehört zu", links, "lks")' },
+  { name: "the rights block says Eigene Arbeit again", state: "mehr", claim: "Info speaks English", file: "src/rights.ts",
+    needle: 'kv("Own work", ownWork(row))', with: 'kv("Eigene Arbeit", ownWork(row))' },
+  { name: "the session's ⋯ explains itself in German on hover", state: "lane", claim: "Info speaks English",
+    needle: 'mbtn.title = "More actions — copy, bring the session back";', with: 'mbtn.title = "Weitere Aktionen — kopieren, die Session zurückholen";' },
 ];
 export interface ArbeitsorteDomResult { width: number; height: number; state: string; claims: Record<string, boolean>; facts: Record<string, unknown> }
 // A MUTANT NEEDS ITS OWN VERDICTS ONLY (UI-MAIN e5b9a171: preview shard 2 lapsed twice; the 33 lane
@@ -11838,7 +11879,7 @@ export const ARBEITSORTE_STATES = ["lane", "laneb", "modell", "tippen", "ueberga
 // A MUTANT (owner card 2026-10-07, „[Zitat entfernt]“): `mutate`
 // swaps one needle of src/board.ts in the bundle the page runs; a needle that is not in the source
 // throws, so a probe that could not apply its mutation fails as ITSELF and never reads as caught.
-export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/gitstruktur.ts" | "src/plaudit.ts" | "src/handover.ts" | "src/handover-now.ts" | "public/index.html" };
+export type ArbeitsorteMutant = { needle: string; with: string; file?: "src/board.ts" | "src/client.ts" | "src/board-words.ts" | "src/rights.ts" | "src/gitstruktur.ts" | "src/branchcard.ts" | "src/plaudit.ts" | "src/handover.ts" | "src/handover-now.ts" | "public/index.html" };
 // THE PROBE'S BROWSER: headless Chromium with CDP on a free port, its endpoint read from stderr. One
 // run starts its own; the mutants share one (UI-MAIN e5b9a171: preview shard 2 lapsed twice once
 // this lane's 83 mutants each started a Chromium, ~2.9 s apiece before the page ran)
@@ -11927,7 +11968,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     // it runs on overhaul for E's land, and a land on main waits for the next run
     audit: false,
     // a session whose label is only its branch (a live lane before its rename): slot 12's
-    bare: false };
+    bare: false,
+    // a session on a board branch in a linked worktree (slot 5): no lane, its repo the worktree's top (server.ts#repoInfo);
+    // the branch's tip and the owner's „[Zitat entfernt]“ on it, as GET /api/branches says them
+    branchSession: false, branchHead: "", branchSeen: null as null | { at: number; head: string; via: "cookie" },
+    // the board branch's merge check when it is not the green one (rechts-7 C: a check of an older tip)
+    branchCheck: null as null | { state: "stale"; at: number; why: string } };
   const green = (head: string, minAgo = 4): Check => ({ state: "green", head, at: fx.now - minAgo * 60_000, fails: [], stale: false });
   const own: Lane = { slot: 9, letter: "A", title: "Rechter Tab dichter", branch: "fleet/261005-rechter-tab-dichter-42f1", target: "overhaul", ahead: 3, dirty: 2, working: true };
   const zeit: Lane = { slot: 10, letter: "B", title: "Zeitleiste", branch: "fleet/261005-zeitleiste-c3d4", target: "overhaul", ahead: 1 };
@@ -11973,6 +12019,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     return [...base, ...more];
   };
   const pathOf = (l: Lane) => l.path ?? `${l.repo ?? REPO}.worktrees/${l.branch.replace(/\//g, "-")}`;
+  const onBranch: Lane = { slot: 5, branch: "branch/rechter-tab", target: "main", ahead: 1, landed: "no" };
   const openedAt = (slot: number) => 1_000_000 + slot;
   const sessions = (st: State) => {
     const lanes = lanesOf(st);
@@ -11985,6 +12032,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       // a session that only sits in a project's main checkout marks a place, not running work
       put(7, { cwd: REPO3, repo: REPO3, label: "alte-skripte", lastOutput: fx.now - 2 * 3600_000, git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } });
     }
+    if (fx.branchSession) put(5, { cwd: pathOf(onBranch), repo: pathOf(onBranch), label: "Rechter Tab",
+      git: { branch: onBranch.branch, dirty: 0, ahead: onBranch.ahead, behind: 0 } });
     for (const l of lanes) if (l.slot) {
       const repo = l.repo ?? REPO;
       const bare = fx.bare && l.slot === 12;
@@ -12024,7 +12073,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     return {
       repos: [
         { repo: REPO, branches: [{ branch: "main", head: MAIN, distance: { ahead: 0, behind: 0 }, reasons: [] }, { branch: "overhaul", head: OVER, distance: { ahead: 41, behind: 0 }, reasons: [] }],
-          worktrees: [primary(REPO, MAIN), ...lanes.filter((l) => (l.repo ?? REPO) === REPO).map(row)], landNotes: { truncated: false }, reasons: [] },
+          worktrees: [primary(REPO, MAIN), ...lanes.filter((l) => (l.repo ?? REPO) === REPO).map(row), ...(fx.branchSession ? [row(onBranch)] : [])],
+          landNotes: { truncated: false }, reasons: [] },
         { repo: REPO2, branches: [{ branch: "main", head: MAIN2, distance: { ahead: 0, behind: 0 }, reasons: [] }],
           worktrees: [primary(REPO2, MAIN2), ...lanes.filter((l) => l.repo === REPO2).map(row)], landNotes: { truncated: false }, reasons: [] },
         { repo: REPO3, branches: [{ branch: "main", head: MAIN3, distance: { ahead: 0, behind: 0 }, reasons: [] }],
@@ -12167,6 +12217,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if ("keepCacheText" in b) handover.text3 = b.keepCacheText ?? null;
           return void json(requestId, { slot: 3, openedAt: openedAt(3), setting: null, step: 5, min: 5, max: 95, succession: succession(3) });
         }
+        if (p === "/api/branches/seen" && fx.branchSession) {
+          fx.branchSeen = { at: fx.now, head: String((body as { head?: string })?.head), via: "cookie" };
+          return void json(requestId, { ok: true, seen: fx.branchSeen });
+        }
         if (/testinstanz$/.test(p) && (body as { action?: string })?.action === "open") {
           const answer = () => json(requestId, { ok: true, state: "up", url: "http://fleet.fixture/blank?instanz", port: 8913, expiresAt: fx.now + 3600_000 });
           return void (fx.holdOpen ? fx.holdOpen.then(answer) : answer());
@@ -12207,6 +12261,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         ...(st === "alarm" ? { postLandAudit: { at: fx.plaAt, result: "red", repo: REPO, main: "main", mainSha: MAIN, covers: [UNDO_BRANCH],
           artifact: { bytes: 745_000, sha256: "5e".repeat(32), url: `/api/post-land-audits/artifact?at=${fx.plaAt}` }, ...fx.pla },
           errors: { total: 3, distinct: 2, since: fx.now - 3 * 3600_000, last: { at: fx.now - 10 * 60_000, where: "Poll-Route", msg: "Zeitüberschreitung", n: 2 } } } : {}) });
+      if (p === "/api/branches" && fx.branchSession) return void json(requestId, { repos: [{ repo: REPO, integration: "main", others: [], othersTotal: 0, reasons: [],
+        branches: [{ branch: onBranch.branch, name: "Rechter Tab", base: null, head: fx.branchHead, text: "", rev: 0, seen: fx.branchSeen, path: pathOf(onBranch),
+          session: { slot: 5, openedAt: openedAt(5) }, distance: { ahead: onBranch.ahead, behind: 0 }, lands: [], landForm: "squash", chargeBase: "main",
+          chargeCommits: onBranch.ahead, check: fx.branchCheck ?? { state: "green", at: fx.now - 60_000, why: null } },
+          // a branch that landed and has nothing since, no worktree and no session: what the gear's „Landed branches“ leaves out
+          { branch: "branch/alt", name: "Alt", base: null, head: hex("branch/alt"), text: "", rev: 0, seen: null, path: null, session: null, distance: null,
+            lands: [{ sha: hex("branch/alt land"), at: fx.now - 3600_000, subject: "Alt: erste Charge", points: [], passt: true, checked: true, form: "squash" }],
+            landForm: "squash", chargeBase: hex("branch/alt"), chargeCommits: 0, check: { state: "stale", at: fx.now - 3600_000, why: null } }] }] });
       if (p === "/api/tree") return void json(requestId, { root: REPO, files: Array.from({ length: 412 }, (_, i) => `src/datei-${i}.ts`), total: 412, capped: false });
       if (p === "/api/worktrees") {
         const held = fx.holdWorktrees;
@@ -12337,6 +12399,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           return o.filter((e) => !o.some((c) => c !== e && e.contains(c))).slice(0, 6).map((e) => String(e.getAttribute('class') ?? e.tagName) + ' +'
             + Math.round(e.getBoundingClientRect().right - r) + ': ' + (e.textContent ?? '').trim().slice(0, 40)); })(),
         bodyText: body.innerText, oldCard: !!document.querySelector('.testinstanzcard'), machineCards: body.querySelectorAll('.testinstanzmachine').length, cut,
+        // an EMPTY word beside a name (a device with no kind word: the live server without a port) that still stands
+        // away from the name's last letter — its margin is room the name lacks (rechts-7: Linux cut "Live server" by it)
+        emptyRoom: [...sec.querySelectorAll('.zr > .nm > .cnt')].filter((c) => c.textContent === '' && c.getClientRects().length > 0 && (() => {
+          const rg = document.createRange(); rg.setStart(c.parentElement, 0); rg.setEndBefore(c);
+          const rs = [...rg.getClientRects()];
+          return rs.length > 0 && c.getBoundingClientRect().left - rs[rs.length - 1].right > 0.5; })()).map((c) => c.parentElement.textContent.trim().slice(0, 40)),
         live: probe('var(--q-live)'), wait: probe('var(--q-wait)'), danger: probe('var(--danger)'), amber: probe('var(--amber)'), faint: probe('var(--chat-faint)'), ink: probe('var(--chat-ink)'),
         field: field ? { text: field.innerText.replace(/\\s+/g, ' ').trim(), title: field.title, box: box(field), vis: vis(field), sq: !!field.querySelector('.wtsq') } : null,
         trayBox: box(tray), schedBox: box(sched), mort: mort ? mort.innerText.replace(/\\s+/g, ' ').trim() : null,
@@ -12357,7 +12425,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       backs: { cls: string | null; for: string | null; y: number; x0: number }[]; gates: { row: string | null; gate: string | null; placed: string | null; cy: number; title: string; aria: string; vis: boolean;
         gap: number | null; fill: string | null; note: string | null; noteBox: { x: number; r: number } | null; notePoints: string[] }[];
       heads: { row: string | null; next: boolean; x: number }[]; hier: { cls: string; text: string; chip: string | null }[];
-      secBox: { x: number; r: number; w: number }; secOverflow: number; over: string[]; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[];
+      secBox: { x: number; r: number; w: number }; secOverflow: number; over: string[]; pageScroll: number; bodyText: string; oldCard: boolean; machineCards: number; cut: string[]; emptyRoom: string[];
       live: string; wait: string; danger: string; amber: string; faint: string; ink: string;
       field: { text: string; title: string; box: { x: number; r: number; y: number; h: number }; vis: boolean; sq: boolean } | null;
       trayBox: { x: number; r: number } | null; schedBox: { x: number; r: number; y: number } | null; mort: string | null };
@@ -12375,6 +12443,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     };
     const PROCESS = /\b(baton|gate|audit|suite|deploy|mutex|srv)\b/i;
     const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|localhost|\.local\b/i;
+    // THE WHOLE TAB SPEAKS ENGLISH (owner 18.10. 23:4x via the Bauleitung, rechts-7 F01): the words the German board
+    // said, closed like the git structure's list; the fixture's own data (lane titles, notes, commits, prompts, the
+    // server's succession sentences) uses none of them, so a hit is the board's own word
+    const OLD_GERMAN = /(?<![\p{L}-])(Prüfung|Prüfungen|Prüflauf|Landprüfung|Nachprüfung|Prüfsperre|Sperre|Geräte|Gerät|Rechner|Helfer|läuft|laufen|wartet|warten|gesichert|ungesichert|Notizblock|Rechte|Eigene Arbeit|Ausführung|Deine Sicht|Gehört zu|Akte|Auftrag|kopieren|Kopieren|zurückholen|Umbenennen|Teilen|Geteilt|Exportieren|Serverfehler|Gespräch|ungelesen|gelesen|Postfach|Neustart|Weniger|Ansehen|Gesehen|Braucht dich|Arbeitet|Steht still|Mehr zu dieser Session|Kein Git|bestanden|fehlgeschlagen|zuletzt|Bereit|unbekannt|nicht lesbar|hinter|Platz|losgelöst|Dateien|Datei|seit)(?![\p{L}-])/gu;
+    // Info's visible text and every hover, label, placeholder and held word in it
+    const SAID = `(() => { const b = document.querySelector('#boardbody'); if (!b) return '';
+      const out = [b.innerText];
+      for (const e of b.querySelectorAll('*')) for (const a of ['title', 'aria-label', 'placeholder', 'data-hold']) { const v = e.getAttribute(a); if (v) out.push(v); }
+      return out.join('\\n'); })()`;
     const results: ArbeitsorteDomResult[] = [];
     let targetId = "";
     let contextId: string | undefined;
@@ -12388,7 +12465,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       for (const st of ARBEITSORTE_STATES.filter((x) => !only.states || only.states.includes(x))) {
         const facts: Record<string, unknown> = {};
         const claims = claimsUntil(only.until, (c) => ({ width, height, state: st, claims: c, facts }));
-        fx.state = st; fx.writes = []; fx.briefAt = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false;
+        fx.state = st; fx.writes = []; fx.briefAt = []; fx.pla = {}; fx.plaAt = Date.now() - 20 * 60_000; fx.tiUntil = Date.now() + 2 * 3600_000; fx.holdWorktrees = null; fx.holdOpen = null; fx.liveFail = null; fx.liveMade = []; fx.audit = false; fx.bare = false; fx.branchSession = false; fx.branchHead = hex("branch/rechter-tab"); fx.branchSeen = null; fx.branchCheck = null;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank", ...(contextId ? { browserContextId: contextId } : {}) })).targetId);
         sessionId = String((await send("Target.attachToTarget", { targetId, flatten: true })).sessionId);
@@ -12434,7 +12511,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await evaluate("document.querySelector('#minfo')?.click()");
         };
         await openInfo();
-        const shown = await wait(`document.querySelector('#boardbody .ranke .rk-git ${st === "leer" ? ".gsquiet, #boardbody .ranke .rk-git .gs" : ".gss .gsr"}')`, 15000);
+        const shown = await wait(st === "leer" ? "document.querySelector('#boardbody .ranke .rk-dev .zr')" : "document.querySelector('#boardbody .ranke .rk-git .gss .gsr')", 15000);
         if (!shown) throw new Error(`arbeitsorte DOM probe (${st} ${width}): the git structure did not draw: ` + await evaluate<string>("(document.querySelector('#boardbody')?.innerText ?? document.body.innerText).slice(0, 400)"));
         await settle(400);
         const tag = `${st}: `;
@@ -12443,20 +12520,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         facts.headFit = null; // filled by the Info pass — first, so a truncated FAIL line still carries it
         facts.base = { index: r.index, before: r.before, head: r.head, blocks: r.blocks, rows: r.rows.length, secOverflow: r.secOverflow, over: r.over, pageScroll: r.pageScroll, cut: r.cut };
         // NO HEAD OF THEIR OWN (owner 2026-10-09: „[Zitat entfernt]“)
-        claims[`${tag}the Arbeitsorte are the first section of Info after the alarms, above the session — no head of their own, the git structure on top`] = r.head === null
-          && r.blocks[0]?.cls.split(" ").includes("rk-git") === true && r.blocks[0]?.title === null && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
+        claims[`${tag}the Arbeitsorte are the first section of Info after the alarms, above the session — no head of their own, the git structure on top (none without a session)`] = r.head === null
+          && (st === "leer" ? !r.blocks.some((b) => b.cls.split(" ").includes("rk-git")) : r.blocks[0]?.cls.split(" ").includes("rk-git") === true && r.blocks[0]?.title === null) && r.before.every((c) => /plasec|berrs|bfail/.test(c)) && (st === "leer" || /bhead|plasec/.test(r.next ?? ""));
         // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
         // the machines; the git structure took the Projekte block's place and needs no head (owner Z83: „[Zitat entfernt]“
         // ) — each project's name heads its drawing; the block Prüfungen stands only while a run
         // runs or waits (here: `land`)
-        claims[`${tag}the Arbeitsorte stand in blocks: the git structure, Prüfungen (only while a run runs or waits) and Geräte under their own heads`] =
-          JSON.stringify(r.blocks.map((b) => b.title ?? b.cls)) === JSON.stringify(["rkblock rk-git", "Prüfungen", "Geräte"])
-          && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title ?? "git")) === JSON.stringify(st === "land" ? ["git", "Prüfungen", "Geräte"] : ["git", "Geräte"]);
+        claims[`${tag}the Arbeitsorte stand in blocks: the git structure (with a selected session), Checks (only while a run runs or waits) and Devices under their own heads`] =
+          JSON.stringify(r.blocks.map((b) => b.title ?? b.cls)) === JSON.stringify([...(st === "leer" ? [] : ["rkblock rk-git"]), "Checks", "Devices"])
+          && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => b.title ?? "git")) === JSON.stringify(st === "land" ? ["git", "Checks", "Devices"] : st === "leer" ? ["Devices"] : ["git", "Devices"]);
         // THE CHECKS STAND WITH THE PROJECTS (owner 2026-10-09: „[Zitat entfernt]“
         // ): no
         // rule above Prüfungen; Geräte keeps its own
-        if (st === "land") claims[`${tag}no rule between the git structure and Prüfungen; Geräte keeps its rule`] =
-          r.blocks.find((b) => b.title === "Prüfungen")?.rule === "0px" && r.blocks.find((b) => b.title === "Geräte")?.rule === "1px";
+        if (st === "land") claims[`${tag}no rule between the git structure and Checks; Devices keeps its rule`] =
+          r.blocks.find((b) => b.title === "Checks")?.rule === "0px" && r.blocks.find((b) => b.title === "Devices")?.rule === "1px";
         // THE GIT STRUCTURE (K16, src/gitstruktur.ts; owner Z79–Z87): one drawing per project in the block rk-git — its heads
         // (rectangles), its sessions (circles), its checks (diamonds), its lines, its test instances; the menu of a selected
         // head in two steps; the legend as a quiet line under it. Read in one pass, as the Ranke was
@@ -12468,7 +12545,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             repos: [...git.querySelectorAll(':scope > .gs')].map((g) => { const s = g.querySelector('svg.gss:not(.gslg)'); const k = s ? s.getBoundingClientRect().width / s.viewBox.baseVal.width : null;
               const m = g.querySelector('.gsm');
               return { repo: g.dataset.repo, open: g.classList.contains('open'), name: g.querySelector('.gsn')?.textContent ?? null, fold: g.querySelector('.gsf')?.getAttribute('aria-expanded') ?? null,
-                side: t(g.querySelector('.gsside')), ib: g.querySelectorAll('.gsh .rk-btn.ib:not(.gsadd)').length,
+                side: t(g.querySelector('.gsside')), ib: g.querySelectorAll('.gsh .rk-btn.ib:not(.gsadd):not(.gsgear)').length,
                 heads: s ? [...s.querySelectorAll(':scope > g.gsr')].map((h) => ({ key: h.dataset.head, cls: h.getAttribute('class'), text: h.querySelector('text')?.textContent ?? null, title: tip(h),
                   aria: h.getAttribute('aria-label'), exp: h.getAttribute('aria-expanded'), px: Math.round(parseFloat(getComputedStyle(h.querySelector('text')).fontSize) * k * 100) / 100,
                   x: Number(h.querySelector('rect').getAttribute('x')), y: Number(h.querySelector('text').getAttribute('y')) - 4, w: Number(h.querySelector('rect').getAttribute('width')) })) : [],
@@ -12497,7 +12574,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if (!g) throw new Error("arbeitsorte DOM probe: no git structure (.rk-git) in #boardbody");
           return g;
         };
-        let g = await gsRead();
+        let g: GsRead = st === "leer" ? { info: 0, quiet: [], repos: [] } : await gsRead();
         const fleetGs = () => g.repos.find((x) => x.repo === REPO);
         facts.gs = g.repos.map((x) => ({ ...x, text: x.text.slice(0, 300) }));
         facts.gsQuiet = g.quiet;
@@ -12505,13 +12582,18 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         // ; the evening: „[Zitat entfernt]“): the instance this page comes from says "hier" in its chip — here the
         // Live-Server under this machine, a due restart before it — and nothing else does
         facts.hier = r.hier;
-        const HIER = st === "alarm" ? "Neustart fällig · hier" : "hier";
-        claims[`${tag}the server this page comes from says so in its state — "${HIER}" at the Live-Server under this machine, and only there`] =
-          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("inst") && r.hier[0].text.startsWith("Live-Server")
+        const HIER = st === "alarm" ? "restart due · here" : "here";
+        claims[`${tag}the server this page comes from says so in its state — "${HIER}" at the Live server under this machine, and only there`] =
+          r.hier.length === 1 && r.hier[0].cls.split(" ").includes("inst") && r.hier[0].text.startsWith("Live server")
           && r.hier[0].chip === HIER;
         claims[`${tag}no process word and no network address in the section's visible text`] = !PROCESS.test(r.text) && !ADDRESS.test(r.text);
+        const said = await evaluate<string>(SAID);
+        facts.german = [...new Set([...said.matchAll(OLD_GERMAN)].map((m) => m[0]))].slice(0, 8);
+        claims[`${tag}Info speaks English — no word of the German board in its text, its hovers or its labels`] = said.length > 0 && (facts.german as string[]).length === 0;
         claims[`${tag}nothing runs off the side: the section and the page do not scroll sideways`] = r.secOverflow <= 0 && r.pageScroll <= 0;
         claims[`${tag}nothing in the top of Info is cut — no text of the alarm, the Arbeitsorte or the session head runs out under an ellipsis`] = r.cut.length === 0;
+        facts.emptyRoom = r.emptyRoom;
+        claims[`${tag}an empty word beside a device's name takes no room`] = r.emptyRoom.length === 0;
         // THE MACHINE-WIDE LIST LEFT TOO (owner 2026-10-08, round 2): a test instance opens at its lane
         // (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md)
         facts.oldCard = { present: r.oldCard, machineCards: r.machineCards, retiredTitles: /Testinstanz · dieser Worktree|Lanes in |Alle Testinstanzen dieser Maschine/.test(r.bodyText) };
@@ -12534,36 +12616,36 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const out = []; for (const x of machAll.slice(i + 1)) { if (!x.cls.split(" ").includes("inst")) break; out.push(x); } return out; };
         claims[`${tag}every machine stands once as one row — this server, the helpers and links that answer, the silent one last — whatever carriers report under its name, its instances under it`] =
           JSON.stringify(machRows.map((x) => x.machine)) === JSON.stringify(["Mac", "workhorse", "Zweite Fleet",
-            ...(st === "doppelt" ? ["Helfer ohne Namen 1", "Helfer ohne Namen 2"] : []), "mainMacbook"])
+            ...(st === "doppelt" ? ["helper without a name 1", "helper without a name 2"] : []), "mainMacbook"])
           && stray.length === 0;
-        claims[`${tag}each device carries its instances one rail in: the Live-Server under Mac, a Fleet-Instanz under workhorse and under Zweite Fleet, none under mainMacbook`] =
-          JSON.stringify(instOf("Mac").map((x) => x.machine)) === JSON.stringify(["Live-Server"])
-          && JSON.stringify(instOf("workhorse").map((x) => x.machine)) === JSON.stringify(["Fleet-Instanz"])
-          && JSON.stringify(instOf("Zweite Fleet").map((x) => x.machine)) === JSON.stringify(["Fleet-Instanz"])
+        claims[`${tag}each device carries its instances one rail in: the Live server under Mac, a Fleet instance under workhorse and under Zweite Fleet, none under mainMacbook`] =
+          JSON.stringify(instOf("Mac").map((x) => x.machine)) === JSON.stringify(["Live server"])
+          && JSON.stringify(instOf("workhorse").map((x) => x.machine)) === JSON.stringify(["Fleet instance"])
+          && JSON.stringify(instOf("Zweite Fleet").map((x) => x.machine)) === JSON.stringify(["Fleet instance"])
           && instOf("mainMacbook").length === 0
           && machAll.filter((x) => x.cls.split(" ").includes("inst")).every((x) => !!x.box && !!mach("Mac")?.box && x.box.x > mach("Mac")!.box!.x + 8);
-        claims[`${tag}a device row names its kind once: Mac "dieser Rechner", workhorse and mainMacbook "Helfer", Zweite Fleet nothing (a link is its instance)`] =
-          mach("Mac")?.roles === "dieser Rechner" && mach("workhorse")?.roles === "Helfer"
-          && mach("mainMacbook")?.roles === "Helfer" && mach("Zweite Fleet")?.roles === "";
+        claims[`${tag}a device row names its kind once: Mac "this computer", workhorse and mainMacbook "helper", Zweite Fleet nothing (a link is its instance)`] =
+          mach("Mac")?.roles === "this computer" && mach("workhorse")?.roles === "helper"
+          && mach("mainMacbook")?.roles === "helper" && mach("Zweite Fleet")?.roles === "";
         // A DEVICE IS ONLINE OR OFFLINE (owner 2026-10-09: „[Zitat entfernt]“
         // ): an instance says only "hier", a link says nothing
-        claims[`${tag}each device's state is a dot and a word at the row's end: Mac and workhorse "online", mainMacbook "still", Zweite Fleet none; its instances: the Live-Server "${HIER}", a linked Fleet none`] =
+        claims[`${tag}each device's state is a dot and a word at the row's end: Mac and workhorse "online", mainMacbook "quiet", Zweite Fleet none; its instances: the Live server "${HIER}", a linked Fleet none`] =
           mach("Mac")?.chip === "online" && mach("Mac")?.tone === "live"
           && mach("workhorse")?.chip === "online" && mach("workhorse")?.tone === "live"
-          && mach("Zweite Fleet")?.chip === null && mach("mainMacbook")?.chip === "still"
+          && mach("Zweite Fleet")?.chip === null && mach("mainMacbook")?.chip === "quiet"
           && instOf("Mac")[0]?.chip === HIER && instOf("Mac")[0]?.tone === (st === "alarm" ? "wait" : "live")
           && instOf("workhorse")[0]?.chip === null && instOf("Zweite Fleet")[0]?.chip === null;
         // SENTENCES FOR PEOPLE (owner 2026-10-08: „[Zitat entfernt]“
         // ): the commit, the distance and which code stay behind the tap
         const liveRow = instOf("Mac")[0];
-        claims[`${tag}this machine's Live-Server says in one sentence how it runs${st === "alarm" ? ", a due restart in the wait colour" : ""} — no commit, no distance in the row`] =
-          !!liveRow && liveRow.kind === "live-server" && !/[0-9a-f]{7}|hinter main/.test(liveRow.text) && (st === "alarm"
-            ? liveRow.say === "Läuft auf älterem Server-Code." && liveRow.cls.split(" ").includes("due") && liveRow.nd === null
-            : liveRow.say === "Läuft auf dem neuesten Stand.");
+        claims[`${tag}this machine's Live server says in one sentence how it runs${st === "alarm" ? ", a due restart in the wait colour" : ""} — no commit, no distance in the row`] =
+          !!liveRow && liveRow.kind === "live-server" && !/[0-9a-f]{7}|behind main/.test(liveRow.text) && (st === "alarm"
+            ? liveRow.say === "Running older server code." && liveRow.cls.split(" ").includes("due") && liveRow.nd === null
+            : liveRow.say === "Running the newest state.");
         claims[`${tag}each machine row says what it means: the helper that it is ready, the silent one when it was last heard, a link nothing beside its word (its sentence is the title)`] =
-          mach("workhorse")?.say === "Bereit, auf dem neuesten Stand." && /zuletzt gemeldet/.test(mach("workhorse")?.title ?? "")
-          && mach("mainMacbook")?.say === "Meldet keinen Stand, zuletzt gehört vor 41 Tagen."
-          && mach("Zweite Fleet")?.say === null && instOf("Zweite Fleet")[0]?.say === null && /Ihre Repos liest dieser Server nicht\./.test(instOf("Zweite Fleet")[0]?.title ?? "");
+          mach("workhorse")?.say === "Ready, on the newest state." && /last reported/.test(mach("workhorse")?.title ?? "")
+          && mach("mainMacbook")?.say === "Reports no state, last heard 41 d ago."
+          && mach("Zweite Fleet")?.say === null && instOf("Zweite Fleet")[0]?.say === null && /This server does not read its repos\./.test(instOf("Zweite Fleet")[0]?.title ?? "");
         const lastMach = machRows.at(-1);
         claims[`${tag}a machine silent for days is taken back: mainMacbook stands after every other machine, its name in the faint ink`] =
           lastMach?.machine === "mainMacbook" && lastMach.tone === "still" && lastMach.nmColor === r.faint
@@ -12588,8 +12670,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         const fold0 = await evaluate<{ exp: string | null; gates: string[] }>(`({ exp: document.querySelector('#boardbody .rk-runs > .rkbh')?.getAttribute('aria-expanded') ?? null,
           gates: [...document.querySelectorAll('#boardbody .zd.run.sum .gq')].map((q) => q.dataset.gate) })`);
         facts.runsFolded = { lines: shut.map((l) => `${l.cls}: ${l.text}`), ...fold0 };
-        claims[`${tag}closed by default, the Prüfungen block is one line — a diamond per run and "1 läuft · 1 wartet"; its head says it opens`] =
-          shut.length === 1 && shut[0].cls.split(" ").includes("sum") && shut[0].text === "1 läuft · 1 wartet"
+        claims[`${tag}closed by default, the Checks block is one line — a diamond per run and "1 running · 1 waiting"; its head says it opens`] =
+          shut.length === 1 && shut[0].cls.split(" ").includes("sum") && shut[0].text === "1 running · 1 waiting"
           && JSON.stringify(fold0.gates) === JSON.stringify(["run", "queue"]) && fold0.exp === "false";
         await evaluate(`document.querySelector('#boardbody .rk-runs > .rkbh')?.click()`);
         await wait(`document.querySelector('#boardbody .zd.run.free')`, 3000);
@@ -12597,9 +12679,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         const kept = await evaluate<string>(`localStorage.getItem('fleet.board.folds') ?? ''`);
         const free0 = r.lines.filter((l) => l.cls.split(" ").includes("run"));
         facts.runsClosed = { lines: free0.map((l) => `${l.cls}: ${l.text}`), kept };
-        claims[`${tag}the Prüfungen block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
+        claims[`${tag}the Checks block says every run in one line — what, on which machine, whose: 3A's land check runs on Mac, 3B's preview waits there`] =
           free0.length === 2 && free0.every((l) => l.cls.split(" ").includes("free"))
-          && free0[0]?.text === "Landprüfung läuft auf Mac 3A Rechter Tab dichter" && free0[1]?.text === "Vorschau wartet auf Mac 3B Zeitleiste"
+          && free0[0]?.text === "Land check running on Mac 3A Rechter Tab dichter" && free0[1]?.text === "Preview waiting on Mac 3B Zeitleiste"
           && kept.includes('"pruefungen"');
         }
         if (st === "doppelt") {
@@ -12614,17 +12696,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const wh = await opened("workhorse", "workhorse");
           facts.workhorse = wh;
           // …and its link is the instance row under it (round 9), opened by its own tap
-          const wl = await opened("Fleet-Instanz", "workhorse:0");
+          const wl = await opened("Fleet instance", "workhorse:0");
           facts.workhorseLink = wl;
-          claims[`${tag}a tap on workhorse opens its instance and when it last reported, a tap on the Fleet-Instanz under it its link — nothing lost`] =
-            wh.row?.exp === "true" && wh.lines.some((t) => t === `Instanz · läuft auf unbekannt · Checkout ${sha7(hex("helper-checkout"))} — die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses`)
-            && !wh.lines.some((t) => t.startsWith("Fleet-Instanz")) && wh.lines.some((t) => /zuletzt gemeldet /.test(t))
-            && wl.row?.exp === "true" && wl.lines.includes("Fleet-Instanz · läuft auf unbekannt · ihre Repos liest dieser Server nicht");
+          claims[`${tag}a tap on workhorse opens its instance and when it last reported, a tap on the Fleet instance under it its link — nothing lost`] =
+            wh.row?.exp === "true" && wh.lines.some((t) => t === `Instance · runs on unknown · Checkout ${sha7(hex("helper-checkout"))} — the instance reports only its checkout, not the state of its running process`)
+            && !wh.lines.some((t) => t.startsWith("Fleet instance")) && wh.lines.some((t) => /last reported /.test(t))
+            && wl.row?.exp === "true" && wl.lines.includes("Fleet instance · runs on unknown · this server does not read its repos");
           if (width === 390) await shot(`${st}-maschine-${width}`);
           const me = await opened("Mac", "here");
           facts.mac = me;
-          claims[`${tag}this server's own link says "das ist dieser Server", never that its repos are not read here`] =
-            me.lines.includes("Fleet-Instanz · verlinkt — das ist dieser Server") && !me.lines.some((t) => /ihre Repos liest/.test(t));
+          claims[`${tag}this server's own link says "that is this server", never that its repos are not read here`] =
+            me.lines.includes("Fleet instance · linked — that is this server") && !me.lines.some((t) => /does not read its repos/.test(t));
         }
         // --- THE GIT STRUCTURE'S OWN CLAIMS (auftraege/k16-git-struktur*.md, owner Z79–Z87). Its geometry — where a circle
         // stands, what is dashed — is src/gitstruktur.test.ts's; here what the browser shows and what a click sends.
@@ -12670,9 +12752,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             && !fl.circles.some((c) => c.at === laneKey(free)) && fl.circles.length === 4;
           claims[`${tag}a circle is small and filled while its session works: 3A and the MAIN filled, 3B and the Orchestratorin a ring`] =
             fl.circles.every((c) => c.r === 5) && circ(9)?.on === true && circ(3)?.on === true && circ(10)?.on === false && circ(1)?.on === false;
-          // A LANE CARRIES ITS NAME (owner Z81 5, Z83 1): the session's label, else the lane's goal — its id only when nothing else is there
+          // A LANE CARRIES ITS NAME (owner Z81 5, Z83 1): the session's label, else the lane's goal — its id only when nothing else is there.
+          // Since next holds its column (rechts-7 B, the price the owner saw in the proposal: „[Zitat entfernt]“) a long
+          // name may end in „[Zitat entfernt]“ — still its own beginning, never another word
+          const named = (t: string | null | undefined, full: string) => !!t && (t === full || (t.endsWith("…") && t.length > 3 && full.startsWith(t.slice(0, -1))));
           claims[`${tag}a lane block carries its name — "Rechter Tab dichter", "Zeitleiste" — and the lane without a session its branch's short end`] =
-            h9?.text === "Rechter Tab dichter" && h10?.text === "Zeitleiste" && hFree?.text === "7c08";
+            named(h9?.text, "Rechter Tab dichter") && named(h10?.text, "Zeitleiste") && hFree?.text === "7c08";
           // THE SLOT ON HOVER (owner Z81 1/4, Z83 2, Z87 a): no number in a circle; the card names the session
           claims[`${tag}no circle carries a number — the slot is in the card`] =
             await evaluate<boolean>(`![...document.querySelectorAll('#boardbody .rk-git svg.gss > g.gsk')].some((c) => c.querySelector('text'))`);
@@ -12712,15 +12797,15 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             // project — one commit, as the server lands without a choice — until a form is kept as the lane's own, in this browser
             const lf = () => evaluate<{ on: string[]; follow: string | null; stored: string | null }>(`(() => { const z = document.querySelector('#boardbody .rk-git .gsm .zd.lf-set');
               return { on: z ? [...z.querySelectorAll('.lf-c[aria-pressed="true"]')].map((b) => b.textContent) : [], stored: localStorage.getItem('fleet.board.landform'),
-                follow: z ? [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'like the project')?.title ?? null : null }; })()`);
+                follow: z ? [...z.querySelectorAll('.lf-c')].find((b) => b.textContent === 'Like the project')?.title ?? null : null }; })()`);
             const lf0 = await lf();
-            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.lf-set .lf-c')].find((b) => b.textContent === 'one commit')?.click()`);
-            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.lf-set .lf-c[aria-pressed="true"]')?.textContent === 'one commit'`, 3000);
+            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.lf-set .lf-c')].find((b) => b.textContent === 'One commit')?.click()`);
+            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.lf-set .lf-c[aria-pressed="true"]')?.textContent === 'One commit'`, 3000);
             const lf1 = await lf();
             facts.gsLandForm = { lf0, lf1 };
             claims[`${tag}3A's menu carries On land: like the project (one commit) until one commit is kept as the lane's own`] =
-              JSON.stringify(lf0.on) === JSON.stringify(["like the project"]) && lf0.follow === "Like the project: one commit" && lf0.stored === null
-              && JSON.stringify(lf1.on) === JSON.stringify(["one commit"]) && lf1.stored === JSON.stringify({ repo: {}, lane: { [pathOf(own)]: "squash" } });
+              JSON.stringify(lf0.on) === JSON.stringify(["Like the project"]) && lf0.follow === "Like the project: one commit" && lf0.stored === null
+              && JSON.stringify(lf1.on) === JSON.stringify(["One commit"]) && lf1.stored === JSON.stringify({ repo: {}, lane: { [pathOf(own)]: "squash" } });
             await evaluate(`localStorage.removeItem('fleet.board.landform')`);
           }
           await gsClose();
@@ -12910,14 +12995,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             !!fold && Number(/^(\d+)/.exec(fold)?.[1]) > 12 && after === before + Number(/^(\d+)/.exec(fold)?.[1]);
         }
         if (st === "leer") {
-          // NOTHING AT WORK (owner 2026-10-07, „[Zitat entfernt]“): every project waits behind one line; a click draws them, each closed
-          facts.gsQuietLeer = g.quiet;
-          const q0 = g.quiet[0];
-          await evaluate(`document.querySelector('#boardbody .rk-git > .gsquiet')?.click()`);
-          await settle(200);
-          g = await gsRead();
-          claims[`${tag}with no running work every project waits behind one line "3 quiet projects", and one click draws the three, each closed`] =
-            !!q0 && q0.text === "3 quiet projects" && q0.exp === "false" && g.repos.length === 3 && g.repos.every((x) => !x.open && x.fold === "false");
+          // NO SESSION, NO STRUCTURE (owner Z131, 18.10.: „[Zitat entfernt]“
+          //  — turned from 2026-10-07's overview, every project behind one line „[Zitat entfernt]“):
+          // no project and no row of quiet ones, and Geräte opens the Arbeitsorte without a rule above it
+          const leer = await evaluate<{ git: boolean; quiet: number }>(`({ git: !!document.querySelector('#boardbody .rk-git'), quiet: document.querySelectorAll('#boardbody .gsquiet').length })`);
+          facts.gsLeer = { ...leer, blocks: r.blocks };
+          claims[`${tag}with no session selected Info draws no git structure — no project, no row of quiet ones — and Devices opens it without a rule above`] =
+            !leer.git && leer.quiet === 0 && JSON.stringify(r.blocks.filter((b) => b.shown).map((b) => [b.title, b.rule])) === JSON.stringify([["Devices", "0px"]]);
         }
         await shot(`${st}-${width}`);
         // --- THE REST OF INFO (cards R1–R4, rechter-tab-notiz.md §3–§4a, Variante 3A): the session
@@ -12970,6 +13054,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
               vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
               headH: Math.round(ranke?.querySelector(':scope > .rk-git .gs > .gsh')?.getBoundingClientRect().height ?? 0), ownHead: !!ranke?.querySelector(':scope > h3'),
+              // where the side stands against the name when the head is two lines: under it, whole, flush with the head's right edge
+              headWrap: (() => { const h = ranke?.querySelector(':scope > .rk-git .gs > .gsh'), f = h?.querySelector(':scope > .gsf'), d = h?.querySelector(':scope > .gsside');
+                if (!h || !f || !d) return null; const hb = h.getBoundingClientRect(), fb = f.getBoundingClientRect(), db = d.getBoundingClientRect();
+                return { foldB: Math.round(fb.bottom), sideT: Math.round(db.top), sideH: Math.round(db.height), sideR: Math.round(db.right), headR: Math.round(hb.right) }; })(),
               // the head's room and what fills it, in px (a Linux font is wider than the Mac's)
               headFit: (() => { const h = ranke?.querySelector(':scope > .rk-git .gs > .gsh'); if (!h) return null;
                 const w = (e) => Math.round(e.getBoundingClientRect().width);
@@ -12993,7 +13081,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
             cards: number; raised: string;
             bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null; landInInfo: number | null;
-            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean; headFit: { room: number; parts: string[] } | null };
+            boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean; headFit: { room: number; parts: string[] } | null;
+            headWrap: { foldB: number; sideT: number; sideH: number; sideR: number; headR: number } | null };
           const info = async (): Promise<Info> => {
             const x = await evaluate<Info | null>(INFO);
             if (!x) throw new Error("info DOM probe: no #boardbody");
@@ -13009,7 +13098,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.headFit = n.headFit;
           facts.info = { land: [n.landBottom, n.vh], kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
-          if (!phone && hasSession) claims[`${it}the Arbeitsorte carry no head of their own; the first project's head stays one line`] = !n.ownHead && n.headH > 0 && n.headH <= 36;
+          // THE HEAD ON ONE LINE, OR ITS SIDE WHOLE UNDER THE NAME (owner 2026-10-08, src/gitstruktur.ts#GS_CSS): round 7's gear made
+          // the busiest side (remote, „[Zitat entfernt]“, gear, +) wider than 1200's column beside the name — it wraps, never cut
+          facts.headWrap = n.headWrap;
+          if (!phone && hasSession) claims[`${it}the Arbeitsorte carry no head of their own; the first project's head stays one line, or its side stands whole under the name, flush right`] =
+            !n.ownHead && n.headH > 0 && (n.headH <= 36 || (!!n.headWrap && n.headWrap.sideT >= n.headWrap.foldB - 1 && n.headWrap.sideH <= 36 && Math.abs(n.headWrap.sideR - n.headWrap.headR) <= 1));
           // …WHATEVER THE FONT: the Linux helper's sans is wider than this Mac's. Letter-spacing stands in for a
           // still wider one on every machine: the head may wrap, but nothing in the top of Info runs out under
           // an ellipsis and nothing passes the section's edge (owner 2026-10-08: „[Zitat entfernt]“ — names
@@ -13043,16 +13136,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             ? JSON.stringify(story) === JSON.stringify(["ranke", "nopane"])
             : JSON.stringify(story) === JSON.stringify(isLane ? ["ranke", "sess", "changes", "more", "note", "history"] : ["ranke", "sess", "changes", "more", "history"]));
           claims[`${it}no process word anywhere in the column's visible text`] = !PROCESS.test(n.bodyText) && !ADDRESS.test(n.bodyText);
-          if (!hasSession) claims[`${it}without a session the column says so in one sentence and draws no session block`] = /Wähle eine Pane, um ihre Session zu sehen\./.test(n.bodyText) && !n.sess;
+          if (!hasSession) claims[`${it}without a session the column says so in one sentence and draws no session block`] = /Pick a pane to see its session\./.test(n.bodyText) && !n.sess;
           if (hasSession && detail && n.sess) {
-            claims[`${it}Umbenennen · Teilen · Exportieren · ⋯ are glyph buttons beside the name, each with its sentence on hover and as its name`] =
-              JSON.stringify(n.sess.glyphs.map((g) => g.label)) === JSON.stringify(["Umbenennen", "Teilen", "Exportieren", "Weitere Aktionen"])
+            claims[`${it}Rename · Share · Export · ⋯ are glyph buttons beside the name, each with its sentence on hover and as its name`] =
+              JSON.stringify(n.sess.glyphs.map((g) => g.label)) === JSON.stringify(["Rename", "Share", "Export", "More actions"])
               && n.sess.glyphs.every((g) => g.title.length > 12 && g.text === "") && !/\b(Rename|Share…|Export…)/.test(n.bodyText);
             const keys = n.sess.kv.map((r) => r.k);
             // THE SESSION STAYS SIMPLE (owner 2026-10-08: „[Zitat entfernt]“
             // ): branch, target and checks are the lane's row under Arbeitsorte now
-            claims[`${it}the session's values are Context · Gehört zu — no Branch, no Landet in, no Check, no Land`] =
-              JSON.stringify(keys) === JSON.stringify(["Context", "Gehört zu"]);
+            claims[`${it}the session's values are Context · Belongs to — no Branch, no Lands in, no Check, no Land`] =
+              JSON.stringify(keys) === JSON.stringify(["Context", "Belongs to"]);
             const kon = n.sess.kv.find((r) => r.k === "Context");
             // K9 S3, Mangel 76 (owner 15.10.: „[Zitat entfernt]“
             // ): the line shows where Fleet nudges the lane, 40, and while its cache is warm the cap 45 it has;
@@ -13062,8 +13155,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               && (isLane ? /^Fleet nudges the session once to succeed at 40 %; it has until 45 % while the cache is warm$/.test(kon.sw ?? "")
                 : /^No succession by Fleet: not switched on in this Fleet$/.test(kon.sw ?? ""))
               && !/\b(Fill|Kind|Handoff)\b/.test(n.bodyText);
-            claims[`${it}"Gehört zu" carries the links${isLane ? " Auftrag · Akte" : ""}`] = isLane
-              ? /^Auftrag [0-9a-f]{8} Akte$/.test(n.sess.kv.find((r) => r.k === "Gehört zu")?.v ?? "") : n.sess.kv.some((r) => r.k === "Gehört zu");
+            claims[`${it}"Belongs to" carries the links${isLane ? " Task · Record" : ""}`] = isLane
+              ? /^Task [0-9a-f]{8} Record$/.test(n.sess.kv.find((r) => r.k === "Belongs to")?.v ?? "") : n.sess.kv.some((r) => r.k === "Belongs to");
             if (isLane) {
               // where it lands is the line it hangs from in the git structure (under overhaul); its branch the lane block's title
               const h9 = (await gsRead()).repos.find((x) => x.repo === REPO)?.heads.find((h) => h.key === `lane:${own.branch}`);
@@ -13074,31 +13167,32 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           }
           if (hasSession && detail && n.work) {
             const btns = n.work.buttons;
-            const want = !isLane ? ["Commit", "Commit with written message"] : ownLanded ? ["Landing…", "Weitere Lane-Aktionen"] : ["Commit", "Land lane", "Weitere Lane-Aktionen"];
+            const want = !isLane ? ["Commit", "Commit with written message"] : ownLanded ? ["Landing…", "More lane actions"] : ["Commit", "Land lane", "More lane actions"];
             claims[`${it}Changes' row: ${want.join(" · ")}${isLane ? " — Land lane the one primary, ⋯ beside it" : ""}`] =
               JSON.stringify(btns.map((b) => b.label ?? b.text)) === JSON.stringify(want)
               && (!isLane || (ownLanded ? btns.every((b) => b.disabled) : btns.filter((b) => b.primary).map((b) => b.text).join() === "Land lane"));
             if (st !== "menue") claims[`${it}Shelve and Park for review are not on the surface — they are behind ⋯`] = !/Shelve|Park for review/.test(n.work.text ?? "");
             if (isLane && !ownLanded) claims[`${it}the uncommitted files are listed: 2`] = n.work.files === 2 && n.work.state === "2 uncommitted files · 3 commits ready";
-            if (ownLanded) claims[`${it}under Landing… it says how far: "wird geprüft · m:ss von üblich 4:10"`] = /^wird geprüft · \d+:\d\d von üblich 4:10$/.test(n.work.landnote ?? "");
+            if (ownLanded) claims[`${it}under Landing… it says how far: "being checked · m:ss of usually 4:10"`] = /^being checked · \d+:\d\d of usually 4:10$/.test(n.work.landnote ?? "");
           }
           if (isLane && detail) claims[`${it}the notepad stays visible and compact: two lines, no save button and no counter while nothing changed`] =
-            !!n.note && n.note.rows === 2 && !n.note.save && (noteOf(st) ? n.note.value === NOTE && n.note.foot === "gesichert" : n.note.value === "" && n.note.foot === "")
+            !!n.note && n.note.rows === 2 && !n.note.save && (noteOf(st) ? n.note.value === NOTE && n.note.foot === "saved" : n.note.value === "" && n.note.foot === "")
             && n.note.h <= (noteOf(st) ? 120 : 60);
           if (hasSession && detail) {
             claims[`${it}History shows the three newest commits and one button for the rest`] = !!n.hist && n.hist.rows <= 3 && n.hist.files === 0
-              && n.hist.more === (isLane ? "Alle 3 Commits · Already in overhaul" : "Alle 4 Commits");
+              // „All N commits“ only where commits are hidden (rechts-7 P4 F11): the lane's three all stand already
+              && n.hist.more === (isLane ? "Already in overhaul" : "All 4 commits");
             // THE FILES STAND UNDER CHANGES (owner 2026-10-09: „[Zitat entfernt]“
             // ): the lane's footprint vs its base, the
             // first five and one button for the rest
-            claims[`${it}${isLane ? `Changes carries what the lane changes vs overhaul: five of its 12 files and "Alle 12 Dateien"` : "a session without a footprint shows none under Changes"}`] = isLane
-              ? n.foot?.head === "Changed vs overhaul" && n.foot.files === 5 && n.foot.more === "Alle 12 Dateien"
+            claims[`${it}${isLane ? `Changes carries what the lane changes vs overhaul: five of its 12 files and "All 12 files"` : "a session without a footprint shows none under Changes"}`] = isLane
+              ? n.foot?.head === "Changed vs overhaul" && n.foot.files === 5 && n.foot.more === "All 12 files"
               : n.foot === null;
             const tabs = n.tabs;
-            claims[`${it}"Mehr zu dieser Session": Setup · Rechte · Files · Your prompts as tabs with their summary, ${phone ? 40 : 28} px high`] =
+            claims[`${it}"More about this session": Setup · Rights · Files · Your prompts as tabs with their summary, ${phone ? 40 : 28} px high`] =
               JSON.stringify(tabs.map((t) => t.key)) === JSON.stringify(["setup", "rechte", "files", "prompts"])
-              && tabs[0]?.sum === "standard · 2 Packs" && tabs[1]?.sum === (isLane ? "eigener Auftrag" : "Program Oberfläche")
-              && tabs[2]?.sum === "412 Dateien" && tabs[2]?.x === "Explorer öffnen" && tabs[3]?.sum === "6"
+              && tabs[0]?.sum === "standard · 2 Packs" && tabs[1]?.sum === (isLane ? "its own task" : "Program Oberfläche")
+              && tabs[2]?.sum === "412 files" && tabs[2]?.x === "Open explorer" && tabs[3]?.sum === "6"
               && tabs.every((t) => t.h === (phone ? 40 : 28)) && tabs.every((t) => t.open === (st === "mehr" && (t.key === "setup" || t.key === "rechte")));
           }
           if (phone && hasSession) {
@@ -13128,29 +13222,29 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             // NOBODY HAS IT (no ping, no judgement on the row): the card stands at the TOP, tinted, says what
             // failed with the repo's name, one sentence what to do, and in its foot "Braucht dich"
             facts.alarm = n.alarm;
-            claims[`${it}an alarm nobody holds is a tinted card at the top: "Der Check nach dem Land in claude‑fleet ist rot", one sentence what to do, "Braucht dich", Gesehen · Ansehen`] =
+            claims[`${it}an alarm nobody holds is a tinted card at the top: "The check after the land in claude‑fleet is red", one sentence what to do, "Needs you", Seen · Look`] =
               !!n.alarm.card && n.alarm.card.cls.includes("red") && !n.alarm.card.cls.includes("held") && n.alarm.card.place === "top" && n.alarm.card.at === 0
-              && n.alarm.card.t === "Der Check nach dem Land in claude\u2011fleet ist rot" && n.alarm.card.d === "Nimm das Land zurück oder gib die Reparatur in Auftrag."
-              && n.alarm.card.state === "Braucht dich" && n.alarm.card.holder === "none"
-              && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Gesehen", "Ansehen"]);
-            claims[`${it}the server errors are one line under it: "3 Serverfehler · 2 verschiedene seit …"`] = /^3 Serverfehler · 2 verschiedene seit /.test(n.alarm.errs ?? "");
-            claims[`${it}the due restart is this machine's Live-Server row itself: "Läuft auf älterem Server-Code." beside "Neustart fällig"`] =
-              n.live === "Läuft auf älterem Server-Code." && !/deploy due/i.test(n.bodyText);
+              && n.alarm.card.t === "The check after the land in claude\u2011fleet is red" && n.alarm.card.d === "Take the land back or have it repaired."
+              && n.alarm.card.state === "Needs you" && n.alarm.card.holder === "none"
+              && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Seen", "Look"]);
+            claims[`${it}the server errors are one line under it: "3 server errors · 2 distinct since …"`] = /^3 server errors · 2 distinct since /.test(n.alarm.errs ?? "");
+            claims[`${it}the due restart is this machine's Live server row itself: "Running older server code." beside "Restart due"`] =
+              n.live === "Running older server code." && !/deploy due/i.test(n.bodyText);
             // …and its chain is a tap away: the commit, the distance and which code it touches
             // (since round 9 of 2026-10-09 the chain is the Live-Server's, the instance under this machine)
-            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live-Server"]')?.click()`);
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live server"]')?.click()`);
             await wait(`document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:live"]')`, 3000);
             const chain = (await read()).lines.filter((l) => l.for === "mach:live").map((l) => l.text);
             facts.chain = chain;
-            claims[`${it}a tap on this machine's Live-Server opens the chain: "Live · läuft auf <commit> · 5 hinter main · betrifft den Server-Code"`] =
-              chain.some((t) => t.startsWith(`Live · läuft auf ${sha7(BOOT)} · 5 hinter main · betrifft den Server-Code`));
-            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live-Server"]')?.click()`);
+            claims[`${it}a tap on this machine's Live server opens the chain: "Live · runs on <commit> · 5 behind main · touches the server code"`] =
+              chain.some((t) => t.startsWith(`Live · runs on ${sha7(BOOT)} · 5 behind main · touches the server code`));
+            await evaluate(`document.querySelector('#boardbody .ranke .zr.mach[data-machine="Live server"]')?.click()`);
             await wait(`!document.querySelector('#boardbody .ranke .zd.mx[data-for="mach:live"]')`, 3000);
-            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Ansehen')?.click()`);
+            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Look')?.click()`);
             await wait(`document.querySelector('#boardbody .plasec .pladetail')`, 3000);
             n = await info();
-            claims[`${it}"Ansehen" opens the raw values — repo, tip, the land before`] =
-              (n.alarm.card?.detail ?? "").startsWith(`claude\u2011fleet · main@${MAIN.slice(0, 8)} · nach `);
+            claims[`${it}"Look" opens the raw values — repo, tip, the land before`] =
+              (n.alarm.card?.detail ?? "").startsWith(`claude\u2011fleet · main@${MAIN.slice(0, 8)} · after `);
             await shot(`info-${st}-${width}`);
             // THE ALARM LIVES IN INFO, on the phone too (card "Du kennst mobile Web-Oberflaechen"): the strip
             // above the island is gone, so everything it led to is read and pressed here — the whole log
@@ -13159,8 +13253,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               a.scrollIntoView({ block: 'nearest' }); const r = a.getBoundingClientRect();
               return { text: a.textContent, href: a.getAttribute('href'), target: a.target, hit: a.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
             facts.alarmLog = logLink;
-            claims[`${it}"Ansehen" carries the whole log the helper uploaded (suite.log): "Protokoll · 728 KB", opening in its own tab, under a finger`] = !!logLink
-              && logLink.text === "Protokoll · 728 KB" && /^\/api\/post-land-audits\/artifact\?at=\d+$/.test(logLink.href) && logLink.target === "_blank" && logLink.hit;
+            claims[`${it}"Look" carries the whole log the helper uploaded (suite.log): "Log · 728 KB", opening in its own tab, under a finger`] = !!logLink
+              && logLink.text === "Log · 728 KB" && /^\/api\/post-land-audits\/artifact\?at=\d+$/.test(logLink.href) && logLink.target === "_blank" && logLink.hit;
             if (phone) {
               const top = await evaluate<{ mhead: boolean; dot: boolean; app: number; mtop: number }>(`({ mhead: !!document.querySelector('#mhead') && getComputedStyle(document.querySelector('#mhead')).display !== 'none',
                 dot: !!document.querySelector('#malarm'), app: Math.round(document.querySelector('#app').getBoundingClientRect().top), mtop: Math.round(document.querySelector('#mtop').getBoundingClientRect().top) })`);
@@ -13168,8 +13262,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               claims[`${it}while the alarm is due nothing stands above the top island: no #mhead strip, no dot, the app and the island start at 0`] =
                 !top.mhead && !top.dot && top.app === 0 && top.mtop === 0;
             }
-            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Gesehen')?.click()`);
-            claims[`${it}"Gesehen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
+            await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Seen')?.click()`);
+            claims[`${it}"Seen" acknowledges this check: the card becomes the quiet receipt with its way back`] =
               await wait(`document.querySelector('#boardbody .plasec.seen') && localStorage.getItem('fleet.plaudit.ack') !== null`, 3000);
             // WHO HAS IT (owner 2026-10-08: „[Zitat entfernt]“
             // ): the rails the row carries, walked one by one. The fixture's `at` moves with every poll,
@@ -13180,7 +13274,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               await wait(holder ? `document.querySelector('#boardbody .plasec[data-holder="${holder}"]')` : `!document.querySelector('#boardbody .plasec')`, 8000);
               // the detail "Ansehen" opened above stays open across cards (one switch): closed, the card reads as it stands
               if (await evaluate<boolean>("!!document.querySelector('#boardbody .plasec .pladetail')")) {
-                await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Weniger')?.click()`);
+                await evaluate(`[...document.querySelectorAll('#boardbody .plasec button')].find((b) => b.textContent === 'Less')?.click()`);
                 await wait(`!document.querySelector('#boardbody .plasec .pladetail')`, 3000);
               }
               await settle(150);
@@ -13190,23 +13284,23 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const since = await evaluate<string>(`new Date(${delivered}).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })`);
             n = await holderCard({ ping: { status: "delivered", slot: 1, deliveredAt: delivered, sameSession: true } }, "session");
             facts.heldBySession = n.alarm.card;
-            claims[`${it}an alarm a session holds recedes under the Arbeitsorte: no tint, no sentence what to do, no Gesehen — its foot "Bei der Orchestratorin seit <Uhrzeit>"`] =
+            claims[`${it}an alarm a session holds recedes under the Arbeitsorte: no tint, no sentence what to do, no Seen — its foot "With the Orchestrator since <time>"`] =
               !!n.alarm.card && n.alarm.card.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.cls.includes("held") && n.alarm.card.bg === n.raised
-              && n.alarm.card.d === null && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Ansehen"])
-              && n.alarm.card.state === `Bei der Orchestratorin seit ${since}` && n.alarm.card.t === "Der Check nach dem Land in claude\u2011fleet ist rot";
+              && n.alarm.card.d === null && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Look"])
+              && n.alarm.card.state === `With the Orchestrator since ${since}` && n.alarm.card.t === "The check after the land in claude\u2011fleet is red";
             await shot(`info-${st}-gehalten-${width}`);
             n = await holderCard({ ping: { status: "program-inbox" } }, "program");
-            claims[`${it}an alarm in the Program's inbox recedes too: "Im Posteingang des Programs"`] =
-              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "Im Posteingang des Programs" && n.alarm.card.d === null;
+            claims[`${it}an alarm in the Program's inbox recedes too: "In the Program's inbox"`] =
+              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "In the Program's inbox" && n.alarm.card.d === null;
             n = await holderCard({ adjudication: { verdict: "flake", at: fx.now - 5 * 60_000, by: "owner" } }, "judged");
-            claims[`${it}a judged alarm recedes and says the verdict: "Von dir beurteilt: ein Flake"`] =
-              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "Von dir beurteilt: ein Flake" && n.alarm.card.d === null;
+            claims[`${it}a judged alarm recedes and says the verdict: "Judged by you: a flake"`] =
+              n.alarm.card?.place === "quiet" && n.alarm.card.afterRanke && n.alarm.card.state === "Judged by you: a flake" && n.alarm.card.d === null;
             n = await holderCard({ ping: { status: "delivered", slot: 1, deliveredAt: delivered, sameSession: false } }, "gone");
             facts.heldGone = n.alarm.card;
-            claims[`${it}an alarm whose session has gone stands at the top again: "niemand hat ihn jetzt", what to do, "Braucht dich"`] =
+            claims[`${it}an alarm whose session has gone stands at the top again: "nobody has it now", what to do, "Needs you"`] =
               n.alarm.card?.place === "top" && n.alarm.card.at === 0 && !n.alarm.card.cls.includes("held")
-              && n.alarm.card.d === "Zugestellt an Slot 1, dort läuft inzwischen eine andere Session — niemand hat ihn jetzt. Nimm das Land zurück oder gib die Reparatur in Auftrag."
-              && n.alarm.card.state === "Braucht dich" && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Gesehen", "Ansehen"]);
+              && n.alarm.card.d === "Delivered to slot 1, where another session runs by now — nobody has it now. Take the land back or have it repaired."
+              && n.alarm.card.state === "Needs you" && JSON.stringify(n.alarm.card.btns) === JSON.stringify(["Seen", "Look"]);
             // NOT-APPLICABLE IS NO ALARM (owner 2026-10-08): a repo without an audit command measured nothing
             // it was meant to — no card, no receipt (the classifier itself: e2e/outcomes.ts)
             n = await holderCard({ result: "not-applicable", reason: "no audit command applies to this repo" }, null);
@@ -13266,45 +13360,43 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             n = await info();
             facts.kopf = n.pop;
             const items = n.pop?.items ?? [];
-            claims[`${it}the session's ⋯: Branch kopieren · Commit kopieren · Worktree-Pfad kopieren · — · Session zurückholen (danger, last)`] = n.pop?.kind === "kopf"
-              && JSON.stringify(items.map((x) => x.t)) === JSON.stringify(["Branch kopieren", "Commit kopieren", "Worktree-Pfad kopieren", "Session zurückholen"])
+            claims[`${it}the session's ⋯: Copy branch · Copy commit · Copy worktree path · — · Bring the session back (danger, last)`] = n.pop?.kind === "kopf"
+              && JSON.stringify(items.map((x) => x.t)) === JSON.stringify(["Copy branch", "Copy commit", "Copy worktree path", "Bring the session back"])
               && n.pop.seps === 1 && items[3]?.danger === true && items[3]?.color === r.danger && sheetOk(n.pop?.box);
             await shot(`info-${st}-${width}`);
-            await evaluate(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem')].find((b) => b.textContent.startsWith('Branch kopieren'))?.click()`);
-            claims[`${it}"Branch kopieren" says it copied`] = await wait(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem .t')].some((t) => t.textContent === 'Kopiert')`, 2000);
+            await evaluate(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem')].find((b) => b.textContent.startsWith('Copy branch'))?.click()`);
+            claims[`${it}"Copy branch" says it copied`] = await wait(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem .t')].some((t) => t.textContent === 'Copied')`, 2000);
           }
           if (st === "mehr") {
             const setupTab = n.tabs.find((t) => t.key === "setup"), rightsTab = n.tabs.find((t) => t.key === "rechte");
-            claims[`${it}Setup and Rechte open show the former blocks unchanged: Program type and the packs, Eigene Arbeit · Ausführung · Deine Sicht`] =
-              /Program type standard/.test(setupTab?.body ?? "") && /grammatik/.test(setupTab?.body ?? "") && /Ein Recht geben sie nicht/.test(setupTab?.body ?? "")
-              && /Eigene Arbeit/.test(rightsTab?.body ?? "") && /Deine Sicht/.test(rightsTab?.body ?? "");
+            claims[`${it}Setup and Rights open show the former blocks unchanged: Program type and the packs, Own work · Execution · Your view`] =
+              /Program type standard/.test(setupTab?.body ?? "") && /grammatik/.test(setupTab?.body ?? "") && /They grant no right/.test(setupTab?.body ?? "")
+              && /Own work/.test(rightsTab?.body ?? "") && /Your view/.test(rightsTab?.body ?? "");
             await evaluate(`document.querySelector('#boardbody .bhist .bmorebtn')?.click()`);
             await wait(`document.querySelector('#boardbody .bhist .bfold')`, 3000);
             await evaluate(`document.querySelector('#boardbody .bchanges > .bfoot .bmorebtn')?.click()`);
             await wait(`document.querySelectorAll('#boardbody .bchanges > .bfoot .bfile').length === 12`, 3000);
             n = await info();
-            claims[`${it}"Alle 3 Commits · Already in overhaul" opens the whole history: the commits and "Already in overhaul" folded, no file`] =
-              !!n.hist && n.hist.rows === 3 && n.hist.files === 0 && n.hist.folds === 1 && n.hist.more === "Weniger zeigen";
-            claims[`${it}"Alle 12 Dateien" under Changes opens every file of the lane`] = n.foot?.files === 12 && n.foot.more === "Weniger zeigen";
+            claims[`${it}"Already in overhaul" opens the whole history: the commits and "Already in overhaul" folded, no file`] =
+              !!n.hist && n.hist.rows === 3 && n.hist.files === 0 && n.hist.folds === 1 && n.hist.more === "Show less";
+            claims[`${it}"All 12 files" under Changes opens every file of the lane`] = n.foot?.files === 12 && n.foot.more === "Show less";
             // the draft's `mehr` stands at the opened tabs, as after a click there
             await evaluate(`document.querySelector('#boardbody .bmoresec')?.scrollIntoView({ block: 'start' })`);
             await settle(120);
             await shot(`info-${st}-${width}`);
-            // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
-            if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
             await navigate("http://fleet.fixture/");
             await wait(`document.querySelector('#boardbody .bmoresec .btab')`, 15000);
             if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); await wait(`document.querySelector('#boardbody .bmoresec .btab')`, 8000); }
             await settle(500);
             n = await info();
             claims[`${it}which tabs are open, the open History and the open file list survive a reload (src/prefs.ts)`] = n.tabs.filter((t) => t.open).map((t) => t.key).join() === "setup,rechte"
-              && n.hist?.more === "Weniger zeigen" && n.foot?.more === "Weniger zeigen";
+              && n.hist?.more === "Show less" && n.foot?.more === "Show less";
           }
           if (st === "lane") {
             // writing in the notepad: "Notiz sichern" appears with the change, and only then
             await evaluate(`(() => { const ta = document.querySelector('#boardbody .bnotesec textarea'); ta.value = 'Notiz aus der Probe'; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
             n = await info();
-            claims[`${it}a change to the notepad brings "Notiz sichern" and says "ungesichert"`] = !!n.note && n.note.save && n.note.foot === "ungesichert";
+            claims[`${it}a change to the notepad brings "Save note" and says "not saved"`] = !!n.note && n.note.save && n.note.foot === "not saved";
             await evaluate(`(() => { const ta = document.querySelector('#boardbody .bnotesec textarea'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur(); })()`);
           }
           if (st === "branch") {
@@ -13312,10 +13404,13 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             // claude-fleet stands open because it is the focused session's and at work — closed by hand, it stays closed
             await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gs .gsf')].find((x) => x.textContent.includes('claude-fleet') && x.getAttribute('aria-expanded') === 'true')?.click()`);
             await wait(`!document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]')`, 3000);
-            // the phone opens Info by a tap on the island, which toggles the remembered state: start closed
-            if (phone) await evaluate(`localStorage.setItem('fleet.board', '0')`);
+            // the phone reloads with Info open, so fleet.board still says 1 — one tap on the island's Info opens it
+            // anyway (rechts-7: the tap toggled the remembered state and closed a window that did not stand)
             await navigate("http://fleet.fixture/");
-            if (phone) { await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()"); }
+            if (phone) {
+              await wait("document.querySelector('#mpill')", 8000); await settle(400); await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200); await evaluate("document.querySelector('#minfo')?.click()");
+              claims[`${it}on the phone, after a reload with Info open, the first tap on Info opens it`] = await wait("!!document.querySelector('#shell-board #boardbody')", 5000);
+            }
             const back = await wait(`[...document.querySelectorAll('#boardbody .rk-git .gs .gsf')].some((x) => x.textContent.includes('claude-fleet') && x.getAttribute('aria-expanded') === 'false')
               && !document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]')`, 15000);
             facts.reload = await evaluate(`({ repos: localStorage.getItem('fleet.ranke.repos'), s9: !!document.querySelector('#boardbody .rk-git g.gsk[data-slot="9"]'),
@@ -13323,7 +13418,6 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}a project closed by hand stays closed across a reload, though it is at work`] = back;
           }
           if (st === "viele3") {
-            // (the second repo is at work and stands open: its branch is not one of claude-fleet's three)
             const fl3 = (await gsRead()).repos.find((x) => x.repo === REPO);
             claims[`${it}with three lanes: one block each, no fold line`] = (fl3?.heads.filter((h) => h.key.startsWith("lane:")).length ?? 0) === 3
               && !(fl3?.below ?? []).some((b) => /without a session/.test(b));
@@ -13344,7 +13438,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // ): an icon button's focus was handed to the first button of the same class — a project's +
           // at the top — and the restore scrolled there on every tick. A real click (a JS click moves no
           // focus), then two repaints, one after a scroll of 40 px
-          const WHY = `[...document.querySelectorAll('#boardbody button')].find((b) => b.getAttribute('aria-label') === 'Was die Zustände der Geräte heißen')`;
+          const WHY = `[...document.querySelectorAll('#boardbody button')].find((b) => b.getAttribute('aria-label') === 'What the device states mean')`;
           const repaint = async () => { await evaluate(`(() => { const l = document.querySelector('#boardbody .rklegend'); if (l) l.dataset.old = '1'; })()`);
             return wait(`!!document.querySelector('#boardbody .rklegend:not([data-old])')`, 8000); };
           const at = await evaluate<number[] | null>(`(() => { const b = ${WHY}; if (!b) return null; b.scrollIntoView({ block: 'center' });
@@ -13361,8 +13455,8 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const tick2 = opened && await repaint();
           const after = await evaluate<{ y: number; focus: string | null }>(`({ y: document.querySelector('#boardbody').scrollTop, focus: document.activeElement?.getAttribute('aria-label') ?? null })`);
           facts.legendFocus = { at, y0, y1, y2, after, opened, tick1, tick2 };
-          claims[`${tag}a real click on the Geräte ⓘ opens its legend in place: across two repaints, one after a scroll, the column stays where the reader put it and the focus on the ⓘ`] =
-            !!at && opened && tick1 && tick2 && Math.abs(y1 - y0) <= 1 && y2 > y1 && Math.abs(after.y - y2) <= 1 && after.focus === "Was die Zustände der Geräte heißen";
+          claims[`${tag}a real click on the Devices ⓘ opens its legend in place: across two repaints, one after a scroll, the column stays where the reader put it and the focus on the ⓘ`] =
+            !!at && opened && tick1 && tick2 && Math.abs(y1 - y0) <= 1 && y2 > y1 && Math.abs(after.y - y2) <= 1 && after.focus === "What the device states mean";
           await evaluate(`(${WHY})?.click()`);
           await wait(`!document.querySelector('#boardbody .rklegend')`, 3000);
         }
@@ -13373,14 +13467,14 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // instance's own row "hier", and is no machine of its own
           fx.ti = true;
           await navigate("http://fleet.fixture/");
-          const tiShown = await wait(`[...document.querySelectorAll('#boardbody .zr.mach')].some((x) => x.dataset.machine === 'Live-Server')`, 8000);
-          const groups = await evaluate<string[][]>(`(() => { const dev = [...document.querySelectorAll('#boardbody .ranke .rkblock')].find((b) => b.querySelector('.rkbt')?.textContent === 'Geräte');
-            return dev ? [...dev.querySelectorAll('.grp')].map((g) => [...g.querySelectorAll(':scope > .zr')].map((x) => (x.dataset.machine ?? x.innerText.replace(/\\s+/g, ' ').trim()) + (x.dataset.hier ? ' [hier]' : ''))) : []; })()`);
+          const tiShown = await wait(`[...document.querySelectorAll('#boardbody .zr.mach')].some((x) => x.dataset.machine === 'Live server')`, 8000);
+          const groups = await evaluate<string[][]>(`(() => { const dev = [...document.querySelectorAll('#boardbody .ranke .rkblock')].find((b) => b.querySelector('.rkbt')?.textContent === 'Devices');
+            return dev ? [...dev.querySelectorAll('.grp')].map((g) => [...g.querySelectorAll(':scope > .zr')].map((x) => (x.dataset.machine ?? x.innerText.replace(/\\s+/g, ' ').trim()) + (x.dataset.hier ? ' [here]' : ''))) : []; })()`);
           // EVERY MACHINE ROW BUILT ALIKE (owner 2026-10-09: „[Zitat entfernt]“
           // ): the instance's row is a machine row — its
           // square as its sign, and at its end the mark, the state as dot and word, and the chevron
           const tiRow = await evaluate<{ chip: string | null; tone: string | null; sign: boolean; fc: boolean; chipR: number; fcL: number } | null>(`(() => {
-            const r = document.querySelector('#boardbody .zr.mach[data-machine="Testinstanz"]'); if (!r) return null;
+            const r = document.querySelector('#boardbody .zr.mach[data-machine="Test instance"]'); if (!r) return null;
             const z = r.querySelector(':scope > .zs'), f = r.querySelector(':scope > .fc');
             return { chip: z ? z.textContent : null, tone: r.dataset.tone ?? null, sign: !!r.querySelector(':scope > .fx > .sq.up'), fc: !!f,
               chipR: z ? z.getBoundingClientRect().right : 0, fcL: f ? f.getBoundingClientRect().left : 0 }; })()`);
@@ -13392,13 +13486,139 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               + (r.classList.contains('inst') ? (r.getBoundingClientRect().left > x0 + 8 ? ':in' : ':flush') : '')); })()`);
           fx.ti = false;
           facts.tiDevices = { shown: tiShown, groups, tiRow, tiInst };
-          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "hier" as dot and word and the chevron at the row's end`] =
-            !!tiRow && tiRow.chip === "hier" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
-          claims[`${tag}as a test instance: Mac says "online"; the Live-Server (no state — this instance does not measure it) and the Testinstanz ("hier") stand one rail in under it`] =
-            JSON.stringify(tiInst.slice(0, 3)) === JSON.stringify(["Mac:online", "Live-Server:-:in", "Testinstanz:hier:in"]);
-          claims[`${tag}as a test instance: the Live-Server stands under Mac above "Testinstanz [hier]", in this machine's group, and nowhere as a machine of its own`] =
-            tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live-Server", "Testinstanz [hier]"])
-            && groups.slice(1).every((g) => !g.some((x) => /^(live|Live-Server)$/.test(x)));
+          claims[`${tag}as a test instance: its own row is built like every machine row — the green square, then "here" as dot and word and the chevron at the row's end`] =
+            !!tiRow && tiRow.chip === "here" && tiRow.tone === "live" && tiRow.sign && tiRow.fc && tiRow.chipR <= tiRow.fcL;
+          claims[`${tag}as a test instance: Mac says "online"; the Live server (no state — this instance does not measure it) and the Test instance ("here") stand one rail in under it`] =
+            JSON.stringify(tiInst.slice(0, 3)) === JSON.stringify(["Mac:online", "Live server:-:in", "Test instance:here:in"]);
+          claims[`${tag}as a test instance: the Live server stands under Mac above "Test instance [here]", in this machine's group, and nowhere as a machine of its own`] =
+            tiShown && JSON.stringify(groups[0]) === JSON.stringify(["Mac", "Live server", "Test instance [here]"])
+            && groups.slice(1).every((g) => !g.some((x) => /^(live|Live server)$/.test(x)));
+        }
+        if (st === "lane" && !phone) {
+          // ONE REPO, THE SELECTED SESSION'S (owner Z131, 18.10.: „[Zitat entfernt]“
+          // ): a session on
+          // a board branch in a linked worktree reports that worktree as its repo (server.ts#repoInfo) and still shows
+          // claude-fleet alone, its circle behind its branch; a pick in the bar moves Info to rezepte-app alone, and back
+          fx.branchSession = true;
+          await evaluate(`localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [5], focused: 0 }))`);
+          await navigate("http://fleet.fixture/");
+          const reposNow = () => evaluate<string>(`[...document.querySelectorAll('#boardbody .rk-git > .gs')].map((x) => x.dataset.repo).join()`);
+          const drawn = await wait(`document.querySelector('#boardbody .rk-git svg.gss > g.gsk[data-slot="5"]')`, 15000);
+          const first = { repos: await reposNow(), at: await evaluate<string | null>(`document.querySelector('#boardbody .rk-git svg.gss > g.gsk[data-slot="5"]')?.dataset.at ?? null`) };
+          await evaluate(`document.querySelector('#slots .slot[data-slot="6"]')?.click()`);
+          const moved = await wait(`[...document.querySelectorAll('#boardbody .rk-git > .gs')].map((x) => x.dataset.repo).join() === ${JSON.stringify(REPO2)}`, 8000);
+          const there = await reposNow();
+          await evaluate(`document.querySelector('#slots .slot[data-slot="5"]')?.click()`);
+          const back = await wait(`[...document.querySelectorAll('#boardbody .rk-git > .gs')].map((x) => x.dataset.repo).join() === ${JSON.stringify(REPO)}`, 8000);
+          facts.ownRepo = { drawn, first, moved, there, back, last: await reposNow() };
+          claims[`${tag}Info shows exactly one repo, the selected session's, and follows the pick — a session on a branch in a linked worktree shows claude-fleet alone, a pick of rezepte-app's session that alone, and back`] =
+            drawn && first.repos === REPO && first.at === `branch:${onBranch.branch}` && moved && there === REPO2 && back;
+          // „PASST“ AS A BUTTON (owner Z132, 18.10.; Mangel 121): the board branch's menu says the tip, „[Zitat entfernt]“ sends
+          // /api/branches/seen with exactly that tip and the line then says it; a commit after it asks again
+          const BRANCH_HEAD = `svg.gss > g.gsr[data-head=${JSON.stringify(`branch:${onBranch.branch}`)}]`;
+          const looked = () => evaluate<{ text: string | null; buttons: string[] }>(`(() => { const z = document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen');
+            return { text: z?.querySelector('.tx')?.textContent ?? null, buttons: z ? [...z.querySelectorAll('button')].map((b) => b.textContent) : [] }; })()`);
+          const h1 = fx.branchHead, h2 = hex("branch/rechter-tab, ein Commit später");
+          // without the branch's head drawn there is no menu to press: the claim is red, the walk goes on
+          const headDrawn = async () => (await wait(`document.querySelector('#boardbody .rk-git ${BRANCH_HEAD}')`, 8000))
+            && (await gsHead(`branch:${onBranch.branch}`), true);
+          if (await headDrawn()) {
+            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen')`, 8000);
+            const unseen = await looked();
+            await evaluate(`[...document.querySelectorAll('#boardbody .rk-git .gsm .zd.brc-seen button')].find((b) => b.textContent === 'Looks good')?.click()`);
+            const sent = await wrote((w) => w.path === "/api/branches/seen" && JSON.stringify(w.body) === JSON.stringify({ repo: REPO, branch: onBranch.branch, head: h1 }));
+            await wait(`(document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen .tx')?.textContent ?? '').startsWith('Looks good at')`, 8000);
+            const marked = await looked();
+            fx.branchHead = h2;
+            await navigate("http://fleet.fixture/");
+            await wait(`document.querySelector('#boardbody .rk-git ${BRANCH_HEAD}')`, 15000);
+            const reopened = await headDrawn();
+            await wait(`document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen')`, 8000);
+            const again = await looked();
+            facts.looksGood = { unseen, sent, marked, again, reopened };
+            claims[`${tag}a board branch's menu says which tip the owner looked at: "Looks good" sends /seen with the tip it shows, then says it; a new commit asks again`] =
+              unseen.text === `Not seen yet · tip ${sha7(h1)}` && JSON.stringify(unseen.buttons) === JSON.stringify(["Looks good"]) && sent
+              && marked.text === `Looks good at ${sha7(h1)} — the session may land it` && marked.buttons.length === 0 && reopened
+              && again.text === `Not seen yet · tip ${sha7(h2)} (you looked at ${sha7(h1)})` && JSON.stringify(again.buttons) === JSON.stringify(["Looks good"]);
+          } else claims[`${tag}a board branch's menu says which tip the owner looked at: "Looks good" sends /seen with the tip it shows, then says it; a new commit asks again`] = false;
+          await gsClose();
+          // A CHECK OF AN OLDER TIP IS NO CHECK (owner 18.10. 23:4x: the dashed diamond was a sign too many): the branch's diamond
+          // is the hollow one of „[Zitat entfernt]“, and its hover names the commit that check looked at
+          const olderTip = hex("branch/rechter-tab, ein älterer Stand");
+          fx.branchCheck = { state: "stale", at: fx.now - 600_000, why: `geprüft war ${olderTip.slice(0, 8)} gegen main` };
+          await navigate("http://fleet.fixture/");
+          const DIA = `#boardbody .rk-git svg.gss > g.gsdg[data-of=${JSON.stringify(`branch:${onBranch.branch}`)}]`;
+          const staleDia = await wait(`document.querySelector('${DIA}')`, 15000) ? await evaluate<{ cls: string | null; title: string | null }>(`(() => {
+            const g = document.querySelector('${DIA}'); return { cls: g?.querySelector('path')?.getAttribute('class') ?? null, title: g?.querySelector('title')?.textContent ?? null }; })()`) : null;
+          // NEXT ALWAYS STANDS (owner 18.10. 23:4x: „[Zitat entfernt]“; Ja 19.10. 03:38): the only branch checked on
+          // an older tip, nothing is green on main — next stands grey with a hollow diamond and says so; green again, it is ready
+          const NEXT_G = `#boardbody .rk-git svg.gss > g.gsr[data-head="next"]`;
+          const nextRead = () => evaluate<{ cls: string | null; title: string | null; stroke: string; fill: string; dia: string | null; diaTitle: string | null; faint: string } | null>(`(() => {
+            const g = document.querySelector('${NEXT_G}'); if (!g) return null;
+            const d = document.querySelector('#boardbody .rk-git svg.gss > g.gsdg[data-of="next"]');
+            const t = document.createElement('span'); t.style.color = 'var(--chat-faint)'; document.body.append(t); const faint = getComputedStyle(t).color; t.remove();
+            return { cls: g.getAttribute('class'), title: g.querySelector('title')?.textContent ?? null, stroke: getComputedStyle(g.querySelector('rect')).stroke,
+              fill: getComputedStyle(g.querySelector('text')).fill, dia: d?.querySelector('path')?.getAttribute('class') ?? null,
+              diaTitle: d?.querySelector('title')?.textContent ?? null, faint }; })()`);
+          const quietNext = await nextRead();
+          fx.branchCheck = null;
+          await navigate("http://fleet.fixture/");
+          await wait(`document.querySelector('#boardbody .rk-git svg.gss')`, 15000);
+          await wait(`!!document.querySelector('${NEXT_G}') && !document.querySelector('${NEXT_G}').classList.contains('quiet')`, 8000);
+          const readyNext = await nextRead();
+          facts.next = { quiet: quietNext, ready: readyNext };
+          claims[`${tag}with no branch green on main, next still stands: grey, a hollow diamond, and its hover says nothing is ready to land yet`] =
+            !!quietNext && (quietNext.cls ?? "").split(" ").includes("quiet") && quietNext.stroke === quietNext.faint && quietNext.fill === quietNext.faint
+            && quietNext.dia === "gsd none open" && (quietNext.title ?? "").includes("nothing ready to land yet") && (quietNext.diaTitle ?? "").includes("nothing ready to land yet");
+          claims[`${tag}with a branch green on main, next is ready: the green diamond, and its hover says what main becomes`] =
+            !!readyNext && !(readyNext.cls ?? "").split(" ").includes("quiet") && readyNext.dia === "gsd green open"
+            && (readyNext.title ?? "").includes("becomes main when the batch of");
+          facts.staleDiamond = staleDia;
+          claims[`${tag}a merge check of an older tip draws the hollow diamond of "not checked yet", and its hover names the older commit`] =
+            staleDia?.cls === "gsd none open" && (staleDia.title ?? "").includes(`not checked yet · last checked ${sha7(olderTip)} (older commit)`);
+          // MAIN AND NEXT NOT BOLD (owner Z131: „[Zitat entfernt]“, Ja 18.10. 22:4x; 23:4x „[Zitat entfernt]“
+          // ): every head's line width, in the muted colour — the white line is the selection's alone
+          const NEXT = `#boardbody .rk-git svg.gss > g.gsr[data-head="next"] rect`;
+          const strokes = await wait(`document.querySelector('${NEXT}')`, 8000) ? await evaluate<{ main: string[]; next: string[]; branch: string[]; ink: string; mute: string }>(`(() => {
+            const st = (sel) => { const e = document.querySelector(sel); if (!e) return []; const c = getComputedStyle(e); return [c.strokeWidth, c.stroke]; };
+            const col = (v) => { const t = document.createElement('span'); t.style.color = v; document.body.append(t); const c = getComputedStyle(t).color; t.remove(); return c; };
+            return { main: st('#boardbody .rk-git svg.gss > g.gsr[data-head="main:main"] rect'), next: st('${NEXT}'),
+              branch: st('#boardbody .rk-git svg.gss > g.gsr[data-head="branch:${onBranch.branch}"] rect'), ink: col('var(--chat-ink)'), mute: col('var(--chat-mute)') }; })()`) : null;
+          facts.mainStroke = strokes;
+          claims[`${tag}main and next are drawn at every head's line width, in the muted colour — not bold, not white like a selection`] = !!strokes && strokes.branch.length === 2
+            && strokes.main[0] === strokes.branch[0] && strokes.next[0] === strokes.branch[0] && strokes.main[1] === strokes.mute && strokes.next[1] === strokes.mute
+            && strokes.main[1] !== strokes.ink;
+          // THE GEAR OF THE REPOSITORY VIEW (owner Z124/Z131, Ja 18.10. 22:4x): it opens three switches, and each one changes
+          // what stands — landed heads nobody works at, heads without a session, and how the project's lanes land
+          const keysNow = async () => (await gsRead()).repos.find((x) => x.repo === REPO)?.heads.map((h) => h.key) ?? [];
+          const flip = async (view: string, word: string) => {
+            await evaluate(`[...document.querySelectorAll('#boardbody .gsset .zd.gsvw[data-view="${view}"] .lf-c')].find((b) => b.textContent === '${word}')?.click()`);
+            await settle(250);
+          };
+          await evaluate(`document.querySelector('#boardbody .rk-git .gsh .gsgear')?.click()`);
+          const opened = await wait(`document.querySelector('#boardbody .rk-git .gsset')`, 4000);
+          const rows = await evaluate<string[]>(`[...document.querySelectorAll('#boardbody .gsset > .zd > .lf-k')].map((k) => k.textContent)`);
+          const all = await keysNow();
+          await flip("landed", "Hide");
+          const noLanded = await keysNow(), storedL = await evaluate<string | null>(`localStorage.getItem('fleet.gs.view')`);
+          await flip("landed", "Show");
+          await flip("idle", "Hide");
+          const noIdle = await keysNow();
+          await flip("idle", "Show");
+          const shownAgain = await keysNow();
+          await evaluate(`[...document.querySelectorAll('#boardbody .gsset .zd.lf-set.repo .lf-c')].find((b) => b.textContent === 'All commits')?.click()`);
+          await settle(250);
+          const form = await evaluate<{ on: string[]; stored: string | null }>(`({ on: [...document.querySelectorAll('#boardbody .gsset .zd.lf-set.repo .lf-c[aria-pressed="true"]')].map((b) => b.textContent),
+            stored: localStorage.getItem('fleet.board.landform') })`);
+          await evaluate(`localStorage.removeItem('fleet.gs.view'); localStorage.removeItem('fleet.board.landform')`);
+          const minus = (keys: string[], out: string[]) => JSON.stringify(all.filter((k) => !out.includes(k))) === JSON.stringify(keys);
+          facts.gear = { opened, rows, all, noLanded, storedL, noIdle, shownAgain, form };
+          claims[`${tag}the gear in the head opens three switches, and each changes the view: Landed branches, Without a session, Lanes land as`] =
+            opened && JSON.stringify(rows) === JSON.stringify(["Landed branches", "Without a session", "Lanes land as"])
+            && all.includes("branch:branch/alt") && minus(noLanded, ["branch:branch/alt"]) && storedL === JSON.stringify({ landed: false, idle: true })
+            && minus(noIdle, ["branch:branch/alt", laneKey(free)]) && JSON.stringify(shownAgain) === JSON.stringify(all)
+            && JSON.stringify(form.on) === JSON.stringify(["All commits"]) && form.stored === JSON.stringify({ repo: { [REPO]: "commits" }, lane: {} });
+          fx.branchSession = false;
         }
         results.push({ width, height, state: st, claims, facts });
       }

@@ -540,7 +540,7 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };` });
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
       await navigate("http://fleet.fixture/blank");
-      // the phone opens Info by a tap on the island, which toggles the remembered state: start closed there
+      // the phone starts with Info closed and opens it by a tap on the island
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }));
         localStorage.setItem('fleet.board', '${phone ? "0" : "1"}'); localStorage.setItem('fleet.board.folds', JSON.stringify(['postfach'])); })()`);
       await navigate("http://fleet.fixture/");
@@ -650,9 +650,9 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       facts.signs = { d0: d0?.sign, a0: a0?.sign, d1: d1?.sign, d1text: d1?.text };
       claims["whether a sent message was read is a small sign beside its time, its words only in the title"] =
         !!d0?.sign && !!a0?.sign && !!d1?.sign && d1.open && d1.full === "Danke, passt.\nAls Nächstes S7."
-        && d0.sign.title === "noch nicht gelesen" && d1.sign.title === "noch nicht gelesen" && a0.sign.title === `gelesen ${readAt}`
+        && d0.sign.title === "not read yet" && d1.sign.title === "not read yet" && a0.sign.title === `read ${readAt}`
         && [d0.sign, a0.sign, d1.sign].every((s) => s.text === "" && s.w <= 10 && s.h <= 10 && s.besideTime)
-        && !!l1 && [d0, a0, d1, l1].every((r) => !/gelesen/.test(r.text));
+        && !!l1 && [d0, a0, d1, l1].every((r) => !/\bread\b/.test(r.text));
       // S12 · Owner 14.10. 13:2x: „[Zitat entfernt]“
       //  The list names every counterpart, the newest conversation first and chosen;
       // a choice shows that conversation alone and holds over a repaint of the board (a tab's fold redraws it).
@@ -719,11 +719,11 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       const p5 = await evaluate<Pick>(PICK);
       facts.pick = { p0, p1, p2, p3, p4, p5, dark: dark?.big, hover: hover?.big, light: light?.big };
       claims["with two counterparts a list in the head chooses the conversation — the newest first and chosen — and only that one stands below, also after the board redraws"] =
-        p0.convs === 1 && !p0.select && p0.shown === "Strang · 1 ungelesen" && p0.expanded === "false" && !p0.open && JSON.stringify(p0.ids) === JSON.stringify(["m-dank", "m-long", "m-ask"])
-        && p1.open && p1.expanded === "true" && JSON.stringify(p1.opts) === JSON.stringify([["Strang", "1 ungelesen", "true"], ["Prüfer", "1 ungelesen", "false"]])
+        p0.convs === 1 && !p0.select && p0.shown === "Strang · 1 unread" && p0.expanded === "false" && !p0.open && JSON.stringify(p0.ids) === JSON.stringify(["m-dank", "m-long", "m-ask"])
+        && p1.open && p1.expanded === "true" && JSON.stringify(p1.opts) === JSON.stringify([["Strang", "1 unread", "true"], ["Prüfer", "1 unread", "false"]])
         && p1.focus === "list:Strang"
-        && p4.convs === 1 && !p4.open && p4.shown === "Prüfer · 1 ungelesen" && JSON.stringify(p4.ids) === JSON.stringify(["m-pruef"])
-        && p5.convs === 1 && !p5.stale && p5.shown === "Prüfer · 1 ungelesen" && JSON.stringify(p5.ids) === JSON.stringify(["m-pruef"]);
+        && p4.convs === 1 && !p4.open && p4.shown === "Prüfer · 1 unread" && JSON.stringify(p4.ids) === JSON.stringify(["m-pruef"])
+        && p5.convs === 1 && !p5.stale && p5.shown === "Prüfer · 1 unread" && JSON.stringify(p5.ids) === JSON.stringify(["m-pruef"]);
       claims["the list is the column's own switch and menu in black and white — open, hovered and focused only grays, the same under a light and a dark system scheme; Escape gives the focus back, a press beside it closes it"] =
         !!dark && !!hover && !!light && dark.big.length === 0 && hover.big.length === 0 && light.big.length === 0 && light.tones === dark.tones
         && !p2.open && p2.focus === "switch" && !p3.open;

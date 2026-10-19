@@ -488,11 +488,11 @@ async function snapshotTruthChecks(): Promise<void> {
   // "hier" — and the helper says "offline" with its reason in the row (UI-MAIN d00a5a9d: a phone
   // has no hover), the copy's reason still on hover
   const wired = (c: string) => c.includes("here.append(...testInstanceStandRows(instanceSource))")
-    && c.includes('machineRow("testinstanz", "Testinstanz",')
-    && c.includes('{ ...HERE_STATE, title: "Diese Seite kommt von dieser Testinstanz" }')
+    && c.includes('machineRow("testinstanz", "Test instance",')
+    && c.includes('{ ...HERE_STATE, title: "This page comes from this test instance" }')
     && /instanceSource && !helpers\.size/.test(c)
-    && c.includes('machineHead(KIND_HELPER, "Helfer", "",')
-    && c.includes('{ tone: "off", word: "offline · nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" }');
+    && c.includes('machineHead(KIND_HELPER, "Helper", "",')
+    && c.includes('{ tone: "off", word: "offline · not signed in", title: "A test instance carries no helper devices over" }');
   check("snapshot board (Owner-Runde 9, 2026-10-09): the machine group paints the Testinstanz device row and the helper placeholder only from instance.source",
     wired(boardCode), "");
   check("snapshot board MUTATION: without the placeholder condition the helper claim is red",
@@ -510,13 +510,13 @@ export async function snapshotBoardDom(sourceRoot: string, opts: { mutants?: boo
   if (!built.success) throw new Error(built.logs.join("\n"));
   const appJs = await built.outputs[0].text();
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
-  // the board's two brief sentences, both German (UI-MAIN 2026-10-06): this fixture's pages answer
+  // the board's two brief sentences (UI-MAIN 2026-10-06, English since rechts-7 F01): this fixture's pages answer
   // git:none, so the painted card is the calm one — the MUTANT must kill THAT sentence, a mutation
   // of the failed-read sentence could never turn the brief claim red on a git:none page.
-  const CALM = "Kein Git in diesem Ordner";
-  const FAILED = "Der Session-Brief konnte nicht gelesen werden";
+  const CALM = "No git in this folder";
+  const FAILED = "The session brief could not be read";
   if (!appJs.includes(CALM) || !appJs.includes(FAILED)) throw new Error("brief sentences not found in the built bundle");
-  const mutantJs = appJs.replaceAll(CALM, "aus diesem Bundle genommen");
+  const mutantJs = appJs.replaceAll(CALM, "taken out of this bundle");
   const S = "e".repeat(40);
   const workPlaces = { repos: [], measuredAt: 1, cacheMs: 10000, stands: [{ kind: "live-server", repo: "/x", name: null, path: null,
     head: null, basis: "boot-head", codeScope: "server", observedAt: 1, branch: null, target: null, remote: null, reasons: [] }] };
@@ -593,7 +593,7 @@ export async function snapshotBoardDom(sourceRoot: string, opts: { mutants?: boo
           if (document.body.classList.contains('board') || open()) break;
           await new Promise(r => setTimeout(r, 120));
         }
-        // the rights block sits in the closed "Rechte" tab under "Mehr zu dieser Session" since
+        // the rights block sits in the closed "Rights" tab under "More about this session" since
         // dd6e77af (Variante 3A, a closed tab builds nothing) — open it as the owner does; the tab
         // state is a device preference that survives the next load, so press only a closed one
         const until2 = Date.now() + 12000;
@@ -612,7 +612,7 @@ export async function snapshotBoardDom(sourceRoot: string, opts: { mutants?: boo
           .map(r => r.textContent).join(' | ') || null;
         // .nm's textContent INCLUDES a .cnt child where machineHead appends a sub, so the name is read
         // from the first text node — exact equality on textContent never matches there
-        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helfer');
+        const helper = [...document.querySelectorAll('#board .zr.mach')].find(m => m.querySelector('.nm')?.childNodes[0]?.textContent === 'Helper');
         // the test instance's own device row (Owner-Runde 9): its tone, the state chip's word, its text
         const ti = document.querySelector('#board .zr.mach[data-glyph="testinstanz"]');
         const rights = [...document.querySelectorAll('#board .rgv')].map(v => v.textContent).join(' | ');

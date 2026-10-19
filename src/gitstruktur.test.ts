@@ -94,7 +94,8 @@ describe("heads, checks and colour", () => {
       checks: { local: null, preview: null, gate: { state: "green", head: null, at: null, fails: [], stale: null }, audit: null } })]),
       board(R1, [bv("bau/a", { check: { state: "red", at: 1, why: null } })]), [], () => false, card);
     const d = gitLayout(m).shapes.filter((p): p is Extract<GsShape, { t: "diamond" }> => p.t === "diamond").map((p) => [p.of, p.d, p.merged]);
-    expect(d).toEqual([["branch:bau/a", "red", false], ["lane:fleet/l", "landed", true]]);
+    // next stands with its hollow diamond while nothing is green (rechts-7 B)
+    expect(d).toEqual([["next", "none", false], ["branch:bau/a", "red", false], ["lane:fleet/l", "landed", true]]);
   });
   test("a branch is merged only after a land with no commit since; a fresh one stays dashed", () => {
     const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: true, form: "squash" as const };
@@ -102,15 +103,23 @@ describe("heads, checks and colour", () => {
       bv("again", { chargeCommits: 3, lands: [land] })]), [], () => false, card);
     expect(m.items.map((i) => [i.branch, i.merged])).toEqual([["fresh", false], ["landed", true], ["again", false]]);
   });
-  test("next stands only while a branch's merge-check is green, without a head of its own", () => {
+  // NEXT ALWAYS STANDS (owner 18.10. 23:4x „[Zitat entfernt]“, Ja 19.10. 03:38; rechts-7 B)
+  test("next always stands, without a head of its own: quiet while no branch's merge-check is green, ready with the green ones", () => {
     const green = { state: "green" as const, at: 1, why: null };
+    const nextOf = (shapes: GsShape[]) => shapes.find((p): p is Extract<GsShape, { t: "rect" }> => p.t === "rect" && p.key === "next");
+    const diaOf = (shapes: GsShape[]) => shapes.find((p): p is Extract<GsShape, { t: "diamond" }> => p.t === "diamond" && p.of === "next");
     expect(m1.next).toBeNull();
-    expect(gitLayout(m1).shapes.some((p) => p.t === "rect" && p.key === "next")).toBe(false);
+    const quiet = gitLayout(m1).shapes;
+    expect(nextOf(quiet)?.quiet).toBe(true);
+    expect(nextOf(quiet)?.title).toBe("next — nothing ready to land yet — a branch shows here once its merge check is green on the current main");
+    expect(diaOf(quiet)?.d).toBe("none");
     const m = gitModel(repo(R1, []), board(R1, [bv("bau/a", { check: green }), bv("bau/b", { check: { state: "red", at: 1, why: null } }), bv("bau/c", { check: green })]), [], () => false, card);
     expect(m.next).toEqual(["bau/a", "bau/c"]);
-    const next = gitLayout(m).shapes.find((p): p is Extract<GsShape, { t: "rect" }> => p.t === "rect" && p.key === "next")!;
-    expect(next.title).toBe("next — becomes main when the batches of bau/a, bau/c land");
-    expect(next.title).not.toMatch(/[0-9a-f]{7}/);
+    const ready = gitLayout(m).shapes;
+    expect(nextOf(ready)?.quiet).toBe(false);
+    expect(nextOf(ready)?.title).toBe("next — becomes main when the batches of bau/a, bau/c land");
+    expect(nextOf(ready)?.title).not.toMatch(/[0-9a-f]{7}/);
+    expect(diaOf(ready)?.d).toBe("green");
   });
   test("main carries a commit point left of it, never a session there", () => {
     const p = L1.shapes.find((x) => x.t === "point")!, r = rectOf(L1.shapes, "main:main")!;
@@ -195,13 +204,14 @@ describe("round 3: lane names, the landed diamond, the card", () => {
   });
   // Runde 6 (owner Z118: „[Zitat entfernt]“): a landed charge is quiet,
   // checked or not — the check it landed with stands in its batch
-  test("a landed charge has the quiet landed diamond, checked or not — never stale; stale only with commits since", () => {
+  // with commits since, its check of an older tip counts as no check for the tip now (owner 18.10. 23:4x; rechts-7 C)
+  test("a landed charge has the quiet landed diamond, checked or not — never stale; with commits since, its older check counts as none", () => {
     const land = (checked: boolean) => ({ sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked, form: "squash" as const });
     const stale = { state: "stale" as const, at: 1, why: "geprüft war b5de40e4 gegen main" };
     const m = gitModel(repo(R1, []), board(R1, [bv("checked", { chargeCommits: 0, lands: [land(true)], check: stale }),
       bv("unchecked", { chargeCommits: 0, lands: [land(false)], check: stale }),
       bv("moved", { chargeCommits: 2, lands: [land(true)], check: stale })]), [], () => false, card);
-    expect(m.items.map((i) => [i.branch, i.check, i.merged])).toEqual([["checked", "landed", true], ["unchecked", "landed", true], ["moved", "stale", false]]);
+    expect(m.items.map((i) => [i.branch, i.check, i.merged, i.older])).toEqual([["checked", "landed", true, null], ["unchecked", "landed", true, null], ["moved", "none", false, "b5de40e"]]);
   });
   test("the card on a circle speaks English (owner Z87: „[Zitat entfernt]“)", () => {
     const lane = circleOf(L1.shapes, 3)!.ses, branch = circleOf(L1.shapes, 2)!.ses, main = circleOf(L1.shapes, 1)!.ses;
@@ -221,8 +231,9 @@ describe("round 4: what Projekte could do is reachable, simply, the test instanc
       expect(headWords(h({ at, ...o }))[0]).toBe("testinstanz");
     expect(headWords(h({ at: "branch", worktree: false, board: true }))[0]).toBe("landform");
   });
-  test("main: Live-Session (3) and the project's Beim Land (4) after the test instance (6)", () => {
-    expect(headWords(h({ at: "main" }))).toEqual(["testinstanz", "live", "landform"]);
+  // round 7 (owner Ja 18.10. 22:4x): the project's Beim Land moved from main's menu to the gear in the head
+  test("main: Live-Session (3) after the test instance (6) — the project's land form is the gear's", () => {
+    expect(headWords(h({ at: "main" }))).toEqual(["testinstanz", "live"]);
   });
   // owner Z87: „[Zitat entfernt]“ — the routes stay
   test("a board branch: no Diff, Passt or Landen; its land form; Start session without a session, Restart when it hangs", () => {
@@ -375,8 +386,9 @@ describe("round 5: small circles, dashed until the land, English", () => {
   test("ahead/behind in the menu: behind counts the target's tip, not the point the lane branched from", () => {
     const w = row("/w/wt/lane-o", "fleet/lane-o", { distance: { ahead: 1, behind: 0 },
       target: { branch: "bau/oberflaeche", head: "c".repeat(40), behind: 1, landed: "no", landedAs: null, basis: "land-note" } });
-    expect(distanceLine(w)).toBe("1 ahead, 1 behind bau/oberflaeche");
-    expect(distanceLine({ ...w, target: { ...w.target, behind: null } })).toBe("1 ahead, 0 behind bau/oberflaeche");
+    // a number never ends a line apart from its word (no-break spaces, rechts-7 P4)
+    expect(distanceLine(w)).toBe("1\u00a0ahead, 1\u00a0behind bau/oberflaeche");
+    expect(distanceLine({ ...w, target: { ...w.target, behind: null } })).toBe("1\u00a0ahead, 0\u00a0behind bau/oberflaeche");
     expect(distanceLine({ ...w, distance: null })).toBeNull();
   });
 });
@@ -411,5 +423,38 @@ describe("round 6: next only for what waits to land, a lane only where Fleet run
   test("a plain worktree without a session is a branch row too, not checked and not landed", () => {
     const m = gitModel(repo(R1, [row(R1, "main", { primary: true }), row("/w/wt/old", "bau/old")]), board(R1, []), [], () => false, card);
     expect(m.items.map((i) => [i.kind, i.branch, i.check, i.merged, i.sessions.length])).toEqual([["branch", "bau/old", "none", false, 0]]);
+  });
+});
+
+// round 7 (owner Z124 „[Zitat entfernt]“, Z131; Ja 18.10. 22:4x): the gear hides what nobody works at
+describe("round 7: the gear leaves out landed heads and heads without a session", () => {
+  const green = { state: "green" as const, at: 1, why: null };
+  const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: true, form: "squash" as const };
+  const rows = [row(R1, "main", { primary: true }),
+    row("/w/wt/done", "bau/done", { session: { slot: 6, openedAt: 6, taskId: null } }),
+    row("/w/wt/lane-l", "fleet/lane-l", on("bau/old", 7, "yes")),
+    row("/w/wt/lane-r", "fleet/lane-r", { ...on("main", 8), checks: { local: null, preview: null, gate: { state: "running", head: null, at: 1, fails: [], stale: null }, audit: null } }),
+    row("/w/wt/lane-q", "fleet/lane-q", on("main", 9)),
+    row("/w/wt/lane-i", "fleet/lane-i", { ...on("bau/idle", 10), checks: { local: null, preview: null, gate: { state: "waiting", head: null, at: 1, fails: [], stale: null }, audit: null } })];
+  const brd = board(R1, [bv("bau/done", { chargeCommits: 0, lands: [land], path: "/w/wt/done", session: { slot: 6, openedAt: 6 } }),
+    bv("bau/old", { chargeCommits: 0, lands: [land] }), bv("bau/green", { check: green }), bv("bau/idle")]);
+  // slot 6 works directly on bau/done; the lane sessions 7–10 have left (no slot holds them any more)
+  const sl = [slot(6, "/w/wt/done", { repo: "/w/wt/done", git: { branch: "bau/done" } })];
+  const keys = (hide?: { landed: boolean; idle: boolean }) => {
+    const m = gitModel(repo(R1, rows), brd, sl, () => false, card, hide ? { hide } : {});
+    return { items: m.items.flatMap((i) => [`${i.kind}:${i.branch}`, ...i.lanes.map((l) => `lane:${l.branch}`)]), next: m.next };
+  };
+  test("shown by default: every head", () => {
+    expect(keys().items).toEqual(["branch:bau/done", "branch:bau/old", "lane:fleet/lane-l", "branch:bau/green", "branch:bau/idle", "lane:fleet/lane-i",
+      "lane:fleet/lane-r", "lane:fleet/lane-q"]);
+  });
+  test("landed hidden: what landed with nothing since goes, unless a session works there", () => {
+    expect(keys({ landed: true, idle: false }).items).toEqual(["branch:bau/done", "branch:bau/green", "branch:bau/idle", "lane:fleet/lane-i", "lane:fleet/lane-r",
+      "lane:fleet/lane-q"]);
+  });
+  test("without a session hidden: only heads a session works at or whose check runs or waits, and a branch over such a lane; next still names the green branch", () => {
+    const k = keys({ landed: false, idle: true });
+    expect(k.items).toEqual(["branch:bau/done", "branch:bau/idle", "lane:fleet/lane-i", "lane:fleet/lane-r"]);
+    expect(k.next).toEqual(["bau/green"]);
   });
 });

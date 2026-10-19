@@ -2,7 +2,6 @@
 // GET /api/branches, die Wahl „On land“, Session starten und neu starten, der Merge-Check und die Charge im Menü.
 import { api, el, openActivity, post, revealStartedSlot, showSlot } from "./client";
 import { askRisk } from "./dialog";
-import { mergeCheckLine } from "./gitstruktur";
 import type { BranchesRepoView, BranchesView, BranchView } from "./protocol";
 
 const BRANCHES_EVERY_MS = 10_000;
@@ -117,10 +116,45 @@ export function branchCharge(repo: string, b: BranchView): HTMLElement {
     + (last ? ` · ${b.lands.length} ${b.lands.length === 1 ? "batch" : "batches"} on main, last:` : "")));
   // the charge commit stands on the integration branch, not on this one
   if (last) box.appendChild(commitLine(repo, view?.repos.find((r) => r.repo === repo)?.integration ?? null, last.sha, `“${last.subject}”`));
-  const chk = b.check;
-  if (chk) box.appendChild(el("div", `brc-k brc-check ${chk.state}`, mergeCheckLine(chk)));
+  // the merge check is said once, in step 1 of the menu (src/board.ts#gsPanel)
   box.append(...said(keyOf(repo, b.branch)));
   return box;
+}
+// „PASST“ AS A BUTTON (owner Z132, 18.10.: „[Zitat entfernt]“; Mangel 121): the owner
+// marks the tip he looked at — POST /api/branches/seen with the tip this view read. The line says which tip that is,
+// and a commit after it asks again; on the tip he marked, the session lands the branch itself (/api/self/branches/land)
+export function lookedLine(repo: string, b: BranchView, repaint: () => void): HTMLElement {
+  injectCss();
+  const key = keyOf(repo, b.branch);
+  const tip = sha7(b.head), at = b.seen?.head ?? null;
+  const line = el("div", "zd brc-seen");
+  line.dataset.seen = at === b.head ? "tip" : at ? "older" : "none";
+  line.appendChild(el("span", "tx", at === b.head ? `Looks good at ${tip} — the session may land it`
+    : `Not seen yet · tip ${tip}${at ? ` (you looked at ${sha7(at)})` : ""}`));
+  if (at !== b.head) {
+    const r = el("span", "r");
+    const btn = el("button", "rk-btn primary", "Looks good") as HTMLButtonElement;
+    btn.type = "button";
+    btn.title = `Mark ${tip}, the tip of ${b.branch} now, as looked at — the session may land it then`;
+    btn.disabled = busy.has(key);
+    btn.onclick = (e) => { e.stopPropagation(); void markLooked(repo, b, repaint); };
+    r.appendChild(btn);
+    line.appendChild(r);
+  }
+  line.append(...said(key));
+  return line;
+}
+async function markLooked(repo: string, b: BranchView, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch), head = b.head;
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const r = await post("/api/branches/seen", { repo, branch: b.branch, head }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { seen?: BranchView["seen"]; error?: string } | null;
+  busy.delete(key);
+  if (r?.ok && j?.seen) b.seen = j.seen;
+  else errs.set(key, `“Looks good” was not saved: ${j?.error ?? (r ? `answer ${r.status}` : "the server was not reachable")}`);
+  loadBranches(true, repaint);
 }
 export const branchBusy = (repo: string, b: BranchView): boolean => busy.has(keyOf(repo, b.branch));
 export const mayCheck = (b: BranchView): boolean => !!b.check && b.check.state !== "green" && b.check.state !== "running" && !!b.chargeCommits;
@@ -135,8 +169,7 @@ const BRANCH_CSS = `
   #board .zd.brc > * { width: 100%; margin: 0; justify-content: flex-start; }
   #board .zd.brc > .brc-k { color: var(--chat-prose); margin-top: 4px; white-space: normal; }
   #board .zd.brc > .err { color: var(--danger); white-space: normal; }
-  #board .zd.brc > .brc-check.green { color: var(--chat-ink); }
-  #board .zd.brc > .brc-check.red { color: var(--danger); }
+  #board .zd.brc-seen > .err { flex-basis: 100%; color: var(--danger); white-space: normal; }
   .brc-open { display: block; width: 100%; padding: 2px 0; border: 0; background: none; color: inherit; font: inherit; text-align: left;
     cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
   .brc-open:hover, .brc-open:focus-visible { color: var(--chat-ink); text-decoration-style: solid; }

@@ -29,8 +29,8 @@ export async function run(): Promise<void> {
     check("(meter-row) should NOT show the wire label 'land gate' anywhere in the row",
       !!staged && !staged.join(" · ").includes("land gate"), JSON.stringify(staged));
     const late = lineOf({ ...base, gate: { lock: null, reports: [land({ stage: "claude-gate (3/3)", stats, at: now - 400_000 })] } });
-    check("(meter-row) past p90 the clock says 'länger als üblich' — a word, the tone stays plain (G0.2)",
-      late?.[1] === "6:40 / ~3:38 länger als üblich"
+    check("(meter-row) past p90 the clock says 'longer than usual' — a word, the tone stays plain (G0.2)",
+      late?.[1] === "6:40 / ~3:38 longer than usual"
         && suiteMeter({ ...base, gate: { lock: null, reports: [land({ stats, at: now - 400_000 })] } }).balls[0]?.tone === "plain",
       JSON.stringify(late));
     check("(meter-row) at p90 exactly it is still usual — the word needs the run to be LONGER",
@@ -108,9 +108,9 @@ export async function run(): Promise<void> {
     const running = 5;
     check("(meter-helper) the helper station counts the SAME runs as the device's running: shards one by one, previews, gate scripts",
       meterRuns(busy.balls, "helper") === running, `meterRuns=${meterRuns(busy.balls, "helper")} running=${running}`);
-    check("(meter-helper) each helper run says its kind: Vorschau, Gate-Skript, Nachprüfung (the audit)",
+    check("(meter-helper) each helper run says its kind: Preview, Gate script, Check after land (the audit)",
       JSON.stringify(busy.balls.filter((b) => b.station === "helper").map((b) => meterKind(b.kind).label).sort())
-        === JSON.stringify(["Gate-Skript", "Nachprüfung", "Vorschau"]),
+        === JSON.stringify(["Check after land", "Gate script", "Preview"]),
       JSON.stringify(busy.balls.map((b) => [b.station, b.kind])));
 
     // (3) no distribution → no expectation drawn at all

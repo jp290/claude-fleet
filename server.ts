@@ -211,9 +211,10 @@ import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
-import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase, chargeMessage,
-  doneSinceLastLand, dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, recordLand as recordBranchLand, repoBranches, restoreBook,
+import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
+  dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
+import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
@@ -8418,12 +8419,7 @@ async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base:
   if (last.tip !== tip || last.base !== base) return { state: "stale", at, why: `geprüft war ${String(last.tip).slice(0, 8)} gegen ${String(last.base)}` };
   return { state: last.mergeable === true ? "green" : "red", at, why };
 }
-// a charge after a land must grow from that land's tip; a branch rewritten since has no base to count from
-async function chargeRewritten(repo: string, r: BranchRecord, tip: string): Promise<boolean> {
-  const last = r.lands.at(-1);
-  return !!last && (await gitRead(repo, "merge-base", "--is-ancestor", last.tip, tip)).code !== 0;
-}
-const CHARGE_REWRITTEN = "Branch seit der letzten Charge umgeschrieben, Basis neu wählen";
+const chargeRewritten = (repo: string, r: BranchRecord, tip: string): Promise<boolean> => chargeRewrittenBy(gitRead, repo, r, tip);
 // THE COMMITS OF A CHARGE: reachable from the tip, not from the charge's base and not from main, merge
 // commits left out. A branch that took main per `git merge main` holds main's commits — the last charge
 // among them — and they are not this charge's (ci/merge-check.ts skips them by patch-id instead).
@@ -8455,6 +8451,18 @@ async function chargeTree(repo: string, main: string, base: string, tip: string)
   }
   const tree = await gitRead(repo, "rev-parse", `${cur}^{tree}`);
   return tree.code === 0 ? { tree: tree.out } : { conflict: "der Baum der Charge ist nicht lesbar" };
+}
+
+// the board branch a session works on: the branch checked out in its own linked worktree of a workplace repo — a
+// session in a main checkout, on a detached head or outside every repo has none
+async function ownBranchOf(cwd: string): Promise<{ ok: true; repo: string; branch: string } | { ok: false; error: string }> {
+  const top = await gitRead(cwd, "rev-parse", "--show-toplevel");
+  if (top.code !== 0 || !top.out) return { ok: false, error: "this session works in no git checkout" };
+  const here = (await listWorktrees(top.out)).find((w) => repoCanon(w.path) === repoCanon(top.out));
+  if (!here || here.primary || here.branch === "(detached)")
+    return { ok: false, error: "this session works on no branch of its own — a session lands the branch checked out in its own worktree" };
+  const ro = await branchRepoOf(top.out);
+  return ro.ok ? { ok: true, repo: ro.repo, branch: here.branch } : { ok: false, error: ro.error };
 }
 
 // The newest conversation of a branch's worktree, by transcript mtime — whichever session, slot or
@@ -8558,6 +8566,24 @@ async function worktreeRisk(repo: string, path: string, preservedBy?: string): P
     unknown: failed.length ? `${failed.join(", ")} failed` : null,
   };
 }
+
+// THE LAND OF A CHARGE (server/branch-land.ts): one core for the owner's door and the session's own; here its git,
+// its state and what a land that moved main owes. A charge passed no land gate, so its check after the land is the
+// full suite (`proportional` false) — the merge check is no such verdict (Mangel 94).
+// It stands here, after worktreeRisk: e2e/lanes-lifecycle.ts#workplacesChecks runs the block from WtEntry to worktreeRisk,
+// and an object built there at load reads `git`, which that fixture does not hand in
+const branchLandDeps: LandDeps = {
+  gitRead, git, integrationBranch: (repo) => integrationBranch(repo), branchExists, hasMergeCheck, mergeCheckRows, chargeLog, chargeTree,
+  advanceIntegration, book: () => branchBook, setBook: (book) => { branchBook = book; }, saveStateNow,
+  afterLand: async (repo, main, branch, sha) => {
+    await schedulePostLandAudit(repo, main, branch, sha, false);
+    scheduleMainGraphRebuild(repo, main);
+    workplacesCache = null;
+    void tickGit().catch(() => {});
+  },
+  landing: branchLanding,
+  deployNote: (repo) => (FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? "nötig — der Server fährt den neuen Stand erst nach einem Deploy" : null),
+};
 
 // the /api/slots/:id/worktrees board, cached serve-stale-while-revalidate (see the route):
 // a session switch must not wait for ~150 git spawns (~5 s on a loaded machine, measured
@@ -48905,6 +48931,27 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return handleSelfRetire(s);
     }
+    // A SESSION LANDS ITS OWN BRANCH (owner Z132, 18.10.: „[Zitat entfernt]“;
+    // Z87: „[Zitat entfernt]“): the token names the session, its checkout names repo and
+    // branch — a body that names another branch is refused. The owner door's core (server/branch-land.ts), plus „[Zitat entfernt]“
+    // on exactly this tip and a usable merge check. A deploy stays with the owner.
+    if (url.pathname === "/api/self/branches/land" && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const body = await readJson(req);
+      const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
+      if (!body || !subject || subject.length > 200 || /[\r\n]/.test(subject) || (body.branch !== undefined && typeof body.branch !== "string")
+        || (body.squash !== undefined && typeof body.squash !== "boolean"))
+        return json({ error: "expected { subject (one line, ≤200), squash?, branch? } — repo and branch are this session's own" }, 400);
+      const own = await ownBranchOf(s.cwd);
+      if (!own.ok) return json({ error: own.error }, 404);
+      if (body.branch !== undefined && body.branch !== own.branch)
+        return json({ error: `this session lands only its own branch ${own.branch}, not ${body.branch}` }, 403);
+      const landed = await landCharge(branchLandDeps, { repo: own.repo, branch: own.branch, subject, unchecked: false,
+        squash: typeof body.squash === "boolean" ? body.squash : undefined, own: true });
+      return json(landed.body, landed.status);
+    }
 
     // the lane's own drift view — read-only by construction (laneDrift never touches a working tree)
     // and no new capability: the route exists so session, board and sync path read ONE server-computed
@@ -51253,13 +51300,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       void run.exited.then(() => { branchCheckRuns.delete(key); workplacesCache = null; });
       return json({ ok: true, tip, base }, 202);
     }
-    // CHARGE MERGEN: the commits since the last charge become ONE commit on the integration branch,
-    // with the subject from the board's question. Its tree is the merge check's candidate (or, without
-    // a merge check and only with unchecked:true, the same per-commit build here); main moves by
-    // advanceIntegration. Branch, worktree and session stay; the land is recorded on the branch.
-    // squash:false (or, without body.squash, the branch's landForm "commits"): no charge commit — main
-    // fast-forwards to the candidate itself, which ci/merge-check.ts#candidateOf built commit by commit
-    // on this very main. Only with a merge check: chargeTree's steps are no commits for main.
+    // CHARGE MERGEN through the owner's door: the commits since the last charge become ONE commit on the integration
+    // branch (or, as its land form says, main fast-forwards to the merge check's candidate) — server/branch-land.ts
     if (url.pathname === "/api/branches/land" && req.method === "POST") {
       const body = await readJson(req);
       const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
@@ -51268,70 +51310,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         return json({ error: "expected { repo, branch, subject (one line, ≤200), unchecked?, squash? }" }, 400);
       const ro = await branchRepoOf(body.repo);
       if (!ro.ok) return json({ error: ro.error }, 400);
-      const repo = ro.repo;
-      const record = findBranch(branchBook, repo, body.branch);
-      if (!record?.name || !(await branchExists(repo, body.branch))) return json({ error: `${body.branch} is no board branch here` }, 404);
-      if (branchLanding.has(repo)) return json({ error: "in diesem Repo wird gerade eine Charge gemergt" }, 409);
-      branchLanding.add(repo);
-      try {
-        const main = await integrationBranch(repo);
-        if (!main) return json({ error: "cannot resolve the repo's integration branch" }, 400);
-        const [tipR, mainR] = await Promise.all([gitRead(repo, "rev-parse", `refs/heads/${body.branch}`), gitRead(repo, "rev-parse", `refs/heads/${main}`)]);
-        if (tipR.code !== 0 || mainR.code !== 0) return json({ error: "branch or integration branch unreadable" }, 400);
-        const tip = tipR.out, mainSha = mainR.out;
-        if (await chargeRewritten(repo, record, tip)) return json({ error: CHARGE_REWRITTEN }, 409);
-        const base = chargeBase(record, main);
-        if (!base) return json({ error: "cannot resolve the charge's base" }, 400);
-        const checked = hasMergeCheck(repo);
-        const form = body.squash === undefined ? record.landForm ?? "squash" : body.squash ? "squash" : "commits";
-        if (form === "commits" && !checked)
-          return json({ error: "alle Commits nur mit Merge-Check — dieses Repo hat keinen; „ein Commit“ geht (squash: true)" }, 409);
-        const use = checked ? usableCheck(await mergeCheckRows(repo), { branch: body.branch, base, tip, main: mainSha }) : null;
-        if (use && !use.ok) return json({ error: use.why }, 409);
-        if (!checked && body.unchecked !== true)
-          return json({ error: "dieses Repo hat keinen Merge-Check — mergen nur ausdrücklich „ohne Merge-Check“ (unchecked: true)" }, 409);
-        const log = await chargeLog(repo, use?.row.commits ?? null, base, tip, mainSha, "--format=%H%x00%s");
-        const commits = log.out.split("\n").filter(Boolean).map((line) => { const [sha, s2] = line.split("\0"); return { sha: sha ?? "", subject: s2 ?? "" }; });
-        if (log.code !== 0 || !commits.length) return json({ error: `nichts zu mergen: keine Commits seit ${base.slice(0, 12)}` }, 409);
-        let tree: string;
-        if (use) {
-          const ct = await gitRead(repo, "rev-parse", `${use.row.candidate}^{tree}`);
-          if (ct.code !== 0 || ct.out !== use.row.tree) return json({ error: "der Kandidat des Merge-Checks fehlt hier oder hat einen anderen Baum — neu prüfen" }, 409);
-          tree = use.row.tree;
-        } else {
-          const built = await chargeTree(repo, mainSha, base, tip);
-          if ("conflict" in built) return json({ error: built.conflict }, 409);
-          tree = built.tree;
-        }
-        const passt = record.seen?.head === tip;
-        let sha: string;
-        if (form === "commits" && use) sha = use.row.candidate;
-        else {
-          const commit = await git(repo, "commit-tree", tree, "-p", mainSha, "-m",
-            chargeMessage(subject, { branch: body.branch, tip, commits, passt, checked }));
-          if (commit.code !== 0 || !commit.out) return json({ error: `commit-tree: ${commit.err.slice(0, 200)}` }, 409);
-          sha = commit.out;
-        }
-        const moved = await advanceIntegration(repo, main, sha);
-        if (moved) return json({ error: `main wurde nicht bewegt: ${moved.error}` }, 409);
-        const landed = recordBranchLand(branchBook, repo, body.branch, { sha, at: Date.now(), tip, base, subject,
-          points: doneSinceLastLand(record), passt, checked, form });
-        if (landed.ok) branchBook = landed.book;
-        await saveStateNow();
-        // main moved, so this land owes what recordLand gives every main-MOVING lane land (Mangel 94:
-        // until here a charge got neither, and every audit since the switch to branches was queued by
-        // hand through /api/repos/audit-tip). `proportional` false: a charge passed no land gate, so
-        // there is no docs-only short-chain verdict to carry — NOT PROVEN, the full suite, the same
-        // reading recordLand gives a land without `prov.verify`. The merge check is no such verdict.
-        await schedulePostLandAudit(repo, main, body.branch, sha, false);
-        scheduleMainGraphRebuild(repo, main);
-        workplacesCache = null;
-        void tickGit().catch(() => {});
-        return json({ ok: true, sha, main, commits: commits.length, passt, checked, form,
-          ...(FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? { deploy: "nötig — der Server fährt den neuen Stand erst nach einem Deploy" } : {}) });
-      } finally {
-        branchLanding.delete(repo);
-      }
+      const landed = await landCharge(branchLandDeps, { repo: ro.repo, branch: body.branch, subject, unchecked: body.unchecked === true,
+        squash: typeof body.squash === "boolean" ? body.squash : undefined, own: false });
+      return json(landed.body, landed.status);
     }
     if (url.pathname === "/api/testinstanzen" && req.method === "GET") {
       const script = `${import.meta.dir}/testinstanz.sh`;

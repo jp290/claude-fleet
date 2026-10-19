@@ -51,7 +51,7 @@ export function postfachOf(slot: number, openedAt: number): Message[] | null {
 
 export function postfachSummary(list: Message[], slot: number, openedAt: number): string {
   const unread = list.filter((m) => own(m.to, slot, openedAt) && m.readAt === null).length;
-  return `${list.length}${unread ? ` · ${unread} ungelesen` : ""}${stand?.failed ? " · nicht aktuell" : ""}`;
+  return `${list.length}${unread ? ` · ${unread} unread` : ""}${stand?.failed ? " · not current" : ""}`;
 }
 
 // der Name einer Adresse und (fürs Hovern) was hinter ihm steht
@@ -60,24 +60,24 @@ function who(a: Address): { name: string; hint: string } {
     const s = fleet.find((x) => x.id === a.slot);
     const name = s?.label || `Slot ${a.slot}`;
     const now = s?.openedAt === a.openedAt;
-    return { name: now ? name : `${name} (frühere Besetzung)`,
-      hint: `Slot ${a.slot}${now && s?.cwd ? ` · ${s.cwd}` : ""}${now ? "" : " · die Session dort ist inzwischen eine andere"}` };
+    return { name: now ? name : `${name} (earlier occupant)`,
+      hint: `Slot ${a.slot}${now && s?.cwd ? ` · ${s.cwd}` : ""}${now ? "" : " · the session there is a different one now"}` };
   }
   if (a.kind === "program") return { name: `Program ${(a.id ?? "").slice(0, 8)}`, hint: `Program ${a.id ?? ""}` };
-  const name = a.role === "orchestrator" ? "Orchestratorin" : a.role === "owner" ? "Owner" : a.role ?? a.kind;
+  const name = a.role === "orchestrator" ? "Orchestrator" : a.role === "owner" ? "Owner" : a.role ?? a.kind;
   return { name, hint: name };
 }
 
-const clock = (ms: number): string => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-// „08:08“ heute, „gestern 08:08“, sonst „13.10. 08:08“
+const clock = (ms: number): string => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+// „08:08“ heute, „yesterday 08:08“, sonst „13/10 08:08“
 function when(ms: number): string {
   const d = new Date(ms);
   const day = (x: Date) => x.toDateString();
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   if (day(d) === day(new Date())) return clock(ms);
-  if (day(d) === day(yesterday)) return `gestern ${clock(ms)}`;
-  return `${d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })} ${clock(ms)}`;
+  if (day(d) === day(yesterday)) return `yesterday ${clock(ms)}`;
+  return `${d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" })} ${clock(ms)}`;
 }
 
 // Ein Gespräch ist alles mit derselben Gegenstelle: der Empfänger dessen, was diese Session schrieb, der
@@ -175,8 +175,8 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
     sw.type = "button";
     sw.setAttribute("aria-haspopup", "listbox");
     sw.setAttribute("aria-expanded", String(listOpen));
-    sw.title = "Gespräch wählen";
-    sw.append(el("span", "t", `${partner.name}${unread ? ` · ${unread} ungelesen` : ""}`), icon("chevron"));
+    sw.title = "Choose a conversation";
+    sw.append(el("span", "t", `${partner.name}${unread ? ` · ${unread} unread` : ""}`), icon("chevron"));
     const redraw = (next: Conversation, focus: "button" | "list" | null) => {
       fillConversation(box, next, slot, openedAt, all);
       const target = focus === "button" ? box.querySelector<HTMLElement>(".bgesprsel")
@@ -190,7 +190,7 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
       pickClose = close;
       const pop = el("div", "bpop bgesprpop");
       pop.setAttribute("role", "listbox");
-      pop.setAttribute("aria-label", "Gespräche dieser Session");
+      pop.setAttribute("aria-label", "Conversations of this session");
       pop.append(...all.map((o) => {
         const n = unreadIn(o, slot, openedAt);
         const b = el("button", "bmenuitem") as HTMLButtonElement;
@@ -201,17 +201,17 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
         const dot = el("span", "bgesprdot");
         dot.style.setProperty("--who-h", String(hueOf(o.with, slot, openedAt)));
         b.append(dot, el("span", "t", who(o.with).name));
-        if (n) b.append(el("span", "kk", `${n} ungelesen`));
+        if (n) b.append(el("span", "kk", `${n} unread`));
         b.title = who(o.with).hint;
         b.onclick = () => { chosen.set(seat, o.key); pickOpen = null; pickClose = null; redraw(o, "button"); };
         return b;
       }));
       const scrim = el("div", "bpopscrim");
       scrim.onclick = () => close(true);
-      hd.append("Gespräch mit ", name, scrim, pop);
+      hd.append("Conversation with ", name, scrim, pop);
     }
   }
-  if (!listOpen) hd.append("Gespräch mit ", name);
+  if (!listOpen) hd.append("Conversation with ", name);
   box.appendChild(hd);
   const newest = [...c.msgs].reverse();
   const shown = unfolded.has(c.key) ? newest : newest.slice(0, SHOWN);
@@ -228,7 +228,7 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
       if (orig) {
         const re = el("button", "bmsgre", firstLine(orig.payload.text ?? "")) as HTMLButtonElement;
         re.type = "button";
-        re.title = `Antwort auf ${own(orig.from, slot, openedAt) ? "diese Session" : who(orig.from).name}, ${when(orig.at)} — zeigen`;
+        re.title = `Reply to ${own(orig.from, slot, openedAt) ? "this session" : who(orig.from).name}, ${when(orig.at)} — show it`;
         re.onclick = () => {
           unfolded.add(c.key);
           expanded.add(orig.id);
@@ -239,12 +239,12 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
           setTimeout(() => target?.classList.remove("flash"), 1200);
         };
         row.appendChild(re);
-      } else row.appendChild(el("div", "bmsgre", "Antwort auf eine ältere Nachricht"));
+      } else row.appendChild(el("div", "bmsgre", "Reply to an older message"));
     }
     const line = el("button", "bmsgline") as HTMLButtonElement;
     line.type = "button";
     line.setAttribute("aria-expanded", String(open));
-    line.title = open ? "Zuklappen" : "Ganz lesen";
+    line.title = open ? "Collapse" : "Read in full";
     const hd = el("span", "bmsghd");
     if (!mine) {
       const speaker = who(m.from);
@@ -254,16 +254,16 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
       hd.appendChild(w);
     }
     const at = el("span", "bmsgat", when(m.at));
-    at.title = `${new Date(m.at).toLocaleString("de-DE")} · Nachricht ${m.id}`;
+    at.title = `${new Date(m.at).toLocaleString("en-GB")} · message ${m.id}`;
     hd.appendChild(at);
     if (mine) {
       const seen = el("span", `bmsgread${m.readAt === null ? "" : " seen"}`);
-      seen.title = m.readAt === null ? "noch nicht gelesen" : `gelesen ${when(m.readAt)}`;
+      seen.title = m.readAt === null ? "not read yet" : `read ${when(m.readAt)}`;
       if (m.readAt !== null) seen.appendChild(icon("check"));
       hd.appendChild(seen);
     } else if (m.readAt === null) {
       const dot = el("span", "bmsgdot");
-      dot.title = "ungelesen";
+      dot.title = "unread";
       hd.appendChild(dot);
     }
     line.append(hd, el("span", "bmsgfirst", firstLine(text)));
@@ -274,7 +274,7 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
   });
   const hidden = newest.length - shown.length;
   if (hidden) {
-    const more = el("button", "bmsgmore", `${hidden} frühere ${hidden === 1 ? "Nachricht" : "Nachrichten"}`) as HTMLButtonElement;
+    const more = el("button", "bmsgmore", `${hidden} earlier ${hidden === 1 ? "message" : "messages"}`) as HTMLButtonElement;
     more.type = "button";
     more.onclick = () => { unfolded.add(c.key); refill(); };
     box.appendChild(more);
@@ -282,7 +282,7 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
 }
 
 export function postfachBody(body: HTMLElement, list: Message[], slot: number, openedAt: number): void {
-  if (stand?.failed) body.appendChild(el("div", "bstate", "Das Postfach war beim letzten Lesen nicht erreichbar; gezeigt ist der Stand davor."));
+  if (stand?.failed) body.appendChild(el("div", "bstate", "The messages could not be reached at the last read; shown is the state before."));
   const all = conversations(list, slot, openedAt);
   const c = all.find((x) => x.key === chosen.get(`${slot}:${openedAt}`)) ?? all[0];
   if (!c) return;

@@ -359,28 +359,28 @@ async function snapshotDom(sourceRoot: string): Promise<void> {
       const p = v.pages;
       const home = v.size === "1200x900";
       // (Owner-Runde 9, 2026-10-09) the instance runs: it answers this page, so its device row carries
-      // the live tone and the mark "hier"; no live-server stand row is painted, so nothing claims a Live stand
-      if (home) check(`snapshot DOM ${v.size} (Owner-Runde 9): the machine group's Testinstanz device row says it runs here — live tone, "hier" — and never claims a Live stand`,
-        p.carried.tiRow !== null && p.carried.tiRow.tone === "live" && p.carried.tiRow.state === "hier"
-        && p.carried.rowText === "(no row)" && !/Live|Sein Stand|läuft auf/.test(p.carried.tiRow.text),
+      // the live tone and the mark "here"; no live-server stand row is painted, so nothing claims a Live stand
+      if (home) check(`snapshot DOM ${v.size} (Owner-Runde 9): the machine group's Testinstanz device row says it runs here — live tone, "here" — and never claims a Live stand`,
+        p.carried.tiRow !== null && p.carried.tiRow.tone === "live" && p.carried.tiRow.state === "here"
+        && p.carried.rowText === "(no row)" && !/Live|Its state|runs on/.test(p.carried.tiRow.text),
         JSON.stringify({ ti: p.carried.tiRow, row: p.carried.rowText }));
-      if (home) check(`snapshot DOM ${v.size}: the helper devices stand as one row "Helfer · offline · nicht angemeldet", the reason — the copy carries none — on hover`,
-        p.carried.helperText === "offline · nicht angemeldet" && /Testinstanz/.test(p.carried.helperTitle ?? ""), JSON.stringify([p.carried.helperText, p.carried.helperTitle]));
+      if (home) check(`snapshot DOM ${v.size}: the helper devices stand as one row "Helper · offline · not signed in", the reason — the copy carries none — on hover`,
+        p.carried.helperText === "offline · not signed in" && /test instance/.test(p.carried.helperTitle ?? ""), JSON.stringify([p.carried.helperText, p.carried.helperTitle]));
       if (home) check(`snapshot DOM ${v.size}: the copy is no workplace — no repo group row under the machine`,
         p.carried.repoRows === 0, JSON.stringify(p.carried.repoRows));
-      check(`snapshot DOM ${v.size}: a carried binding reads "Ihr Program", never "An keinen Auftrag, kein Program gebunden"`,
-        p.carried.rights.includes("Ihr Program") && !p.carried.rights.includes("An keinen Auftrag"),
+      check(`snapshot DOM ${v.size}: a carried binding reads "Its Program", never "Bound to no task and no Program"`,
+        p.carried.rights.includes("Its Program") && !p.carried.rights.includes("Bound to no task"),
         JSON.stringify(p.carried.rights).slice(0, 300));
-      check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Im Snapshot nicht belegt", never "Keine"`,
-        p.unknown.rights.includes("Im Snapshot nicht belegt") && !p.unknown.rights.includes("An keinen Auftrag"),
+      check(`snapshot DOM ${v.size}: a binding the snapshot cannot carry reads "Not in the snapshot", never "None"`,
+        p.unknown.rights.includes("Not in the snapshot") && !p.unknown.rights.includes("Bound to no task"),
         JSON.stringify(p.unknown.rights).slice(0, 300));
       if (home) check(`snapshot DOM ${v.size}: a git:none brief stands as the board's calm sentence, the column is not empty`,
-        p.carried.brief?.includes("Kein Git in diesem Ordner") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
+        p.carried.brief?.includes("No git in this folder") === true && p.carried.briefLen > 40, JSON.stringify(p.carried.brief));
       if (p.mutant) check(`snapshot DOM ${v.size} MUTATION: without the sentence the painted calm is gone and the claim is red`,
-        p.mutant.brief !== null && !p.mutant.brief.includes("Kein Git in diesem Ordner"), JSON.stringify(p.mutant.brief));
-      if (p.live) check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — the live server's own sentence, no placeholder, "Keine" rights`,
-        p.live.rowText === "Sein Stand ist nicht belegt." && p.live.helperText === null && p.live.tiRow === null
-        && p.live.rights.includes("An keinen Auftrag, kein Program gebunden") && !p.live.rowText.includes("Testinstanz"),
+        p.mutant.brief !== null && !p.mutant.brief.includes("No git in this folder"), JSON.stringify(p.mutant.brief));
+      if (p.live) check(`snapshot DOM ${v.size} MUTATION: the same predicates over the live page are red — the live server's own sentence, no placeholder, "None" rights`,
+        p.live.rowText === "Its state is not proven." && p.live.helperText === null && p.live.tiRow === null
+        && p.live.rights.includes("Bound to no task and no Program") && !p.live.rowText.includes("test instance"),
         JSON.stringify({ row: p.live.rowText, ti: p.live.tiRow, helper: p.live.helperText, rights: p.live.rights.slice(0, 120) }));
     }
   } catch (error) {

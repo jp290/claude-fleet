@@ -136,6 +136,15 @@ const PRE_AUTH_ROUTES = [
   String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
   '= /api/self/messages',
   String.raw`~ /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/`,
+  // A SESSION LANDS ITS OWN BRANCH (rechts-7 P5, owner Z132 18.10.: „[Zitat entfernt]“
+  // ; Mangel 121) — it moves the integration branch. What bounds it: the principal is the token's slot, and repo and
+  // branch come from that session's own checkout (ownBranchOf: its linked worktree of a workplace repo; a main checkout, a
+  // detached head or no repo is a 404); a body naming another branch is a 403. The land runs the owner door's core
+  // (server/branch-land.ts#landCharge) with `own`: a board branch only, the owner's „[Zitat entfernt]“ on exactly its tip (a commit
+  // after it is a 409), a repo with a merge check and that check usable for this tip on the current main; `unchecked` is
+  // not reachable from here. Its side effects are the owner door's: the check after the land is scheduled. It writes into
+  // no pane and deploys nothing.
+  '= /api/self/branches/land',
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
   // into the event-ack regex: that one is a TRANSPORT receipt for every event kind, this one
   // records what the receiving MAIN did with the work. Who may call it: the exact self principal

@@ -1473,6 +1473,8 @@
   .shellback { display: none; }  /* mobile-only: the detail pane is a pushed screen there */
   .shelltitles { flex: 1; min-width: 0; }
   .shelltitles h2 { font-size: var(--chat-fs); font-weight: 500; color: var(--chat-ink); }
+  /* Info on the phone in the face it has on the desktop */
+  #shell-board .shelltitles h2 { font-family: var(--chat-sans); }
   .shellsub { font-size: var(--chat-ui-fs); color: var(--chat-mute); margin-top: 2px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shellsub:empty { display: none; }
@@ -2608,7 +2610,7 @@
      therefore RIGHTMOST in its row, on the pane corner). padding 13/16 + a 24px box puts
      #boardclose's center at (W−28, 25), the ℹ center at #panes 3 + right 10 + half 30 = 28,
      top 3 + 8 + half 26 = 24.5 → the same spot. Pinned in e2e/slots.ts. */
-  #board #boardhead { padding: 12px 14px 6px 16px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
+  #board #boardhead { padding: 12px 14px 6px 12px; font-size: 12px; font-weight: 600; color: var(--b-ink2); letter-spacing: .01em; }
   /* the close box carries its whole rule here: the pre-alias #boardclose base above is gone (D-4),
      the living bits (flex centering, cursor) moved in — nothing of the old palette is left */
   /* the close box IS the pressed ℹ, on the spot of the pane's ℹ (owner 2026-10-08) */
@@ -2617,7 +2619,8 @@
   #board #boardclose .ico { width: 14px; height: 14px; }
   #board #boardclose:hover { background: var(--b-hover); }
   body.board .panetools .boardtoggle { visibility: hidden; }
-  #board #boardbody { padding: 0 12px 20px; font-size: 12px; line-height: 1.45; }
+  /* text-wrap: pretty — no word alone in a paragraph's last line (rechts-7 P4: „warm.“, „hover)“) */
+  #board #boardbody { padding: 0 12px 20px; font-size: 12px; line-height: 1.45; text-wrap: pretty; }
 
   /* sections */
   /* THE THIRD VERSION'S RHYTHM (rechter-tab-notiz.md §3b): air between GROUPS, not between rows —
@@ -2766,6 +2769,7 @@
     white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.35; padding: 3px 0; }
   #board .zr.repo.zu .nm { color: var(--chat-mute); font-weight: 400; }
   #board .zr .cnt { color: var(--chat-faint); font-weight: 400; font-size: var(--chat-ui-fs); margin-left: 6px; }
+  #board .zr .cnt:empty { display: none; }
   #board .zr .tag { font-size: 10px; color: var(--chat-faint); border: 1px solid var(--chat-edge); border-radius: 4px; padding: 0 4px;
     margin-left: 6px; font-weight: 400; }
   #board .zr.repo .rt { grid-column: 3; justify-self: end; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 2px 4px; }
@@ -2779,7 +2783,8 @@
   #board .zr.zf .fc .ico { width: 12px; height: 12px; transform: rotate(-90deg); }
   /* machines and the stand of every carrier on them */
   #board .zr.stand { grid-template-columns: var(--rk-rail) minmax(0, 1fr); }
-  #board .zr.mach { grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto; }
+  /* the chevron's column stands in every machine row, so every state ends on one edge — with a chevron or without */
+  #board .zr.mach { grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto 14px; }
   #board .zr.mach .fx { grid-column: 1; color: var(--chat-mute); display: grid; place-items: center start; }
   /* a machine: the glyph names its kind (src/board.ts#machineKind), the chip its state as dot AND word (G0.2) */
   #board .zr.mach > .zs { grid-column: 3; grid-row: 1; align-self: center; padding-left: 8px; }
@@ -2938,7 +2943,8 @@
     #board .zr { font-size: 13px; }
     #board .zr .ref { font-size: 11px; }
     #board .zr.stand, #board .zr.mach { min-height: 32px; }
-    #board .zr.mach[role="button"] { grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto 40px; min-height: 40px; }
+    #board .zr.mach, #board .zr.mach[role="button"] { grid-template-columns: var(--rk-rail) minmax(0, 1fr) auto 40px; }
+    #board .zr.mach[role="button"] { min-height: 40px; }
     #board .zr.zq { min-height: 40px; }
     #board .zr.mach[role="button"]:hover, #board .zr.zq:hover { background: transparent; }
     #board .zr.mach.open { background: var(--chat-surface); }
@@ -3028,7 +3034,8 @@
   #board .bpop .bmenuitem { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 3px 8px; border: 0;
     border-radius: var(--r1); background: none; color: var(--chat-prose); font: 400 12px var(--chat-sans); text-align: left; cursor: pointer; }
   #board .bpop .bmenuitem:hover:not(:disabled), #board .bpop .bmenuitem:focus-visible { background: var(--c-hover); color: var(--chat-ink); }
-  #board .bpop .bmenuitem .kk { margin-left: auto; font-size: var(--chat-ui-fs); color: var(--chat-mute); font-family: var(--chat-mono); }
+  #board .bpop .bmenuitem .kk { margin-left: auto; padding-left: 12px; font-size: var(--chat-ui-fs); color: var(--chat-mute); }
+  #board .bpop .bmenuitem .kk.mono { font-family: var(--chat-mono); }
   #board .bpop .bmenuitem.danger { color: var(--danger); }
   #board .bpop .sep { height: 1px; margin: 4px 2px; background: var(--chat-edge); }
   /* THE „HANDOVER“ BLOCK under the session's values (K16, uebergabe-b): what happens next, one line each — when · what —
@@ -3051,6 +3058,7 @@
   #board .bueb .st.grey > .pv { color: var(--chat-mute); }
   #board .bueb .st > .c { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 4px; }
   #board .bueb .cl { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+  #board .bueb .cl > .clafter { display: inline-flex; align-items: center; gap: 6px; }
   #board .bueb .perr, #board .bueb .pnote { margin-top: 4px; font-size: var(--chat-ui-fs); color: var(--danger); }
   #board .bueb .pnote { color: var(--chat-mute); }
   /* a value no longer to pick (at or under the fill once Fleet asked): visible, struck quiet */
@@ -3059,9 +3067,10 @@
   #board .bueb .st.grey .bbtn:disabled { opacity: 1; background: none; border-style: dashed; color: var(--chat-faint); }
   #board .bueb .unit { font-size: var(--chat-ui-fs); color: var(--chat-mute); }
   /* „New session from summary“ (Runde C): agent, model and effort as three labelled pickers, wrapping on a narrow column */
-  #board .bueb .picks { display: flex; flex-wrap: wrap; gap: 4px 10px; width: 100%; }
-  #board .bueb .pickw { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
-  #board .bueb select.pick { min-height: 22px; max-width: 170px; padding: 0 4px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
+  /* one label column and one picker column: the three pickers start on one edge and are one width (rechts-7 P4 F29) */
+  #board .bueb .picks { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 6px; width: 100%; }
+  #board .bueb .pickw { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; min-width: 0; }
+  #board .bueb select.pick { width: 100%; min-height: 22px; max-width: 170px; padding: 0 4px; border: 1px solid var(--chat-edge); border-radius: var(--r1);
     background: var(--chat-surface); color: var(--chat-ink); font: 400 var(--chat-ui-fs) var(--chat-sans); }
   #board .seg:is(.pcts, .mins) button { min-width: 27px; padding: 0 5px; font-variant-numeric: tabular-nums; }
   /* ten thresholds 25–70 (K9 S3c), eleven with a lane's 37, and their unit on one line of the 256-px row; „Aus“ below */
@@ -3100,13 +3109,16 @@
   #board .btabbtn .sum { justify-self: end; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: var(--chat-ui-fs); color: var(--chat-faint); }
   #board .btabx { margin-left: 2px; }
+  /* where one tab carries a glyph after its summary, the others keep its room: every summary ends on one edge */
+  #board .bmoresec:has(.btabx) .btabhd:not(:has(> .btabx))::after { content: ""; flex: none; width: calc(var(--b-hit) + 2px); }
   #board .btabbody { padding: 2px 0 8px 17px; } /* the body starts under the tab's title (chevron 12 + gap 5) */
   #board .btabbody .brights { padding: 0; }
   /* the rights block keeps the column's width: its project paths are cut by the width they get
      (src/rights.ts#pathLine), and 17 px of indent cost the last path segment its room */
   #board .btab[data-tab="rechte"] .btabbody { padding-left: 0; }
   #board .btabbody .bsrow .bskey { width: 86px; }
-  #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px -7px; }
+  /* Open explorer stands on the search field's edge (rechts-7 P4 F28: -7 px put its box left of the field) */
+  #board .btabbody > .bwthead { display: flex; gap: 2px; margin: 0 0 6px; }
   /* the postfach (K13 S6/S9/S10/S11, src/postfach.ts): one conversation per counterpart, the newest message
      on top. Each message is first ONE line — who, the first line of its text, when — and a click opens it.
      BLACK AND WHITE (owner 14.10. 12:1x: „[Zitat entfernt]“
@@ -3197,8 +3209,8 @@
     #board .bueb .st { grid-template-columns: 88px minmax(0, 1fr); font-size: 13px; }
     #board .buebh button { min-height: 40px; padding: 0 12px; }
     #board .seg:is(.pcts, .mins) button { min-width: 36px; padding: 0 4px; }
-    /* eight minutes and their unit on one line of Info's 335-px sheet */
-    #board .seg.mins button { min-width: 32px; }
+    /* „after“, eight minutes and their unit on one line of Info's ~300-px window — the three wrap as one piece (.clafter) */
+    #board .seg.mins button { min-width: 28px; }
     /* eleven thresholds and their unit on one line of Info's ~300-px window (K16 Teil 2: the settings stand in it now) */
     #board .seg.pcts button { min-width: 22px; padding: 0 1px; }
     #board .seg button { min-height: 40px; padding: 0 14px; }

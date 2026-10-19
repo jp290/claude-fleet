@@ -23,6 +23,7 @@ import { AUTOS_TICK_MS, BASE, REPO, ROOT, UntilTimeout, until, check, get, plogR
 import { laneSuiteWatchMessage } from "../lane-signals";
 import { openLane, type Lane } from "./lane-helpers";
 import { suiteMeter, calmCase, laneDisplayName, laneTail, laneTitleOf, meterKind, meterLine, shortTitle, type MeterInput } from "../src/suitemeter";
+import { CHECK_KIND, RUN_STATE } from "../src/board-words";
 import { DAEMON_FEATURES, modulesEnv } from "../helper-daemon/daemon";
 import { localProofFor, verificationProportionFor, type LocalProof, type LocalProofContext } from "../verify-proportion";
 import { modulePlanFor, SERVER_MODULE_ANCHORS } from "../suite-modules";
@@ -241,10 +242,10 @@ export async function run(): Promise<void> {
       gate: { lock: null, reports: [rep(17, "running")] } }).balls[0];
     check("(LS.meter) a lane uses its worktree letter, not a slot-number threshold or branch tail",
       referenced.name === "3A" && phases.balls[0].name === "Slot 1", referenced.name);
-    check("(LS.meter) each run kind has an owner word and a German explanation",
-      meterKind("land check").label === "Landprüfung" && meterKind("land check").title.includes("bevor")
-        && meterLine(referenced, 1000, true).at(-1) === "Vorschau"
-        && meterKind("post-land check").label === "Nachprüfung", meterLine(referenced, 1000).join(" · "));
+    check("(LS.meter) each run kind has an owner word and an English explanation",
+      meterKind("land check").label === "Land check" && meterKind("land check").title.includes("before")
+        && meterLine(referenced, 1000, true).at(-1) === "Preview"
+        && meterKind("post-land check").label === "Check after land", meterLine(referenced, 1000).join(" · "));
     let meterClient = "", meterClientError = "";
     try { meterClient = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/board.ts`, "utf8"); }
     catch (e) { meterClientError = e instanceof Error ? e.message : String(e); }
@@ -291,7 +292,7 @@ export async function run(): Promise<void> {
       rowUsesSentence: /el\("span", "w", runSentence\(b\)\)/.test(meterCode),
       hoverTitle: /line\.title = `[^`\n]*\$\{meterKind\(b\.kind\)\.title\}`/.test(meterCode),
     };
-    check("(LS.meter) the right tab uses the German row words and explains them on hover",
+    check("(LS.meter) the right tab uses the row words and explains them on hover",
       !meterClientError && Object.values(meterWords).every(Boolean),
       meterClientError || `dead: ${Object.entries(meterWords).filter(([, ok]) => !ok).map(([k]) => k).join(",") || "-"}`);
     check("(LS.meter) an unlabelled lane is named by its branch's four hex, the part lanes do NOT share",
@@ -353,7 +354,7 @@ export async function run(): Promise<void> {
     const landedWait = (title: string | null) => suiteMeter({ ...base, slots: [{ id: 17, label: null, branch: "fleet/b-2222", letter: "3A", title }],
       audit: { running: null, waiting: [{ repo: "r", main: "main", branch: "fleet/b-2222", mainAfter: "f00", at: 11 }], stats: null } }).balls[0]?.what;
     check("(LS.title) a folded land names its lane by title; untitled it keeps the four hex beside the name",
-      landedWait("Kurz") === "nach Land von 3A · Kurz" && landedWait(null) === "nach Land von 3A (2222)",
+      landedWait("Kurz") === "after the land of 3A · Kurz" && landedWait(null) === "after the land of 3A (2222)",
       `${landedWait("Kurz")} / ${landedWait(null)}`);
     // the WIRE half: the server derives the title on the poll from the founding card and ships it;
     // the sidebar swaps only a dispatcher-written ⎇ label for it, never a hand-given one
@@ -399,7 +400,7 @@ export async function run(): Promise<void> {
     check("(LS.meter) the post-land audit is ONE ball in 'run' (its slotless lock row steps aside), its folded land waits",
       at(audit) === "run:post-land check:plain wait:post-land check:plain"
         && audit.balls.find((b) => b.station === "run")?.what === "main@abcdef01"
-        && audit.balls.find((b) => b.station === "wait")?.what === "nach Land von Lane 2222 (2222)", JSON.stringify(audit.balls));
+        && audit.balls.find((b) => b.station === "wait")?.what === "after the land of Lane 2222 (2222)", JSON.stringify(audit.balls));
     const onHelper = suiteMeter({ ...base, audit: live,
       devices: [{ name: "workhorse", claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: 0 }] }] });
     check("(LS.meter) an audit a helper holds sits at 'helper' and names the device as its PLACE",
@@ -440,28 +441,28 @@ export async function run(): Promise<void> {
     check("(LS.meter) waiters name their slot and branch and say whose run is ahead",
       queued.balls.filter((b) => b.station === "wait").length === 2
         && queued.balls.some((b) => b.name === "6B" && b.branch === "fleet/x-bbbb"
-          && b.what === "wartet hinter 5A · Platz 1/2")
-        && queued.balls.some((b) => b.what === "wartet hinter 6B · Platz 2/2"),
+          && b.what === "waiting behind 5A · place 1/2")
+        && queued.balls.some((b) => b.what === "waiting behind 6B · place 2/2"),
       JSON.stringify(queued.balls.map((b) => [b.station, b.what])));
     const firstWaiter = queued.balls.find((b) => b.name === "6B");
     check("(LS.meter) a narrow row reads branch, wait state, then kind",
       firstWaiter !== undefined && meterLine(firstWaiter, Date.now(), true)[0] === "bbbb"
-        && meterLine(firstWaiter, Date.now(), true)[1] === "wartet hinter 5A"
-        && meterLine(firstWaiter, Date.now(), true)[2].startsWith("seit ")
-        && meterLine(firstWaiter, Date.now(), true).at(-1) === "Wartender Prüflauf",
+        && meterLine(firstWaiter, Date.now(), true)[1] === "waiting behind 5A"
+        && meterLine(firstWaiter, Date.now(), true)[2].startsWith("for ")
+        && meterLine(firstWaiter, Date.now(), true).at(-1) === "Queued check run",
       JSON.stringify(firstWaiter && meterLine(firstWaiter, Date.now(), true)));
     const ownedHolder = queued.balls.find((b) => b.station === "run");
     check("(LS.meter) an unreported holder uses the same board name and branch as its lock owner",
       ownedHolder?.name === "5A" && ownedHolder.branch === "fleet/x-aaaa", JSON.stringify(ownedHolder));
     check("(LS.meter) missing owner metadata stays explicit instead of borrowing another lane",
-      queued.balls.some((b) => b.name === "Lauf 902" && b.branch === null), JSON.stringify(queued.balls));
+      queued.balls.some((b) => b.name === "run 902" && b.branch === null), JSON.stringify(queued.balls));
     // a ticket whose process is gone is the wrappers' to reap, not this reader's to hide: it is
     // still part of what the directory says, and a silently dropped one would make the line look
     // shorter than the next contender will find it
     const orphan = suiteMeter({ ...base, gate: { lock: null, reports: [], queue: [q(3, 903, false, 0)] } });
     check("(LS.meter) a ticket whose process is gone is SHOWN and said to be gone, never silently dropped",
       orphan.balls.length === 1 && orphan.balls[0].tone === "warn"
-        && /Prozess weg/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
+        && /process gone/.test(orphan.balls[0].what), JSON.stringify(orphan.balls));
     check("(LS.meter) a server that sends no queue draws no waiters — absent is 'not reported', not 'nobody waits'",
       suiteMeter({ ...base, gate: { lock: { pid: 900, alive: true }, reports: [rep(2, "running")] } })
         .balls.filter((b) => b.kind === "queued check run").length === 0, "a phantom waiter");
@@ -469,15 +470,16 @@ export async function run(): Promise<void> {
     // === (LS.names) THE PRÜFUNGEN ROWS NAME A LANE BY BAND AND KURZTITEL (owner 26.09., note cdf43028:
     // „[Zitat entfernt]“). Two halves, each run from its source
     // and each run again on a mutant that brings the old naming back — a claim the mutant leaves green
-    // would not be about the naming. The model: a waiter behind a TITLED lane says "wartet hinter 0A",
+    // would not be about the naming. The model: a waiter behind a TITLED lane says "waiting behind 0A",
     // the reference alone, while its own name carries the title. The board: the row's lane is
     // "0B <Kurztitel>", the branch's four hex only in the tooltip — visible for a lane without a band.
     let meterSrc = "", namesError = "";
     try { meterSrc = readFileSync(`${dirname(realpathSync(`${ROOT}/node_modules`))}/src/suitemeter.ts`, "utf8"); }
     catch (e) { namesError = e instanceof Error ? e.message : String(e); }
     const titledQueue = (src: string): string[] => {
-      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(src.replace(/^export /gm, ""));
-      const meter = new Function(`${js}\nreturn suiteMeter;`)() as typeof suiteMeter;
+      // the module's one import (its words, src/board-words.ts) is handed in: a Function body takes no import
+      const js = new Bun.Transpiler({ loader: "ts" }).transformSync(src.replace(/^import [^\n]*$/gm, "").replace(/^export /gm, ""));
+      const meter = new Function("CHECK_KIND", `${js}\nreturn suiteMeter;`)(CHECK_KIND) as typeof suiteMeter;
       const lane = (id: number, letter: string, tail: string) =>
         ({ id, label: null, branch: `fleet/261009-x-${tail}`, letter, title: `Titel von ${letter} mit genug Worten zum Kuerzen` });
       return meter({ ...base, slots: [lane(5, "0A", "aaaa"), lane(6, "0B", "bbbb"), lane(7, "0C", "cccc")], gate: {
@@ -487,8 +489,8 @@ export async function run(): Promise<void> {
         .balls.filter((b) => b.station === "wait").map((b) => `${b.name} | ${b.what}`);
     };
     const queueSays = (got: string[]) => JSON.stringify(got) === JSON.stringify([
-      `0B · ${shortTitle("Titel von 0B mit genug Worten zum Kuerzen")} | wartet hinter 0A · Platz 1/2`,
-      `0C · ${shortTitle("Titel von 0C mit genug Worten zum Kuerzen")} | wartet hinter 0B · Platz 2/2`]);
+      `0B · ${shortTitle("Titel von 0B mit genug Worten zum Kuerzen")} | waiting behind 0A · place 1/2`,
+      `0C · ${shortTitle("Titel von 0C mit genug Worten zum Kuerzen")} | waiting behind 0B · place 2/2`]);
     const queueMutants = [
       ["let ahead = holderSlot !== null ? refOf(holderSlot) : holderName;", "let ahead = holderName;"],
       ["if (t.alive) ahead = t.owner?.slot !== null && t.owner?.slot !== undefined ? refOf(t.owner.slot) : name;", "if (t.alive) ahead = name;"],
@@ -498,7 +500,7 @@ export async function run(): Promise<void> {
       queueGot = titledQueue(meterSrc);
       queueMutantsRed = queueMutants.every((m) => m !== meterSrc) && queueMutants.every((m) => { try { return !queueSays(titledQueue(m)); } catch { return false; } });
     } catch (e) { namesError ||= e instanceof Error ? e.message : String(e); }
-    check("(LS.names) a waiter behind a titled lane says 'wartet hinter 0A' — the reference alone, its own name keeps the title (mutants red)",
+    check("(LS.names) a waiter behind a titled lane says 'waiting behind 0A' — the reference alone, its own name keeps the title (mutants red)",
       !namesError && queueSays(queueGot) && queueMutantsRed, namesError || `${JSON.stringify(queueGot)} mutantsRed=${queueMutantsRed}`);
 
     // the board half: runWho and waitWord are cut from src/board.ts with laneWords, and run against a
@@ -520,7 +522,7 @@ export async function run(): Promise<void> {
       const code = sliceOf(src, "function waitBehind(", "// \"e2e-isolated\" broke at its hyphen")
         + sliceOf(src, "export function laneWords(", "\n}\n") + "\n}\n" + sliceOf(src, "export function branchDay(", "\n}\n") + "\n}\n";
       const js = new Bun.Transpiler({ loader: "ts" }).transformSync(code.replace(/^export /gm, ""));
-      return new Function("el", "nameWithoutModel", "shortTitle", `${js}\nreturn { runWho, waitWord };`)(fakeEl, nameWithoutModel, shortTitle) as {
+      return new Function("el", "nameWithoutModel", "shortTitle", "RUN_STATE", `${js}\nreturn { runWho, waitWord };`)(fakeEl, nameWithoutModel, shortTitle, RUN_STATE) as {
         runWho: (s: Record<string, unknown>, band: string | undefined) => StandIn; waitWord: (b: Record<string, unknown>) => string };
     };
     const TITLE = "Lupe Referenzen erklaeren und an der Stelle zeigen";
@@ -533,8 +535,8 @@ export async function run(): Promise<void> {
         untitled: who({ id: 22, cwd: "/w", label: "⎇ 261009-lupe-referenzen-4b63", worktree: wt("4b63"), taskTitle: null }, "0C"),
         hand: who({ id: 23, cwd: "/w", label: "Mein Name", worktree: wt("5c74"), taskTitle: null }, "0D"),
         bandless: who({ id: 24, cwd: "/w", label: "⎇ 261009-lupe-referenzen-6d85", worktree: wt("6d85"), taskTitle: null }),
-        wait: waitWord({ station: "wait", what: "wartet hinter 0A · Platz 1/2" }),
-        waitUnnamed: waitWord({ station: "wait", what: "wartet hinter Lauf 902 · Platz 2/2" }),
+        wait: waitWord({ station: "wait", what: "waiting behind 0A · place 1/2" }),
+        waitUnnamed: waitWord({ station: "wait", what: "waiting behind run 902 · place 2/2" }),
       };
     };
     const rowsSay = (r: ReturnType<typeof rowsOf>) =>
@@ -542,7 +544,7 @@ export async function run(): Promise<void> {
       && r.untitled.ref === "0C" && r.untitled.text === "0C lupe referenzen" && r.hand.text === "0D Mein Name"
       && ![r.titled, r.untitled, r.hand].some((x) => /3a52|4b63|5c74/.test(x.text))
       && r.bandless.ref === "24" && r.bandless.text.includes("6d85")
-      && r.wait === "wartet hinter 0A" && r.waitUnnamed === "wartet";
+      && r.wait === "waiting behind 0A" && r.waitUnnamed === "waiting";
     const boardMutants = [
       [/const name = !band \? nameWithoutModel\(s\)[\s\S]*?: nameWithoutModel\(s\);/, "const name = nameWithoutModel(s);"],
       ["return q ? q[1] : null;", "return null;"],
@@ -555,10 +557,10 @@ export async function run(): Promise<void> {
     // the row is built from these two and its hover carries the branch: the anchors, comments stripped
     const rowWiring = {
       who: /const who = s\?\.cwd \? runWho\(s, bands\.get\(s\.id\)\)/.test(meterCode),
-      wait: /el\("span", "w", `\$\{kind\} \$\{b\.station === "wait" \? waitWord\(b\) : "läuft"\}`\)/.test(meterCode),
-      hoverBranch: /line\.title = `\$\{b\.title \? [^\n]*\$\{runSentence\(b\)\} · \$\{b\.branch \?\? "Branch nicht gemeldet"\}/.test(meterCode),
+      wait: /el\("span", "w", `\$\{kind\} \$\{b\.station === "wait" \? waitWord\(b\) : RUN_STATE\.running\}`\)/.test(meterCode),
+      hoverBranch: /line\.title = `\$\{b\.title \? [^\n]*\$\{runSentence\(b\)\} · \$\{b\.branch \?\? "branch not reported"\}/.test(meterCode),
     };
-    check("(LS.names) a Prüfungen row names its lane '0B <Kurztitel>' and says 'wartet hinter 0A'; the four hex stand in the hover, visible only without a band (mutants red)",
+    check("(LS.names) a Checks row names its lane '0B <Kurztitel>' and says 'waiting behind 0A'; the four hex stand in the hover, visible only without a band (mutants red)",
       !namesError && rows !== null && rowsSay(rows) && boardMutantsRed && Object.values(rowWiring).every(Boolean),
       namesError || `${JSON.stringify(rows)} mutantsRed=${boardMutantsRed} dead=${Object.entries(rowWiring).filter(([, ok]) => !ok).map(([k]) => k).join(",") || "-"}`);
   }

@@ -945,6 +945,25 @@ Gemessen 2026-10-07 an einem echten Claude-Transkript (dieser Lane, 628 Zeilen, 
 Scratch-Instanz: Übergabe 8 min alt, Rest 9 Einträge / 1227 Zeichen, Brief **2242 Bytes**; ohne
 stehende Übergabe 17 Einträge / 3899 Zeichen. Obergrenze: Ritual (~0,7 KB) + 24 000 Zeichen Rest.
 
+## branches land — eine Session landet ihren eigenen Branch (seit 2026-10-18)
+
+Owner Z132, 18.10.: „[Zitat entfernt]“
+ Der Owner drückt „[Zitat entfernt]“ im Menü des Branches (`POST /api/branches/seen` mit der Spitze, die das Board
+zeigt); danach landet die Session die Charge selbst:
+
+```sh
+curl -X POST http://<fleet-host>:<port>/api/self/branches/land -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -H 'content-type: application/json' -d '{"subject": "Kurzer Betreff der Charge"}'
+```
+
+- Repo und Branch nennt der Checkout der Session: der Board-Branch in ihrem eigenen Worktree. `branch` im Body ist nur
+  eine Gegenprobe — ein fremder Branch gibt 403; eine Session ohne eigenen Branch (Haupt-Checkout, Lane, losgelöst) 404.
+- Gelandet wird nur, wenn das „passt“ auf genau der Spitze von jetzt steht (sonst 409 mit der Spitze, auf die es zielt)
+  und ein brauchbarer Merge-Check vorliegt (`bun ci/merge-check.ts <branch> --base <chargeBase>`; sonst 409 mit dem Grund).
+  `squash` wie an der Owner-Tür; „[Zitat entfernt]“ gibt es hier nicht.
+- Derselbe Kern wie `POST /api/branches/land` (server/branch-land.ts). Die Antwort sagt `deploy`, wenn der Server aus
+  diesem Repo läuft — deployen tut weiter der Owner bzw. die Bauleitung.
+
 ## Bindung — eine MAIN, n Programs (seit 2026-10-06)
 
 Owner 2026-10-06 abends: „[Zitat entfernt]“ — je Projekt (Repo) genau eine dauerhafte MAIN mit

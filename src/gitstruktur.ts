@@ -17,7 +17,7 @@
 import type { BranchCheckView, BranchesRepoView, WorkplaceRepo, WorkplaceRow } from "./protocol";
 import { shortTitle } from "./suitemeter";
 
-export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "stale" | "skipped" | "landed";
+export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "skipped" | "landed";
 export interface GsSlot {
   id: number; cwd: string | null; label: string | null; openedAt?: number; repo?: string | null; taskTitle?: string;
   git?: { branch: string } | null; worktree?: { repo: string; branch: string } | null;
@@ -29,18 +29,23 @@ export interface GsSession { slot: number; active: boolean; where: string; card:
 export interface GsTi { port: number | null }
 // a lane is named by its session (owner Z81 „[Zitat entfernt]“); the id only when there is none.
 // path: its worktree, where it has one; live: a live session's lane (src/board.ts#isLiveLane)
+// older: a check of an older tip — for the tip now it is no check (owner 18.10. 23:4x, the dashed diamond was „[Zitat entfernt]“
+// ); the hover names the commit it looked at ("" where the server does not say which)
 export interface GsLane { branch: string; name: string; named: boolean; sessions: GsSession[]; check: Diamond; merged: boolean;
-  ti: GsTi | null; live: boolean; path: string | null }
+  ti: GsTi | null; live: boolean; path: string | null; older: string | null }
 // one row under main: a branch (with its lanes under it) or a lane that lands on main itself
 export interface GsItem extends GsLane { kind: "branch" | "lane"; lanes: GsLane[] }
-// next: the branches whose merge-check is green — „becomes main when this charge lands“; none green, no next. It has no
+// next: the branches whose merge-check is green — „becomes main when this charge lands“; none green, null (the drawing then
+// shows next quiet: nothing ready to land yet). It has no
 // head of its own: the land builds a new commit with the same tree, so the candidate's SHA would be a false claim.
 // main's check after a land is no sign here (owner Z86: „[Zitat entfernt]“) — it is text in main's menu
 export interface GsModel { repo: string; integration: string; head: string | null; sessions: GsSession[]; items: GsItem[]; next: string[] | null;
   ti: GsTi | null }
 // what the board knows beside the rows: which lane is a live one, and a lane check that runs on a helper before the row
 // says so (src/board.ts#gateLook)
-export interface GsOpts { live?: (branch: string) => boolean; run?: (w: WorkplaceRow) => "running" | "waiting" | null }
+// hide: what the gear in the head leaves out (owner Z124/Z131) — landed heads nobody works at, heads without a session
+export interface GsOpts { live?: (branch: string) => boolean; run?: (w: WorkplaceRow) => "running" | "waiting" | null;
+  hide?: { landed: boolean; idle: boolean } }
 const tiOf = (w: WorkplaceRow | undefined): GsTi | null => {
   if (w?.testinstanz?.state !== "up") return null;
   const port = w.testinstanz.instance.port;
@@ -65,8 +70,11 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
     // goes stale at the land, so it speaks again only once the branch has commits since
     const last = b?.lands.at(-1);
     const merged = !!last && b?.chargeCommits === 0;
+    // the server says which tip a stale check looked at in its why ("geprüft war <sha> gegen <base>", server.ts#chargeCheckView)
+    const st = b?.check?.state ?? "none", stale = st === "stale";
     const made: GsItem = { kind, branch, name: b?.name || branch, named: !!b?.name, sessions: [],
-      check: merged ? "landed" : b?.check?.state ?? "none", merged, lanes: [], ti: null, live: false, path: null };
+      check: merged ? "landed" : st === "stale" ? "none" : st, merged, lanes: [], ti: null, live: false, path: null,
+      older: !merged && stale ? (/\b[0-9a-f]{7,40}\b/.exec(b?.check?.why ?? "")?.[0].slice(0, 7) ?? "") : null };
     items.set(branch, made);
     return made;
   };
@@ -115,7 +123,7 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
       const lane: GsLane = { branch: w.branch, name: name ?? (w.branch.split(/[/-]/).pop() || w.branch), named: name !== null,
         sessions: ses ? [ses] : [], check: w.target?.landed === "yes" ? "landed" : opts.run?.(w) ?? w.checks.gate?.state ?? "none",
         merged: w.target?.landed === "yes",
-        ti: tiOf(w), live: opts.live?.(w.branch) ?? false, path: w.path };
+        ti: tiOf(w), live: opts.live?.(w.branch) ?? false, path: w.path, older: null };
       lanesOn.set(parent, [...(lanesOn.get(parent) ?? []), lane]);
     }
   }
@@ -139,8 +147,31 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
     it.path = w?.path ?? null;
   }
   const green = all.filter((i) => i.kind === "branch" && i.check === "green").map((i) => i.branch);
-  return { repo: R.repo, integration, head, sessions: mainSessions, items: all, next: green.length ? green : null,
+  // THE GEAR'S SWITCHES (owner Z124 „[Zitat entfernt]“, Ja 18.10. 22:4x): a hidden head is one
+  // no session works at — landed with nothing since, or with no check running or waiting; a branch stays while a lane
+  // under it stays. next still counts every green branch: it says what main becomes
+  const { landed = false, idle = false } = opts.hide ?? {};
+  const gone = (l: GsLane) => !l.sessions.length && ((landed && l.merged) || (idle && l.check !== "running" && l.check !== "waiting"));
+  const shown = all.flatMap((i) => {
+    const lanes = i.lanes.filter((l) => !gone(l));
+    return gone(i) && !lanes.length ? [] : [{ ...i, lanes }];
+  });
+  return { repo: R.repo, integration, head, sessions: mainSessions, items: shown, next: green.length ? green : null,
     ti: primary?.branch === integration ? tiOf(primary) : null };
+}
+
+// THE SESSION'S REPO (owner Z131: „[Zitat entfernt]“
+// ): a lane names its repo; any other session reports the top of its checkout (server.ts#repoInfo), and for a
+// session in a linked worktree — a branch session — that top is the worktree, so the repo is the one holding the
+// innermost checkout around it
+export function sessionRepo(s: GsSlot, repos: readonly WorkplaceRepo[]): WorkplaceRepo | undefined {
+  if (!s.cwd) return undefined;
+  if (s.worktree) return repos.find((R) => R.repo === s.worktree?.repo);
+  const at = s.repo ?? s.cwd;
+  let best: { R: WorkplaceRepo; len: number } | undefined;
+  for (const R of repos) for (const p of [R.repo, ...(R.worktrees ?? []).map((w) => w.path)])
+    if ((at === p || at.startsWith(`${p}/`)) && p.length > (best?.len ?? -1)) best = { R, len: p.length };
+  return best?.R;
 }
 
 // THE DRAWING: one row per head, rows 30 px apart; main on top, its items below, each branch's lanes below it.
@@ -152,12 +183,14 @@ export function gitModel(R: WorkplaceRepo, board: BranchesRepoView | undefined, 
 // ONE DIAMOND SIZE (owner Z86: „[Zitat entfernt]“); circles at about half (owner Z87: „[Zitat entfernt]“)
 const ROW = 30, RH = 20, TOP = 14, CR = 5, CSTEP = 13, TI_SQ = 8, DR = 5;
 const X = { dot: 5, main: 12, mainW: 56, trunk: 24, l1: 38, sub: 50, l2: 80 };
-const NEXT_W = 46, RECT_MIN = 48, BRANCH_MAX = 120, LANE_MAX = 170;
+const NEXT_W = 40, RECT_MIN = 48, BRANCH_MAX = 120, LANE_MAX = 170;
 // the average width of a character at the Info tab's 12 px, for the drawing's own estimate before the browser measures
 const CH = 6.9, CH_MONO = 7.3;
 export const GS_DEFAULT_WIDTH = 320;
-const cols = (W: number, next: boolean) => {
-  const Xc = next ? W - 2 - NEXT_W - 26 : W - 8;
+// next always holds its column at the right (rechts-7 B), 14 px narrower than before so a lane's test instance and its port
+// keep their place beside the lane's rectangle (Mangel 66)
+const cols = (W: number) => {
+  const Xc = W - 2 - NEXT_W - 18;
   return { Xc, Xb: Xc - 16, Xl: Xc - 28, Xld: Xc - 40 };
 };
 // a rectangle and the test instance after it share what is left of a row: the instance only where the rectangle keeps its
@@ -179,22 +212,23 @@ const fit = (text: string, width: number): string => {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 };
 const CHECK_WORD: Record<Diamond, string> = { none: "not checked yet", running: "check running", waiting: "check waiting",
-  green: "check passed", red: "check failed", stale: "an older state was checked", skipped: "no check", landed: "landed" };
+  green: "check passed", red: "check failed", skipped: "no check", landed: "landed" };
+const NEXT_QUIET = "nothing ready to land yet — a branch shows here once its merge check is green on the current main";
 
 // THE GEOMETRY, pure: every shape with its place, so a check reads where a circle stands against its head.
 // gap: a selected row opens its menu under it (owner Z83 „[Zitat entfernt]“) — every row below moves down by h
 export type GsShape =
   | { t: "line"; x1: number; y1: number; x2: number; y2: number; open: boolean }
-  | { t: "rect"; x: number; y: number; w: number; text: string; kind: "main" | "branch" | "lane"; key: string; title: string; live: boolean }
+  | { t: "rect"; x: number; y: number; w: number; text: string; kind: "main" | "branch" | "lane"; key: string; title: string; live: boolean; quiet?: boolean }
   | { t: "circle"; x: number; y: number; r: number; ses: GsSession; at: string }
-  | { t: "diamond"; x: number; y: number; r: number; d: Diamond; merged: boolean; of: string }
+  | { t: "diamond"; x: number; y: number; r: number; d: Diamond; merged: boolean; of: string; older?: string | null }
   | { t: "ti"; x: number; y: number; w: number; port: number | null; of: string }
   | { t: "point"; x: number; y: number; title: string };
 export const tiWidth = (ti: GsTi): number => (ti.port === null ? TI_SQ : TI_SQ + 4 + Math.ceil(CH_MONO * `:${ti.port}`.length));
 export function gitLayout(m: GsModel, opts: { width?: number; gap?: { after: string; h: number } } = {}): { width: number; height: number; shapes: GsShape[] } {
   const { gap } = opts;
   const W = Math.round(opts.width ?? GS_DEFAULT_WIDTH);
-  const { Xc, Xb, Xl, Xld } = cols(W, !!m.next);
+  const { Xc, Xb, Xl, Xld } = cols(W);
   const shapes: GsShape[] = [];
   const line = (x1: number, y1: number, x2: number, y2: number, open = false) => { if (x1 !== x2 || y1 !== y2) shapes.push({ t: "line", x1, y1, x2, y2, open }); };
   // a horizontal run from x1 to x2 past marks on it (circles, a test instance): the line stops at each
@@ -229,13 +263,15 @@ export function gitLayout(m: GsModel, opts: { width?: number; gap?: { after: str
   const mainEnd = mainCircles.length ? mainCircles.at(-1)! + CR : X.main + X.mainW;
   if (m.ti && mainEnd + 6 + tiWidth(m.ti) + 4 <= Xc - 4) mainMarks.push(...ti(m.ti, mainEnd, mainY, mainKey));
   run(X.main + X.mainW, Xc, mainY, mainMarks);
-  if (m.next) {
-    const why = `becomes ${m.integration} when ${m.next.length === 1 ? `the batch of ${m.next[0]} lands` : `the batches of ${m.next.join(", ")} land`}`;
-    line(Xc, mainY, Xc + 14 - DR, mainY);
-    shapes.push({ t: "diamond", x: Xc + 14, y: mainY, r: DR, d: "green", merged: false, of: "next" });
-    line(Xc + 14 + DR, mainY, Xc + 26, mainY);
-    shapes.push({ t: "rect", x: Xc + 26, y: mainY, w: NEXT_W, text: "next", kind: "main", key: "next", title: `next — ${why}`, live: false });
-  }
+  // NEXT ALWAYS STANDS (owner 18.10. 23:4x: „[Zitat entfernt]“; Ja 19.10. 03:38 on the proposal): quiet and
+  // grey with a hollow diamond while no branch is green on the current main, ready once one is
+  const ready = !!m.next;
+  const why = m.next ? `becomes ${m.integration} when ${m.next.length === 1 ? `the batch of ${m.next[0]} lands` : `the batches of ${m.next.join(", ")} land`}`
+    : NEXT_QUIET;
+  line(Xc, mainY, Xc + 9 - DR, mainY, !ready);
+  shapes.push({ t: "diamond", x: Xc + 9, y: mainY, r: DR, d: ready ? "green" : "none", merged: false, of: "next" });
+  line(Xc + 9 + DR, mainY, Xc + 18, mainY, !ready);
+  shapes.push({ t: "rect", x: Xc + 18, y: mainY, w: NEXT_W, text: "next", kind: "main", key: "next", title: `next — ${why}`, live: false, quiet: !ready });
   // A ROW'S WAY UP is dashed until it landed (owner Z81 c; Z87: the stretch up to the diamond too): a stretch of a collector
   // that several rows share is drawn once, dashed while any row arriving over it has not landed — two dashes on top of each
   // other read as a line. Only where a head leaves its parent is the line solid
@@ -256,7 +292,7 @@ export function gitLayout(m: GsModel, opts: { width?: number; gap?: { after: str
     marks.push(...ti(rowTi, behind.length ? behind.at(-1)! + CR : x0 + w, yy, key));
     run(x0 + w, Xb - DR, yy, marks, !it.merged);
     if (it.kind === "branch") it.sessions.forEach((ses, k) => circle(behind[k]!, yy, ses, key));
-    shapes.push({ t: "diamond", x: Xb, y: yy, r: DR, d: it.check, merged: it.merged, of: key });
+    shapes.push({ t: "diamond", x: Xb, y: yy, r: DR, d: it.check, merged: it.merged, of: key, older: it.older });
     line(Xb + DR, yy, Xc, yy, !it.merged);
     line(Xc, yy, Xc, i ? lay[i - 1]!.y : mainY, lay.slice(i).some((r) => !r.it.merged));
     if (lanes.length) line(X.sub, yy + RH / 2, X.sub, lanes.at(-1)!.y);
@@ -313,10 +349,11 @@ export function mergeCheckLine(chk: BranchCheckView | null): string {
 // a checkout's distance in step 1: ahead of where it branched, behind its target as the target stands NOW (target.behind,
 // the number the lane's Rebase button names) — the fork-point distance says 0 behind long after the target moved on
 export function distanceLine(w: WorkplaceRow): string | null {
-  return w.distance ? `${w.distance.ahead} ahead, ${w.target.behind ?? w.distance.behind} behind ${w.target.branch}` : null;
+  // a number never ends a line apart from its word (no-break spaces)
+  return w.distance ? `${w.distance.ahead}\u00a0ahead, ${w.target.behind ?? w.distance.behind}\u00a0behind ${w.target.branch}` : null;
 }
 export function headWords(h: GsHead): GsWord[] {
-  // the test instance first wherever there is a checkout to run one from — without a template it says so there
+  // the test instance first wherever there is a checkout to run one from — a repo without its template shows no line (src/board.ts#gsPanel)
   const ti: GsWord[] = h.worktree && !h.mirror ? ["testinstanz"] : [];
   // how its next batch lands (a board branch: BranchRecord.landForm; a lane: the browser's choice) — gone once landed
   const form: GsWord[] = !h.landed && !h.mirror ? ["landform"] : [];
@@ -325,7 +362,8 @@ export function headWords(h: GsHead): GsWord[] {
   // a worktree no session holds: open it in a free slot (a board branch starts its session instead)
   const tree: GsWord[] = !h.board && h.slot === null && h.worktree && !h.mirror ? ["worktree"] : [];
   switch (h.at) {
-    case "main": return [...ti, "live", "landform"];
+    // the project's land form for every lane moved to the gear in the head (owner Ja 18.10. 22:4x)
+    case "main": return [...ti, "live"];
     case "branch": return [...ti, ...(h.board ? form : []), ...session, ...tree];
     case "lane": return [...ti, ...form, ...(h.live && h.slot !== null && !h.landed ? ["mergen" as const] : []), ...session, ...tree];
     case "branch-check": return h.board ? ["charge", "pruefen"] : [];
@@ -337,12 +375,12 @@ export function headWords(h: GsHead): GsWord[] {
 // under the structure (Z87: the i was „[Zitat entfernt]“): the signs this drawing uses, one line each
 // — a sign one line cannot explain does not belong in the drawing
 export type GsSign = "rect" | "rect-live" | "circle" | "circle-on" | "diamond-none" | "diamond-running" | "diamond-green" | "diamond-red"
-  | "diamond-stale" | "diamond-skipped" | "diamond-landed" | "line-open" | "line" | "ti" | "point";
+  | "diamond-skipped" | "diamond-landed" | "line-open" | "line" | "ti" | "point";
 export const GS_LEGEND: Record<GsSign, string> = {
   rect: "Git head: main, a branch or a lane", "rect-live": "Lane of a live session",
-  circle: "Slot with a session, resting (its card on hover)", "circle-on": "Slot with a session, working right now",
+  circle: "Slot with a session, resting", "circle-on": "Slot with a session, working right now",
   "diamond-none": "Check on the way up: none yet", "diamond-running": "Check running or waiting",
-  "diamond-green": "Check passed", "diamond-red": "Check failed", "diamond-stale": "An older state was checked",
+  "diamond-green": "Check passed", "diamond-red": "Check failed",
   "diamond-skipped": "Check skipped", "diamond-landed": "Landed", "line-open": "Dashed: not landed yet", line: "Solid: landed, or where a head branches off",
   ti: "Test instance running, its port beside it", point: "Commit point: where main stands",
 };
@@ -376,6 +414,8 @@ function sample(sign: GsSign): SVGSVGElement {
 // and its menu, the jump to a session, and lines that stay in sight under the structure
 export interface GsUi {
   open: boolean; toggle: () => void; info: boolean; toggleInfo: () => void; side: HTMLElement[];
+  // the gear's panel under the head, while it is open (src/board.ts#gsSettings)
+  settings: HTMLElement | null;
   sel: string | null; select: (key: string | null) => void; jump: (slot: number) => void;
   // the menu of the selection; fresh: what just opened unfolds once, calmly — the first step, or the second under it
   panel: HTMLElement | null; fresh: "step1" | "step2" | null; below: HTMLElement[];
@@ -410,6 +450,7 @@ export function gitStructure(m: GsModel, ui: GsUi): HTMLElement {
   side.append(...ui.side);
   head.append(fold, side);
   box.appendChild(head);
+  if (ui.settings) box.appendChild(ui.settings);
   if (!open) return box;
 
   const wrap = document.createElement("div");
@@ -454,7 +495,7 @@ export function gitStructure(m: GsModel, ui: GsUi): HTMLElement {
     for (const p of L.shapes) {
       if (p.t === "line") s.appendChild(svg("path", { d: `M${p.x1} ${p.y1} L${p.x2} ${p.y2}`, class: `gsl${p.open ? " open" : ""}` }));
       else if (p.t === "rect") {
-        const g = svg("g", { class: `gsr ${p.kind}${p.live ? " live" : ""}`, "data-head": p.key }, p.live ? `Live session · ${p.title}` : p.title);
+        const g = svg("g", { class: `gsr ${p.kind}${p.live ? " live" : ""}${p.quiet ? " quiet" : ""}`, "data-head": p.key }, p.live ? `Live session · ${p.title}` : p.title);
         const t = Object.assign(svg("text", { x: p.x + 6, y: p.y + 4 }), { textContent: fit(p.text, p.w) });
         named.push([t, p.text, p.w - 12]);
         g.append(svg("rect", { x: p.x, y: p.y - RH / 2, width: p.w, height: RH, rx: 5 }), t);
@@ -478,7 +519,9 @@ export function gitStructure(m: GsModel, ui: GsUi): HTMLElement {
         g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ui.jump(ses.slot); } });
         s.appendChild(g);
       } else if (p.t === "diamond") {
-        const word = p.d === "landed" ? CHECK_WORD.landed : `${CHECK_WORD[p.d]}${p.merged ? " · landed" : " · not landed yet"}`;
+        const older = p.older === undefined || p.older === null ? "" : ` · last checked ${p.older || "an older commit"}${p.older ? " (older commit)" : ""}`;
+        const word = p.of === "next" && p.d === "none" ? NEXT_QUIET
+          : p.d === "landed" ? CHECK_WORD.landed : `${CHECK_WORD[p.d]}${older}${p.merged ? " · landed" : " · not landed yet"}`;
         const g = svg("g", { class: "gsdg", "data-of": p.of }, `${p.of}: ${word}`);
         g.append(svg("rect", { x: p.x - 11, y: p.y - 11, width: 22, height: 22, class: "gshit" }),
           svg("path", { d: `M${p.x} ${p.y - p.r} L${p.x + p.r} ${p.y} L${p.x} ${p.y + p.r} L${p.x - p.r} ${p.y} Z`,
@@ -572,7 +615,7 @@ export const GS_CSS = `
   #board .gs.open .gsf .gsv { transform: rotate(90deg); }
   @media (prefers-reduced-motion: reduce) { #board .gsf .gsv { transition: none; } }
   #board .gsf .gsn { font-weight: 700; }
-  #board .gslegbtn { display: block; min-height: 32px; margin: 2px 0 0; padding: 0 4px; border: 0; border-radius: 6px; background: none;
+  #board .gslegbtn { display: block; min-height: 32px; margin: 2px 0 0; padding: 0; border: 0; border-radius: 6px; background: none;
     color: var(--chat-faint); font: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .gslegbtn:hover, #board .gslegbtn.on { color: var(--chat-mute); }
   #board .gslegend { list-style: none; margin: 6px 0 4px; padding: 6px 8px; border: 1px solid var(--chat-edge); border-radius: 8px; }
@@ -585,9 +628,16 @@ export const GS_CSS = `
   #board .gss .gsl.open { stroke-dasharray: 4 3; }
   #board .gss .gsr { cursor: pointer; outline: none; }
   #board .gss .gsr rect { fill: var(--chat-surface); stroke: var(--chat-faint); stroke-width: 1.4; }
-  #board .gss .gsr.main rect { stroke: var(--chat-ink); stroke-width: 1.8; }
+  /* main and next at every head's width, a step brighter than a branch and a step quieter than a selection — the white
+     line stays the selection's (owner Z131: „[Zitat entfernt]“; 18.10. 23:4x: „[Zitat entfernt]“
+     ) */
+  #board .gss .gsr.main rect { stroke: var(--chat-mute); }
   #board .gss .gsr.live rect { stroke: var(--q-live); }
   #board .gss .gsr:hover rect { stroke: var(--chat-mute); }
+  /* next while nothing is ready to land: grey, nothing to press */
+  #board .gss .gsr.quiet { cursor: default; }
+  #board .gss .gsr.quiet rect, #board .gss .gsr.quiet:hover rect { stroke: var(--chat-faint); }
+  #board .gss .gsr.quiet text { fill: var(--chat-faint); }
   #board .gss .gsr.sel rect, #board .gss .gsr:focus-visible rect { stroke: var(--chat-ink); stroke-width: 2.2; }
   #board .gss .gsr text { fill: var(--chat-ink); font-size: inherit; pointer-events: none; }
   #board .gss .gsr.lane text { fill: var(--chat-mute); }
@@ -603,7 +653,6 @@ export const GS_CSS = `
   #board .gss .gsd.green { fill: var(--q-live); stroke: var(--q-live); }
   #board .gss .gsd.red { fill: var(--danger); stroke: var(--danger); }
   #board .gss .gsd.running, #board .gss .gsd.waiting { stroke: var(--q-live); }
-  #board .gss .gsd.stale { stroke-dasharray: 2 2; }
   #board .gss .gsd.skipped { fill: var(--chat-mute); stroke: var(--chat-mute); }
   #board .gss .gsd.landed { fill: var(--chat-faint); stroke: var(--chat-faint); }
   #board .gss .gsdg.sel .gsd, #board .gss .gsdg:focus-visible .gsd { stroke: var(--chat-ink); stroke-width: 2.2; }
@@ -618,6 +667,8 @@ export const GS_CSS = `
     background: var(--chat-surface); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
   #board .gsm1 { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; }
   #board .gsm1 > .gshd { color: var(--chat-ink); font-weight: 600; overflow-wrap: anywhere; }
+  /* a branch name moves to the next line whole; it breaks inside only where it is wider than the menu */
+  #board .gsm1 > .gshd > .gsbn { display: inline-block; max-width: 100%; }
   #board .gsm1 > .gscap { color: var(--chat-mute); white-space: normal; overflow-wrap: anywhere; }
   #board .gsm1 > .gswords { display: flex; flex-wrap: wrap; gap: 6px; }
   #board .gsm1 .gsword { min-height: 32px; padding: 0 12px; border: 1px solid var(--chat-edge); border-radius: 16px; background: none;
@@ -635,12 +686,30 @@ export const GS_CSS = `
   #board .gsm .gsm1 > .zd.lf-set > .lf-k { flex-basis: 100%; color: var(--chat-mute); }
   #board .gsm .gsm1 > .zd.lf-set .lf-c { min-height: 30px; padding: 0 12px; border: 1px solid var(--chat-edge); border-radius: 15px; }
   #board .gsm .gsm1 > .zd.lf-set .lf-c.on { background: var(--chat-ink); border-color: var(--chat-ink); color: var(--chat-surface); }
+  /* a lane's own two forms stay together: where three do not fit, both go under „Like the project“ */
+  #board .gsm .gsm1 > .zd.lf-set .lf-own { display: inline-flex; gap: 6px; }
+  /* „Looks good“ stays beside its line, which wraps to its left */
+  #board .gsm .gsm1 > .zd.brc-seen { flex-wrap: nowrap; }
+  #board .gsm .gsm1 > .zd.brc-seen > .tx { flex: 1 1 0; }
   #board .gsm .gsfact { padding: 0; border: 0; background: none; color: var(--chat-ink); font: inherit; cursor: pointer;
     text-decoration: underline dotted; text-underline-offset: 3px; }
   #board .gsm .gsfact:focus-visible { outline: 2px solid var(--chat-ink); outline-offset: 2px; }
   #board .gsm2 { overflow: hidden; border-top: 1px solid var(--chat-edge); padding: 4px 2px 6px; }
   #board .gsm .gsm2 > .zd, #board .gsm .gsm2 > .zd.brc { padding-left: 10px; padding-right: 10px; }
+  /* the way line starts at the menu's edge, not behind the old Ranke's rail */
+  #board .gsm .gsm2 > .zd.wl > .tx { grid-column: 1 / -1; }
   #board .gs > .gsbelow { margin: 4px 0 0 34px; }
+  /* THE GEAR'S PANEL under the head: a label left, its choices right — they wrap under it where the column is narrow */
+  #board .gsh .gsgear.on { color: var(--chat-ink); background: var(--chat-surface); }
+  #board .gsset { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 6px; padding: 8px 10px; border: 1px solid var(--chat-edge);
+    border-radius: 8px; background: var(--chat-surface); }
+  #board .gsset > .zd.lf-set { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px 8px; min-height: 0;
+    margin: 0; padding: 0; text-align: left; }
+  #board .gsset > .zd.lf-set > .lf-k { flex: 0 1 auto; min-width: 0; color: var(--chat-prose); }
+  #board .gsset > .zd.lf-set > .lf-i { margin-left: -6px; }
+  #board .gsset > .zd.lf-set > .gsch { display: inline-flex; gap: 6px; margin-left: auto; }
+  #board .gsset .gsch > .lf-c { min-height: 30px; padding: 0 10px; border: 1px solid var(--chat-edge); border-radius: 15px; }
+  #board .gsset .gsch > .lf-c.on { background: var(--chat-ink); border-color: var(--chat-ink); color: var(--chat-surface); }
   #board .gsquiet { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px 0 4px; border: 0; border-radius: 8px;
     background: none; color: var(--chat-mute); font: inherit; cursor: pointer; }
   #board .gsquiet:hover { background: var(--chat-surface); }

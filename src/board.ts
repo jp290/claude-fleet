@@ -1,11 +1,11 @@
-import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openDiff, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
 import { openK15Entwurf } from "./k15-lader";
-import { boardBranch, boardRepo, branchBusy, branchCharge, loadBranches, mayCheck,
+import { boardBranch, boardRepo, branchBusy, branchCharge, loadBranches, lookedLine, mayCheck,
   chooseLandForm, onPlacesChanged, restartSession, startCheck, startSession } from "./branchcard";
-import { GS_CSS, GS_WORD, distanceLine, gitModel, gitStructure, headWords, mergeCheckLine, rowOf, type GsCard, type GsHead, type GsModel, type GsWord } from "./gitstruktur";
+import { GS_CSS, GS_WORD, distanceLine, gitModel, gitStructure, headWords, mergeCheckLine, rowOf, sessionRepo, type GsCard, type GsHead, type GsModel, type GsWord } from "./gitstruktur";
 import type { BranchView } from "./protocol";
 import { askRisk } from "./dialog";
 import { Shell, openShell } from "./shell";
@@ -14,6 +14,7 @@ import { projectHue } from "./marks";
 import { modelLabel } from "./modelname";
 import { isSlashLine } from "./slashcommand";
 import { MeterBall, MeterStation, laneDisplayName, laneTail, meterKind, mmss, shortTitle, suiteMeter } from "./suitemeter";
+import { CHECK_KIND, RUN_STATE, SECTION } from "./board-words";
 import { PLA_ACK_KEY, postLandAlarm, plaHolder, plaNeedsOwner, type PlaHolder } from "./plaudit";
 import { porcelainPath } from "./gitpath";
 import { icon, type IconName } from "./icons";
@@ -919,11 +920,11 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
 // someone. The glass tube with its gliding balls is gone (§3a: "keine Bewegung außer Farbe", G0.4);
 // the model below is unchanged (src/suitemeter.ts).
 export let meterSuites: SuiteOfferRow[] = [];
-export const METER_WORD: Record<MeterStation, string> = { wait: "wartet", run: "läuft", helper: "auf Helfer", done: "fertig" };
+export const METER_WORD: Record<MeterStation, string> = { wait: RUN_STATE.waiting, run: RUN_STATE.running, helper: "on a helper", done: "done" };
 // a finished ball says HOW it finished — the station alone would call a red run "done"
 export const meterState = (b: MeterBall): string =>
-  b.station === "wait" ? "waiting" : b.station !== "done" ? "running"
-  : b.tone === "red" ? "failed" : b.tone === "unknown" ? "no result" : "passed";
+  b.station === "wait" ? RUN_STATE.waiting : b.station !== "done" ? RUN_STATE.running
+  : b.tone === "red" ? RUN_STATE.failed : b.tone === "unknown" ? RUN_STATE.noResult : RUN_STATE.passed;
 export function meterModel() {
   const laneNames = laneBandNames(stacksOf());
   return suiteMeter({
@@ -935,20 +936,20 @@ export function meterModel() {
   });
 }
 export const METER_TITLE: Record<MeterStation, string> = {
-  wait: "Angefragt, nicht gestartet — eine Lane wartet auf die Sperre, ein Angebot nahm noch kein Helfer, ein Land rollt in den nächsten Check ein (intern: suite mutex · post-land check).",
-  run: "Läuft auf dieser Maschine — was gerade die maschinenweite Sperre hält (intern: suite mutex).",
-  helper: "Läuft auf einem Helfer-Gerät — ein Check, den diese Maschine abgegeben hat (intern: suite offer).",
-  done: "In den letzten Minuten beendet — grün, rot oder ohne Messung.",
+  wait: "Asked for, not started — a lane waits for the lock, no helper took an offer yet, or a land rolls into the next check (internal: suite mutex · post-land check).",
+  run: "Running on this machine — what holds the machine-wide lock right now (internal: suite mutex).",
+  helper: "Running on a helper device — a check this machine handed off (internal: suite offer).",
+  done: "Finished in the last few minutes — green, red or without a result.",
 };
 // one run's state as the machines say a state, and what follows it: shared by the run rows below
 // and the run lines under a lane, so both say the same words
 function runSay(b: MeterBall): { state: MachineState; more: string[] } {
   const tone: MachineState["tone"] = b.station === "wait" ? "off" : "live";
   const ms = b.at > 0 ? serverClock() - b.at : 0;
-  const word = b.station === "wait" ? "wartet" : b.station === "helper" ? `auf ${b.where}` : `läuft${b.at > 0 ? ` ${mmss(ms)}` : ""}`;
+  const word = b.station === "wait" ? RUN_STATE.waiting : b.station === "helper" ? `on ${b.where}` : `${RUN_STATE.running}${b.at > 0 ? ` ${mmss(ms)}` : ""}`;
   const e = b.station !== "wait" && b.expect && b.expect.p50 >= 1000 ? b.expect : null;
   const more = [b.what && !/^pid \d+$/.test(b.what) ? b.what : "",
-    e ? (ms > e.p90 ? `länger als üblich (~${mmss(e.p50)})` : `üblich ~${mmss(e.p50)}`) : ""].filter(Boolean);
+    e ? (ms > e.p90 ? `longer than usual (~${mmss(e.p50)})` : `usually ~${mmss(e.p50)}`) : ""].filter(Boolean);
   return { state: { tone, word, title: METER_TITLE[b.station] }, more };
 }
 // THE RUNS BESIDE THEIR LANES (owner 2026-10-08: „[Zitat entfernt]“
@@ -989,37 +990,37 @@ function readRunsHere(): void {
 // row's above it, so they stand in the title only.
 function runSentence(b: MeterBall): string {
   // a queued run is a run that waits — the state says the waiting, the kind need not say it again
-  const kind = b.kind === "queued check run" ? "Prüflauf" : meterKind(b.kind).label;
-  // what it works through, unless it only repeats the state ("wartet hinter 2A" carries the wait),
+  const kind = b.kind === "queued check run" ? CHECK_KIND.run : meterKind(b.kind).label;
+  // what it works through, unless it only repeats the state ("waiting behind 2A" carries the wait),
   // the stem it measures ("main@…" under main) or a lone place in a line of one
-  const what = b.what && !/^pid \d+$/.test(b.what) && !/^main@/.test(b.what) ? b.what.replace(/\s*·\s*Platz 1\/1$/, "") : "";
+  const what = b.what && !/^pid \d+$/.test(b.what) && !/^main@/.test(b.what) ? b.what.replace(/\s*·\s*place 1\/1$/, "") : "";
   // ended in the server's last minutes (only the diamond says these): how, and how long ago
   if (b.station === "done") {
-    const ago = b.at > 0 ? ` vor ${mmss(serverClock() - b.at)}` : "";
-    return `${kind} ${b.tone === "ok" ? "bestanden" : b.tone === "red" ? "fehlgeschlagen" : "ohne Ergebnis"}${ago}${what ? ` · ${what}` : ""}`;
+    const ago = b.at > 0 ? ` ${mmss(serverClock() - b.at)} ago` : "";
+    return `${kind} ${b.tone === "ok" ? RUN_STATE.passed : b.tone === "red" ? RUN_STATE.failed : RUN_STATE.noResult}${ago}${what ? ` · ${what}` : ""}`;
   }
   if (b.station === "wait") {
-    // "wartet hinter 2A" names a lane; behind a run nobody named, only the place in the line is a fact
-    const q = /^wartet hinter (.+?)(?:\s*·\s*Platz (\d+)\/\d+)?$/.exec(what);
-    if (q) return `${kind} ${waitWord(b)}${!waitBehind(b) && q[2] ? ` · Platz ${q[2]}` : ""}`;
-    return `${kind} ${/^wartet\b/.test(what) ? what : ["wartet", what].filter(Boolean).join(" · ")}`;
+    // "waiting behind 2A" names a lane; behind a run nobody named, only the place in the line is a fact
+    const q = /^waiting behind (.+?)(?:\s*·\s*place (\d+)\/\d+)?$/.exec(what);
+    if (q) return `${kind} ${waitWord(b)}${!waitBehind(b) && q[2] ? ` · place ${q[2]}` : ""}`;
+    return `${kind} ${/^waiting\b/.test(what) ? what : [RUN_STATE.waiting, what].filter(Boolean).join(" · ")}`;
   }
-  // running: the word, the clock and, where past runs were measured, the usual length — "läuft 3:21
-  // von ~8:00" (owner 2026-10-09: „[Zitat entfernt]“ — a bare clock said nothing). The machine
+  // running: the word, the clock and, where past runs were measured, the usual length — "running 3:21
+  // of ~8:00" (owner 2026-10-09: „[Zitat entfernt]“ — a bare clock said nothing). The machine
   // is its glyph, or its name beside the sentence where the line has room for it.
   const ms = b.at > 0 ? serverClock() - b.at : 0;
   const e = b.expect && b.expect.p50 >= 1000 ? b.expect : null;
   const clock = b.at > 0 ? ` ${mmss(ms)}` : "";
-  const usual = e && b.at > 0 ? (ms > e.p90 ? `, länger als üblich (~${mmss(e.p50)})` : ` von ~${mmss(e.p50)}`) : "";
-  return `${kind} läuft${clock}${usual}${what ? ` · ${what}` : ""}`;
+  const usual = e && b.at > 0 ? (ms > e.p90 ? `, longer than usual (~${mmss(e.p50)})` : ` of ~${mmss(e.p50)}`) : "";
+  return `${kind} ${RUN_STATE.running}${clock}${usual}${what ? ` · ${what}` : ""}`;
 }
 // WHOM A QUEUED RUN WAITS BEHIND, by the lane's band name ("0A") — the queue names it so
 // (src/suitemeter.ts#suiteMeter); null behind a run nobody named
 function waitBehind(b: MeterBall): string | null {
-  const q = b.station === "wait" ? /^wartet hinter (\d+[A-Z])(?:\s*·|$)/.exec(b.what) : null;
+  const q = b.station === "wait" ? /^waiting behind (\d+[A-Z])(?:\s*·|$)/.exec(b.what) : null;
   return q ? q[1] : null;
 }
-const waitWord = (b: MeterBall): string => { const a = waitBehind(b); return a ? `wartet hinter ${a}` : "wartet"; };
+const waitWord = (b: MeterBall): string => { const a = waitBehind(b); return a ? `${RUN_STATE.waiting} behind ${a}` : RUN_STATE.waiting; };
 // THE LANE A RUN BELONGS TO, said as the board says a lane (note cdf43028, owner 26.09.: „[Zitat entfernt]“
 // ): its band name, then its Kurztitel — a hand label
 // where no title was derived, the branch's words where the label is only the dispatcher's "⎇ <branch>".
@@ -1063,29 +1064,29 @@ function runLines(balls: MeterBall[], place = true): HTMLElement[] {
     if (at) {
       const d = el("span", "dv");
       d.appendChild(icon(at.glyph));
-      d.title = `läuft auf ${at.name}`;
+      d.title = `running on ${at.name}`;
       d.setAttribute("role", "img");
       d.setAttribute("aria-label", d.title);
       tx.appendChild(d);
     }
     line.appendChild(tx);
-    line.title = `${meterKind(b.kind).label} · ${b.branch ?? "Branch nicht gemeldet"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
+    line.title = `${meterKind(b.kind).label} · ${b.branch ?? "branch not reported"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
     return line;
   });
 }
 // the shared lock of this machine as a state chip: free, taken, stuck, closed by hand, not reported
 function lockState(m: ReturnType<typeof meterModel>): MachineState {
   const lk = gateInfo?.lock ?? null;
-  const held = lk ? agoDe(lk.ageMs ?? lk.heldMs).replace(/^vor /, "") : "";
+  const held = lk ? agoEn(lk.ageMs ?? lk.heldMs) : "";
   const holder = m.balls.find((b) => b.station === "run");
-  const by = holder ? ` — hält ${holder.name}` : "";
+  const by = holder ? ` — held by ${holder.name}` : "";
   switch (m.lock) {
-    case "overdue": return { tone: "wait", word: `Sperre steckt ${held}`, title: `Ein Lauf hält die Sperre länger als jeder Lauf hier braucht${by}` };
-    case "held": case "stale": return { tone: "live", word: "Sperre belegt", title: `Ein Prüflauf hält die gemeinsame Sperre dieses Rechners seit ${held}${by}` };
-    case "parked": return { tone: "wait", word: "von Hand gesperrt", title: "Die Sperre ist von Hand gesetzt — kein Lauf startet, bis sie gelöst ist" };
-    case "unknown": return { tone: "off", word: "Sperre: Halter unbekannt", title: "Die Sperre ist gesetzt, aber wer sie hält, ist nicht belegt" };
-    case "free": return { tone: "still", word: "Sperre frei", title: "Kein Prüflauf hält die gemeinsame Sperre dieses Rechners" };
-    default: return { tone: "off", word: "nicht gemeldet", title: "Dieser Server schickt keine Lesung der Sperre" };
+    case "overdue": return { tone: "wait", word: `Lock stuck for ${held}`, title: `A run holds the lock longer than any run here needs${by}` };
+    case "held": case "stale": return { tone: "live", word: "Lock taken", title: `A check run has held this machine's shared lock for ${held}${by}` };
+    case "parked": return { tone: "wait", word: "locked by hand", title: "The lock was set by hand — no run starts until it is released" };
+    case "unknown": return { tone: "off", word: "Lock: holder unknown", title: "The lock is set, but who holds it is not on record" };
+    case "free": return { tone: "still", word: "Lock free", title: "No check run holds this machine's shared lock" };
+    default: return { tone: "off", word: "not reported", title: "This server sends no reading of the lock" };
   }
 }
 export function runRows(noPane: boolean): HTMLElement {
@@ -1112,16 +1113,16 @@ export function runRows(noPane: boolean): HTMLElement {
     line.dataset.station = b.station;
     line.dataset.gate = b.station === "wait" ? "queue" : "run";
     const tx = el("span", "tx");
-    const kind = b.kind === "queued check run" ? "Prüflauf" : meterKind(b.kind).label;
+    const kind = b.kind === "queued check run" ? CHECK_KIND.run : meterKind(b.kind).label;
     const at = runMachine(b);
     const dv = el("span", "dv");
-    if (at) dv.append(icon(at.glyph), `auf ${at.name}`);
-    else dv.appendChild(el("span", "q", b.station === "wait" ? "noch auf keinem Gerät" : `Ort: ${b.where || "nicht gemeldet"}`));
+    if (at) dv.append(icon(at.glyph), `on ${at.name}`);
+    else dv.appendChild(el("span", "q", b.station === "wait" ? "on no device yet" : `place: ${b.where || "not reported"}`));
     const s = b.slot !== null ? fleet[b.slot - 1] : undefined;
-    const who = s?.cwd ? runWho(s, bands.get(s.id)) : el("span", "who", b.branch ? laneWords(b.branch) : b.kind === "post-land check" ? "main" : "ohne Session");
-    tx.append(el("span", "gd"), el("span", "w", `${kind} ${b.station === "wait" ? waitWord(b) : "läuft"}`), dv, who);
+    const who = s?.cwd ? runWho(s, bands.get(s.id)) : el("span", "who", b.branch ? laneWords(b.branch) : b.kind === "post-land check" ? "main" : "no session");
+    tx.append(el("span", "gd"), el("span", "w", `${kind} ${b.station === "wait" ? waitWord(b) : RUN_STATE.running}`), dv, who);
     line.appendChild(tx);
-    line.title = `${b.title ? `${b.title} — ` : ""}${runSentence(b)} · ${b.branch ?? "Branch nicht gemeldet"} · ${b.where} · ${meterKind(b.kind).title}`;
+    line.title = `${b.title ? `${b.title} — ` : ""}${runSentence(b)} · ${b.branch ?? "branch not reported"} · ${b.where} · ${meterKind(b.kind).title}`;
     const slot = b.slot;
     if (slot !== null && s?.cwd) rowTarget(line, () => showSlot(slot));
     box.appendChild(line);
@@ -1132,7 +1133,7 @@ export function runRows(noPane: boolean): HTMLElement {
     row.dataset.tone = lock.tone;
     const fx = el("span", "fx");
     fx.appendChild(icon("shield"));
-    row.append(fx, el("span", "nm", "Prüfsperre"), stateChip(lock));
+    row.append(fx, el("span", "nm", "Check lock"), stateChip(lock));
     row.title = lock.title;
     box.appendChild(row);
   }
@@ -1140,12 +1141,13 @@ export function runRows(noPane: boolean): HTMLElement {
 }
 export const METER_ROWS_MAX = 6;
 const RUNS_FOLD = "pruefungen";
+const RUNS_OPEN_HINT = "Click opens each check as a line of its own";
 function toggleRuns(): void {
   if (boardFolds.has(RUNS_FOLD)) boardFolds.delete(RUNS_FOLD); else boardFolds.add(RUNS_FOLD);
   prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
   void renderBoard();
 }
-// the closed block's one line: a diamond per run in its state, then "2 laufen · 1 wartet"
+// the closed block's one line: a diamond per run in its state, then "2 running · 1 waiting"
 function runsSummary(open: MeterBall[]): HTMLElement {
   const line = el("div", "zd run sum");
   const tx = el("span", "tx");
@@ -1157,11 +1159,11 @@ function runsSummary(open: MeterBall[]): HTMLElement {
     ds.appendChild(q);
   }
   const run = open.filter((b) => b.station !== "wait").length, wait = open.length - run;
-  tx.append(ds, el("span", "w", [run ? `${run} ${run === 1 ? "läuft" : "laufen"}` : "", wait ? `${wait} ${wait === 1 ? "wartet" : "warten"}` : ""]
+  tx.append(ds, el("span", "w", [run ? `${run} ${RUN_STATE.running}` : "", wait ? `${wait} ${RUN_STATE.waiting}` : ""]
     .filter(Boolean).join(" · ")));
   line.appendChild(tx);
-  line.title = [...open.map((b) => { const at = runMachine(b); return `${runSentence(b)}${at ? ` · auf ${at.name}` : ""}`; }),
-    "Klick klappt jede Prüfung als eigene Zeile auf"].join("\n");
+  line.title = [...open.map((b) => { const at = runMachine(b); return `${runSentence(b)}${at ? ` · on ${at.name}` : ""}`; }),
+    RUNS_OPEN_HINT].join("\n");
   rowTarget(line, toggleRuns);
   line.setAttribute("aria-expanded", "false");
   return line;
@@ -1219,15 +1221,15 @@ export function errorsSection(): HTMLElement | null {
   // derives its own page from (CLAUDE.md) — and a lane cannot build that repo to check it. One
   // property here has no reach outside this file; a rule there has one nothing available can test.
   const head = el("button", "bstate errrow") as HTMLButtonElement;
-  head.append(el("span", "dot bad"), el("span", "t", `${e.total} Serverfehler${many ? ` · ${e.distinct} verschiedene` : ""} seit ${fmtTs(e.since)}`));
+  head.append(el("span", "dot bad"), el("span", "t", `${e.total} server ${e.total === 1 ? "error" : "errors"}${many ? ` · ${e.distinct} distinct` : ""} since ${fmtTs(e.since)}`));
   const chev = icon("chevron");
   chev.classList.add("chev");
   head.appendChild(chev);
   head.setAttribute("aria-expanded", String(errorsOpen));
   head.style.cssText =
     "background:none;border:0;padding:0;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;";
-  head.title = "Seit dem Start dieses Servers geworfen. Nur im Speicher — ein Neustart leert die Liste,"
-    + " die Geschichte bleibt in server.log. Klick zeigt jede Zeile.";
+  head.title = "Thrown since this server started. Kept in memory only — a restart empties the list,"
+    + " the history stays in server.log. Click shows every line.";
   head.onclick = () => {
     errorsOpen = !errorsOpen;
     // one fetch per (boot, total): reopening after nothing new happened costs no request
@@ -1248,7 +1250,7 @@ export function errorsSection(): HTMLElement | null {
   sec.appendChild(head);
   const last = e.last;
   sec.appendChild(el("div", "bidmeta",
-    `zuletzt · ${last.where} · ${last.msg}${last.n > 1 ? ` ×${last.n}` : ""} · ${fmtTs(last.at)}`));
+    `last · ${last.where} · ${last.msg}${last.n > 1 ? ` ×${last.n}` : ""} · ${fmtTs(last.at)}`));
   if (errorsOpen) {
     // rows one poll behind the COUNTER are still drawn — a row that arrived a second ago is a true
     // thing that happened, and blanking the list mid-fetch would hide it. Rows from a previous BOOT
@@ -1363,11 +1365,11 @@ export function notepadBlock(repo: string, w: WtRow): HTMLElement {
   ta.className = "bnoteta";
   ta.value = notepadDraft.get(w.path) ?? saved;
   ta.rows = 2;
-  ta.placeholder = "Notiz zu diesem Worktree — wandert beim Parken und Weiterarbeiten mit";
+  ta.placeholder = "A note on this work — it stays when the work pauses and goes on";
   const foot = el("div", "bnotefoot");
   const meta = el("span", "m");
   const err = el("div", "brefusal");
-  const save = el("button", "bbtn quiet bnotesave", "Notiz sichern") as HTMLButtonElement;
+  const save = el("button", "bbtn quiet bnotesave", "Save note") as HTMLButtonElement;
   save.type = "button";
   const grow = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight + 2, 320)}px`; };
   const sync = () => {
@@ -1376,30 +1378,30 @@ export function notepadBlock(repo: string, w: WtRow): HTMLElement {
     const over = t.length > WORKTREE_NOTE_MAX;
     const dirty = t !== saved;
     const count = t.length >= WORKTREE_NOTE_MAX * 0.8 ? `${t.length} / ${WORKTREE_NOTE_MAX}` : "";
-    meta.textContent = over ? `${count} — über dem Deckel, kürzen (der Server nimmt nicht mehr an)`
-      : [dirty ? "ungesichert" : saved ? "gesichert" : "", count].filter(Boolean).join(" · ");
+    meta.textContent = over ? `${count} — over the limit, shorten it (the server takes no more)`
+      : [dirty ? "not saved" : saved ? "saved" : "", count].filter(Boolean).join(" · ");
     save.hidden = !dirty;
     save.disabled = over;
     foot.hidden = !meta.textContent && save.hidden;
     grow();
   };
   ta.addEventListener("input", sync);
-  save.title = "sichert den Text an diesem Worktree-Pfad — er bleibt beim Parken, Wiederaufnehmen und über Neustarts erhalten";
+  save.title = "Saves the text at this worktree's path — it stays through parking, resuming and restarts";
   save.onclick = async () => {
     save.disabled = true;
-    save.textContent = "sichere…";
+    save.textContent = "saving…";
     err.textContent = "";
     try {
       const r = await post("/api/worktrees/note", { repo, path: w.path, text: ta.value });
       if (!r.ok) {
-        err.textContent = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "Sichern fehlgeschlagen";
+        err.textContent = ((await r.json().catch(() => ({}))) as { error?: string }).error ?? "Saving failed";
         return;
       }
       notepadDraft.delete(w.path); // the board now carries the saved text — the draft has served
       void renderBoard();
     } finally {
       save.disabled = false;
-      save.textContent = "Notiz sichern";
+      save.textContent = "Save note";
     }
   };
   foot.append(meta, save);
@@ -1445,7 +1447,7 @@ export async function renderBoard() {
       const y0 = boardBody.scrollTop;
       boardPop = null;
       perfRebuild("renderBoard");
-      const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Wähle eine Pane, um ihre Session zu sehen.")];
+      const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Pick a pane to see its session.")];
       boardBody.replaceChildren(...next);
       boardBody.scrollTop = y0;
       return;
@@ -1509,8 +1511,8 @@ export async function renderBoard() {
     if (pla0 && plaTop) nodes.push(pla0);
     const esec0 = errorsSection();
     if (esec0) nodes.push(esec0);
-    // 1 — ARBEITSORTE: every worktree of every repo this server reads, on the machines it knows
-    // (cards e66909b1, abe74821); the former lane list and test-instance card live in it
+    // 1 — ARBEITSORTE: the selected session's repo as its git structure, the checks, the machines this server knows
+    // (cards e66909b1, abe74821, owner Z131); the former lane list and test-instance card live in it
     const ranke = arbeitsorteSection(slot, wts);
     nodes.push(ranke);
     if (pla0 && !plaTop) nodes.push(pla0);
@@ -1527,19 +1529,19 @@ export async function renderBoard() {
       // NOT-APPLICABLE, drawn once and quietly: no fail styling, no "keeps trying" — nothing is
       // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
       const ng = el("div", "bsec");
-      ng.appendChild(sectionHead("Changes", "session"));
-      const e = el("div", "bempty", "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository.");
-      e.title = `${s.cwd} ist ein einfacher Ordner; Sitzung, Prompts und Setup werden wie gewohnt gelesen`;
+      ng.appendChild(sectionHead(SECTION.changes, "session"));
+      const e = el("div", "bempty", "No git in this folder — changes, history and lanes exist only in a repository.");
+      e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
       ng.appendChild(e);
       nodes.push(ng);
     }
     if (briefErr) {
       const fail = el("div", "bsec bfail");
       fail.appendChild(sectionHead("Changes, history and lanes are missing", "session"));
-      fail.appendChild(el("div", "bstate", `Der Session-Brief konnte nicht gelesen werden — ${briefErr}.`));
+      fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
       // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
       // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
-      fail.appendChild(el("div", "bempty", "Das ist ein fehlgeschlagener Zugriff, keine leere Sitzung. Die Spalte versucht es weiter."));
+      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
       nodes.push(fail);
     }
     // 3 — CHANGES: the uncommitted tree, Commit, and on a lane Land lane with ⋯ beside it
@@ -1562,7 +1564,7 @@ export async function renderBoard() {
       const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
       if (ownWt && wts) {
         const noteSec = el("div", "bsec bnotesec");
-        noteSec.appendChild(sectionHead("Notizblock", "repo"));
+        noteSec.appendChild(sectionHead(SECTION.notepad, "repo"));
         noteSec.appendChild(notepadBlock(wts.repo, ownWt));
         nodes.push(noteSec);
       }
@@ -1723,20 +1725,20 @@ function sessionSection(c: BoardCtx): HTMLElement {
   // their sentence on hover now (R1, G1.1); the rarer copies and the restart stay behind ⋯
   const sessName = s.label ?? baseName(s.cwd ?? "");
   top.append(
-    glyphBtn("pencil", "Umbenennen", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
+    glyphBtn("pencil", "Rename", "Rename this session — the name then stands in the sidebar.", () => {
       const row = slotsEl.querySelector(`[data-slot="${slot}"]`);
       if (row instanceof HTMLElement) startRename(row, s);
     }),
-    glyphBtn("share", s.share ? "Geteilt" : "Teilen", s.share ? "Diese Session ist nur lesend geteilt — Link und Passwort verwalten."
-      : "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(slot)),
-    glyphBtn("export", "Exportieren", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.",
+    glyphBtn("share", s.share ? "Shared" : "Share", s.share ? "This session is shared read-only — manage the link and the password."
+      : "Share this session read-only — a link with a password.", () => openShareDlg(slot)),
+    glyphBtn("export", "Export", "Export the session — the conversation or the screen; you choose the parts and the format.",
       () => { void openExportDlg(slot, sessName); }),
   );
   if (s.share) top.lastElementChild?.previousElementSibling?.classList.add("shared");
   const mbtn = el("button", "bib bheadmenu") as HTMLButtonElement;
   mbtn.appendChild(icon("dots"));
-  mbtn.title = "Weitere Aktionen — kopieren, die Session zurückholen";
-  mbtn.setAttribute("aria-label", "Weitere Aktionen");
+  mbtn.title = "More actions — copy, bring the session back";
+  mbtn.setAttribute("aria-label", "More actions");
   top.appendChild(popTrigger("kopf", slot, mbtn));
   if (boardPop?.kind === "kopf" && boardPop.slot === slot) top.append(...popPanel("kopf", kopfItems(c)));
   idsec.appendChild(top);
@@ -1746,42 +1748,42 @@ function sessionSection(c: BoardCtx): HTMLElement {
     meta.appendChild(el("span", `bdot${working ? " on" : ""}`));
     // no context fill and no model here: the sidebar row carries both for every session at once
     // (owner 2026-09-19). What the head adds is the one thing the row cannot: how long it is quiet.
-    const word = working ? "Arbeitet" : s.lastOutput > 0 ? `Still seit ${agoDe(Date.now() - s.lastOutput).replace(/^vor /, "")}` : "Still";
-    const kind = brief?.worktree ? "Lane" : noGit ? "Ordner-Session" : brief ? "Repo-Session" : "Session";
+    const word = working ? "Working" : s.lastOutput > 0 ? `Quiet for ${agoEn(Date.now() - s.lastOutput)}` : "Quiet";
+    const kind = brief?.worktree ? "Lane" : noGit ? "Folder session" : brief ? "Repo session" : "Session";
     meta.appendChild(document.createTextNode(`${word} · ${kind} in Slot ${slot}`));
     const ref = s.worktree ? bands.get(s.id) : undefined;
     if (ref) {
       meta.appendChild(document.createTextNode(" · "));
       const r = el("span", "ref", ref);
       r.style.setProperty("--proj-h", String(projectHue(s.worktree?.repo ?? s.repo ?? s.cwd ?? "")));
-      r.title = "Dieselbe Adresse wie in der Leiste und am Zweig der Arbeitsorte";
+      r.title = "The same address as in the sidebar and at its branch in the git structure";
       meta.appendChild(r);
     }
     const since = facts?.sessionStart ?? s.openedAt ?? null;
-    if (since) meta.title = `Session seit ${new Date(since).toLocaleString()}`;
+    if (since) meta.title = `Session since ${new Date(since).toLocaleString("en-GB")}`;
     idsec.appendChild(meta);
   }
   // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE — none of them costs a line on a healthy session
   if (s.agent === "no-agent") {
-    const a = el("div", "bwait owner", "Kein Agent in dieser Pane");
-    a.title = "Die Pane lebt und nimmt Tasten an, aber darin läuft nichts — Tippen erreicht keinen Agenten.";
+    const a = el("div", "bwait owner", "No agent in this pane");
+    a.title = "The pane is alive and takes keys, but nothing runs in it — typing reaches no agent.";
     idsec.appendChild(a);
   }
   if (s.stalled) {
-    const st = el("div", "bwait main", s.stalledSince ? `Steht still seit ${gateAge(Date.now() - s.stalledSince)}` : "Steht still");
-    st.title = "Keine Ausgabe, nichts wartet auf eine Antwort — die Lane steht.";
+    const st = el("div", "bwait main", s.stalledSince ? `Stalled for ${gateAge(Date.now() - s.stalledSince)}` : "Stalled");
+    st.title = "No output, nothing waits for an answer — the lane stands still.";
     idsec.appendChild(st);
   }
   if (s.autoCloseRefusal) {
     const r = el("div", "brefusal", s.autoCloseRefusal);
-    r.title = "Warum das automatische Schließen diese Lane offen lässt";
+    r.title = "Why closing by itself leaves this lane open";
     idsec.appendChild(r);
   }
   if (s.awaiting) {
-    const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Wartet auf dich" : "Wartet auf ihre MAIN");
+    const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Waiting for you" : "Waiting for its MAIN");
     w.title = s.awaiting === "owner"
-      ? "Diese Session hält an, bis du antwortest — ihre letzte Nachricht oder eine offene Rückfrage sagt, was sie braucht."
-      : "Diese Session hält an, bis die MAIN antwortet, die sie führt.";
+      ? "This session holds until you answer — its last message or an open question says what it needs."
+      : "This session holds until the MAIN that leads it answers.";
     idsec.appendChild(w);
   }
   if (s.mission) {
@@ -1797,7 +1799,7 @@ function sessionSection(c: BoardCtx): HTMLElement {
   // copies stay behind ⋯, the land's progress in the Changes block
   kv.appendChild(contextRow(c));
   const links = belongsLinks(c);
-  if (links.length) kv.appendChild(kvRow("Gehört zu", links, "lks"));
+  if (links.length) kv.appendChild(kvRow("Belongs to", links, "lks"));
   idsec.appendChild(kv);
   // a lane's next step is „Land lane“: its handover block stands under Changes instead (Bauleitung 16.10. for K16 uebergabe-b)
   const ub = handoverUnderChanges(c) ? null : handoverBlock(c);
@@ -1810,38 +1812,42 @@ function sessionSection(c: BoardCtx): HTMLElement {
 function kopfItems(c: BoardCtx): HTMLElement[] {
   const { s, slot, brief } = c;
   const items: HTMLElement[] = [];
-  const copyItem = (label: string, value: string, note: string) =>
-    popItem(label, `${value} — kopieren`, (b) => { copyText(value); const t = b.querySelector(".t"); if (t) t.textContent = "Kopiert"; }, note);
-  if (brief?.branch) items.push(copyItem("Branch kopieren", brief.branch, `…${brief.branch.slice(-14)}`));
-  if (brief?.head) items.push(copyItem("Commit kopieren", brief.head, brief.head.slice(0, 7)));
-  if (brief?.worktree && s.cwd) items.push(copyItem("Worktree-Pfad kopieren", s.cwd, ""));
+  const copyItem = (label: string, value: string, note: string) => {
+    const b = popItem(label, `${value} — copy`, (b) => { copyText(value); const t = b.querySelector(".t"); if (t) t.textContent = "Copied"; }, note);
+    // a copied value is code and stands in the code face; a menu's other notes are words
+    b.querySelector(".kk")?.classList.add("mono");
+    return b;
+  };
+  if (brief?.branch) items.push(copyItem("Copy branch", brief.branch, `…${brief.branch.slice(-14)}`));
+  if (brief?.head) items.push(copyItem("Copy commit", brief.head, brief.head.slice(0, 7)));
+  if (brief?.worktree && s.cwd) items.push(copyItem("Copy worktree path", s.cwd, ""));
   if (items.length) items.push(el("div", "sep"));
   // bring session back — the repair for a pane that switched conversations on you. Claude Code
   // can change session IN-PROCESS: the pane keeps the argv it was spawned with, so nothing on
   // the outside can tell, and Escape does not undo it. A respawn does, because the slot still
   // holds the pinned sessionId and the server restarts the pane with --resume. There is no
   // deterministic signal for "this pane wandered off", so the owner decides, not a detector.
-  items.push(popItem("Session zurückholen", "Die Pane neu starten und das festgehaltene Gespräch fortsetzen — der Slot behält Lane, "
-    + "Name, Modell, Freigaben und geplante Prompts. Was die Session GERADE tut, geht verloren.", async (b) => {
+  items.push(popItem("Bring the session back", "Restart the pane and resume the pinned conversation — the slot keeps its lane, "
+    + "name, model, permissions and scheduled prompts. What the session is doing RIGHT NOW is lost.", async (b) => {
     if (!(await askRisk({
-      title: `Die Pane von Slot ${slot} neu starten und das festgehaltene Gespräch fortsetzen?`,
+      title: `Restart the pane of slot ${slot} and resume the pinned conversation?`,
       body: [el("div", "bmidrun",
-        "Nichts am Slot wird weggeworfen. Aber der Agent wird beendet — was er gerade tut, "
-        + "ein laufender Werkzeugaufruf oder ungesendete Ausgabe, geht verloren.")],
+        "Nothing of the slot is thrown away. But the agent is ended — what it is doing right now, "
+        + "a running tool call or output not yet sent, is lost.")],
       buttons: [
-        { label: "Abbrechen", value: false },
-        { label: "Neu starten", danger: true, value: true },
+        { label: "Cancel", value: false },
+        { label: "Restart", danger: true, value: true },
       ],
     }))) return;
     const t = b.querySelector(".t");
     b.disabled = true;
-    if (t) t.textContent = "Startet neu…";
+    if (t) t.textContent = "Restarting…";
     const r = await post(`/api/slots/${slot}/restart`, {});
     const j = await r.json().catch(() => null) as { resumed?: boolean; error?: string } | null;
-    if (!r.ok) { alert(j?.error ?? "Neustart fehlgeschlagen"); b.disabled = false; if (t) t.textContent = "Session zurückholen"; return; }
+    if (!r.ok) { alert(j?.error ?? "Restart failed"); b.disabled = false; if (t) t.textContent = "Bring the session back"; return; }
     // "fresh" means the pinned conversation could NOT be resumed (no pin, or its transcript is
     // gone) — the one outcome the owner must not mistake for success
-    if (t) t.textContent = j?.resumed ? "Session ist zurück" : "Frisch gestartet — das Gespräch ließ sich nicht fortsetzen";
+    if (t) t.textContent = j?.resumed ? "The session is back" : "Started fresh — the conversation could not be resumed";
     await refresh();
   }, "", true));
   return items;
@@ -1964,14 +1970,14 @@ function belongsLinks(c: BoardCtx): HTMLElement[] {
     b.onclick = run;
     out.push(b);
   };
-  if (s.taskId) link(`Auftrag ${s.taskId.slice(0, 8)}`, `${s.taskHead || "der Auftrag, aus dem diese Session gestartet wurde"} — öffnet die Aufgabenansicht`, () => openQueue());
+  if (s.taskId) link(`Task ${s.taskId.slice(0, 8)}`, `${s.taskHead || "the task this session was started from"} — opens the task view`, () => openQueue());
   if (s.programId) {
     const p = programsPoll.find((x) => x.id === s.programId);
-    link(`Program ${p?.title ? p.title.slice(0, 28) : s.programId.slice(0, 8)}`, `${p?.title ?? s.programId} — öffnet die Aufgabenansicht`, () => openQueue());
+    link(`Program ${p?.title ? p.title.slice(0, 28) : s.programId.slice(0, 8)}`, `${p?.title ?? s.programId} — opens the task view`, () => openQueue());
   }
   if (brief?.worktree) {
     const branch = brief.worktree.branch;
-    link("Akte", "Diese Lane von Anfang bis Ende — ihr Auftrag, ihre Prompts, ihre Commits, ihr Land", () => void openAkte(branch));
+    link("Record", "This lane from start to end — its task, its prompts, its commits, its land", () => void openAkte(branch));
   }
   return out;
 }
@@ -1981,7 +1987,7 @@ function belongsLinks(c: BoardCtx): HTMLElement[] {
 function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   const { s, slot, mg, ahead, behind } = c;
   const work = el("div", "bsec bchanges");
-  work.appendChild(sectionHead("Changes", "session"));
+  work.appendChild(sectionHead(SECTION.changes, "session"));
   // an interrupted rebase/merge (e.g. a deploy that killed the server mid-land) wedges commit + land
   // here — surface it as an explicit, fixable state, not a silent refusal
   if (brief.gitOp) {
@@ -2050,16 +2056,12 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
       crow.append(q, a);
     }
   } else if (running && brief.worktree) {
-    work.appendChild(el("div", "bstate", `Nichts ungesichert · ${ahead} commit${ahead === 1 ? "" : "s"} werden gelandet`));
+    work.appendChild(el("div", "bstate", `Nothing uncommitted · ${ahead} commit${ahead === 1 ? "" : "s"} landing`));
   } else if (ahead) {
-    work.appendChild(el("div", "bstate", `Nichts ungesichert · ${ahead} commit${ahead === 1 ? "" : "s"} ready${brief.worktree ? "" : " to push"}`));
+    work.appendChild(el("div", "bstate", `Nothing uncommitted · ${ahead} commit${ahead === 1 ? "" : "s"} ready${brief.worktree ? "" : " to push"}`));
   } else {
+    // nothing to show, so no "View diff" under it
     work.appendChild(el("div", "hint bnote", "Nothing uncommitted, nothing ahead."));
-    if (!brief.worktree) {
-      const db = el("button", "bbtn quiet", "View diff") as HTMLButtonElement;
-      db.onclick = () => void openDiff(slot);
-      crow.appendChild(db);
-    }
   }
   // WHAT THIS LANE CHANGES stands here, under its state (owner 2026-10-09: „[Zitat entfernt]“
   // ) — the committed
@@ -2112,7 +2114,7 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     lb.disabled = running;
     lb.title = awaitingReview
       ? "re-run the merge from scratch — only needed if main moved since these conflicts were resolved"
-      : `Die Lane auf ${baseName_} landen — vorher wird sie geprüft. Bereits gemergte Lanes landen sofort; bei Konflikten löst ein Agent im Hintergrund und wartet auf dein Review, bevor etwas ${baseName_} erreicht.`;
+      : `Land the lane on ${baseName_} — it is checked first. A lane already merged lands at once; on conflicts an agent resolves them in the background and waits for your review before anything reaches ${baseName_}.`;
     lb.onclick = () => void doLand(slot);
     crow.appendChild(lb);
   }
@@ -2120,8 +2122,8 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   // reachable on a follower fleet too.
   const more = el("button", "bib bland") as HTMLButtonElement;
   more.appendChild(icon("dots"));
-  more.title = "Weitere Lane-Aktionen — zurückstellen, zur Prüfung parken";
-  more.setAttribute("aria-label", "Weitere Lane-Aktionen");
+  more.title = "More lane actions — shelve, park for review";
+  more.setAttribute("aria-label", "More lane actions");
   more.disabled = running;
   crow.appendChild(popTrigger("land", slot, more));
   if (rebaseBtn) crow.appendChild(rebaseBtn);
@@ -2130,9 +2132,9 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
   if (!running && boardPop?.kind === "land" && boardPop.slot === slot) {
     const items: HTMLElement[] = [
       popItem("Shelve", "set this lane aside with a note (what's left) — kills the slot, keeps the worktree to resume later; nothing lost, nothing destroyed",
-        () => { boardPop = null; void doShelve(slot); }, "mit Notiz beiseite"),
+        () => { boardPop = null; void doShelve(slot); }, "with a note"),
       popItem("Park for review", "park this finished lane for a later review — frees the slot, keeps worktree, task ids, head, base and the accepted report; the tasks do not start again, reopening binds them back (verify then counts as stale)",
-        () => { boardPop = null; void doShelve(slot, true); }, "Slot frei, später prüfen"),
+        () => { boardPop = null; void doShelve(slot, true); }, "frees the slot"),
     ];
     crow.append(...popPanel("land", items));
   }
@@ -2143,9 +2145,9 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     const note = el("div", "landnote");
     note.appendChild(el("span", "dot live"));
     const since = ball && ball.at > 0 ? mmss(serverClock() - ball.at) : null;
-    note.appendChild(document.createTextNode(!ball ? "Land läuft — die Prüfung hat noch nicht begonnen"
-      : ball.station === "wait" ? `wartet auf die Prüfung${since ? ` · ${since}` : ""}`
-      : `wird geprüft${since ? ` · ${since}` : ""}${ball.expect ? ` von üblich ${mmss(ball.expect.p50)}` : ""}`));
+    note.appendChild(document.createTextNode(!ball ? "Landing — the check has not started yet"
+      : ball.station === "wait" ? `waiting for the check${since ? ` · ${since}` : ""}`
+      : `being checked${since ? ` · ${since}` : ""}${ball.expect ? ` of usually ${mmss(ball.expect.p50)}` : ""}`));
     work.appendChild(note);
   }
   if (awaitingReview && l) {
@@ -2221,10 +2223,10 @@ function footprintBlock(slot: number, brief: BriefInfo): HTMLElement {
     box.appendChild(el("div", "bempty", `… ${brief.filesTotal - brief.files.length} more — the brief carries the first 200`));
   const total = brief.filesTotal || brief.files.length;
   if (total > FILES_SHOWN) {
-    const b = el("button", "bbtn quiet bmorebtn", all ? "Weniger zeigen" : `Alle ${total} Dateien`) as HTMLButtonElement;
+    const b = el("button", "bbtn quiet bmorebtn", all ? "Show less" : `All ${total} files`) as HTMLButtonElement;
     b.type = "button";
     b.setAttribute("aria-expanded", String(all));
-    b.title = all ? `Zurück auf die ersten ${FILES_SHOWN} Dateien` : "Jede Datei, die diese Lane gegenüber ihrer Basis ändert";
+    b.title = all ? `Back to the first ${FILES_SHOWN} files` : "Every file this lane changes against its base";
     b.onclick = () => { toggleFold("changed"); void renderBoard(); };
     box.appendChild(b);
   }
@@ -2254,14 +2256,17 @@ function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     return row;
   };
   const csec = el("div", "bsec bhist");
-  csec.appendChild(sectionHead("History", "repo"));
+  csec.appendChild(sectionHead(SECTION.history, "repo"));
   const base = brief.laneBase ?? "main";
   const all = boardFolds.has("history");
   if (!brief.commits.length) csec.appendChild(el("div", "bempty",
     brief.laneScoped ? `No commits on this lane yet.` : "No commits this session yet."));
   for (const cm of all ? brief.commits : brief.commits.slice(0, HISTORY_SHOWN)) csec.appendChild(commitRow(cm, "session"));
   const total = brief.laneScoped ? Math.max(ahead, brief.commits.length) : brief.commits.length;
-  const more = total > HISTORY_SHOWN || brief.repoCommits.length > 0;
+  // the repo's last commits include the session's own (server.ts#repoRecentCommits): only what stands above once
+  const shown = new Set(brief.commits.map((cm) => cm.hash));
+  const earlier = brief.repoCommits.filter((cm) => !shown.has(cm.hash));
+  const more = total > HISTORY_SHOWN || earlier.length > 0;
   if (all) {
     // a list that stops at its cap must say so — for a lane the true total is `ahead`, and a
     // time-scoped session has no total, so there the cap itself is the honest sentence
@@ -2270,18 +2275,19 @@ function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
         `… ${ahead - brief.commits.length} older commit${ahead - brief.commits.length === 1 ? "" : "s"} — the brief carries the newest ${brief.commitsCap}`));
     else if (!brief.laneScoped && brief.commits.length >= brief.commitsCap)
       csec.appendChild(el("div", "bempty", `the newest ${brief.commitsCap} — this session may have made more`));
-    if (brief.repoCommits.length)
+    if (earlier.length)
       csec.appendChild(boardFold("repoCommits", brief.laneScoped ? `Already in ${base}` : "Earlier in this repo",
-        String(brief.repoCommits.length), (box) => { for (const cm of brief.repoCommits) box.appendChild(commitRow(cm, "repo")); }));
+        String(earlier.length), (box) => { for (const cm of earlier) box.appendChild(commitRow(cm, "repo")); }));
   }
   if (more || all) {
-    const label = all ? "Weniger zeigen"
-      : [`Alle ${total} ${total === 1 ? "Commit" : "Commits"}`,
-        brief.repoCommits.length ? (brief.laneScoped ? `Already in ${base}` : "Earlier in this repo") : ""].filter(Boolean).join(" · ");
+    // "All N commits" only where some are hidden — three or fewer all stand above already
+    const label = all ? "Show less"
+      : [total > HISTORY_SHOWN ? `All ${total} commits` : "",
+        earlier.length ? (brief.laneScoped ? `Already in ${base}` : "Earlier in this repo") : ""].filter(Boolean).join(" · ");
     const b = el("button", "bbtn quiet bmorebtn", label) as HTMLButtonElement;
     b.type = "button";
     b.setAttribute("aria-expanded", String(all));
-    b.title = all ? "Zurück auf die drei neuesten Commits" : "Die ganze History: jeder Commit und was schon in der Basis liegt";
+    b.title = all ? "Back to the three newest commits" : "The whole history: every commit and what is already in the base";
     b.onclick = () => { toggleFold("history"); void renderBoard(); };
     csec.appendChild(b);
   }
@@ -2305,7 +2311,7 @@ function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElem
   const chev = icon("chevron");
   chev.classList.add("chev");
   b.append(chev, el("span", "tt", title), el("span", "sum", sum));
-  b.title = `${title} — ${open ? "zuklappen" : "aufklappen"}`;
+  b.title = `${title} — ${open ? "collapse" : "expand"}`;
   b.onclick = () => { toggleFold(key); void renderBoard(); };
   hd.appendChild(b);
   if (extra) hd.appendChild(extra);
@@ -2320,20 +2326,20 @@ function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElem
 }
 function rightsSummary(s: SlotInfo): string {
   const program = s.programId ? programsPoll.find((x) => x.id === s.programId) : undefined;
-  const own = s.worktree ? (s.taskId ? "eigener Auftrag" : "kein Auftrag")
-    : s.programId ? `Program ${program?.title ? program.title.slice(0, 20) : s.programId.slice(0, 8)}` : "keine eigene Arbeit";
+  const own = s.worktree ? (s.taskId ? "its own task" : "no task")
+    : s.programId ? `Program ${program?.title ? program.title.slice(0, 20) : s.programId.slice(0, 8)}` : "no work of its own";
   return own;
 }
 function moreSection(c: BoardCtx): HTMLElement {
   const { s, slot, brief, facts, prompts, outlineErr } = c;
   const sec = el("div", "bsec bmoresec");
-  sec.appendChild(sectionHead("Mehr zu dieser Session", "session"));
+  sec.appendChild(sectionHead(SECTION.more, "session"));
   const setup = facts?.setup;
   const packs = setup?.packs ?? [];
   const setupSum = [setup?.profile ?? "standard", packs.length ? `${packs.length} ${packs.length === 1 ? "Pack" : "Packs"}` : "",
     s.browser ? "Browser" : "", s.container ? "Container" : ""].filter(Boolean).join(" · ");
-  sec.appendChild(boardTab("setup", "Setup", setupSum, (body) => setupBody(c, body)));
-  sec.appendChild(boardTab("rechte", "Rechte", rightsSummary(s), (body) => {
+  sec.appendChild(boardTab("setup", SECTION.setup, setupSum, (body) => setupBody(c, body)));
+  sec.appendChild(boardTab("rechte", SECTION.rights, rightsSummary(s), (body) => {
     // the rights block unchanged (src/rights.ts#rightsSection) — its own head is this tab's
     const r = rightsSection(s);
     r.querySelector(":scope > h3")?.remove();
@@ -2344,7 +2350,7 @@ function moreSection(c: BoardCtx): HTMLElement {
   if (openedAt) {
     loadPostfach(() => void renderBoard());
     const mail = postfachOf(slot, openedAt);
-    if (mail?.length) sec.appendChild(boardTab("postfach", "Postfach", postfachSummary(mail, slot, openedAt),
+    if (mail?.length) sec.appendChild(boardTab("postfach", SECTION.messages, postfachSummary(mail, slot, openedAt),
       (body) => postfachBody(body, mail, slot, openedAt)));
   }
   // FILES: drawn where there is a branch (the tree is `git ls-files`). The explorer opens from the
@@ -2354,15 +2360,15 @@ function moreSection(c: BoardCtx): HTMLElement {
     const cwd = s.cwd!;
     const known = fxTree.get(cwd);
     if (!known && !fxAsked.has(cwd)) { fxAsked.add(cwd); void loadTree(slot, cwd); }
-    const ex = glyphBtn("folder", "Explorer öffnen", "Den Explorer öffnen — ohne Aufklappen", () => openExplorer(slot, cwd));
+    const ex = glyphBtn("folder", "Open explorer", "Open the explorer — without expanding", () => openExplorer(slot, cwd));
     ex.classList.add("btabx");
-    const sum = !known ? "wird gelesen…" : "error" in known ? "nicht lesbar" : `${known.total} ${known.total === 1 ? "Datei" : "Dateien"}`;
-    sec.appendChild(boardTab("files", "Files", sum, (body) => {
+    const sum = !known ? "reading…" : "error" in known ? "not readable" : `${known.total} ${known.total === 1 ? "file" : "files"}`;
+    sec.appendChild(boardTab("files", SECTION.files, sum, (body) => {
       const fx = fileTreeSection(slot, cwd);
       body.append(...fx.childNodes);
     }, ex));
   }
-  sec.appendChild(boardTab("prompts", "Your prompts", outlineErr ? "nicht lesbar" : String(prompts.length), (psec) => {
+  sec.appendChild(boardTab("prompts", SECTION.prompts, outlineErr ? "not readable" : String(prompts.length), (psec) => {
     if (outlineErr) psec.appendChild(el("div", "bstate", `The transcript could not be read — ${outlineErr}.`));
     else if (!prompts.length) psec.appendChild(el("div", "bempty", "None in the transcript yet."));
     prompts.forEach((p, i) => {
@@ -2426,12 +2432,12 @@ function setupBody(c: BoardCtx, su: HTMLElement): void {
     if (setup?.omitted.length) note.title = setup.omitted.map((o) => `${o.id}: ${o.why}`).join("\n");
     su.appendChild(note);
     // E34 (docs/design/datenrechte-notiz.md): a pack is a pointer, never a right
-    su.appendChild(el("div", "bsnote", "Packs zeigen ihr, wo sie nachlesen soll. Ein Recht geben sie nicht."));
+    su.appendChild(el("div", "bsnote", "Packs show it where to read up. They grant no right."));
   }
   const since = facts?.sessionStart ?? s.openedAt ?? null;
   const foot: string[] = [];
   if (since) foot.push(`open ${gateAge(Date.now() - since)}`);
-  if (s.inbound) foot.push(`${s.inbound.sends} send${s.inbound.sends === 1 ? "" : "s"} today`);
+  if (s.inbound) foot.push(`${s.inbound.sends} message${s.inbound.sends === 1 ? "" : "s"} received today`);
   const mine = autosList.filter((a) => a.slot === slot && a.enabled).length;
   if (mine) foot.push(`${mine} check-in${mine === 1 ? "" : "s"} armed`);
   if (foot.length) {
@@ -2481,7 +2487,7 @@ export function loadWorkplaces(force = false): void {
     }
     workplaces = (await r.json()) as Workplaces;
     workplacesErr = null;
-  }).catch(() => { workplacesErr = "der Server war nicht erreichbar"; })
+  }).catch(() => { workplacesErr = "the server could not be reached"; })
     .finally(() => {
       workplacesBusy = false;
       if (workplacesAgain) { workplacesAgain = false; loadWorkplaces(true); }
@@ -2602,8 +2608,18 @@ let gsInfo = false;
 // only what differs unfolds — the poll's repaint leaves an open menu standing still
 let gsSel: { repo: string; key: string; word: GsWord | null } | null = null;
 let gsDrawn = "";
-// the projects without running work behind their one row: open or not is a look, like the fold above
-let rankeQuietOpen = false;
+// THE GEAR OF THE REPOSITORY VIEW (owner Z124 „[Zitat entfernt]“, Z131; Ja 18.10. 22:4x): what
+// the structure shows — landed heads, heads without a session — is a device preference (fleet.gs.view), shown by default;
+// whether its panel stands open is a look
+interface GsView { landed: boolean; idle: boolean }
+const gsViewOf = (): GsView => {
+  const v = prefJSON<unknown>("fleet.gs.view");
+  const o = v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  return { landed: o.landed !== false, idle: o.idle !== false };
+};
+let gsView = gsViewOf();
+let gsSetOpen = false;
+export function reloadGsView(): void { gsView = gsViewOf(); void renderBoard(); }
 // the settings window resets the two (src/client.ts#PREF_APPLY): read them again and repaint
 export function reloadRankePrefs(): void {
   rankeRepos.clear();
@@ -2763,12 +2779,12 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
 // none. A MAIN's land door never sees a choice kept in this browser. The field says so behind its ⓘ
 // (owner 2026-10-09: „[Zitat entfernt]“).
 type LandForm = "commits" | "squash";
-const LAND_FORM_WORD: Record<LandForm, string> = { commits: "all commits", squash: "one commit" };
+const LAND_FORM_WORD: Record<LandForm, string> = { commits: "All commits", squash: "One commit" };
 // what "ein Commit" means since d5657b56: the land is one commit S described from the accepted report, a
 // lane of one commit too; the series stays under the lane's history ref, a series with a merge commit lands as it is
 const LAND_FORM_SAY: Record<LandForm, string> = { commits: "The commits land as they were made",
   squash: "The lane lands as one commit, described anew from the accepted report — a lane of one commit too; its series stays in the lane's history, a series with a merge commit lands unchanged" };
-const LAND_FORM_NOTE = "Holds only when you press “Merge” here: “one commit” folds the lane's work into one commit, “all commits” takes each one — when a MAIN lands the lane, it becomes one commit regardless.";
+const LAND_FORM_NOTE = "Holds when you land the lane from this board: “One commit” folds the lane's work into one commit, “All commits” takes each one. When another session lands the lane, it becomes one commit regardless.";
 type LandForms = { repo: Record<string, LandForm>; lane: Record<string, LandForm> };
 // the sentence on where the choice holds, open behind the field's ⓘ; closing the gear closes it too
 let landFormInfo = false;
@@ -2807,8 +2823,11 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
     c.onclick = (e) => { e.stopPropagation(); setLandForm(kind, key, form); };
     return c;
   };
-  if (kind === "lane") box.appendChild(choice("like the project", `Like the project: ${LAND_FORM_WORD[landFormOf(repo, null).form]}`, !now.own, null));
-  for (const form of ["commits", "squash"] as const) box.appendChild(choice(LAND_FORM_WORD[form], LAND_FORM_SAY[form], now.own && now.form === form, form));
+  if (kind === "lane") box.appendChild(choice("Like the project", `Like the project: ${LAND_FORM_WORD[landFormOf(repo, null).form].toLowerCase()}`, !now.own, null));
+  // a lane's own two forms as one group: they wrap together, never one alone (src/gitstruktur.ts, .lf-own)
+  const own = kind === "lane" ? el("span", "lf-own") : box;
+  for (const form of ["commits", "squash"] as const) own.appendChild(choice(LAND_FORM_WORD[form], LAND_FORM_SAY[form], now.own && now.form === form, form));
+  if (own !== box) box.appendChild(own);
   if (note) {
     const i = el("button", `rk-btn quiet ib lf-i${landFormInfo ? " on" : ""}`) as HTMLButtonElement;
     i.type = "button";
@@ -2955,45 +2974,20 @@ const RANKE_CSS = `
   #board .zd.mx.inst { padding-left: calc(2 * var(--rk-rail) + 4px); font-size: 0.93em; }
   #board .rklegend .lgl .zs .q { color: var(--chat-faint); font-weight: 400; }
   #board .zd.run .w .nw { white-space: nowrap; }
-  /* what a lane's check says, under it on a tap */
-  #board .zd.gate { display: block; min-height: 0; margin: 2px 0 6px calc(var(--rk-rail) + var(--rk-ref) + 8px); padding: 6px 9px;
-    border-radius: var(--r1); background: var(--chat-raised); border: 1px solid var(--chat-edge); color: var(--chat-prose);
-    line-height: 1.45; white-space: normal; }
-  #board .gl { display: grid; grid-template-columns: 13px minmax(0, 1fr); align-items: baseline; }
-  #board .gl > .gx { min-width: 0; }
-  #board .gl .gx > * + * { margin-left: 6px; }
-  #board .gl + .gl { margin-top: 2px; }
   #board .gd { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 1px; transform: rotate(45deg);
     box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
-  #board .gl > .gd { align-self: start; margin-top: 5px; }
   #board [data-gate="run"] > .gd, #board [data-gate="run"] > .tx > .gd { background: var(--chat-ink); box-shadow: none; }
   #board [data-gate="ok"] > .gd { background: var(--q-live); box-shadow: none; }
   #board [data-gate="bad"] > .gd { background: var(--danger); box-shadow: none; }
   #board [data-gate="unk"] > .gd { box-shadow: inset 0 0 0 1.5px var(--amber); }
-  #board .gl b { color: var(--chat-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
-  #board .gl .dv { display: inline-flex; align-items: center; gap: 4px; color: var(--chat-ink); }
-  #board .gl .dv .ico { width: 12px; height: 12px; }
-  #board .gl .q { color: var(--chat-faint); }
-  /* the lane's four points under the runs, each with its word: where it stands on its way to main */
-  /* the four points two by two, in reading order — four words did not fit a note's width and broke 3 + 1 */
-  #board .gw { display: grid; grid-template-columns: repeat(2, max-content); gap: 2px 14px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--chat-edge); }
-  #board .gw > .gwt { grid-column: 1 / -1; color: var(--chat-faint); }
-  #board .gw > .gp { display: inline-flex; align-items: center; gap: 4px; color: var(--chat-faint); white-space: nowrap; }
-  #board .gw > .gp.run, #board .gw > .gp.queue { color: var(--chat-ink); font-weight: 500; }
-  #board .gw > .gp.ok, #board .gw > .gp.skip { color: var(--chat-mute); }
-  #board .gw > .gp.bad { color: var(--danger); }
-  #board .gw i { width: 7px; height: 7px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.25px var(--chat-faint); }
-  #board .gw i.none { width: 4px; height: 4px; margin: 1.5px; box-shadow: none; background: var(--chat-edge); }
-  #board .gw i.ok { background: var(--q-live); box-shadow: none; }
-  #board .gw i.run { background: var(--chat-ink); box-shadow: none; }
-  #board .gw i.queue { box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
-  #board .gw i.bad { background: var(--danger); box-shadow: none; }
   #board .gw i.unk { box-shadow: inset 0 0 0 1.25px var(--amber); }
   #board .gw i.old { background: transparent; }
   #board .gw i.ok.old { box-shadow: inset 0 0 0 1.25px var(--q-live); }
   #board .gw i.bad.old { box-shadow: inset 0 0 0 1.25px var(--danger); }
   /* THE CHECKS FOLD (#runsSummary): the block's head opens and closes it; closed, one line */
   #board .rkblock.rk-git + .rkblock.rk-runs { margin-top: 6px; padding-top: 0; border-top: 0; }
+  /* a session outside every repo has no structure, and with no run the checks block hides: Geräte opens Info, no rule above */
+  #board .rk-runs:first-child:not(:has(.rkruns > *)) + .rkblock { margin-top: 0; padding-top: 0; border-top: 0; }
   #board .rk-runs > .rkbh.fold { cursor: pointer; border-radius: var(--r1); }
   #board .rk-runs > .rkbh.fold > .ico { margin-left: auto; width: 12px; height: 12px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform var(--t); }
   #board .rk-runs > .rkbh.fold[aria-expanded="true"] > .ico { transform: none; }
@@ -3015,8 +3009,6 @@ const RANKE_CSS = `
     #board .rk-btn.live-btn .lx { display: none; }
     #board .zd.live-new .live-in { min-height: 40px; font-size: 16px; }
     #board .zd.live-merge { justify-content: flex-start; }
-    /* the margin stays narrow: a lane's name keeps its width and wraps no sooner (G0.7: a tap is 40 px high) */
-    #board .zd.gate { margin-left: calc(var(--rk-rail) + 4px); }
   }
 `;
 
@@ -3027,13 +3019,13 @@ const refShort = (ref: string): string => ref.replace(/^refs\/(heads|remotes)\//
 // (261004, 260920214010) or a day (2026-10-04); a name of a date and a hex alone says the day it was
 // cut (owner 2026-10-07: „[Zitat entfernt]“ twice told nothing). Without a branch the worktree is detached.
 export function laneWords(branch: string | null): string {
-  if (!branch) return "losgelöst";
+  if (!branch) return "detached";
   const bare = branch.replace(/^fleet\//, "");
   const words = bare.replace(/(^|[-_/])(?:\d{6,}|(?:19|20)\d\d-\d\d-\d\d)(?=[-_/]|$)/g, "$1")
     .replace(/[-_/][0-9a-f]{4,}$/, "").replace(/[-_/]+/g, " ").trim();
   if (words && !/^(?=.*\d)[0-9a-f]{4,}$/.test(words)) return words;
   const day = branchDay(bare);
-  return day ? `Zweig vom ${day}` : branch;
+  return day ? `branch of ${day}` : branch;
 }
 // the day in a branch name, "20.09.": a stamp yymmdd[hhmm…] or a yyyy-mm-dd, read only when it is one
 export function branchDay(branch: string): string | null {
@@ -3096,8 +3088,8 @@ function landedSay(w: WorkplaceRow): string {
 // than the worktree. The words, in order, are the title (hover), the held word (a finger,
 // src/board.ts#holdTip) and the aria-label; the title ends with where the land stands.
 const WAY: { key: keyof WorkplaceChecks; word: string }[] = [
-  { key: "local", word: "Proof" }, { key: "preview", word: "Preview" }, { key: "gate", word: "Land check" },
-  { key: "audit", word: "Check after land" },
+  { key: "local", word: CHECK_KIND.proof }, { key: "preview", word: CHECK_KIND.preview }, { key: "gate", word: CHECK_KIND.landCheck },
+  { key: "audit", word: CHECK_KIND.afterLand },
 ];
 // THE CHECK AFTER A LAND, while it is not through (server.ts#postLandAuditLiveView): "run" while the
 // running audit covers this branch's land, "queue" while the land waits for the next run — read by
@@ -3170,56 +3162,6 @@ function gateLook(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[] = []): 
   const looks = ended.map(endedLook);
   return looks.includes("bad") ? "bad" : looks.includes("unk") ? "unk" : looks.length ? "ok" : null;
 }
-// WHAT THE DIAMOND SAYS (owner 2026-10-09: „[Zitat entfernt]“
-// ): each run as its sentence with its machine, then
-// the lane's four points in their colours with their words — where it stands on its way to main. The
-// same lines on hover (a note beside the diamond) and on a tap (under the lane: a phone has no hover).
-// A check that runs by its stage but names no run says so: its place is not guessed.
-function gateSay(w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLElement[] {
-  const live = mine.filter((x) => x.station !== "done");
-  const out: HTMLElement[] = [];
-  for (const b of live.length ? live : ended) {
-    const line = el("span", "gl");
-    line.dataset.gate = b.station === "done" ? endedLook(b) : b.station === "wait" ? "queue" : "run";
-    const gx = el("span", "gx");
-    gx.appendChild(el("b", "", runSentence(b)));
-    const at = runMachine(b);
-    const dv = el("span", "dv");
-    if (at) {
-      dv.append(icon(at.glyph), `on ${at.name}`);
-      dv.dataset.machine = at.name;
-    } else dv.append(el("span", "q", b.station === "wait" ? "on no device yet" : `place: ${b.where || "not reported"}`));
-    gx.appendChild(dv);
-    line.append(el("span", "gd"), gx);
-    line.title = `${meterKind(b.kind).label} · ${b.branch ?? "Branch nicht gemeldet"} · ${meterState(b)} · ${b.where} · ${meterKind(b.kind).title}`;
-    out.push(line);
-  }
-  if (!out.length) for (const { key, word } of LANE_CHECKS) {
-    const c = w.checks?.[key];
-    if (c?.state !== "running" && c?.state !== "waiting") continue;
-    const line = el("span", "gl");
-    line.dataset.gate = c.state === "running" ? "run" : "queue";
-    const gx = el("span", "gx");
-    gx.appendChild(el("b", "", `${word} ${c.state === "running" ? "running" : "waiting"}`));
-    gx.appendChild(el("span", "q", "place not reported"));
-    line.append(el("span", "gd"), gx);
-    out.push(line);
-  }
-  // the way: the four points as the opened lane draws them, each with its word, its state on hover
-  const way = el("span", "gw");
-  way.appendChild(el("span", "gwt", `Way to ${w.target.branch}`));
-  for (const { key, word } of WAY) {
-    const p = wayPoint(w, key, word, mine);
-    const st = el("span", `gp ${p.cls}`);
-    const dot = el("i", p.cls);
-    dot.dataset.key = key;
-    st.append(dot, word);
-    st.title = p.say;
-    way.appendChild(st);
-  }
-  out.push(way);
-  return out;
-}
 // THE STEM'S CHECK AFTER THE LAND (owner 2026-10-09: „[Zitat entfernt]“
 // ): the audit measures a stem's newest tip after a land,
 // folded over every land since the run before (server.ts#schedulePostLandAudit) — so it is the STEM's
@@ -3243,19 +3185,13 @@ function stemAudit(R: WorkplaceRepo, stem: string): StemAudit | null {
   if (run) {
     const ball = balls.find((b) => b.station !== "done");
     const at = ball ? runMachine(ball) : null;
-    lines.push({ look: "run", head: ball ? runSentence(ball) : "Nachprüfung läuft",
-      more: [at ? `auf ${at.name}` : "", run.covers.length ? `für ${run.covers.map(laneTail).join(", ")}` : ""].filter(Boolean).join(" · ") });
+    lines.push({ look: "run", head: ball ? runSentence(ball) : `${CHECK_KIND.afterLand} ${RUN_STATE.running}`,
+      more: [at ? `on ${at.name}` : "", run.covers.length ? `for ${run.covers.map(laneTail).join(", ")}` : ""].filter(Boolean).join(" · ") });
   }
   const waits = a.waiting.filter((x) => mine(x.repo) && x.main === stem);
-  if (waits.length) lines.push({ look: "queue", head: `${waits.length} ${waits.length === 1 ? "Land wartet" : "Lands warten"} auf die nächste Nachprüfung`,
+  if (waits.length) lines.push({ look: "queue", head: `${waits.length} ${waits.length === 1 ? "land waits" : "lands wait"} for the next check after land`,
     more: waits.map((x) => laneTail(x.branch)).join(", ") });
   return lines.length ? { look: run ? "run" : "queue", lines, balls } : null;
-}
-function gateLines(forKey: string, w: WorkplaceRow, mine: MeterBall[], ended: MeterBall[]): HTMLElement {
-  const box = el("div", "zd gate");
-  box.dataset.for = forKey;
-  box.append(...gateSay(w, mine, ended));
-  return box;
 }
 // THE OPENED LANE'S CHECKS: "Weg nach <Ziel>" and the four points, and what is red in words — or "Noch
 // keine Prüfung" where no check has a result (owner 2026-10-08: never a row of empty points)
@@ -3508,46 +3444,46 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
 // und woher er kommt". One sentence per carrier: läuft auf <sha> · how far from its target · whether
 // that distance touches its own code. Unknown stays unknown, with the reason as a sentence.
 const SCOPE_WORD: Record<WorkplaceStand["codeScope"], string> = {
-  server: "betrifft den Server-Code", "helper-daemon": "betrifft den Helfer-Dienst", repository: "betrifft Code",
+  server: "touches the server code", "helper-daemon": "touches the helper service", repository: "touches code",
 };
 function standSentence(st: WorkplaceStand): { text: (Node | string)[]; title: string; node: string; behindCode: boolean } {
   const parts: (Node | string)[] = [];
   const titles: string[] = [];
   const head = sha7(st.head);
-  parts.push("läuft auf ");
+  parts.push("runs on ");
   if (head) parts.push(el("span", "mono", head));
-  else parts.push(el("span", "q", "unbekannt"));
+  else parts.push(el("span", "q", "unknown"));
   const t = st.target;
   let behindCode = false;
   if (head && t) {
     const ref = refShort(t.ref);
     const d = t.distance;
-    if (!d) parts.push(` · Abstand zu ${ref} unbekannt`);
-    else if (d.ahead === 0 && d.behind === 0) parts.push(` · neuester Stand von ${ref}`);
+    if (!d) parts.push(` · distance to ${ref} unknown`);
+    else if (d.ahead === 0 && d.behind === 0) parts.push(` · newest state of ${ref}`);
     else {
-      parts.push(` · ${[d.behind ? `${d.behind} hinter` : "", d.ahead ? `${d.ahead} vor` : ""].filter(Boolean).join(", ")} ${ref}`);
+      parts.push(` · ${[d.behind ? `${d.behind}\u00a0behind` : "", d.ahead ? `${d.ahead}\u00a0ahead of` : ""].filter(Boolean).join(", ")} ${ref}`);
       if (d.behind) {
         if (t.codeBehind === true) { parts.push(" · "); parts.push(el("span", "cb", SCOPE_WORD[st.codeScope])); behindCode = true; }
-        else if (t.codeBehind === false) parts.push(" · eigener Code aktuell");
-        else parts.push(" · ob eigener Code betroffen ist: unbekannt");
+        else if (t.codeBehind === false) parts.push(" · its own code is current");
+        else parts.push(" · whether its own code is touched: unknown");
       }
     }
-    if (t.mergeBase) titles.push(`abgezweigt von ${ref} bei ${sha7(t.mergeBase)}`);
+    if (t.mergeBase) titles.push(`branched off ${ref} at ${sha7(t.mergeBase)}`);
   }
   if (!head) {
-    if (st.basis === "link-only") parts.push(" · ihre Repos liest dieser Server nicht");
+    if (st.basis === "link-only") parts.push(" · this server does not read its repos");
     else if (st.basis === "checkout-unproven") {
       if (st.reportedCheckout) { parts.push(" · Checkout "); parts.push(el("span", "mono", sha7(st.reportedCheckout.head) ?? "")); }
-      titles.push("die Instanz meldet nur ihren Checkout, nicht den Stand ihres laufenden Prozesses");
-    } else if (st.basis === "copy-unproven") titles.push("eine Testkopie meldet keinen belegten Stand");
+      titles.push("the instance reports only its checkout, not the state of its running process");
+    } else if (st.basis === "copy-unproven") titles.push("a test copy reports no proven state");
     else if (st.basis === "heartbeat") {
       // a helper without a stand still says when it last spoke at all: weeks of silence are the fact
-      parts.push(st.observedAt ? ` · zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)}` : " · hat sich nie gemeldet");
-      titles.push("der Helfer hat noch keinen Stand gemeldet");
+      parts.push(st.observedAt ? ` · last reported ${agoEn(Date.now() - st.observedAt)} ago` : " · never reported");
+      titles.push("the helper has not reported a state yet");
     }
   }
-  if (head && st.basis === "heartbeat" && st.observedAt) titles.push(`zuletzt gemeldet ${agoDe(Date.now() - st.observedAt)} — ein letzter Bericht, kein Beweis, dass er gerade erreichbar ist`);
-  if (st.update) titles.push(`Aktualisierung: ${st.update.state}${st.update.mainSha ? ` auf ${sha7(st.update.mainSha)}` : ""}`);
+  if (head && st.basis === "heartbeat" && st.observedAt) titles.push(`last reported ${agoEn(Date.now() - st.observedAt)} ago — a last report, no proof it can be reached now`);
+  if (st.update) titles.push(`Update: ${st.update.state}${st.update.mainSha ? ` to ${sha7(st.update.mainSha)}` : ""}`);
   const node = st.kind === "live-server" ? (behindCode ? "wait" : "live") : head ? "" : "leer";
   return { text: parts, title: titles.join(" · "), node, behindCode };
 }
@@ -3561,15 +3497,15 @@ function standSay(st: WorkplaceStand): string {
   const server = st.kind === "live-server";
   if (!sha7(st.head)) {
     // "verlinkt" already stands beside the name (rolesOf) — the sentence says only what follows
-    if (st.basis === "link-only") return "Ihre Repos liest dieser Server nicht.";
-    if (st.basis === "heartbeat") return st.observedAt ? `Meldet keinen Stand, zuletzt gehört ${agoDe(Date.now() - st.observedAt)}.` : "Hat sich noch nie gemeldet.";
-    return "Sein Stand ist nicht belegt.";
+    if (st.basis === "link-only") return "This server does not read its repos.";
+    if (st.basis === "heartbeat") return st.observedAt ? `Reports no state, last heard ${agoEn(Date.now() - st.observedAt)} ago.` : "Has never reported.";
+    return "Its state is not proven.";
   }
-  if (!t || !d) return server ? "Läuft." : "Bereit.";
-  if (!d.behind) return server ? "Läuft auf dem neuesten Stand." : "Bereit, auf dem neuesten Stand.";
-  if (t.codeBehind === true) return server ? "Läuft auf älterem Server-Code." : "Bereit, aber sein Code ist älter als main.";
-  if (t.codeBehind === false) return server ? "Läuft, der Server-Code ist aktuell." : "Bereit, sein Code ist aktuell.";
-  return server ? "Läuft auf einem älteren Stand." : "Bereit, auf einem älteren Stand.";
+  if (!t || !d) return server ? "Running." : "Ready.";
+  if (!d.behind) return server ? "Running the newest state." : "Ready, on the newest state.";
+  if (t.codeBehind === true) return server ? "Running older server code." : "Ready, but its code is older than main.";
+  if (t.codeBehind === false) return server ? "Running, the server code is current." : "Ready, its code is current.";
+  return server ? "Running an older state." : "Ready, on an older state.";
 }
 // A MACHINE THAT HAS BEEN SILENT FOR DAYS is not news (owner 2026-10-08, „[Zitat entfernt]“
 //  beside the active ones): a helper whose every carrier last spoke more than
@@ -3609,12 +3545,12 @@ let machinesLegendOpen = false;
 // an instance without a word is a link to another Fleet: this server does not measure it, so it says
 // nothing about it — the legend's last line says so, without a chip
 const MACHINE_LEGEND: [MachineState["tone"] | null, string, string][] = [
-  ["live", "online", "Das Gerät ist da: dieser Rechner, oder ein Helfer, der sich innerhalb des Online-Fensters des Servers gemeldet hat und Läufe übernehmen kann."],
-  ["live", "hier", "Die Instanz, von der diese Seite kommt."],
-  ["wait", "Neustart fällig", "Der Server läuft auf älterem Code als der Checkout — neu starten, dann läuft der aktuelle Stand."],
-  ["off", "offline", "Ein Helfer, der sich gerade nicht meldet — er übernimmt keine Läufe. In einer Testinstanz gibt es keine Helfer."],
-  ["still", "still", "Seit mehr als drei Tagen kein Bericht."],
-  [null, "ohne Angabe", "Eine verlinkte Instanz (FLEET_INSTANCES). Dieser Server misst sie nicht; der Name oben links wechselt hin."],
+  ["live", "online", "The device is there: this computer, or a helper that reported a moment ago and can take check runs."],
+  ["live", "here", "The instance this page comes from."],
+  ["wait", "restart due", "The server runs older code than its checkout — restart it, then the current state runs."],
+  ["off", "offline", "A helper that is not reporting now — it takes no check runs. A test instance has no helpers."],
+  ["still", "quiet", "No report for more than three days."],
+  [null, "no word", "A linked Fleet on another computer. This server does not measure it; the name at the top left switches to it."],
 ];
 function machinesLegend(): HTMLElement {
   const box = el("div", "rklegend");
@@ -3634,14 +3570,14 @@ function machinesLegend(): HTMLElement {
 // instance's row here, the Live row on the live server — and each kind keeps one sign: the test
 // instance the green square its lane line draws, the Live-Server its glyph. The mark is drawn by CSS
 // from data-hier, so the row's words stay what they say.
-const HERE_MARK = "hier";
+const HERE_MARK = "here";
 // ONE WORD WITH ITS STATE (owner 2026-10-09: „[Zitat entfernt]“
 // ; the same evening: „[Zitat entfernt]“): an instance's chip says "hier" and nothing more —
 // it answers this page, so it runs — and a due restart says so before it ("Neustart fällig · hier")
 function markHere(row: HTMLElement): void {
   row.dataset.hier = HERE_MARK;
 }
-const HERE_STATE: MachineState = { tone: "live", word: HERE_MARK, title: "Diese Seite kommt von dieser Instanz" };
+const HERE_STATE: MachineState = { tone: "live", word: HERE_MARK, title: "This page comes from this instance" };
 // EVERY DEVICE GETS ITS INSTANCES (owner 2026-10-09: „[Zitat entfernt]“
 // ; „[Zitat entfernt]“): an instance row
 // and its tap lines stand one rail in under their device, a step smaller
@@ -3658,10 +3594,10 @@ function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   // 2026-10-08: a hollow ring read as "off").
   const port = location.port;
   const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
-  const rows = machineRow("testinstanz", "Testinstanz", { glyph: "laptop", word: port ? `Port\u00a0${port}` : "" }, [],
-    { ...HERE_STATE, title: "Diese Seite kommt von dieser Testinstanz" }, null,
-    [{ label: "Stand", text: band.text, st: null }, { label: "Hinweis", text: band.title, st: null }],
-    "Hier: diese Seite kommt von dieser Testinstanz, nicht vom Live-Server");
+  const rows = machineRow("testinstanz", "Test instance", { glyph: "laptop", word: port ? `Port\u00a0${port}` : "" }, [],
+    { ...HERE_STATE, title: "This page comes from this test instance" }, null,
+    [{ label: "State", text: band.text, st: null }, { label: "Note", text: band.title, st: null }],
+    "Here: this page comes from this test instance, not from the live server");
   const [row] = rows;
   row.dataset.glyph = "testinstanz";
   markHere(row);
@@ -3694,28 +3630,29 @@ function machineHead(kind: MachineKind, name: string, sub: string, state: Machin
 // the stands' observedAt against the server's own online window (deviceOnlineMs), or a link.
 type MachineKind = { glyph: IconName; word: string };
 type MachineState = { tone: "live" | "wait" | "link" | "off" | "still"; word: string; title: string };
-const KIND_HERE: MachineKind = { glyph: "laptop", word: "dieser Rechner" };
-const KIND_HELPER: MachineKind = { glyph: "server", word: "Helfer" };
+const KIND_HERE: MachineKind = { glyph: "laptop", word: "this computer" };
+const KIND_HELPER: MachineKind = { glyph: "server", word: "helper" };
 function machineKind(list: WorkplaceStand[]): MachineKind {
   if (list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance")) return KIND_HELPER;
   if (list.some((st) => st.kind === "linked-instance" && switchLinks.some((l) => l.kind === "live" && l.name === st.name)))
-    return { glyph: "live", word: "Live-Server" };
-  return { glyph: "link", word: "Fleet-Instanz" };
+    return { glyph: "live", word: "Live server" };
+  return { glyph: "link", word: "Fleet instance" };
 }
 function machineState(list: WorkplaceStand[]): MachineState {
   const helper = list.filter((st) => st.kind === "helper-daemon" || st.kind === "helper-instance");
-  if (!helper.length) return { tone: "link", word: "verlinkt", title: "Ein Link auf diese Fleet — dieser Server misst sie nicht" };
+  if (!helper.length) return { tone: "link", word: "verlinkt", title: "A link to this Fleet — this server does not measure it" };
   const heard = Math.max(...helper.map((st) => st.observedAt ?? 0));
-  const ago = heard ? `zuletzt gehört ${agoDe(Date.now() - heard)}` : "hat sich nie gemeldet";
-  if (machineStill(list)) return { tone: "still", word: "still", title: `Seit mehr als drei Tagen kein Bericht — ${ago}` };
+  const ago = heard ? `last heard ${agoEn(Date.now() - heard)} ago` : "never reported";
+  if (machineStill(list)) return { tone: "still", word: "still", title: `No report for more than three days — ${ago}` };
   // "läuft" like every machine that runs (owner 2026-10-09: „[Zitat entfernt]“)
-  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "läuft", title: `Meldet sich regelmäßig als Helfer — ${ago}` };
-  return { tone: "off", word: "nicht angemeldet", title: `Meldet sich gerade nicht — ${ago}` };
+  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "läuft", title: `Reports as a helper regularly — ${ago}` };
+  return { tone: "off", word: "nicht angemeldet", title: `Not reporting now — ${ago}` };
 }
 // A DEVICE'S OWN WORD (owner 2026-10-09: „[Zitat entfernt]“
 // ): a device is online or offline — "läuft" is said of a server; a machine
 // known only by a link has nothing measured and no chip. The sidebar's signs keep machineState's words.
-const DEVICE_WORD: Partial<Record<MachineState["tone"], string>> = { live: "online", off: "offline" };
+// this tab says them in English (owner 18.10. 23:4x); machineState keeps the sidebar's German words
+const DEVICE_WORD: Partial<Record<MachineState["tone"], string>> = { live: "online", off: "offline", still: "quiet" };
 function deviceState(list: WorkplaceStand[]): MachineState | null {
   const st = machineState(list);
   return st.tone === "link" ? null : { ...st, word: DEVICE_WORD[st.tone] ?? st.word };
@@ -3748,11 +3685,11 @@ function machinesOf(stands: WorkplaceStand[]): Map<string, WorkplaceStand[]> {
 }
 // a link is an instance row of its own under the device now (#asInstance), no role beside its name
 function rolesOf(list: WorkplaceStand[]): string[] {
-  return list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance") ? ["Helfer"] : [];
+  return list.some((st) => st.kind === "helper-daemon" || st.kind === "helper-instance") ? ["helper"] : [];
 }
 function carrierWord(st: WorkplaceStand): string {
-  return st.kind === "helper-daemon" ? "Helfer-Dienst" : st.kind === "helper-instance" ? "Instanz"
-    : st.kind === "linked-instance" ? "Fleet-Instanz" : "Live";
+  return st.kind === "helper-daemon" ? "Helper service" : st.kind === "helper-instance" ? "Instance"
+    : st.kind === "linked-instance" ? "Fleet instance" : "Live";
 }
 type MachineLead = { label: string | null; st: WorkplaceStand; due?: boolean; dueTitle?: string }
   | { label: string; text: string; node: string; kind: string };
@@ -3785,7 +3722,7 @@ function machineRow(key: string, name: string, kind: MachineKind, roles: string[
       row.dataset.kind = lead.st.kind;
       // the row says what it means; a due restart leads with what to do — the chain opens on a tap
       // ("Neustart fällig" is the chip's word now — the sentence says why, not the same twice)
-      if (lead.due) say.append("Läuft auf älterem Server-Code.");
+      if (lead.due) say.append("Running older server code.");
       else say.append(standSay(lead.st));
       if (lead.due) { row.classList.add("due"); titles.push(lead.dueTitle ?? ""); }
       lines.push([el("b", "", lead.label && !lead.due ? lead.label : carrierWord(lead.st)), " · ", ...s.text]);
@@ -3823,24 +3760,11 @@ function machineRow(key: string, name: string, kind: MachineKind, roles: string[
   })];
 }
 
-// RUNNING WORK in a project: a lane (a worktree with its session), a session that works or waits
-// right now, or a land on its way (its land check runs or queues). A session that only sits in the
-// main checkout marks a place, not work; an unreadable project stands open with its reason.
+// the session a worktree's row names, while that slot still holds the same occupant
 function workSlot(w: WorkplaceRow): SlotInfo | undefined {
   if (!w.session) return undefined;
   const s = fleet[w.session.slot - 1];
   return s?.cwd && (s.openedAt === undefined || s.openedAt === w.session.openedAt) ? s : undefined;
-}
-function repoAtWork(R: WorkplaceRepo): boolean {
-  if (R.worktrees === null) return true;
-  const busy = (s: SlotInfo) => sessionActive(s.id) || !!s.awaiting;
-  for (const w of R.worktrees) {
-    const s = workSlot(w);
-    if (s && (!w.primary || busy(s))) return true;
-    const gate = w.checks.gate?.state;
-    if (gate === "running" || gate === "waiting") return true;
-  }
-  return fleet.some((s) => !!s.cwd && !s.worktree && (s.repo ?? s.cwd) === R.repo && busy(s));
 }
 
 // a row that acts on a click is a target for the keyboard too: Tab reaches it, Enter or Space act
@@ -3862,10 +3786,10 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   const sec = el("div", "bsec ranke");
   const wp = workplaces;
   if (!wp) {
-    sec.appendChild(el("div", "bempty", workplacesErr ? `Die Arbeitsorte konnten nicht gelesen werden — ${workplacesErr}.` : "lese die Arbeitsorte…"));
+    sec.appendChild(el("div", "bempty", workplacesErr ? `The workplaces could not be read — ${workplacesErr}.` : "reading the workplaces…"));
     return sec;
   }
-  if (workplacesErr) sec.appendChild(el("div", "bstale", `Stand von ${clockOf(wp.measuredAt)} — neu lesen ging nicht: ${workplacesErr}`));
+  if (workplacesErr) sec.appendChild(el("div", "bstale", `As of ${clockOf(wp.measuredAt)} — reading again failed: ${workplacesErr}`));
   const focus = focusSlot ? fleet[focusSlot - 1] : undefined;
   // THREE BLOCKS (owner 2026-10-08, round 2): the projects with their lanes, the checks that run,
   // the machines — each under its own small head, so the eye finds a kind of thing, not a row. The
@@ -3877,12 +3801,12 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     b.appendChild(h);
     return b;
   };
-  const checks = block("runs", "Prüfungen"), devices = block("dev", "Geräte");
+  const checks = block("runs", SECTION.checks), devices = block("dev", SECTION.devices);
   // the checks block's head opens and closes it (#runsSummary)
   const runsHead = checks.firstElementChild as HTMLElement;
   runsHead.classList.add("fold");
   runsHead.appendChild(icon("chevron"));
-  runsHead.title = boardFolds.has(RUNS_FOLD) ? "Klick klappt die Prüfungen auf eine Zeile zu" : "Klick klappt jede Prüfung als eigene Zeile auf";
+  runsHead.title = boardFolds.has(RUNS_FOLD) ? "Click folds the checks into one line" : RUNS_OPEN_HINT;
   rowTarget(runsHead, toggleRuns);
   runsHead.setAttribute("aria-expanded", String(boardFolds.has(RUNS_FOLD)));
   readRunsHere();
@@ -3897,7 +3821,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   const hereOwn = (hereKey ? machines.get(hereKey) : undefined) ?? [];
   if (hereKey) machines.delete(hereKey);
   const here = el("div", "grp");
-  const hereName = instanceName ?? "Dieser Rechner";
+  const hereName = instanceName ?? "This computer";
   // WHICH MACHINE A RUN IS ON: by the name its `where` carries — this machine ("this machine", or the
   // instance's own name) or a machine Geräte draws under that name; anything else names none
   runMachine = (b) => {
@@ -3906,16 +3830,16 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     return list ? { glyph: machineKind(list).glyph, name: list[0]?.name ?? b.where } : null;
   };
   const hereRoles = rolesOf(hereOwn);
-  const hereRuns: MachineState = { tone: "live", word: "online", title: "Der Rechner, auf dem der Server dieser Seite läuft" };
+  const hereRuns: MachineState = { tone: "live", word: "online", title: "The computer the server of this page runs on" };
   const hereFacts = hereOwn.map((st) => st.kind === "linked-instance"
-    ? { label: "Fleet-Instanz", text: "verlinkt — das ist dieser Server", st: null } : { label: carrierWord(st), text: null, st });
+    ? { label: "Fleet instance", text: "linked — that is this server", st: null } : { label: carrierWord(st), text: null, st });
   const lives = (wp.stands ?? []).filter((st) => st.kind === "live-server");
   if (instanceSource) {
     // A TEST INSTANCE DOES NOT CALL ITSELF LIVE (owner, 2026-10-06): the copy has no .git, so its
     // boot head is unreadable and its row would read „[Zitat entfernt]“. It names itself
     // and carries the stand measured BEFORE the copy (instance.source), in the band's own words.
     here.append(...machineRow("here", hereName, KIND_HERE, hereRoles, hereRuns, null, hereFacts,
-      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+      "The computer this Fleet server runs on — under it every repo it reads"));
     // THE LIVE-SERVER BESIDE THE TEST INSTANCE (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
     // ): an
     // instance's way back is the live fleet of THIS machine (testinstanz.sh#ti_live_url), so that link
@@ -3927,9 +3851,9 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       const link = switchLinks.find((l) => l.kind === "live" && list.some((st) => st.name === l.name));
       let port = "";
       try { port = link ? new URL(link.url).port : ""; } catch { /* no port said, none shown */ }
-      here.append(...asInstance(machineRow(key, "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [], null,
+      here.append(...asInstance(machineRow(key, "Live server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [], null,
         { label: null, st: list[0] }, list.slice(1).map((st) => ({ label: carrierWord(st), text: null, st })),
-        "Die echte Fleet auf diesem Rechner — diese Testinstanz misst sie nicht; der Name oben links wechselt hin")));
+        "The real Fleet on this computer — this test instance does not measure it; the name at the top left switches to it")));
     }
     here.append(...testInstanceStandRows(instanceSource));
   } else {
@@ -3941,27 +3865,27 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     let lead: MachineLead | null = null;
     if (live) {
       const due = restartDue || live.target?.codeBehind === true;
-      lead = { label: due ? "Neustart fällig" : "Live", st: live, due,
-        dueTitle: "Der laufende Server bootet von einem älteren Commit, und der Unterschied berührt Server-Code: neu starten, dann läuft dieser Stand." };
+      lead = { label: due ? "Restart due" : "Live", st: live, due,
+        dueTitle: "The running server booted from an older commit, and the difference touches server code: restart it, then this state runs." };
     } else if (deployGapInfo) {
       // an older server without stands: the deploy gap alone, said as plainly
       const n = deployGapInfo.behindCount;
-      lead = { label: "Live", text: `läuft auf ${sha7(deployGapInfo.bootHead) ?? "unbekannt"}${n === null ? "" : n === 0 ? " · neuester Stand" : ` · ${n} hinter`}`,
+      lead = { label: "Live", text: `runs on ${sha7(deployGapInfo.bootHead) ?? "unknown"}${n === null ? "" : n === 0 ? " · newest state" : ` · ${n}\u00a0behind`}`,
         node: deployGapInfo.codeBehind ? "wait" : "live", kind: "live-server" };
     }
     const due = restartDue || (lead !== null && "st" in lead && lead.due === true);
     here.append(...machineRow("here", hereName, KIND_HERE, hereRoles, hereRuns, null, hereFacts,
-      "Der Rechner, auf dem dieser Fleet-Server läuft — darunter jedes Repo, das er liest"));
+      "The computer this Fleet server runs on — under it every repo it reads"));
     // THE LIVE-SERVER UNDER ITS MACHINE, as in a test instance: the page comes from it, so its chip
     // says "hier" — and a due restart before it, in the wait colour (it waits on you)
     if (lead) {
       const port = location.port;
-      const rows = asInstance(machineRow("live", "Live-Server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [],
-        due ? { tone: "wait", word: `Neustart fällig · ${HERE_MARK}`, title: "Der Server läuft auf älterem Code — neu starten, dann läuft dieser Stand" } : HERE_STATE, lead,
+      const rows = asInstance(machineRow("live", "Live server", { glyph: "live", word: port ? `Port\u00a0${port}` : "" }, [],
+        due ? { tone: "wait", word: `restart due · ${HERE_MARK}`, title: "The server runs older code — restart it, then this state runs" } : HERE_STATE, lead,
         moreLives.map((st) => ({ label: "Live", text: null, st })),
-        "Die Fleet auf diesem Rechner, von der diese Seite kommt"));
+        "The Fleet on this computer this page comes from"));
       markHere(rows[0]);
-      rows[0].title = `Hier: diese Seite kommt vom Live-Server — ${rows[0].title}`;
+      rows[0].title = `Here: this page comes from the live server — ${rows[0].title}`;
       here.append(...rows);
     }
     if (bundleStaleInfo?.stale === true) {
@@ -3969,41 +3893,22 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
       row.dataset.kind = "bundle";
       row.appendChild(el("span", "nd wait"));
       const nm = el("span", "nm");
-      nm.append(el("b", "", "Seite neu bauen"), " — der Browser zeigt einen älteren Stand.");
+      nm.append(el("b", "", "Rebuild the page"), " — the browser shows an older state.");
       row.appendChild(nm);
-      row.title = "Der Browser zeigt einen älteren Stand — im Terminal `bun run build` ausführen, dann ist er aktuell (public/*.js sind Bauartefakte).";
+      row.title = "The browser shows an older state — run `bun run build` in the terminal, then it is current (public/*.js are build artefacts).";
       here.appendChild(row);
     }
   }
   devices.appendChild(here);
 
-  // THE PROJECTS (owner 2026-10-07: „[Zitat entfernt]“): a project
-  // with running work (repoAtWork) and the focused session's project stand open; every other one
-  // waits behind ONE row, a tap away, and opens there like any project
-  const focusRepo = focus?.cwd ? (focus.worktree?.repo ?? focus.repo ?? focus.cwd) : null;
-  // ONLY THE FOCUSED SESSION'S PROJECT (owner 2026-10-09 in the test instance: „[Zitat entfernt]“
-  // 
-  // ): a session in a project shows that project and nothing beside it; a session outside
-  // every project keeps the overview — the working projects open, the quiet ones behind one row
-  const focusR = focusRepo ? wp.repos.find((R) => R.repo === focusRepo) : undefined;
-  const quiet = focusR ? [] : wp.repos.filter((R) => !repoAtWork(R));
-  const shown = (focusR ? [focusR] : wp.repos).filter((R) => !quiet.includes(R));
-  // THE GIT STRUCTURE IS THE PROJECTS NOW (owner Z83: „[Zitat entfernt]“
-  // ; src/gitstruktur.ts): each project its heads, sessions and checks,
-  // and what the Projekte block could do in the menus of its heads (Bestandsaufnahme 3db17b9a, Ja 3e75a836)
+  // ONLY THE SELECTED SESSION'S REPO (owner Z131, 18.10.: „[Zitat entfernt]“
+  // ): the session
+  // the left bar marks (panes[focused]) shows its repo and nothing beside it; no session, or one outside every repo this
+  // server reads, shows no structure. THE GIT STRUCTURE IS THE PROJECTS (owner Z83; src/gitstruktur.ts): its heads,
+  // sessions and checks, and what the Projekte block could do in the menus of its heads (Bestandsaufnahme 3db17b9a)
+  const focusR = focus ? sessionRepo(focus, wp.repos) : undefined;
   const git = el("div", "rkblock rk-git");
-  for (const R of shown) git.appendChild(gitBlock(R, true, wts, standOf));
-  if (quiet.length) {
-    const f = el("button", `gsquiet ${rankeQuietOpen ? "auf" : "zu"}`) as HTMLButtonElement;
-    f.type = "button";
-    f.appendChild(icon("chevron"));
-    f.appendChild(el("span", "", `${quiet.length} ${quiet.length === 1 ? "quiet project" : "quiet projects"}`));
-    f.title = `${quiet.map((R) => baseName(R.repo)).join(", ")} — no lane, no working session, no land on its way · ${rankeQuietOpen ? "collapse" : "expand"}`;
-    f.setAttribute("aria-expanded", String(rankeQuietOpen));
-    f.onclick = () => { rankeQuietOpen = !rankeQuietOpen; void renderBoard(); };
-    git.appendChild(f);
-    if (rankeQuietOpen) for (const R of quiet) git.appendChild(gitBlock(R, false, wts, standOf));
-  }
+  if (focusR) git.appendChild(gitBlock(focusR, wts, standOf));
   // the checks are drawn after the projects: what found its lane is not said twice
   checks.appendChild(runRows(focusSlot === null));
 
@@ -4011,7 +3916,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   // whatever reports under the name
   const helpers = new Map([...machines].filter(([, list]) => list.some((st) => st.kind !== "linked-instance")));
   // machines without a name are told apart by a number, never folded into one
-  const nameless = (st: WorkplaceStand) => (st.kind === "linked-instance" ? "verlinkte Fleet" : "Helfer ohne Namen");
+  const nameless = (st: WorkplaceStand) => (st.kind === "linked-instance" ? "linked Fleet" : "helper without a name");
   const namelessCount = new Map<string, number>(), namelessSeen = new Map<string, number>();
   for (const [, [first]] of machines) if (!first.name) namelessCount.set(nameless(first), (namelessCount.get(nameless(first)) ?? 0) + 1);
   const still = [...machines].filter(([, list]) => machineStill(list));
@@ -4030,14 +3935,14 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     const [lead, ...rest] = own;
     g.append(...machineRow(key, name, own.length ? KIND_HELPER : { glyph: KIND_HELPER.glyph, word: "" }, rolesOf(own), deviceState(list),
       lead ? { label: carrierWord(lead), st: lead } : null, rest.map((st) => ({ label: carrierWord(st), text: null, st })),
-      own.length ? "Ein Helfer-Gerät dieser Fleet — sein Stand ist sein letzter Bericht" : "Ein Gerät, das diese Fleet nur über einen Link kennt"));
+      own.length ? "A helper device of this Fleet — its state is its last report" : "A device this Fleet knows only by a link"));
     links.forEach((st, i) => {
       const link = switchLinks.find((l) => l.name === st.name);
       let port = "";
       try { port = link ? new URL(link.url).port : ""; } catch { /* no port said, none shown */ }
       const live = link?.kind === "live";
-      g.append(...asInstance(machineRow(`${key}:${i}`, live ? "Live-Server" : "Fleet-Instanz", { glyph: live ? "live" : "link", word: port ? `Port\u00a0${port}` : "" },
-        [], null, { label: null, st }, [], "Eine verlinkte Fleet-Instanz — nur ein Link, keine Verbindung; der Name oben links wechselt hin")));
+      g.append(...asInstance(machineRow(`${key}:${i}`, live ? "Live server" : "Fleet instance", { glyph: live ? "live" : "link", word: port ? `Port\u00a0${port}` : "" },
+        [], null, { label: null, st }, [], "A linked Fleet instance — only a link, no connection; the name at the top left switches to it")));
     });
     into.appendChild(g);
   };
@@ -4052,22 +3957,22 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
     // Offline like every silent device, and WHY in the row's own words (UI-MAIN d00a5a9d: "nicht
     // angemeldet" is another act for the owner than „[Zitat entfernt]“, and a phone has no hover)
     const g = el("div", "grp");
-    g.appendChild(machineHead(KIND_HELPER, "Helfer", "",
-      { tone: "off", word: "offline · nicht angemeldet", title: "Eine Testinstanz trägt keine Helfer-Geräte über" },
-      "Helfer-Geräte gehören zur echten Fleet — der Kopiervorgang einer Testinstanz trägt sie nicht über, darum meldet diese Instanz keinen."));
+    g.appendChild(machineHead(KIND_HELPER, "Helper", "",
+      { tone: "off", word: "offline · not signed in", title: "A test instance carries no helper devices over" },
+      "Helper devices belong to the real Fleet — a test instance's copy does not carry them over, so this instance reports none."));
     devices.appendChild(g);
   }
   // …and what the states mean, on demand: a glyph in the block's head opens one line per state
   const why = el("button", `rk-btn quiet ib${machinesLegendOpen ? " on" : ""}`) as HTMLButtonElement;
   why.type = "button";
   why.appendChild(icon("info"));
-  why.title = machinesLegendOpen ? "Erklärung schließen" : "Was die Zustände der Geräte heißen";
-  why.setAttribute("aria-label", "Was die Zustände der Geräte heißen");
+  why.title = machinesLegendOpen ? "Close the explanation" : "What the device states mean";
+  why.setAttribute("aria-label", "What the device states mean");
   why.setAttribute("aria-expanded", String(machinesLegendOpen));
   why.onclick = () => { machinesLegendOpen = !machinesLegendOpen; void renderBoard(); };
   devices.firstElementChild!.appendChild(why);
   if (machinesLegendOpen) devices.appendChild(machinesLegend());
-  sec.append(...(shown.length || quiet.length ? [git] : []), checks, devices);
+  sec.append(...(focusR ? [git] : []), checks, devices);
   return sec;
 }
 
@@ -4106,12 +4011,12 @@ function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { 
 // ONE PROJECT AS ITS GIT STRUCTURE with what the Projekte block could do (owner Z83; src/gitstruktur.ts#headWords decides
 // which head offers which word): the head with the project's state and „[Zitat entfernt]“, the menu of the selected head or diamond,
 // and under the structure what must stay in sight — a live start on its way or failed, the fold of many quiet worktrees
-function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
+function gitBlock(R: WorkplaceRepo, wts: WtInfo | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
   const repaint = () => void renderBoard();
   const rows = R.worktrees ?? [];
   // MORE THAN 12 WORKTREES WITHOUT A SESSION wait behind one line, as they did in the Ranke
   const idle = rows.filter((w) => !w.primary && !workSlot(w) && !boardBranch(R.repo, w.branch));
-  const folded = idle.length > 12 && !rankeFoldOpen.has(R.repo) ? idle : [];
+  const folded = gsView.idle && idle.length > 12 && !rankeFoldOpen.has(R.repo) ? idle : [];
   const runsOf = (w: WorkplaceRow) => {
     const s = workSlot(w);
     return { mine: (w.branch ? runsHere.byBranch.get(w.branch) ?? [] : []).filter((b) => b.slot === null || b.slot === s?.id),
@@ -4125,7 +4030,7 @@ function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, 
       const { mine, ended } = runsOf(w);
       const g = gateLook(w, mine, ended);
       return g === "run" ? "running" : g === "queue" ? "waiting" : null;
-    } });
+    }, hide: { landed: !gsView.landed, idle: !gsView.idle } });
   const head = projectHead(R, standOf);
   const add = el("button", "rk-btn quiet ib gsadd") as HTMLButtonElement;
   add.type = "button";
@@ -4133,6 +4038,13 @@ function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, 
   add.title = "New session in this repo — a lane, a branch session or another role";
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo: R.repo }); };
+  const gear = el("button", `rk-btn quiet ib gsgear${gsSetOpen ? " on" : ""}`) as HTMLButtonElement;
+  gear.type = "button";
+  gear.appendChild(icon("gear"));
+  gear.title = gsSetOpen ? "Close the settings of this view" : "Settings of this view: what it shows, how lanes land";
+  gear.setAttribute("aria-label", "Settings of this view");
+  gear.setAttribute("aria-expanded", String(gsSetOpen));
+  gear.onclick = (e) => { e.stopPropagation(); gsSetOpen = !gsSetOpen; repaint(); };
   const sel = gsSel?.repo === R.repo ? gsSel : null;
   const panel = sel ? gsPanel(R, m, sel.key, sel.word, wts, standOf, audit, runsOf, repaint) : null;
   const drawn = sel ? `${R.repo}\n${sel.key}\n${sel.word ?? ""}` : "";
@@ -4154,10 +4066,14 @@ function gitBlock(R: WorkplaceRepo, openByDefault: boolean, wts: WtInfo | null, 
     below.push(f);
   }
   for (const b of below) b.classList.add("gsbelow");
-  const open = rankeRepos.get(R.repo) ?? openByDefault;
+  const open = rankeRepos.get(R.repo) ?? true;
+  // the state's dot in its tone, as the legend says it: a full green dot while lanes work, a ring when quiet
+  const toned = el("span", "gstone");
+  toned.dataset.tone = head.state.tone;
+  toned.appendChild(stateChip(head.state));
   const box = gitStructure(m, {
     open, toggle: () => { rankeRepos.set(R.repo, !open); prefSet("fleet.ranke.repos", JSON.stringify(Object.fromEntries(rankeRepos))); repaint(); }, info: gsInfo, toggleInfo: () => { gsInfo = !gsInfo; repaint(); },
-    side: [...(head.remote ? [head.remote] : []), stateChip(head.state), add],
+    side: [...(head.remote ? [head.remote] : []), toned, gear, add], settings: gsSetOpen ? gsSettings(R.repo) : null,
     sel: sel?.key ?? null, select: (key) => { gsSel = key ? { repo: R.repo, key, word: null } : null; if (!key) gsDrawn = ""; repaint(); },
     jump: jumpTo, panel, fresh, below,
   });
@@ -4194,25 +4110,25 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   // 0 — WHOSE MENU THIS IS (owner Z87: „[Zitat entfernt]“
   // ): its first line names the element it opened from
   const name = item?.name ?? branch;
-  s1.appendChild(el("div", "gshd", isMain ? `${m.integration} · ${sha7(m.head) ?? "tip unknown"}`
-    : dia ? `${lane ? "Land check" : "Merge check"} of ${name}` : `${lane ? "Lane" : "Branch"} ${name}${name !== branch ? ` · ${branch}` : ""}`));
+  const hd = el("div", "gshd", isMain ? `${m.integration} · ${sha7(m.head) ?? "tip unknown"}`
+    : dia ? `${lane ? CHECK_KIND.landCheck : "Merge check"} of ${name}` : `${lane ? "Lane" : "Branch"} ${name}`);
+  if (!isMain && !dia && name !== branch) hd.append(" · ", el("span", "gsbn", branch));
+  s1.appendChild(hd);
   // 1 — THE TEST INSTANCE of this head's own checkout (owner Z86: „[Zitat entfernt]“); a repo
-  // without the script says so in the same place
-  if (words.includes("testinstanz") && w) s1.appendChild(tiLook(w).cls === "tpl"
-    ? el("div", "zd ti gsnoti", "Test instance · no template in this repo (testinstanz.sh is missing)") : tiLine(R.repo, w, slot, standOf));
+  // without the script has nothing to start, so no line stands for it
+  if (words.includes("testinstanz") && w && tiLook(w).cls !== "tpl") s1.appendChild(tiLine(R.repo, w, slot, standOf));
   // 2 — AT MOST THREE FACTS: the session (a click jumps to it), the distance to main, the last check; main the check after
   // its last land in words (owner Z86: the double diamond went) and how many sessions work on it
   const said: (string | HTMLElement)[] = [];
   if (isMain && !dia) {
     const pla = postLandAudit && (postLandAudit.repo === R.repo || postLandAudit.repo === baseName(R.repo)) ? postLandAudit : null;
     said.push(audit ? (audit.look === "run" ? "check after land running" : "check after land waits for the next run")
-      : pla ? `check after land ${pla.result === "green" ? "green" : pla.result === "red" ? "red" : "without a result"} · ${fmtTs(pla.at)}` : "no check after land open");
+      : pla ? `check after land ${pla.result === "green" ? "green" : pla.result === "red" ? "red" : "without a result"} · ${fmtTs(pla.at)}` : "no check after land yet");
     if (m.sessions.length) said.push(`${m.sessions.length} ${m.sessions.length === 1 ? "session" : "sessions"} on ${m.integration}`);
   } else if (at === "branch-check") {
     said.push(!bb ? "Not a board branch — it has no merge check"
       : item?.merged ? `Landed ${bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
-  } else if (at === "lane-check") said.push(`Way to ${w?.target?.branch ?? m.integration}`);
-  else {
+  } else if (at !== "lane-check") {
     if (s) {
       const b = el("button", "gsfact", `Slot ${s.id} · ${slotWorks(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
         : s.lastOutput > 0 ? `quiet for ${agoEn(Date.now() - s.lastOutput)}` : "quiet"}`) as HTMLButtonElement;
@@ -4221,7 +4137,8 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
       b.onclick = (e) => { e.stopPropagation(); jumpTo(s.id); };
       said.push(b);
     } else said.push("no session");
-    const dist = w ? distanceLine(w) : null;
+    // a landed head's commits are on main as copies: "1 ahead" would read as something still to land
+    const dist = w && !facts.landed ? distanceLine(w) : null;
     if (dist) said.push(dist);
     const gate = w?.checks.gate;
     said.push(bb ? (item?.merged ? `landed${bb.lands.at(-1)?.checked ? ", check green" : ", no check"}` : mergeCheckLine(bb.check))
@@ -4229,9 +4146,12 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
       : gate ? `land check ${gate.state === "green" ? "green" : gate.state === "red" ? "red" : gate.state === "running" ? "running" : gate.state === "waiting" ? "waiting" : "skipped"}`
       : "no check yet");
   }
+  // a lane's checks say their state in step 2, under „Checks“ — step 1 names the head only
   const line = el("div", "gscap");
   said.slice(0, 3).forEach((x, i) => { if (i) line.append(" · "); line.append(x); });
-  s1.appendChild(line);
+  if (said.length) s1.appendChild(line);
+  // 2b — „PASST“ (owner Z132): a board branch with commits since its last batch says which tip the owner looked at
+  if (!dia && bb && bb.chargeCommits !== 0 && !facts.mirror) s1.appendChild(lookedLine(R.repo, bb, repaint));
   // 3 — THE LAND FORM in step 1 (owner Z86: „[Zitat entfernt]“): a lane's in this browser, a board
   // branch's on the server
   if (!dia && words.includes("landform") && lane && w) s1.appendChild(landFormField("lane", w.path, R.repo, "On land", false));
@@ -4264,12 +4184,51 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   const s2 = el("div", "gsm2");
   const runs = w ? runsOf(w) : { mine: [], ended: [] };
   if (open === "live") s2.appendChild(liveField(R.repo, liveArriving(R.repo, rows)));
-  else if (open === "landform") s2.appendChild(landFormField("repo", R.repo, R.repo, "On land, every lane", true));
   else if (open === "charge" && bb) s2.appendChild(branchCharge(R.repo, bb));
   else if (open === "worktree" && w) s2.append(...wtLines(R, w, wts));
-  else if (open === "pruefungen" && w) s2.append(wayLine(w, runs.mine), gateLines(`gs:${w.path}`, w, runs.mine, runs.ended), ...runLines(runs.mine));
+  else if (open === "pruefungen" && w) s2.append(wayLine(w, runs.mine), ...runLines(runs.mine));
   if (!s2.childElementCount) return box;
   box.appendChild(s2);
+  return box;
+}
+
+// THE GEAR'S PANEL under the head: two switches of what the structure shows, and how this project's lanes land (it stood
+// in main's menu as „On land, every lane“ until round 7). A switch is real or it is not here
+function gsSettings(repo: string): HTMLElement {
+  const box = el("div", "gsset");
+  const row = (key: keyof GsView, label: string, say: Record<"show" | "hide", string>) => {
+    const r = el("div", "zd lf-set gsvw");
+    r.dataset.view = key;
+    const chips = el("span", "gsch");
+    r.append(el("span", "lf-k", label), chips);
+    for (const show of [true, false]) {
+      const on = gsView[key] === show;
+      const c = el("button", `rk-btn quiet lf-c${on ? " on" : ""}`, show ? "Show" : "Hide") as HTMLButtonElement;
+      c.type = "button";
+      c.title = say[show ? "show" : "hide"];
+      c.setAttribute("aria-pressed", String(on));
+      c.onclick = (e) => {
+        e.stopPropagation();
+        if (on) return;
+        gsView = { ...gsView, [key]: show };
+        prefSet("fleet.gs.view", JSON.stringify(gsView));
+        void renderBoard();
+      };
+      chips.appendChild(c);
+    }
+    return r;
+  };
+  // the land form as the Projekte block built it, its choices held together like the rows above, its ⓘ by its word
+  const lf = landFormField("repo", repo, repo, "Lanes land as", true);
+  const chips = el("span", "gsch");
+  chips.append(...lf.querySelectorAll<HTMLElement>(":scope > .lf-c"));
+  lf.insertBefore(chips, lf.querySelector(":scope > .lf-hint"));
+  const info = lf.querySelector(":scope > .lf-i");
+  if (info) lf.insertBefore(info, chips);
+  box.append(row("landed", "Landed branches", { show: "Show branches and lanes that landed and have nothing new",
+    hide: "Leave out what landed and has nothing new — unless a session works there" }),
+  row("idle", "Without a session", { show: "Show every branch and lane, with a session or not",
+    hide: "Leave out branches and lanes no session works at and where no check runs or waits" }), lf);
   return box;
 }
 
@@ -4348,43 +4307,43 @@ export let plaCard: HTMLElement | null = null;
 // src/plaudit.ts#plaHolder reads that off the two rails the row carries. Whether an alarm exists
 // and its tone stay the classifier's (src/plaudit.ts#postLandAlarm, run by e2e/outcomes.ts).
 // a repo name breaks as a whole word, never at its hyphen ("claude-|fleet"): U+2011 in the sentence
-const plaRepo = (a: PostLandAuditInfo): string => baseName(a.repo ?? "").replace(/-/g, "\u2011") || "einem Repo";
+const plaRepo = (a: PostLandAuditInfo): string => baseName(a.repo ?? "").replace(/-/g, "\u2011") || "a repo";
 export function plaOwnerHeadline(a: PostLandAuditInfo, tone: "red" | "unknown"): string {
   const r = plaRepo(a);
-  if (tone === "red") return `Der Check nach dem Land in ${r} ist rot`;
-  if (a.remoteReason === "timeout") return `Der Check nach dem Land in ${r} wurde abgebrochen`;
-  if (a.remoteReason === "could-not-start") return `Der Check nach dem Land in ${r} konnte nicht starten`;
-  return `Der Check nach dem Land in ${r} hat nichts gemessen`;
+  if (tone === "red") return `The check after the land in ${r} is red`;
+  if (a.remoteReason === "timeout") return `The check after the land in ${r} was cut off`;
+  if (a.remoteReason === "could-not-start") return `The check after the land in ${r} could not start`;
+  return `The check after the land in ${r} measured nothing`;
 }
 // a session's name for a sentence: its role where the server gives one (the Orchestratorin, the
 // MAIN of a Program), else its label without the model the label often carries
 export function sessionWord(slot: number): string {
   const s = fleet[slot - 1];
   if (!s?.cwd) return `Slot ${slot}`;
-  if (s.role === "orchestrator") return "Die Orchestratorin";
+  if (s.role === "orchestrator") return "The Orchestrator";
   if (s.role === "program-main") {
     const p = programsList.find((x) => x.main?.slot === slot);
-    return p ? `Die MAIN von „${p.title}“` : `Die MAIN in Slot ${slot}`;
+    return p ? `The MAIN of “${p.title}”` : `The MAIN in slot ${slot}`;
   }
   return nameWithoutModel(s);
 }
-const VERDICT_WORD: Record<string, string> = { real: "ein echter Fehler", flake: "ein Flake", "stale-test": "ein veralteter Test", unknowable: "nicht beurteilbar" };
+const VERDICT_WORD: Record<string, string> = { real: "a real failure", flake: "a flake", "stale-test": "an outdated test", unknowable: "not judgeable" };
 const clockDe = (ms: number) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 // what the owner does, in one sentence
 const plaOwnerTodo = (tone: "red" | "unknown"): string => tone === "red"
-  ? "Nimm das Land zurück oder gib die Reparatur in Auftrag."
-  : "Sieh nach, warum er nicht lief, und stoß ihn neu an.";
+  ? "Take the land back or have it repaired."
+  : "Look why it did not run, and start it again.";
 // WHO HAS IT, as one sentence — only what the rails record (ping, adjudication); "works on it" is
 // not recorded anywhere, so no sentence claims it
 export function plaHolderLine(h: PlaHolder, a: PostLandAuditInfo, tone: "red" | "unknown"): string {
   switch (h.kind) {
-    case "session": return `${sessionWord(h.slot)} hat ihn${h.since ? ` seit ${clockDe(h.since)}` : ""}.`;
-    case "program": return "Er liegt im Posteingang des Programs, das gelandet hat.";
+    case "session": return `${sessionWord(h.slot)} has it${h.since ? ` since ${clockDe(h.since)}` : ""}.`;
+    case "program": return "It is in the inbox of the Program that landed.";
     case "judged": return h.verdict
-      ? `Beurteilt${h.by === "owner" ? " von dir" : h.by === "rule" ? " per Regel" : ""}: ${VERDICT_WORD[h.verdict] ?? h.verdict}.`
-      : "Beurteilt, bevor er zugestellt wurde.";
-    case "gone": return `${h.slot ? `Zugestellt an Slot ${h.slot}, dort läuft inzwischen eine andere Session` : "Zugestellt, an wen ist nicht mehr lesbar"} — niemand hat ihn jetzt. ${plaOwnerTodo(tone)}`;
-    case "waiting": return `Keine Session in ${plaRepo(a)} kann ihn gerade übernehmen. ${plaOwnerTodo(tone)}`;
+      ? `Judged${h.by === "owner" ? " by you" : h.by === "rule" ? " by a rule" : ""}: ${VERDICT_WORD[h.verdict] ?? h.verdict}.`
+      : "Judged before it was delivered.";
+    case "gone": return `${h.slot ? `Delivered to slot ${h.slot}, where another session runs by now` : "Delivered, to whom can no longer be read"} — nobody has it now. ${plaOwnerTodo(tone)}`;
+    case "waiting": return `No session in ${plaRepo(a)} can take it right now. ${plaOwnerTodo(tone)}`;
     // "Braucht dich" stands in the card's foot (plaStateWord); the sentence is only what to do
     default: return plaOwnerTodo(tone);
   }
@@ -4398,22 +4357,22 @@ export function plaStateWord(h: PlaHolder): { word: string; title: string; kind:
   switch (h.kind) {
     case "session": {
       const w = sessionWord(h.slot);
-      const dat = w.startsWith("Die ") ? `der ${w.slice(4)}` : w;
-      return { word: `Bei ${dat}${h.since ? ` seit ${clockDe(h.since)}` : ""}`, kind: "held",
-        title: `In die Pane dieser Session zugestellt${h.since ? ` um ${clockDe(h.since)}` : ""} — ob sie schon daran arbeitet, zeichnet Fleet nicht auf.` };
+      const dat = w.startsWith("The ") ? `the ${w.slice(4)}` : w;
+      return { word: `With ${dat}${h.since ? ` since ${clockDe(h.since)}` : ""}`, kind: "held",
+        title: `Delivered into this session's pane${h.since ? ` at ${clockDe(h.since)}` : ""} — whether it works on it yet, Fleet does not record.` };
     }
-    case "program": return { word: "Im Posteingang des Programs", kind: "held",
-      title: "Die MAIN des Programs, das gelandet hat, liest ihn beim nächsten Blick in den Posteingang." };
-    case "judged": return { word: `${h.by === "owner" ? "Von dir beurteilt" : "Beurteilt"}${h.verdict ? `: ${VERDICT_WORD[h.verdict] ?? h.verdict}` : ""}`, kind: "judged",
-      title: h.by === "owner" ? "Du hast ihn beurteilt." : h.by === "rule" ? "Per Regel beurteilt." : "Eine Session hat ihn beurteilt." };
-    default: return { word: "Braucht dich", kind: "owner", title: "Keine Session hat diesen Check — er wartet auf dich." };
+    case "program": return { word: "In the Program's inbox", kind: "held",
+      title: "The MAIN of the Program that landed reads it at its next look into the inbox." };
+    case "judged": return { word: `${h.by === "owner" ? "Judged by you" : "Judged"}${h.verdict ? `: ${VERDICT_WORD[h.verdict] ?? h.verdict}` : ""}`, kind: "judged",
+      title: h.by === "owner" ? "You judged it." : h.by === "rule" ? "Judged by a rule." : "A session judged it." };
+    default: return { word: "Needs you", kind: "owner", title: "No session has this check — it waits for you." };
   }
 }
 // the consequence, opened by "Ansehen": what this means for the reader
 export function plaOwnerNote(tone: "red" | "unknown"): string {
   return tone === "red"
-    ? "Nichts wurde blockiert, nichts zurückgenommen."
-    : "Ein Check, der nicht lief, ist kein Bestehen. An diesem Land ist nichts gemessen.";
+    ? "Nothing was blocked, nothing taken back."
+    : "A check that did not run is no pass. Nothing was measured at this land.";
 }
 
 // ONE BUILDER FOR BOTH SURFACES. Green is silent and an ack is keyed to THIS audit (PLA_ACK_KEY,
@@ -4432,9 +4391,9 @@ export function plaAlarmCard(): HTMLElement | null {
   const sec = el("div", `plasec ${al.tone}${owner ? "" : " held"}`);
   sec.dataset.place = owner ? "top" : "quiet";
   sec.dataset.holder = holder.kind;
-  const look = el("button", "plaack", plaOpen ? "Weniger" : "Ansehen") as HTMLButtonElement;
+  const look = el("button", "plaack", plaOpen ? "Less" : "Look") as HTMLButtonElement;
   look.setAttribute("aria-expanded", String(plaOpen));
-  look.title = "Wo, wann, was jetzt — und das ganze Protokoll, wenn der Helfer eines hochgeladen hat";
+  look.title = "Where, when, what now — and the whole log, where the helper uploaded one";
   look.onclick = () => { plaOpen = !plaOpen; renderPostLandAudit(); };
   // ONE SHAPE FOR EVERY STATE (owner 2026-10-08: „[Zitat entfernt]“
   // 
@@ -4451,8 +4410,8 @@ export function plaAlarmCard(): HTMLElement | null {
   const foot = el("div", "plafoot");
   foot.appendChild(state);
   if (owner) {
-    const ack = el("button", "plaack quiet", "Gesehen") as HTMLButtonElement;
-    ack.title = "Blendet diese Meldung aus — nur für diesen Prüflauf; die nächste nicht-grüne Prüfung meldet sich wieder.";
+    const ack = el("button", "plaack quiet", "Seen") as HTMLButtonElement;
+    ack.title = "Hides this alarm — for this check run only; the next check that is not green speaks again.";
     ack.onclick = () => {
       prefSet(PLA_ACK_KEY, String(postLandAudit?.at ?? 0));
       renderPostLandAudit();
@@ -4466,7 +4425,7 @@ export function plaAlarmCard(): HTMLElement | null {
     // the raw values live here, behind Ansehen: which tip, after which lands — the classifier's own
     // line (src/plaudit.ts#postLandAlarm) stays the hover, it names the full path
     const wh = el("div", "plawhere", [plaRepo(a), `${a.main ?? "main"}@${a.mainSha?.slice(0, 8) || "?"}`,
-      a.covers?.length ? `nach ${a.covers.map((b) => laneNameOfBranch(b)).join(", ")}` : "welches Land davor lag, ist nicht aufgezeichnet",
+      a.covers?.length ? `after ${a.covers.map((b) => laneNameOfBranch(b)).join(", ")}` : "which land came before it is not recorded",
       ...(a.reason ? [a.reason] : [])].join(" · "));
     wh.title = al.where;
     detail.appendChild(wh);
@@ -4477,12 +4436,12 @@ export function plaAlarmCard(): HTMLElement | null {
     const art = a.artifact;
     if (art) {
       const line = el("div", "hint planote");
-      const lg = el("a", "plalog", `Protokoll · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
+      const lg = el("a", "plalog", `Log · ${Math.max(1, Math.round(art.bytes / 1024))} KB`) as HTMLAnchorElement;
       lg.href = art.url;
       lg.target = "_blank";
       lg.rel = "noopener";
-      lg.title = `Das ganze Protokoll, das der Helfer nach diesem Urteil hochgeladen hat, ${art.bytes} Bytes,`
-        + ` sha256 ${art.sha256.slice(0, 12)}…. Es kam NACH der Zeile und ist von der Seite her verbunden — am Ergebnis oben ändert es nichts.`;
+      lg.title = `The whole log the helper uploaded after this verdict, ${art.bytes} bytes,`
+        + ` sha256 ${art.sha256.slice(0, 12)}…. It came AFTER the row and is linked from the page — it changes nothing in the result above.`;
       line.appendChild(lg);
       detail.appendChild(line);
     }
@@ -4501,9 +4460,9 @@ export function plaReceiptCard(): HTMLElement | null {
   const sec = el("div", "plasec seen");
   sec.dataset.place = "quiet";
   sec.appendChild(el("div", "hint planote",
-    `Der ${a.result === "red" ? "rote" : "ungemessene"} Check nach dem letzten Land in ${plaRepo(a)} (${fmtTs(a.at)}) ist als gesehen markiert`));
-  const back = el("button", "plaack", "wieder zeigen") as HTMLButtonElement;
-  back.title = "zeigt die Meldung wieder, die du als gesehen markiert hattest.";
+    `The ${a.result === "red" ? "red" : "unmeasured"} check after the last land in ${plaRepo(a)} (${fmtTs(a.at)}) is marked as seen`));
+  const back = el("button", "plaack", "show again") as HTMLButtonElement;
+  back.title = "Shows the alarm again that you marked as seen.";
   back.onclick = () => { prefSet(PLA_ACK_KEY, null); renderPostLandAudit(); };
   sec.appendChild(back);
   plaCard = sec;

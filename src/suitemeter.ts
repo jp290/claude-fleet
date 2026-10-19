@@ -12,6 +12,7 @@
 // Nothing here is new data. Each ball cites the one wire row it came from, and two rows are never
 // merged into one ball — a lane that reported its own run AND handed an offer to a helper shows two.
 
+import { CHECK_KIND } from "./board-words";
 import type { PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
 
 export type MeterStation = "wait" | "run" | "helper" | "done";
@@ -152,12 +153,12 @@ export function mmss(ms: number): string {
 
 export function meterKind(kind: string): { label: string; title: string } {
   switch (kind) {
-    case "land check": return { label: "Landprüfung", title: "Prüft eine Lane, bevor ihre Änderung auf main landet." };
-    case "preview": return { label: "Vorschau", title: "Prüft den aktuellen Stand einer Lane vor dem Land." };
-    case "post-land check": return { label: "Nachprüfung", title: "Prüft main nach einem Land erneut." };
-    case "queued check run": return { label: "Wartender Prüflauf", title: "Dieser Prüflauf wartet auf die gemeinsame Sperre." };
-    case "gate script": return { label: "Gate-Skript", title: "Ein Gate-Skript (clean-review, security, claude-gate), das eine Session an ein Helfer-Gerät abgegeben hat." };
-    default: return { label: "Prüflauf", title: "Ein Prüflauf ohne näher gemeldete Art." };
+    case "land check": return { label: CHECK_KIND.landCheck, title: "Checks a lane before its change lands on main." };
+    case "preview": return { label: CHECK_KIND.preview, title: "Checks the current state of a lane before the land." };
+    case "post-land check": return { label: CHECK_KIND.afterLand, title: "Checks main again after a land." };
+    case "queued check run": return { label: CHECK_KIND.queued, title: "This check run waits for the shared lock." };
+    case "gate script": return { label: CHECK_KIND.gateScript, title: "A gate script (clean-review, security, claude-gate) that a session handed to a helper device." };
+    default: return { label: CHECK_KIND.run, title: "A check run of no reported kind." };
   }
 }
 
@@ -168,9 +169,10 @@ export function meterKind(kind: string): { label: string; title: string } {
 // The clock is m:ss since
 // `at`, computed on each repaint; a finished run says how long ago, a run with no known start says
 // nothing. "/ ~p50" only where a distribution exists, and past its p90 the WORD, never a colour —
-// G0.2 gives --amber to "unmeasured", and a long run is measured.
-export function meterLine(b: MeterBall, now: number, german = false): string[] {
-  if (!german) {
+// G0.2 gives --amber to "unmeasured", and a long run is measured. `named`: the row that names its branch,
+// its state and its kind; without it the short form the e2e meter checks read.
+export function meterLine(b: MeterBall, now: number, named = false): string[] {
+  if (!named) {
     const parts: string[] = [];
     if (b.kind !== b.name) parts.push(b.kind);
     if (b.at > 0) {
@@ -178,23 +180,23 @@ export function meterLine(b: MeterBall, now: number, german = false): string[] {
       if (b.station === "done") parts.push(`${mmss(ms)} ago`);
       else {
         const e = b.station !== "wait" && b.expect && b.expect.p50 >= 1000 ? b.expect : null;
-        parts.push(`${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " länger als üblich" : ""}` : ""}`);
+        parts.push(`${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " longer than usual" : ""}` : ""}`);
       }
     }
     if (b.what) parts.push(b.what);
     return parts;
   }
-  const parts: string[] = b.slot !== null && b.title ? [] : [b.branch ? laneTail(b.branch) : "Branch unbekannt"];
-  const waitingOn = b.station === "wait" && (b.what.startsWith("wartet ") || b.what.startsWith("nach Land"));
+  const parts: string[] = b.slot !== null && b.title ? [] : [b.branch ? laneTail(b.branch) : "branch unknown"];
+  const waitingOn = b.station === "wait" && (b.what.startsWith("waiting ") || b.what.startsWith("after the land"));
   if (waitingOn) parts.push(b.what.split(" · ")[0]!);
   if (b.at > 0) {
     const ms = now - b.at;
-    if (b.station === "done") parts.push(`${b.tone === "ok" ? "bestanden" : b.tone === "red" ? "fehlgeschlagen" : "beendet"} vor ${mmss(ms)}`);
+    if (b.station === "done") parts.push(`${b.tone === "ok" ? "passed" : b.tone === "red" ? "failed" : "finished"} ${mmss(ms)} ago`);
     else {
       const e = b.station !== "wait" && b.expect && b.expect.p50 >= 1000 ? b.expect : null;
-      parts.push(`${waitingOn ? "seit" : b.station === "wait" ? "wartet seit" : "läuft seit"} ${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " länger als üblich" : ""}` : ""}`);
+      parts.push(`${waitingOn ? "for" : b.station === "wait" ? "waiting for" : "running for"} ${mmss(ms)}${e ? ` / ~${mmss(e.p50)}${ms > e.p90 ? " longer than usual" : ""}` : ""}`);
     }
-  } else if (!waitingOn) parts.push(b.station === "wait" ? "wartet" : b.station === "done" ? "beendet" : "läuft");
+  } else if (!waitingOn) parts.push(b.station === "wait" ? "waiting" : b.station === "done" ? "finished" : "running");
   if (b.what && !waitingOn) parts.push(b.what);
   if (waitingOn && b.what.includes(" · ")) parts.push(b.what.split(" · ").slice(1).join(" · "));
   parts.push(meterKind(b.kind).label);
@@ -214,7 +216,7 @@ export function suiteMeter(inp: MeterInput): Meter {
     const s = slot === null ? undefined : inp.slots.find((x) => x.id === slot);
     return slot === null ? "Fleet" : s?.letter ? laneDisplayName(s.letter, s.title) : `Slot ${slot}`;
   };
-  // whom a waiter stands behind, by its REFERENCE alone ("wartet hinter 0A", note cdf43028): the
+  // whom a waiter stands behind, by its REFERENCE alone ("waiting behind 0A", note cdf43028): the
   // waiter's own row already carries its name and title, and a second title inside the state cut both
   const refOf = (slot: number): string => inp.slots.find((x) => x.id === slot)?.letter ?? `Slot ${slot}`;
   const titleOf = (slot: number | null): string | null =>
@@ -319,7 +321,7 @@ export function suiteMeter(inp: MeterInput): Meter {
     balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check", branch: w.main,
       // the landed lane by its name and title while its slot still holds it; without a title the
       // four hex stay beside the name, as they always did
-      kind: "post-land check", what: `nach Land von ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`}${tail}`,
+      kind: "post-land check", what: `after the land of ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`}${tail}`,
       where: here, tone: "plain", at: w.at, expect: null });
   }
 
@@ -333,18 +335,18 @@ export function suiteMeter(inp: MeterInput): Meter {
   const inLine = queue.filter((t) => t.alive).length;
   const lk = inp.gate?.lock ?? null;
   const holderName = lk?.owner ? lk.owner.slot !== null ? nameOf(lk.owner.slot, null, lk.owner.branch)
-    : lk.owner.branch === "main" ? "Fleet" : `Lauf ${lk.pid ?? "?"}`
-    : balls.find((b) => b.station === "run")?.name ?? "unbekanntem Lauf";
+    : lk.owner.branch === "main" ? "Fleet" : `run ${lk.pid ?? "?"}`
+    : balls.find((b) => b.station === "run")?.name ?? "an unknown run";
   const holderSlot = lk?.owner ? lk.owner.slot : balls.find((b) => b.station === "run")?.slot ?? null;
   let ahead = holderSlot !== null ? refOf(holderSlot) : holderName;
   for (const t of queue) {
     const name = t.owner?.slot !== null && t.owner?.slot !== undefined ? nameOf(t.owner.slot, null, t.owner.branch)
-      : t.owner?.branch === "main" ? "Fleet" : `Lauf ${t.pid}`;
+      : t.owner?.branch === "main" ? "Fleet" : `run ${t.pid}`;
     balls.push({ key: `queue:${t.n}.${t.pid}`, station: "wait", slot: t.owner?.slot ?? null, name,
       branch: t.owner?.branch ?? null,
       kind: "queued check run", expect: null, title: titleOf(t.owner?.slot ?? null),
-      what: t.alive ? `${t.position === 1 && !lk ? "wartet auf Prüfsperre" : `wartet hinter ${ahead}`} · Platz ${t.position}/${inLine}`
-        : `Ticket ${t.n} · Prozess weg`,
+      what: t.alive ? `${t.position === 1 && !lk ? "waiting for the check lock" : `waiting behind ${ahead}`} · place ${t.position}/${inLine}`
+        : `ticket ${t.n} · process gone`,
       where: here, tone: t.alive ? "plain" : "warn",
       at: t.sinceMs === null ? 0 : Date.now() - t.sinceMs });
     if (t.alive) ahead = t.owner?.slot !== null && t.owner?.slot !== undefined ? refOf(t.owner.slot) : name;

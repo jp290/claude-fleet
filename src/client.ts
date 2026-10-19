@@ -5,7 +5,7 @@ import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initFieldPerf } from "./fieldperf";
 import { pasteText } from "./paste";
-import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, reloadGsView, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -1516,7 +1516,9 @@ class Pane {
     this.boardBtn.onclick = (e) => {
       e.stopPropagation();
       focusPane(this.index);
-      setBoard(!boardOpen);
+      // the phone's Info is a window: open is whether it stands, not the remembered fleet.board — after
+      // a reload with Info open that still says 1, and the first tap closed nothing (rechts-7)
+      setBoard(isMobile() ? !boardShell?.isOpen() : !boardOpen);
       if (boardOpen && !isMobile()) document.getElementById("boardclose")?.focus({ preventScroll: true });
     };
     this.viewBtn = el("button", "viewtoggle") as HTMLButtonElement;
@@ -3278,6 +3280,7 @@ const PREF_APPLY: Record<string, () => void> = {
   "fleet.queue.scope": () => { setQueueTreeOn(prefText("fleet.queue.scope") !== "line"); if (qShell?.isOpen()) { invalidateQueueList(); renderQueue(); } },
   "fleet.board.folds": () => { boardFolds.clear(); void renderBoard(); },
   "fleet.ranke.repos": () => reloadRankePrefs(),
+  "fleet.gs.view": () => reloadGsView(),
   "fleet.stacks.closed": () => { stackClosed.clear(); renderSlots(); },
   "fleet.plaudit.ack": () => renderPostLandAudit(),
   "fleet.view": () => setLayout(1, [panes[focused]?.slot ?? 0]),
@@ -4813,7 +4816,7 @@ async function loadGit(slot: number, cwd: string): Promise<void> {
   // never parsed.
   const e = res ? ((await res.json().catch(() => null)) as { error?: string; git?: string } | null) : null;
   fxGit.set(cwd, { error: e?.git === "none"
-    ? "Kein Git in diesem Ordner — Änderungen, Historie und Lanes gibt es nur in einem Repository."
+    ? "No git in this folder — changes, history and lanes exist only in a repository."
     : e?.error ?? "git status could not be read" });
 }
 // What both homes paint, derived in ONE place so the card and the window cannot disagree about
@@ -4843,7 +4846,7 @@ export function fxSearchInput(cwd: string, onInput: () => void, wide: boolean): 
   inp.autocomplete = "off";
   // the shell consumes Enter in the CAPTURE phase to open the selected row; this field wants that
   // (type, then Enter on the best match), so it does NOT opt out via data-ownEnter.
-  inp.placeholder = "search paths — e.g. e2e/pins";
+  inp.placeholder = "search paths";
   inp.value = fxQuery.get(cwd) ?? "";
   inp.oninput = () => { fxQuery.set(cwd, inp.value); onInput(); };
   return inp;
@@ -4977,7 +4980,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   const setMode = (contents: boolean) => {
     fxContents.set(cwd, contents);
     search.value = contents ? fxContentQuery.get(cwd) ?? "" : fxQuery.get(cwd) ?? "";
-    search.placeholder = contents ? "search contents" : "search paths — e.g. e2e/pins";
+    search.placeholder = contents ? "search contents" : "search paths";
     searchSeq++;
     clearTimeout(searchTimer);
     if (contents) scheduleContents(); else repaint();
@@ -5197,7 +5200,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   }
   paintHead(); paintFoot();
   search.value = fxContents.get(cwd) ? fxContentQuery.get(cwd) ?? "" : fxQuery.get(cwd) ?? "";
-  search.placeholder = fxContents.get(cwd) ? "search contents" : "search paths — e.g. e2e/pins";
+  search.placeholder = fxContents.get(cwd) ? "search contents" : "search paths";
   if (fxContents.get(cwd)) scheduleContents(); else repaint();
   if (startAt) open(startAt, line);
   // the git state is read fresh for THIS window — the board holds it only for the slot it shows
@@ -8492,8 +8495,7 @@ export async function openReview(slotId: number, initial: RvSource, startAt?: Rv
     });
 }
 
-// six call sites across the board and the sidebar reach the window through these two names
-export async function openDiff(slotId: number) { await openReview(slotId, "working"); }
+// the board and the sidebar reach the land review through this name
 export async function openMergeDiff(slotId: number) { await openReview(slotId, "land"); }
 
 // --- audit trail overlay (Backlog #9): owner-only read-only lens over /api/audit ---

@@ -326,9 +326,12 @@ export function handoverFlow(v: HandoverView): HTMLElement[] {
     if (kc.on) {
       const fleetMin = kc.fleetIdleMin ?? 50;
       const values = MINUTES.includes(kc.idleMin) ? MINUTES : [...MINUTES, kc.idleMin].sort((a, b) => a - b);
-      line.append(el("span", "unit", "after"), seg("mins", values.map((m) => ({ text: String(m), uk: `idle-${m}`, on: m === kc.idleMin,
+      // „after … min“ wraps as one piece: the word never ends a line apart from its minutes
+      const after = el("span", "clafter");
+      after.append(el("span", "unit", "after"), seg("mins", values.map((m) => ({ text: String(m), uk: `idle-${m}`, on: m === kc.idleMin,
         dflt: m === fleetMin, label: `${m} min`, title: m === fleetMin ? `${m} min — the Fleet value` : `After ${m} min idle — this session only`,
         run: () => { if (m !== kc.idleMin) void write(v, { keepCacheIdleMin: m }); } })), false), el("span", "unit", "min"));
+      line.appendChild(after);
     }
     cacheStep.appendChild(controls(line));
   }

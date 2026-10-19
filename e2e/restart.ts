@@ -1717,13 +1717,13 @@ export async function run(ctx: Ctx): Promise<void> {
         const auditSince = async (): Promise<Row[]> =>
           (await Bun.file(`${ROOT}/audit.jsonl`).text()).slice(auditFrom).trim().split("\n").filter(Boolean)
             .map((l) => JSON.parse(l) as Row);
-        // the nudge is TYPED into `slot` in one of two shapes, both a real paste with its send row:
-        // alone (the send row keeps path inbox-nudge), or merged with a "sofort" send that met the
+        // a nudge is TYPED into `slot` in one of two shapes, both a real paste with its send row:
+        // alone (the send row keeps path inbox-nudge), or merged with a "sofort" send that met a
         // waiting bundle (flushDeliveryBundle(key, immediate): one paste, send row path "bundle",
-        // the nudge named in delivery_bundle_sent.paths). The full shard hits the second shape:
-        // report-orphan hints from earlier modules' Program reports go to the Orchestratorin every
-        // tick (post-land audits on cb108971 and 0ef933f6, workhorse shard 2). A sent row with no
-        // send row before it on the same slot counts as nothing.
+        // the nudge named in delivery_bundle_sent.paths). Since Mangel 141 a message to the role
+        // "orchestrator" is direct (tickMessageNudge), so the Orchestratorin gets only the first
+        // shape; the lane's negative below still counts both. A sent row with no send row before
+        // it on the same slot counts as nothing.
         const nudgeTyped = (rows: Row[], slot: number): boolean => rows.some((r, i) => {
           if (r.event === "send" && r.slot === slot && r.path === "inbox-nudge") return true;
           if (r.event !== "delivery_bundle_sent" || r.slot !== slot
@@ -1772,20 +1772,23 @@ export async function run(ctx: Ctx): Promise<void> {
         const roleBefore = await paneNudges(roleA);
         const laneBefore = await paneNudges(ln.slot);
         await restartSrv({ ...roleBundleEnv, FLEET_INBOX_NUDGE_MS: "1000" });
-        // before the fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s
+        // before the role fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s;
+        // since Mangel 141 the nudge goes direct — typed alone, no "orchestrator" bundle on the way
+        const typedAlone = (rows: Row[]): boolean =>
+          rows.some((r) => r.event === "send" && r.slot === roleA && r.path === "inbox-nudge");
         const nudged = await until(async () => {
           const pane = await paneNudges(roleA);
-          return nudgeTyped(await auditSince(), roleA) && pane.code === 0 && pane.count > roleBefore.count || null;
+          return typedAlone(await auditSince()) && pane.code === 0 && pane.count > roleBefore.count || null;
         },
         { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
         const rows = await auditSince();
         const deliveredInbox = await messageView();
         const laneAfter = await paneNudges(ln.slot);
-        check("the role-addressed bundle is typed into the Orchestratorin, never into the lane, nothing dropped",
+        check("the role-addressed nudge is typed directly into the Orchestratorin, never into the lane, nothing bundled or dropped",
           empty && soleUnread(stagedInbox) && soleUnread(deliveredInbox) && roleBefore.code === 0
             && laneBefore.code === 0 && laneAfter.code === 0 && laneAfter.count === laneBefore.count
-            && !!nudged && rows.some((r) => r.event === "delivery_bundle_queued" && r.slot === roleA
-              && r.detail?.startsWith("orchestrator ") === true)
+            && !!nudged && typedAlone(rows)
+            && !rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
             && !rows.some((r) => r.event === "delivery_bundle_dropped" && r.detail?.startsWith("orchestrator ") === true)
             && !nudgeTyped(rows, ln.slot)
             && !rows.some((r) => r.event.startsWith("delivery_bundle") && r.slot === ln.slot
@@ -1807,8 +1810,11 @@ export async function run(ctx: Ctx): Promise<void> {
       // hint and sent it again. And the immediate branch returned before the delete, so the emptied
       // bundle pulled every later "sofort" send to the key through a bundle of none
       // (delivery_bundle_sent "orchestrator count=0"). Fixture: a Program whose live MAIN holds two
-      // planted undecided reports; a role-message nudge waits under "orchestrator" (600 s window),
-      // then the MAIN is killed — the first report's hint meets the bundle, the second comes a tick later.
+      // planted undecided reports; a message nudge waits under "orchestrator" (600 s window), then
+      // the MAIN is killed — the first report's hint meets the bundle, the second comes a tick later.
+      // The waiting nudge comes from a message to a second, only proposed Program: it escalates to
+      // the Orchestratorin (escalateMessage) and is not direct, so it is still bundled — a message
+      // to the role "orchestrator" goes direct since Mangel 141 and no longer waits.
       {
         type ARow = { ts?: number; event: string; slot?: number; detail?: string; path?: string; paths?: string;
           reportId?: string; bytes?: number };
@@ -1827,6 +1833,10 @@ export async function run(ctx: Ctx): Promise<void> {
         const programId = made.ok ? ((await made.json()) as { program?: { id?: string } }).program?.id ?? "" : "";
         const confirmed = programId ? await post(`/api/programs/${programId}/confirm`, {}) : null;
         const activated = programId ? await post(`/api/programs/${programId}/activate`, {}) : null;
+        const proposed = await post("/api/programs", { title: "escalated nudge", intent: "e2e fixture",
+          successCriterion: "a message to it reaches the Orchestratorin", nonGoals: ["none"], decisions: ["none"],
+          evidence: ["e2e/restart.ts"], openQuestions: ["none"] });
+        const proposedId = proposed.ok ? ((await proposed.json()) as { program?: { id?: string } }).program?.id ?? "" : "";
         // the probe above leaves roleA's role message unread; after the restart its nudge would wait
         // in the bundle, the POST below would then queue none, and the merged flush would drop it
         // ("messages for slot N changed before paste") — the hint typed alone, no merge to measure
@@ -1859,8 +1869,8 @@ export async function run(ctx: Ctx): Promise<void> {
         const t0 = Date.now();
         check("precondition: a Program with a live MAIN holds two planted undecided reports, the Orchestratorin is unique",
           !!mainOpen?.ok && made.ok && !!confirmed?.ok && !!activated?.ok && !!programRow && mainOpenedAt > 0
-            && unreadLeft === 0 && (await selfMessages("GET")).ok,
-          `main=${mainSlot} open=${mainOpen?.status} program=${made.status}/${confirmed?.status}/${activated?.status} openedAt=${mainOpenedAt} unread=${unreadLeft}`);
+            && proposedId !== "" && unreadLeft === 0 && (await selfMessages("GET")).ok,
+          `main=${mainSlot} open=${mainOpen?.status} program=${made.status}/${confirmed?.status}/${activated?.status} proposed=${proposed.status} openedAt=${mainOpenedAt} unread=${unreadLeft}`);
         // earlier modules' leftover orphans (full shard) are typed one per tick right after the restart;
         // the nudge must wait in the bundle only once they are done
         let typedCount = -1;
@@ -1871,9 +1881,11 @@ export async function run(ctx: Ctx): Promise<void> {
           await Bun.sleep(1_250);
         }
         const tPost = Date.now();
-        const queuedMsg = await selfMessages("POST", { to: { kind: "role", role: "orchestrator" },
+        const queuedMsg = await selfMessages("POST", { to: { kind: "program", id: proposedId },
           payload: { kind: "text", text: "a nudge that waits for the merged orphan hint" },
           idempotencyKey: `merged-orphan-${Date.now()}` });
+        const queuedBody = queuedMsg.ok ? (await queuedMsg.json()) as { holder?: { slot?: number } | null;
+          escalatedTo?: string | null } : {};
         // the nudge WAITS: its queued row has no orchestrator bundle row after it
         const queued = await until(async () => {
           const rows = auditAfter(tPost);
@@ -1897,8 +1909,10 @@ export async function run(ctx: Ctx): Promise<void> {
         const evidence = JSON.stringify(before.filter((r) => r.event.startsWith("delivery_bundle")
           || (r.event === "send" && r.slot === roleA)).map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path, r.reportId]));
         check("an orphan hint that meets the waiting bundle is typed in ONE paste whose send row carries its reportId",
-          queuedMsg.ok && !!queued && !!bothTyped && merged.length === 1 && !!mergedSent
-            && reportIds.every((id) => orphanTyped(before, id).length === 1), evidence);
+          queuedMsg.ok && queuedBody.escalatedTo === "orchestrator" && queuedBody.holder?.slot === roleA
+            && !!queued && !!bothTyped && merged.length === 1 && !!mergedSent
+            && reportIds.every((id) => orphanTyped(before, id).length === 1),
+          `${JSON.stringify({ status: queuedMsg.status, ...queuedBody })} ${evidence}`);
         check("after an immediate flush no emptied bundle stays behind: the next hint is typed alone, no delivery_bundle_sent count=0",
           !!bothTyped && !before.some((r) => r.event === "delivery_bundle_sent" && r.detail === "orchestrator count=0")
             && reportIds.some((id) => orphanTyped(before, id).some((r) => r.path === "report-orphan" && r.slot === roleA)),
@@ -1915,7 +1929,7 @@ export async function run(ctx: Ctx): Promise<void> {
         await stopSrv();
         const clean = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
         clean.fleetReports = (clean.fleetReports ?? []).filter((r) => !reportIds.includes(r.id ?? ""));
-        clean.programs = (clean.programs ?? []).filter((p) => p.id !== programId);
+        clean.programs = (clean.programs ?? []).filter((p) => p.id !== programId && p.id !== proposedId);
         writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(clean, null, 2), { mode: 0o600 });
         await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
       }

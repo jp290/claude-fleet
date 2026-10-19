@@ -78,8 +78,9 @@ graphify-out/
 inspektion-register.jsonl
 
 # uploads the owner drops into a session (POST /api/slots/:id/upload). Ignored on purpose: an
-# untracked file blocks a lane land, and the route REFUSES to write where this line is missing.
-# Keeping a drop is then a deliberate `git add -f` — losing it is the default.
+# untracked file blocks a lane land. A repo without this line gets `drops/` in its untracked
+# .git/info/exclude from the route instead (server/drops.ts). Keeping a drop is then a deliberate
+# `git add -f` — losing it is the default.
 drops/
 
 # backups of the deploy identity. `.env` above is ignored, its copies were not: a `.env.bak-<ts>`

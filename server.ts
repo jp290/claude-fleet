@@ -221,6 +221,7 @@ import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choi
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { k15Speicher } from "./server/k15-speicher";
+import { ensureDropsIgnored } from "./server/drops";
 import { SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -22816,10 +22817,12 @@ interface DirInfo {
 //
 // It costs exactly one thing, and it is paid at the route rather than left as a footgun: a file
 // dropped into a worktree is UNTRACKED, and an untracked file blocks the land (CLAUDE.md, lane
-// discipline). So the drop directory must be ignored by the repo it lands in, and the route
-// REFUSES when it is not — see the check-ignore gate in POST /api/slots/:id/upload. Keeping a
-// drop then costs a deliberate `git add -f`, which is the intended friction: losing an upload is
-// the default, keeping one is a decision.
+// discipline). So the drop directory must be ignored by the repo it lands in. Where the repo does
+// not ignore it, the route adds `drops/` to the repo's untracked `info/exclude` and asks git again,
+// refusing only when that does not take (server/drops.ts — owner 2026-10-19: every session must be
+// able to receive a screenshot, and almost no foreign repo carries the line). Keeping a drop then
+// costs a deliberate `git add -f`, which is the intended friction: losing an upload is the default,
+// keeping one is a decision.
 const DROP_DIR = "drops";
 const UPLOAD_CAP = 20 * 1024 * 1024;
 // multipart wraps the bytes in boundaries and part headers; the content-length pre-check has to
@@ -52089,8 +52092,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // --- the OTHER write: a file the OWNER hands to a session (drag&drop, paste, 📎). Same containment
     // shape as /api/file/write; the owner never names a path (DROP_DIR) and the filename is rebuilt
     // (dropName). The landability gate below is the load-bearing line: an untracked file in a lane
-    // blocks its land SILENTLY hours later, so the route asks git whether the file would be ignored and
-    // refuses if not, fail-closed. Verified facts: server-narrativ-archiv.md#fetch-post-apislotsidupload
+    // blocks its land SILENTLY hours later, so the route makes git ignore the file (server/drops.ts)
+    // and refuses if git still says no, fail-closed. Verified facts: server-narrativ-archiv.md#fetch-post-apislotsidupload
     const upMatch = /^\/api\/slots\/(\d+)\/upload$/.exec(url.pathname);
     if (upMatch && req.method === "POST") {
       const s = slotFrom(upMatch[1]);
@@ -52119,18 +52122,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       try { root = realpathSync(s.cwd); } catch { return json({ error: "this session's directory is gone" }, 400); }
       const rel = `${DROP_DIR}/${Date.now()}-${dropName(file.name)}`;
       // THE LANDABILITY GATE. Read-only git, so it runs lock-free like every other probe Fleet
-      // makes into a directory a live session is also using. A non-zero exit is treated as "not
-      // ignored" whether it means that (1) or means git could not answer at all (128) — the
-      // refusal must not depend on a probe succeeding.
-      const inTree = await gitRead(root, "rev-parse", "--is-inside-work-tree");
-      if (inTree.code === 0 && inTree.out === "true") {
-        if ((await gitRead(root, "check-ignore", "-q", rel)).code !== 0)
-          return json({ error: `this repository does not ignore ${DROP_DIR}/ — an upload here would leave an untracked file and block the land. Add "${DROP_DIR}/" to its .gitignore.` }, 409);
-      }
+      // makes into a directory a live session is also using. A repo that does not ignore drops/
+      // yet gets the line in its untracked info/exclude instead of a refusal (owner 2026-10-19:
+      // sessions in foreign repos could not receive a screenshot); the 409 is left for a repo
+      // where git still says "not ignored" after that.
+      const ignored = await ensureDropsIgnored(gitRead, root, DROP_DIR, rel);
+      if (!ignored.ok) return json({ error: ignored.error }, 409);
       const target = `${root}/${rel}`;
       mkdirSync(`${root}/${DROP_DIR}`, { recursive: true });
       writeFileSync(target, Buffer.from(await file.arrayBuffer()));
-      audit("file_drop", s.id, `${rel} · ${file.size}b`);
+      audit("file_drop", s.id, `${rel} · ${file.size}b${ignored.added ? ` · ${DROP_DIR}/ added to ${ignored.added}` : ""}`);
       return json({ ok: true, path: target, name: rel.split("/").pop(), size: file.size, mention: dropMention(target) });
     }
     // --- the READ side of a drop: the bytes behind one `attached: <path> — read it` line, so the chat

@@ -6,14 +6,16 @@
 // reason the route has a gate at all: the bytes land INSIDE the lane's worktree (owner decision
 // 2026-08-06, „[Zitat entfernt]“), and an untracked file in a worktree blocks the
 // land. That failure is silent and late — the upload succeeds, the agent works, and the land
-// refuses an hour later over a screenshot. So the route asks git whether the file would be ignored
-// and refuses when it would not, and BOTH sides of that gate are asserted here against a real
-// lane: refused while the repo ignores nothing, accepted once it does, and `git status --porcelain`
-// still empty afterwards. The teardown check closes the loop the refusal buys — `git worktree
-// remove` takes the drops with it, WITHOUT --force, which is exactly what the negative control
-// proves is impossible when the ignore rule is missing.
+// refuses an hour later over a screenshot. So the route makes git ignore the file before it writes:
+// a repo that ignores nothing gets `drops/` in its untracked info/exclude (owner 2026-10-19: every
+// session must be able to receive a screenshot, whatever repo it works in), and only a repo where
+// git STILL says "not ignored" afterwards is refused. Both sides are asserted here against a real
+// lane: accepted while the repo's .gitignore ignores nothing — tracked .gitignore unchanged, the
+// rule written once, `git status --porcelain` empty — and refused while the lane's own .gitignore
+// re-includes drops/. The teardown check closes the loop — `git worktree remove` takes the drops
+// with it, WITHOUT --force, which needs the ignore rule the route supplied.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
@@ -63,36 +65,48 @@ export async function run(): Promise<void> {
   // does not. Comparing against the unresolved path measures the symlink, not the route.
   const wtReal = realpathSync(wt);
 
-  // --- the landability gate, refusing half. The throwaway repo ignores .env and nothing else, so
-  // this is the state every repo is in before someone adds the rule. ---------------------------
-  const refused = await upload(SLOT, "shot.png", "PNG");
-  const refusedJson = await asJson(refused);
-  check("upload is REFUSED in a repo that does not ignore drops/ (409, not a silently unlandable lane)",
-    refused.status === 409 && (refusedJson.error ?? "").includes("drops/"),
-    `${refused.status} ${refusedJson.error ?? ""}`);
-  check("…and the refusal wrote nothing at all — no directory, no file",
-    !existsSync(`${wt}/drops`), `${wt}/drops`);
-
-  // the rule the refusal asked for, committed IN THE LANE so the tree it protects stays clean
+  // --- the landability gate. The throwaway repo ignores .env and nothing else — the state nearly
+  // every foreign repo is in. The rule the route supplies lives in the repo's info/exclude, which
+  // git names from the LANE as the root's own (the common dir), so the root and every lane share it.
   const ignore = `${wt}/.gitignore`;
-  let ignoreBefore: string | null = "";
-  let ignoreError = "";
-  try { if (existsSync(ignore)) ignoreBefore = readFileSync(ignore, "utf8"); }
-  catch (e) { ignoreBefore = null; ignoreError = e instanceof Error ? e.message : String(e); }
-  check("drops fixture precondition: an existing .gitignore is readable before mutation",
-    ignoreBefore !== null, ignoreError);
-  if (ignoreBefore === null) {
-    await post(`/api/slots/${SLOT}/kill`, {});
-    spawnSync("git", ["worktree", "remove", "--force", wt], { cwd: REPO });
-    spawnSync("git", ["-C", REPO, "branch", "-D", BRANCH]);
-    return;
-  }
-  await Bun.write(ignore, `${ignoreBefore}drops/\n`);
-  spawnSync("git", ["-C", wt, "commit", "-aqm", "ignore drops/"]);
-  check("drops: fixture — the lane is clean again after committing the ignore rule",
+  const readOrNull = (p: string): string | null => (existsSync(p) ? readFileSync(p, "utf8") : null);
+  const ignoreBefore = readOrNull(ignore);
+  const exclude = spawnSync("git", ["-C", wt, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+    { encoding: "utf8" }).stdout.trim();
+  const excludeBefore = readOrNull(exclude);
+  const dropsRules = (): number => (readOrNull(exclude) ?? "").split("\n").filter((l) => l.trim() === "drops/").length;
+  check("drops fixture precondition: the lane's repo does not ignore drops/, and its info/exclude names no drops/",
+    spawnSync("git", ["-C", wt, "check-ignore", "-q", "drops/x.png"]).status === 1 && dropsRules() === 0 && exclude !== "",
+    exclude);
+
+  const first = await upload(SLOT, "shot.png", "PNG");
+  const firstJson = await asJson(first);
+  check("upload is ACCEPTED in a repo whose .gitignore does not ignore drops/ — the route adds the rule instead of refusing",
+    first.status === 200 && !!firstJson.path && existsSync(firstJson.path), `${first.status} ${firstJson.error ?? ""}`);
+  check("…the rule is in the repo's info/exclude (common dir, shared with every lane), exactly once",
+    dropsRules() === 1, `${dropsRules()} in ${exclude}`);
+  check("…the tracked .gitignore is unchanged and git status --porcelain is still empty",
+    readOrNull(ignore) === ignoreBefore && statusOf(wt) === "", JSON.stringify(statusOf(wt)));
+  const second = await upload(SLOT, "shot2.png", "PNG");
+  check("a second upload is accepted and does not write the rule a second time",
+    second.status === 200 && dropsRules() === 1, `${second.status} ${dropsRules()}`);
+
+  // --- the refusing half: where the repo ITSELF re-includes drops/ (a .gitignore rule outranks
+  // info/exclude), the supplied rule cannot take and the route still refuses, saying what it tried.
+  // Uncommitted in the lane and put back right after. -----------------------------------------
+  await Bun.write(ignore, `${ignoreBefore ?? ""}!drops/\n`);
+  const refused = await upload(SLOT, "nope.png", "PNG");
+  const refusedJson = await asJson(refused);
+  check("upload is still REFUSED (409) where the repo re-includes drops/ — the error names the exclude rule and what overrides it",
+    refused.status === 409 && (refusedJson.error ?? "").includes("info/exclude lists drops/") && (refusedJson.error ?? "").includes('"!drops/"'),
+    `${refused.status} ${refusedJson.error ?? ""}`);
+  check("…and the refusal wrote no file",
+    !(existsSync(`${wt}/drops`) && readdirSync(`${wt}/drops`).some((n) => n.endsWith("-nope.png"))), `${wt}/drops`);
+  if (ignoreBefore === null) rmSync(ignore, { force: true }); else await Bun.write(ignore, ignoreBefore);
+  check("drops: fixture — the lane's .gitignore is back and the lane clean",
     statusOf(wt) === "", JSON.stringify(statusOf(wt)));
 
-  // --- the accepting half, and the property the whole design turns on -------------------------
+  // --- what an accepted upload hands back, and the property the whole design turns on ----------
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
   const okRes = await upload(SLOT, "screen shot.png", png);
   const ok = await asJson(okRes);
@@ -190,8 +204,8 @@ export async function run(): Promise<void> {
     afterOver.status === 200, String(afterOver.status));
 
   // --- retention, which is the whole reason the bytes live in the worktree: they die with it,
-  // and the removal needs no --force. That is the same command the negative control above made
-  // impossible, so this pair IS the argument for the gate. ------------------------------------
+  // and the removal needs no --force — only because the route supplied the ignore rule, so this
+  // pair IS the argument for the gate. ---------------------------------------------------------
   const drop = ok.path ?? "";
   await post(`/api/slots/${SLOT}/kill`, {});
   const rm = spawnSync("git", ["worktree", "remove", wt], { cwd: REPO, encoding: "utf8" });
@@ -200,6 +214,8 @@ export async function run(): Promise<void> {
   check("…and the drops died with the worktree (no sweep, no delete-by-slot-number, no store to leak)",
     !existsSync(drop) && !existsSync(`${wt}/drops`), drop);
   spawnSync("git", ["-C", REPO, "branch", "-D", BRANCH]);
+  // the fixture repo's exclude as this unit found it: the rule the route added is this unit's
+  if (excludeBefore === null) rmSync(exclude, { force: true }); else writeFileSync(exclude, excludeBefore);
 }
 
 // A SENT DROP IN THE CHAT VIEW, measured in a real browser on the real client bundle (card 7d9c5394,

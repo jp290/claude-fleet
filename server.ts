@@ -192,6 +192,7 @@ import { buildVariantCompareRow, countCheckedMet, decideVariantCompare, doneEntr
   type VariantDoneEntry, type VariantDoneResult, type VariantGate, type VariantStageCandidate } from "./variant-compare";
 import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/audit-log";
 import { ADJUDICATION_CLEARS_RED, ADJUDICATION_VERDICTS, type AdjudicationVerdict } from "./server/adjudication";
+import { diskAdmission } from "./server/disk-space";
 import { STATE_DIR } from "./server/state-dir";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
@@ -3692,7 +3693,8 @@ type MemoryAuditState =
   | { state: "running"; startedAt: number; basis: "volatile (process memory)" }
   | { state: "starting"; basis: "volatile (process memory)" }
   // `hold` says what a queued land waits FOR on a helper deployment (auditHoldOf): `quiet` — the
-  // cadence releases it at `releaseAt`; `waiting for helper` — released, and only a helper runs it.
+  // cadence releases it at `releaseAt`; `waiting for helper` — released, and only a helper runs it;
+  // on any deployment `disk-space-held` — this box runs it, and the host disk admission holds it.
   // Absent: nothing holds it (a deployment without a helper runs it on the land).
   | { state: "queued"; queuedAt: number; hold?: AuditHold["hold"]; releaseAt?: number; basis: "persisted audit queue" }
   | { state: "terminal"; result: string; at: number; mainSha: string | null;
@@ -22155,7 +22157,7 @@ const DISK_MIN_FREE_BYTES = diskGiBOverride(process.env.FLEET_DISK_MIN_FREE_GIB,
 const DISK_WRITER_BYTES = diskGiBOverride(process.env.FLEET_DISK_WRITER_GIB, 3.6);
 const DISK_PATH = tmpdir();
 type HostDiskSpace = { state: "ready" | "disk-space-held"; reason: "low-free-space" | "measurement-failed" | null;
-  path: string; measuredAt: number; freeBytes: number | null; minimumFreeBytes: number;
+  path: string; measuredAt: number; freeBytes: number | null; totalBytes: number | null; minimumFreeBytes: number;
   writerReserveBytes: number; runningWriters: number; reservedBytes: number; availableBytes: number | null };
 let hostDiskSpace: HostDiskSpace | null = null;
 function foreignDiskSuiteCount(): number {
@@ -22183,21 +22185,22 @@ function foreignDiskSuiteCount(): number {
 function measureHostDiskSpace(): HostDiskSpace {
   const gates = [...serverRuns.entries()].filter(([key]) => key !== "audit").length;
   const runningWriters = gates + (auditRunningRepo ? 1 : 0) + foreignDiskSuiteCount();
-  let freeBytes: number | null = null;
+  let freeBytes: number | null = null, totalBytes: number | null = null;
   try {
     const fs = statfsSync(DISK_PATH);
     const bytes = Number(fs.bavail) * Number(fs.bsize);
     if (Number.isFinite(bytes) && bytes >= 0) freeBytes = bytes;
+    totalBytes = Number(fs.blocks) * Number(fs.bsize);
   } catch { /* a failed reading holds starts, never retires work */ }
-  const reservedBytes = runningWriters * DISK_WRITER_BYTES;
-  const availableBytes = freeBytes === null ? null : freeBytes - reservedBytes;
-  const held = availableBytes === null || availableBytes < DISK_MIN_FREE_BYTES;
-  const next: HostDiskSpace = { state: held ? "disk-space-held" : "ready",
-    reason: freeBytes === null ? "measurement-failed" : held ? "low-free-space" : null,
-    path: DISK_PATH, measuredAt: Date.now(), freeBytes, minimumFreeBytes: DISK_MIN_FREE_BYTES,
-    writerReserveBytes: DISK_WRITER_BYTES, runningWriters, reservedBytes, availableBytes };
+  // floor and reserve capped at a quarter of the filesystem (server/disk-space.ts: a 3,84-GiB tmpfs held every audit)
+  const a = diskAdmission({ freeBytes, totalBytes, runningWriters, minFreeBytes: DISK_MIN_FREE_BYTES, writerBytes: DISK_WRITER_BYTES });
+  const next: HostDiskSpace = { state: a.held ? "disk-space-held" : "ready",
+    reason: freeBytes === null ? "measurement-failed" : a.held ? "low-free-space" : null,
+    path: DISK_PATH, measuredAt: Date.now(), freeBytes, totalBytes: Number.isFinite(totalBytes) ? totalBytes : null,
+    minimumFreeBytes: a.minimumFreeBytes, writerReserveBytes: a.writerReserveBytes, runningWriters,
+    reservedBytes: a.reservedBytes, availableBytes: a.availableBytes };
   if (next.state !== hostDiskSpace?.state)
-    console.log(`host disk ${next.state}: freeBytes=${freeBytes} reservedBytes=${reservedBytes} minimumFreeBytes=${DISK_MIN_FREE_BYTES} path=${DISK_PATH}`);
+    console.log(`host disk ${next.state}: freeBytes=${freeBytes} totalBytes=${next.totalBytes} reservedBytes=${a.reservedBytes} minimumFreeBytes=${a.minimumFreeBytes} path=${DISK_PATH}`);
   hostDiskSpace = next;
   return next;
 }
@@ -22206,6 +22209,17 @@ function diskSpaceWaitNote(space: HostDiskSpace): string {
 }
 function tickHostDiskSpace(): void {
   if (measureHostDiskSpace().state === "ready") kickAuditDrain();
+}
+// the drain's line for an audit the disk holds, once per repo and reason, like `post-land audit QUIET:`;
+// without it a held audit and an idle queue look the same in server.log (Workhorse, from 2026-10-08)
+let auditDiskWaitKey = "";
+function noteAuditDiskWait(repo: string, q: AuditQueueEntry, space: HostDiskSpace): void {
+  const key = space.state === "disk-space-held" ? `${repo}\0${space.reason}` : "";
+  if (key && key !== auditDiskWaitKey)
+    console.log(`post-land audit WAITING: ${basename(repo)} ${q.main} (${q.covers.length} land(s)) — disk-space-held`
+      + ` reason=${space.reason} freeBytes=${space.freeBytes} totalBytes=${space.totalBytes} reservedBytes=${space.reservedBytes}`
+      + ` minimumFreeBytes=${space.minimumFreeBytes} path=${space.path}; starts on its own once the disk is ready`);
+  auditDiskWaitKey = key;
 }
 // HOST LOAD BRAKE. The lane caps count lanes, not the machine: on 2026-10-08 20:30 the 8 GB Mac
 // thrashed swap (19 sessions, the server, five test instances, a local audit; 5-min load 46, ~70 s
@@ -30717,13 +30731,16 @@ function auditCadenceHeldUntil(repo: string, q: AuditQueueEntry, now = Date.now(
 }
 const auditCadenceHolds = (repo: string, q: AuditQueueEntry, now = Date.now()): boolean =>
   auditCadenceHeldUntil(repo, q, now) > 0;
-type AuditHold = { hold: "quiet"; releaseAt: number } | { hold: "waiting for helper" };
+type AuditHold = { hold: "quiet"; releaseAt: number } | { hold: "waiting for helper" } | { hold: "disk-space-held" };
 function auditHoldOf(repo: string, q: AuditQueueEntry, now = Date.now()): AuditHold | null {
-  if (!AUDIT_HELPER_ONLY || helperClaimOf(repo) || auditShardRuns.has(repo)
+  if (helperClaimOf(repo) || auditShardRuns.has(repo)
     || auditRunningRepo === repo || runningPostLandAudit?.repo === repo) return null;
+  // work this box runs itself waits for disk space on every deployment (the last tick's reading)
+  const disk = hostDiskSpace?.state === "disk-space-held" ? { hold: "disk-space-held" as const } : null;
+  if (!AUDIT_HELPER_ONLY) return disk;
   const c = auditCadenceOf(repo, q, now);
   if (!c.due) return { hold: "quiet", releaseAt: c.releaseAt };
-  return helperClaimBar(repo, q.covers) ? null : { hold: "waiting for helper" };
+  return helperClaimBar(repo, q.covers) ? disk : { hold: "waiting for helper" };
 }
 // …and how long a heartbeat still means "that machine is there". Derived from the sweep clock
 // rather than written as its own number so the two cannot drift apart: HELPER_SWEEP_MS is this
@@ -31885,7 +31902,9 @@ async function drainPostLandAudits(): Promise<void> {
         break;
       }
       const [repo, q] = entry;
-      if (measureHostDiskSpace().state === "disk-space-held") break;
+      const disk = measureHostDiskSpace();
+      noteAuditDiskWait(repo, q, disk);
+      if (disk.state === "disk-space-held") break;
       // WHY THIS BOX RUNS IT, one line per local run — on a helper deployment only local-only work
       // reaches this line, and the line says which bar made it local and which number released it.
       const localBar = helperClaimBar(repo, q.covers);
@@ -32567,13 +32586,17 @@ function postLandAuditLiveView(): PostLandAuditLiveInfo | null {
   // "already being audited" from "arrived while it ran" without a second bookkeeping field.
   const inflight = new Set<AuditCover>(r?.covers ?? []);
   const waiting: PostLandAuditLiveInfo["waiting"] = [];
-  for (const [repo, q] of auditQueue)
+  for (const [repo, q] of auditQueue) {
+    // the board says why it waits only for the disk; quiet and helper holds keep their own surfaces
+    const hold = hostDiskSpace?.state === "disk-space-held" && auditHoldOf(repo, q)?.hold === "disk-space-held"
+      ? { hold: "disk-space-held" as const } : {};
     for (const g of auditQueueGroups(q))
       for (const c of g.covers)
         // a PARKED entry (its repo has no audit command) is not waiting for a run — nothing is
         // configured to run it. Masked here, where "waiting" is the claim; the queue keeps it.
         if (!inflight.has(c) && !(shardRun?.repo === repo && shardCovers.has(coverKey(c))) && auditCmdFor(repo))
-          waiting.push({ repo: basename(repo), main: g.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at });
+          waiting.push({ repo: basename(repo), main: g.main, branch: c.branch, mainAfter: c.mainAfter, at: c.at, ...hold });
+  }
   const running: PostLandAuditLiveInfo["running"] = r
     ? { phase: "running", repo: basename(r.repo), main: r.main, mainSha: r.mainSha,
         startedAt: r.startedAt, covers: r.covers.map((c) => c.branch) }

@@ -11,6 +11,7 @@
 //   done   — finished in the last few minutes (the server's own linger windows): green, red, unknown
 // Nothing here is new data. Each ball cites the one wire row it came from, and two rows are never
 // merged into one ball — a lane that reported its own run AND handed an offer to a helper shows two.
+// The one exception: lands waiting for the same post-land run are that one run, so one ball.
 
 import { CHECK_KIND } from "./board-words";
 import type { PostLandAuditLiveInfo, SuiteOfferRow } from "./protocol";
@@ -315,13 +316,20 @@ export function suiteMeter(inp: MeterInput): Meter {
       what: auditHeld.parts || auditHeld.ref, where: auditHeld.device, tone: "plain",
       at: Number.isFinite(auditHeld.at) ? auditHeld.at : 0, expect: null, runs: auditClaims.length });
   }
-  for (const w of inp.audit?.waiting ?? []) {
-    const landed = inp.slots.find((s) => s.branch === w.branch);
+  // ONE ball per tree the next run covers (repo, main): the waiting lands fold into that one run, and
+  // a held Workhorse drew 130 deploys as 130 balls under one key. Its clock is the oldest land.
+  const waits = new Map<string, NonNullable<MeterInput["audit"]>["waiting"]>();
+  for (const w of inp.audit?.waiting ?? []) waits.set(`${w.repo}:${w.main}`, [...(waits.get(`${w.repo}:${w.main}`) ?? []), w]);
+  for (const [tree, ws] of waits) {
+    const w = ws.reduce((a, b) => (b.at < a.at ? b : a));
+    const landed = ws.length === 1 ? inp.slots.find((s) => s.branch === w.branch) : undefined;
     const tail = landed?.title ? "" : ` (${laneTail(w.branch)})`;
-    balls.push({ key: `audit:wait:${w.branch}`, station: "wait", slot: null, name: "post-land check", branch: w.main,
-      // the landed lane by its name and title while its slot still holds it; without a title the
-      // four hex stay beside the name, as they always did
-      kind: "post-land check", what: `after the land of ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`}${tail}`,
+    // a single land: the landed lane by its name and title while its slot still holds it; without a
+    // title the four hex stay beside the name, as they always did
+    const what = ws.length === 1 ? `after the land of ${landed ? nameOf(landed.id, null, w.branch) : `Lane ${laneTail(w.branch)}`}${tail}`
+      : `${ws.length} lands since ${new Date(w.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+    balls.push({ key: `audit:wait:${tree}`, station: "wait", slot: null, name: "post-land check", branch: w.main,
+      kind: "post-land check", what: `${what}${ws.some((x) => x.hold === "disk-space-held") ? " · waiting for disk space" : ""}`,
       where: here, tone: "plain", at: w.at, expect: null });
   }
 

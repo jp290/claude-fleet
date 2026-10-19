@@ -436,8 +436,9 @@ export interface PostLandAuditLiveInfo {
     sharded?: { n: number; shards: { k: number; state: "reported" | "running" | "open" | "closed"; device: string | null }[] };
   } | null;
   // lands whose audit has not begun: coalesced into the NEXT run, and today indistinguishable from
-  // "no audit planned" on every surface. `at` is when the land queued them.
-  waiting: { repo: string; main: string; branch: string; mainAfter: string; at: number }[];
+  // "no audit planned" on every surface. `at` is when the land queued them. `hold`: this box would
+  // run it and the host disk holds it (server.ts#auditHoldOf).
+  waiting: { repo: string; main: string; branch: string; mainAfter: string; at: number; hold?: "disk-space-held" }[];
   stats: { n: number; p50: number; p90: number } | null;
 }
 

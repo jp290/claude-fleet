@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { diskAdmission } from "../server/disk-space";
 import { check, get, ROOT } from "./harness";
 import { scratchReapChecks } from "./scratch-reap-checks";
 
@@ -46,12 +47,12 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     writerReserveBytes: number; runningWriters: number; reservedBytes: number; availableBytes: number | null;
     path: string; measuredAt: number };
   type View = { diskSpace: Space; data: { startable: { id: string }[] } | null };
-  type Fixture = { clock: { free: number; unreadable: boolean; load5: number; swapUsed: number }; queue: Map<string, { covers: { mainAfter: string }[] }>;
+  type Fixture = { clock: { free: number; total: number; unreadable: boolean; load5: number; swapUsed: number }; queue: Map<string, { covers: { mainAfter: string }[] }>;
     tasks: { status: string; note?: string }[]; override(value: string | undefined, fallback: number): number; counts: { audits: number; lanes: number; ticks: number; measurements: number };
-    measure(): Space; timer(): ReturnType<typeof setInterval>; view: { read(): View }; flush(): Promise<void>;
+    measure(): Space; timer(): ReturnType<typeof setInterval>; view: { read(): View }; flush(): Promise<void>; kick(): void; logs: string[];
     occupancy(n: number, gates?: number, audit?: boolean, holder?: "foreign" | "own" | "child" | "dead" | "missing" | "invalid" | "denied"): void };
   const setup = `
-    const clock = {free: 3 * 1024 ** 3, unreadable: false, load5: 1, swapUsed: 100};
+    const clock = {free: 3 * 1024 ** 3, total: 500 * 1024 ** 3, unreadable: false, load5: 1, swapUsed: 100};
     const counts = {audits: 0, lanes: 0, ticks: 0, measurements: 0};
     let holder = 'missing';
     const SUITE_LOCK = '/fixture/suite-lock';
@@ -71,7 +72,7 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
       return {exitCode: 0, stdout: new TextEncoder().encode(holder === 'child' ? '10' : '1')};}};
     const tmpdir = () => '/fixture/tmp';
     const statfsSync = (path) => {counts.measurements++; if (clock.unreadable) throw Error('no reading');
-      if (path !== '/fixture/tmp') throw Error('wrong measurement path'); return {bavail: clock.free, bsize: 1};};
+      if (path !== '/fixture/tmp') throw Error('wrong measurement path'); return {bavail: clock.free, blocks: clock.total, bsize: 1};};
     const slots = [], serverRuns = new Map();
     let auditRunningRepo = null, runningPostLandAudit = null, auditDraining = false;
     const auditQueue = new Map([['/fixture/repo', {main: 'main', covers: [{mainAfter: 'kept-tip', at: 1}]}]]);
@@ -100,7 +101,8 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     const canDeliver = async () => ({ok: true}), releaseVerdictNow = () => ({released: true, by: 'owner'});
     const saveState = () => {}, audit = () => {};
     const dispatchTask = async (next) => {counts.lanes++; next.status = 'sent'; return {ok: true, slot: 1, tail: Promise.resolve()};};
-    const console = {log: () => {}};
+    const logs = [];
+    const console = {log: (line) => logs.push(String(line))};
   `;
   const finish = `
     const source = () => Object.fromEntries(['queue', 'bindings', 'addresses', 'git', 'gateAudit'].map((name) =>
@@ -109,7 +111,7 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
     const view = makeOperationalView({bootEpoch: 1, now: Date.now, schedule: (run) => scheduled.push(run),
       observe: source, produce: async () => ({startable: [{id: 'released'}]}), diskSpace: () => hostDiskSpace});
     const flush = async () => {view.observe(); for (let i = 0; i < 5; i++) {while (scheduled.length) scheduled.shift()(); await Promise.resolve();}};
-    return {clock, counts, queue: auditQueue, tasks, view, flush, measure: measureHostDiskSpace, override: diskGiBOverride,
+    return {clock, counts, queue: auditQueue, tasks, view, flush, measure: measureHostDiskSpace, override: diskGiBOverride, kick: kickAuditDrain, logs,
       occupancy(n, gates = 0, audit = false, lock = 'missing') {slots.length = 0; for (let i = 0; i < n; i++) slots.push({id: i, cwd: '/lane', worktree: {}});
         auditRunningRepo = audit ? '/fixture/repo' : null; holder = lock; serverRuns.clear();
         for (let i = 0; i < gates; i++) serverRuns.set('land:' + i, {});
@@ -119,13 +121,13 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
   const build = (mutation: "audit" | "lane" | "lanes-count" | "suite-reserve" | "brake-default" | null,
     env: Record<string, string> = {}): Fixture => {
     let code = actual;
-    if (mutation === "audit") code = code.replace('if (measureHostDiskSpace().state === "disk-space-held") break;', 'if (false) break;');
+    if (mutation === "audit") code = code.replace('if (disk.state === "disk-space-held") break;', 'if (false) break;');
     if (mutation === "lane") code = code.replace('if (space.state === "disk-space-held") { waiting(diskSpaceWaitNote(space)); continue; }', 'if (false) { waiting(diskSpaceWaitNote(space)); continue; }');
     if (mutation === "lanes-count") code = code.replace('const runningWriters = gates +', 'const runningWriters = slots.length + gates +');
     if (mutation === "suite-reserve") code = code.replace('const runningWriters = gates + (auditRunningRepo ? 1 : 0) + foreignDiskSuiteCount();', 'const runningWriters = 0;');
     if (mutation === "brake-default") code = code.replace('if (value === undefined) return fallback;', 'if (value === undefined) return null;');
     if (mutation && code === actual) throw Error(`missing ${mutation} admission mutation`);
-    return new Function("FIXTURE_ENV", new Bun.Transpiler({loader: "ts"}).transformSync(setup + code + finish))(env) as Fixture;
+    return new Function("FIXTURE_ENV", "diskAdmission", new Bun.Transpiler({loader: "ts"}).transformSync(setup + code + finish))(env, diskAdmission) as Fixture;
   };
   const held = async (f: Fixture): Promise<boolean> => {
     const timer = f.timer();
@@ -140,6 +142,12 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
   assert("host-disk held audit keeps its exact cover; released lane remains queued with named hold",
     f.queue.get('/fixture/repo')?.covers[0]?.mainAfter === 'kept-tip' && f.tasks[0].status === 'queued'
       && f.tasks[0].note?.includes('disk-space-held') === true, JSON.stringify(f.tasks));
+  f.kick();
+  f.kick();
+  assert("host-disk a held audit says so once in server.log through three drain passes, with its reason and numbers",
+    f.logs.filter((l) => l.startsWith("post-land audit WAITING: /fixture/repo main (1 land(s)) — disk-space-held reason=low-free-space"
+      + ` freeBytes=${3 * 1024 ** 3} totalBytes=${500 * 1024 ** 3}`)).length === 1
+      && f.logs.filter((l) => l.startsWith("post-land audit WAITING:")).length === 1, JSON.stringify(f.logs));
   await f.flush();
   const routeStart = source.indexOf('    if (url.pathname === "/api/operational-view" && req.method === "GET")');
   const routeEnd = source.indexOf(';', routeStart) + 1;
@@ -191,6 +199,16 @@ export async function diskSpaceChecks(assert: (name: string, ok: boolean, detail
   f.occupancy(10);
   f.clock.free = 4 * 1024 ** 3;
   assert("host-disk corrected floor permits exactly 4 GiB with zero local suites", f.measure().state === 'ready');
+  // the Workhorse's /tmp: a 3,84-GiB tmpfs is smaller than the 4-GiB floor, so floor and reserve are
+  // capped at a quarter of the filesystem (server/disk-space.ts) — empty it is ready, nearly full held
+  f.clock.total = f.clock.free = 3.84 * 1024 ** 3;
+  const emptyTmpfs = f.measure();
+  f.clock.free = 0.5 * 1024 ** 3;
+  const fullTmpfs = f.measure();
+  assert("host-disk a 3,84-GiB tmpfs is ready empty and held at 0,5 GiB free: floor capped at a quarter of its size",
+    emptyTmpfs.state === 'ready' && emptyTmpfs.minimumFreeBytes === f.clock.total / 4 && fullTmpfs.state === 'disk-space-held',
+    JSON.stringify({ emptyTmpfs, fullTmpfs }));
+  f.clock.total = 500 * 1024 ** 3;
   f.clock.free = 12 * 1024 ** 3;
   f.clock.unreadable = true;
   assert("host-disk unreadable filesystem holds starts with explicit failed measurement",

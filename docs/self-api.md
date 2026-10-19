@@ -164,12 +164,16 @@ Ein fehlender Ledger oder roter/unbekannter Audit nennt seine offene Grenze.
 
 `diskSpace` zeigt den Host-Platzsensor unabhängig von der Metadatenberechnung: `state: ready | disk-space-held`,
 `reason: low-free-space | measurement-failed | null`, `path` (der Temp-Pfad dieses Servers aus
-`TMPDIR`, sonst der OS-Default), `measuredAt`, `freeBytes`, `minimumFreeBytes`, `writerReserveBytes`,
+`TMPDIR`, sonst der OS-Default), `measuredAt`, `freeBytes`, `totalBytes`, `minimumFreeBytes`, `writerReserveBytes`,
 `runningWriters`, `reservedBytes` und `availableBytes`. Gemessen wird mit `statfs.bavail * bsize`
-im Dispatch-Takt und unmittelbar vor einem lokalen schweren Start; GET misst nicht nach.
+(`totalBytes`: `blocks * bsize`) im Dispatch-Takt und unmittelbar vor einem lokalen schweren Start; GET misst nicht nach.
 Defaults sind 4 GiB Mindestrest und 3,6 GiB je laufender lokaler Suite; positive endliche Overrides
 stehen in `FLEET_DISK_MIN_FREE_GIB` und `FLEET_DISK_WRITER_GIB`. Ungültige Overrides behalten den
-Default. Starts brauchen `freeBytes - reservedBytes >= minimumFreeBytes`.
+Default. Beide werden auf ein Viertel von `totalBytes` gekappt (`server/disk-space.ts`), damit ein
+Dateisystem kleiner als der Mindestrest nicht dauerhaft hält (Workhorse: `/tmp` ist ein tmpfs mit
+3,84 GiB); ab 16 GiB ändert sich nichts, und `minimumFreeBytes`/`writerReserveBytes` zeigen die
+gekappten Werte. Starts brauchen `freeBytes - reservedBytes >= minimumFreeBytes`. Hält der Platz ein
+lokales Audit, schreibt der Drain einmal je Zustand `post-land audit WAITING: … disk-space-held …`.
 Gezählt werden lokale Server-Gates (`serverRuns` ohne Audit-Doppelzählung), das lokale
 Post-Land-Audit (`auditRunningRepo`) und ein lebender fremder Holder des Suite-Mutex
 (`FLEET_SUITE_LOCK`, sonst `/tmp/fleet-e2e.lock`). Eigene Mutex-Holder und eigene

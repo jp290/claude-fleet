@@ -401,6 +401,18 @@ export async function run(): Promise<void> {
       at(audit) === "run:post-land check:plain wait:post-land check:plain"
         && audit.balls.find((b) => b.station === "run")?.what === "main@abcdef01"
         && audit.balls.find((b) => b.station === "wait")?.what === "after the land of Lane 2222 (2222)", JSON.stringify(audit.balls));
+    // lands waiting for the same post-land run ARE that one run: a held Workhorse drew 130 deploys as
+    // 130 balls under one key (owner 19.10.)
+    const deploys = Array.from({ length: 130 }, (_, i) => ({ repo: "r", main: "main", branch: "fleet/deploy",
+      mainAfter: `d${i}`, at: 100 + i, hold: "disk-space-held" as const }));
+    const piled = suiteMeter({ ...base, audit: { running: null, stats: null, waiting: [...deploys,
+      { repo: "r", main: "main", branch: "fleet/b-2222", mainAfter: "f00", at: 50 },
+      { repo: "r", main: "next", branch: "fleet/c-3333", mainAfter: "f01", at: 60 }] } }).balls;
+    const pile = piled.find((b) => b.key === "audit:wait:r:main");
+    check("(LS.meter) waiting lands are ONE ball per repo and main, clocked from the oldest, saying when the disk holds them",
+      piled.length === 2 && pile?.station === "wait" && pile.at === 50 && pile.what.startsWith("131 lands since ")
+        && pile.what.endsWith(" · waiting for disk space")
+        && piled.find((b) => b.key === "audit:wait:r:next")?.what === "after the land of Lane 3333 (3333)", JSON.stringify(piled));
     const onHelper = suiteMeter({ ...base, audit: live,
       devices: [{ name: "workhorse", claims: [{ kind: "audit", repo: "claude-fleet", ref: "main", expiresAt: 0 }] }] });
     check("(LS.meter) an audit a helper holds sits at 'helper' and names the device as its PLACE",

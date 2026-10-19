@@ -1812,9 +1812,10 @@ export async function run(ctx: Ctx): Promise<void> {
       // (delivery_bundle_sent "orchestrator count=0"). Fixture: a Program whose live MAIN holds two
       // planted undecided reports; a message nudge waits under "orchestrator" (600 s window), then
       // the MAIN is killed — the first report's hint meets the bundle, the second comes a tick later.
-      // The waiting nudge comes from a message to a second, only proposed Program: it escalates to
-      // the Orchestratorin (escalateMessage) and is not direct, so it is still bundled — a message
-      // to the role "orchestrator" goes direct since Mangel 141 and no longer waits.
+      // The waiting nudge comes from the MAIN's message to a second, only proposed Program: it escalates
+      // to the Orchestratorin (escalateMessage) and is not direct, so it is still bundled — a message
+      // to the role "orchestrator" goes direct since Mangel 141, and the Orchestratorin's own message to
+      // a Program since bau/ohne-owner-token Schnitt 4; neither waits any more.
       {
         type ARow = { ts?: number; event: string; slot?: number; detail?: string; path?: string; paths?: string;
           reportId?: string; bytes?: number };
@@ -1846,10 +1847,11 @@ export async function run(ctx: Ctx): Promise<void> {
             headers: { "content-type": "application/json", "x-fleet-self-token": selfToken }, body: "{}" });
         const unreadLeft = ((await (await selfMessages("GET")).json()) as { unread?: number }).unread;
         await stopSrv();
-        type PlantState = { slots?: Record<string, { openedAt?: number }>;
+        type PlantState = { slots?: Record<string, { openedAt?: number; selfToken?: string }>;
           programs?: { id: string; main?: unknown }[]; fleetReports?: { id?: string }[] };
         const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as PlantState;
         const mainOpenedAt = mainSlot ? plant.slots?.[String(mainSlot)]?.openedAt ?? 0 : 0;
+        const mainSelfToken = mainSlot ? plant.slots?.[String(mainSlot)]?.selfToken ?? "" : "";
         const programRow = plant.programs?.find((p) => p.id === programId);
         const reportIds = [0, 1].map(() => createHash("sha256").update(`${Date.now()}-${Math.random()}`)
           .digest("hex").slice(0, 24));
@@ -1869,7 +1871,7 @@ export async function run(ctx: Ctx): Promise<void> {
         const t0 = Date.now();
         check("precondition: a Program with a live MAIN holds two planted undecided reports, the Orchestratorin is unique",
           !!mainOpen?.ok && made.ok && !!confirmed?.ok && !!activated?.ok && !!programRow && mainOpenedAt > 0
-            && proposedId !== "" && unreadLeft === 0 && (await selfMessages("GET")).ok,
+            && proposedId !== "" && unreadLeft === 0 && mainSelfToken !== "" && (await selfMessages("GET")).ok,
           `main=${mainSlot} open=${mainOpen?.status} program=${made.status}/${confirmed?.status}/${activated?.status} proposed=${proposed.status} openedAt=${mainOpenedAt} unread=${unreadLeft}`);
         // earlier modules' leftover orphans (full shard) are typed one per tick right after the restart;
         // the nudge must wait in the bundle only once they are done
@@ -1881,9 +1883,11 @@ export async function run(ctx: Ctx): Promise<void> {
           await Bun.sleep(1_250);
         }
         const tPost = Date.now();
-        const queuedMsg = await selfMessages("POST", { to: { kind: "program", id: proposedId },
-          payload: { kind: "text", text: "a nudge that waits for the merged orphan hint" },
-          idempotencyKey: `merged-orphan-${Date.now()}` });
+        const queuedMsg = await fetch(BASE + "/api/self/messages", { method: "POST",
+          headers: { "content-type": "application/json", "x-fleet-self-token": mainSelfToken },
+          body: JSON.stringify({ to: { kind: "program", id: proposedId },
+            payload: { kind: "text", text: "a nudge that waits for the merged orphan hint" },
+            idempotencyKey: `merged-orphan-${Date.now()}` }) });
         const queuedBody = queuedMsg.ok ? (await queuedMsg.json()) as { holder?: { slot?: number } | null;
           escalatedTo?: string | null } : {};
         // the nudge WAITS: its queued row has no orchestrator bundle row after it

@@ -145,6 +145,22 @@ const PRE_AUTH_ROUTES = [
   // not reachable from here. Its side effects are the owner door's: the check after the land is scheduled. It writes into
   // no pane and deploys nothing.
   '= /api/self/branches/land',
+  // The tip's audit without the owner token (bau/ohne-owner-token Schnitt 1): POST /api/repos/audit-tip's verb for the
+  // Orchestratorin and a bound Program-MAIN (server.ts#selfDoorRoleOf), every other session 409. It queues the audit of
+  // the server repo's integration tip at most once and moves no ref; the audit row names the role and slot that asked.
+  '= /api/self/repos/audit-tip',
+  // The land sensor without the owner token (Schnitt 2): GET /api/slots/:id/merge for every lane in one read-only answer,
+  // for the same two roles. The Orchestratorin reads the fleet, a bound MAIN only the lanes of its own repo (same git
+  // common dir); every other session 409. It writes nothing.
+  '= /api/self/merges',
+  // The Orchestratorin judges a red audit without the owner token (Schnitt 3): the owner door's writer, `by` names her
+  // occupation (slot + openedAt). A bound MAIN and every other session 409; nothing reaches POSTLAND_AUDIT_FILE.
+  '= /api/self/post-land-audits/adjudicate',
+  // The board's branches without the owner token (Schnitt 6): the owner doors' cores (createBoardBranch, openBoardBranch)
+  // for a non-lane session but the steward, in its own repo only, never under a role label; the caller becomes the
+  // branch's opener (K13 postfach pair). It creates a worktree and opens one roleless session; it lands and deploys nothing.
+  '= /api/self/branches',
+  '= /api/self/branches/open',
   // …and the door that JUDGES one of those rows, deliberately its own route rather than a fold
   // into the event-ack regex: that one is a TRANSPORT receipt for every event kind, this one
   // records what the receiving MAIN did with the work. Who may call it: the exact self principal

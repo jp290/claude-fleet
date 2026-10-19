@@ -8494,6 +8494,153 @@ function lastConversationIn(cwd: string): string | null {
 }
 // The goal the owner gave a branch session, as its first message once the pane is ready — the same
 // boot grace, gates and readiness as a founding card. Not delivered is an answer, never a retry.
+// THE SELF DOORS ONTO THE BOARD'S BRANCHES (bau/ohne-owner-token Schnitt 6; Orchestratorin 19.10.: an agent can no longer
+// borrow the owner token to open a partner, the classifier blocks it). Any non-lane session but the steward, in ITS OWN
+// repo only (same --git-common-dir as its cwd; `repo` defaults to it), and never under a role label: the branch's
+// Board-Name becomes the opened session's label, and a role label there would be the claim Schnitt 0 closed.
+async function selfBranchRequest(s: Slot, body: Record<string, unknown> | null): Promise<
+  { ok: true; body: Record<string, unknown> } | { ok: false; response: Response }> {
+  if (s.worktree || s.label === STEWARD_LABEL)
+    return { ok: false, response: json({ error: "a lane and the steward open no branches — a free session, a MAIN or the Orchestratorin does" }, 409) };
+  if (!body) return { ok: false, response: json({ error: "invalid json" }, 400) };
+  const ro = await branchRepoOf(body.repo ?? s.cwd);
+  if (!ro.ok) return { ok: false, response: json({ error: ro.error }, 400) };
+  const [mine, theirs] = await Promise.all([gitCommonDirOf(s.cwd!), gitCommonDirOf(ro.repo)]);
+  if (mine === null || mine !== theirs)
+    return { ok: false, response: json({ error: "a session opens branches in its own repo only" }, 409) };
+  return { ok: true, body: { ...body, repo: ro.repo } };
+}
+const roleLabelOf = (name: string): boolean => isOrchestratorLabel(name) || name.trim() === STEWARD_LABEL;
+// NEUAUFBAU K5 · open a branch on the board (POST /api/branches, and its self door POST /api/self/branches): a NEW one (no
+// `branch`: a name derived from `name`; or a free `branch` name), or an EXISTING one — checked out into a worktree if it has
+// none. A name another branch of the repo carries is refused with that branch, before anything is created.
+async function createBoardBranch(body: Record<string, unknown> | null): Promise<Response> {
+  const points = body?.points;
+  if (!body || typeof body.name !== "string" || (body.branch !== undefined && typeof body.branch !== "string")
+    || (body.base !== undefined && typeof body.base !== "string")
+    || (points !== undefined && !(Array.isArray(points) && points.every((x) => typeof x === "string"))))
+    return json({ error: "expected { repo, name, branch?, base?, points?: string[], harness? }" }, 400);
+  // the private scaffold follows the harness that will work in the tree (laneScaffoldFor)
+  const ho = harnessIdOf(body);
+  if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
+  const h = harnessOf(ho.harness);
+  if (!h.allowsLanes) return json({ error: `harness ${h.id} is main-session only — it cannot work on a branch` }, 400);
+  const fo = laneFormOf(body, h);
+  if (!fo.ok || fo.form !== "worktree") return json({ error: "form must be 'worktree' — a branch is checked out as a worktree" }, 400);
+  const ro = await branchRepoOf(body.repo);
+  if (!ro.ok) return json({ error: ro.error }, 400);
+  const repo = ro.repo, wanted = typeof body.branch === "string" ? body.branch.trim() : "";
+  const base = typeof body.base === "string" && body.base.trim() ? body.base.trim() : null;
+  if (base && (await gitRead(repo, "rev-parse", "--verify", "--quiet", `${base}^{commit}`)).code !== 0)
+    return json({ error: `no such base: ${base}` }, 400);
+  let branch = wanted;
+  if (!branch) {
+    const slug = taskBranchSlug(body.name) || "ohne-name";
+    branch = `branch/${slug}`;
+    if (await branchExists(repo, branch)) branch = `branch/${slug}-${randomBytes(2).toString("hex")}`;
+  }
+  if ((await git(repo, "check-ref-format", "--branch", branch)).code !== 0) return json({ error: `invalid branch name: ${branch}` }, 400);
+  const opening = { repo, branch, name: body.name, base,
+    points: Array.isArray(points) ? points.filter((x): x is string => typeof x === "string") : [] };
+  const dry = openBranch(branchBook, { ...opening, at: Date.now() });
+  if (!dry.ok) return json({ error: dry.error, ...(dry.existing ? { existing: dry.existing } : {}) }, dry.status);
+  const existed = await branchExists(repo, branch);
+  const primaryBranch = (await listWorktrees(repo)).find((w) => w.primary)?.branch;
+  if (branch === primaryBranch || branch === await integrationBranch(repo))
+    return json({ error: `${branch} is the repo's own line, not a branch to work on` }, 400);
+  if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
+  let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
+  try {
+    if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h, null, false)).path;
+    else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
+  } catch (e) {
+    const error = e instanceof Error ? e.message : "worktree failed";
+    return json({ error }, /already exists/.test(error) ? 409 : 400);
+  }
+  // the book may have moved during the git work: the name is judged again on the current one
+  const done = openBranch(branchBook, { ...opening, at: Date.now() });
+  if (!done.ok) return json({ error: `${done.error} — the worktree ${path} stands without a Board-Name`,
+    ...(done.existing ? { existing: done.existing } : {}) }, done.status);
+  branchBook = done.book;
+  await saveStateNow();
+  workplacesCache = null;
+  void tickGit().catch(() => {});
+  return json({ ok: true, repo, branch, path, created: !existed, name: done.record.name, text: done.record.text,
+    rev: done.record.rev }, existed ? 200 : 201);
+}
+// a SESSION on a board branch (POST /api/branches/open, and its self door): a session without a role (like "Nur Ordner")
+// in the branch's worktree, labelled with its Board-Name; a branch without a worktree is checked out first. It continues the
+// worktree's newest conversation unless `fresh`; `goal` becomes its first message. A branch whose worktree a session
+// already holds answers 409 with that slot. `by` is the opener the postfach pairs with the new session (K13); `opener`
+// says through which door it came — a session's own goal names it in its first line.
+async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | null, opener: "owner" | "self"): Promise<Response> {
+  if (!body || typeof body.branch !== "string" || (body.goal !== undefined && typeof body.goal !== "string")
+    || (body.fresh !== undefined && typeof body.fresh !== "boolean"))
+    return json({ error: "expected { repo, branch, goal?, fresh?, model?, effort?, harness?, rechte? }" }, 400);
+  const goal = typeof body.goal === "string" ? body.goal.trim() : "";
+  if (goal.length > BRANCH_GOAL_MAX) return json({ error: `goal has ${goal.length} characters — the cap is ${BRANCH_GOAL_MAX}` }, 400);
+  const ho = harnessIdOf(body);
+  if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
+  const h = harnessOf(ho.harness);
+  const paused = harnessPausedError(h);
+  if (paused) return json({ error: paused }, 409);
+  const mo = modelOf(body, h);
+  if (!mo.ok) return json({ error: mo.error }, 400);
+  const eo = effortOf(body, h);
+  if (!eo.ok) return json({ error: effortErrFor(h) }, 400);
+  const pe = permissionsOf(body, h);
+  if (!pe.ok) return json({ error: pe.error }, 400);
+  const rt = rechteDerTuer(body, h.id);
+  if (!rt.ok) return json({ error: rt.error }, 400);
+  const ro = await branchRepoOf(body.repo);
+  if (!ro.ok) return json({ error: ro.error }, 400);
+  const record = findBranch(branchBook, ro.repo, body.branch);
+  if (!record?.name || !(await branchExists(ro.repo, body.branch)))
+    return json({ error: `${body.branch} is no board branch here — open it with POST /api/branches first` }, 404);
+  let path = (await listWorktrees(ro.repo)).find((w) => w.branch === body.branch)?.path ?? null;
+  const holder = path ? workplaceHolder(path) : null;
+  if (holder) return json({ error: `${record.name} läuft schon in Slot ${holder.slot}`, session: { slot: holder.slot, openedAt: holder.openedAt } }, 409);
+  const free = freeSessionSlot("main");
+  if (!free) return json({ error: sessionLimitError() ?? "no free slot — the branch stays with its points; open it again when a place is free" }, 409);
+  laneSpawn.add(free.id); // reserve before the first await — the same reservation /api/lanes takes
+  try {
+    if (!path) path = await checkoutBranchWorktree(ro.repo, body.branch, h);
+    if (attachBusy.has(path) || slots.some((x) => x.cwd === path)) return json({ error: "the worktree is being opened right now" }, 409);
+    attachBusy.add(path);
+    try {
+      const resumeId = body.fresh === true ? null : lastConversationIn(path);
+      const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
+        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte);
+      if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
+        throw new Error("slot occupant changed during branch open");
+      // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
+      // door — is recorded, and the two may write each other in the postfach
+      if (by?.cwd && by !== free) {
+        branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: by.id, cwd: by.cwd, at: Date.now() }).book;
+        await saveStateNow();
+      }
+      void tickGit().catch(() => {});
+      // the goal follows once the pane is ready — the board has its slot at once; a goal that is
+      // held or uncertain is a server error the owner sees, never a silent loss
+      // a session's goal says who opened the branch: the head names the path, not a credential
+      const said = goal && by && opener === "self"
+        ? `[geöffnet von der Session in Slot ${by.id} über ihren Self-Token — sie ist dein Gegenüber im Postfach] ${goal}` : goal;
+      if (goal) void deliverBranchGoal(free, said).then((d) => {
+        if (!d.delivered) logError("branch-goal", new Error(`slot ${free.id} (${record.name}): ${d.reason ?? "not delivered"}`));
+      });
+      return json({ ok: true, slot: free.id, openedAt: free.openedAt, cwd: free.cwd, label: free.label,
+        resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: goal ? "follows" : null,
+        ...(free.rechte ? { rechte: free.rechte } : {}) });
+    } finally {
+      attachBusy.delete(path);
+    }
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : "branch open failed" },
+      e instanceof TmuxNewSessionUnavailable ? 503 : 400);
+  } finally {
+    laneSpawn.delete(free.id);
+  }
+}
 async function deliverBranchGoal(s: Slot, text: string): Promise<{ delivered: boolean; reason?: string }> {
   const openedAt = s.openedAt;
   const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
@@ -10733,7 +10880,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "owner": "Owner-Credential",
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
-  "branch-goal": "Ziel eines Branches (Owner-Credential, POST /api/branches/open)",
+  "branch-goal": "Ziel eines Branches (vom Öffner, POST /api/branches/open)",
   "succession": "Nachfolge-Brief",
   "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
   "auto": "geplanter Check-in",
@@ -11288,6 +11435,17 @@ function deliveryRecipient(address: DeliveryAddress): Slot | null {
 // matched the label and made the role ambiguous, so a bundle for the real Orchestratorin fell with
 // "no current role occupant" (Slot 22, 2026-10-02). ONE set for the resolution above and for the
 // conflict below, so the two can never disagree about who holds the label.
+// WHO A ROLE SELF DOOR ANSWERS (bau/ohne-owner-token): a bound Program-MAIN, or else the one Orchestratorin the
+// role address resolves to — read off the slot at every call, never off a body. The binding wins over a label, as
+// on the message rail (messageSenderFor). A lane, the steward and every other session hold neither.
+type SelfDoorRole = "orchestrator" | "program-main";
+function selfDoorRoleOf(s: Slot): SelfDoorRole | null {
+  if (!s.cwd || s.worktree || s.label === STEWARD_LABEL) return null;
+  if (boundProgramsForMain(s).length) return "program-main";
+  return deliveryRecipient({ kind: "orchestrator" }) === s ? "orchestrator" : null;
+}
+const SELF_DOOR_ROLE_REFUSAL = "this door answers the Orchestratorin and a bound Program-MAIN only — "
+  + "a lane, the steward and an unbound session have no role here";
 function orchestratorLabelHolders(): Slot[] {
   return slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
 }
@@ -13826,6 +13984,17 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     const label = typeof body?.label === "string"
       ? body.label.slice(0, MAX_LABEL).trim() || null
       : s.label; // absent means verbatim inheritance, including null
+    // A ROLE LABEL IS A ROLE CLAIM (bau/ohne-owner-token, Schnitt 0). The Orchestratorin is the one non-lane
+    // holder of an Orchestrator label (orchestratorLabelHolders), and her self doors follow from it: a non-lane
+    // session that does not hold one may not hand one to its successor — it would take the empty seat, or silence
+    // the role address as a second holder. A lane's successor stays a lane and holds that role whatever its label
+    // says. The steward is its label alone, lane or not (ensureSlot exports FLEET_STEWARD_TOKEN on it, stewardSlot
+    // finds it), and the steward itself never succeeds (successionScopeError), so no self succession passes it on.
+    // Naming a session to either role stays the owner's rename.
+    if (label === STEWARD_LABEL)
+      return json({ error: "the ⚙ steward label is a role — no session passes it to a successor; naming the steward is the owner's rename (POST /api/slots/:id/rename)" }, 409);
+    if (!s.worktree && isOrchestratorLabel(label) && !isOrchestratorLabel(s.label))
+      return json({ error: "an Orchestrator label passes only from the Orchestratorin to her successor — naming a session the Orchestratorin is the owner's rename (POST /api/slots/:id/rename)" }, 409);
     // REFUSED, NEVER CUT (2026-10-11: a 504-character carry arrived ending mid-word at 500, and its
     // author believed it delivered). The predecessor still holds its turn here, so the 400 is the one
     // moment it can still shorten the sentence; nothing has ended yet.
@@ -17216,11 +17385,14 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   }
 
   // SESSION ADDRESSES SPEAK ONLY TO THEIR COUNTERPART: an unbound session writes to the Orchestrator,
-  // the Orchestrator answers it, and the two ends of a branch door write to each other (K13).
+  // the Orchestrator answers it, and the two ends of a branch door write to each other (K13) — the
+  // Orchestratorin as opener too, under her role address (bau/ohne-owner-token: her first word to the
+  // session she opened went through /send with the owner token).
   if (sender.from.kind === "session" || to.kind === "session") {
+    const orchestratorSends = sender.from.kind === "role" && sender.from.role === "orchestrator";
     const orchestrator = (sender.from.kind === "session" && to.kind === "role" && to.role === "orchestrator")
-      || (sender.from.kind === "role" && sender.from.role === "orchestrator" && to.kind === "session" && replyTo !== null);
-    if (!orchestrator && !(sender.from.kind === "session" && await branchPeers(s, to)))
+      || (orchestratorSends && to.kind === "session" && replyTo !== null);
+    if (!orchestrator && !((sender.from.kind === "session" || orchestratorSends) && await branchPeers(s, to)))
       return json({ error: SESSION_COUNTERPART }, 409);
   }
   if (to.kind === "lane") {
@@ -25953,10 +26125,13 @@ async function tickMessageNudge(): Promise<void> {
       // session). So is a message to the role "orchestrator" (Mangel 141): in the bundle, every further
       // message cancelled the waiting notice at its deadline (checkRecipient) and the next tick queued a
       // fresh fifteen minutes — a steadily asked Orchestratorin was never reached, and the clarification
-      // chain MAIN → Orchestratorin hangs on this link. Every other session's notice waits in the bundle,
-      // as the inbox hint does (tickInboxNudge).
+      // chain MAIN → Orchestratorin hangs on this link. So is the way back, the Orchestratorin's message
+      // to a Program (bau/ohne-owner-token Schnitt 4): it replaces her /send under the owner token, which
+      // reached the MAIN at once. Every other session's notice waits in the bundle, as the inbox hint
+      // does (tickInboxNudge).
       const direct = !!s.worktree || messages.entries.some((m) => unreadIds.includes(m.id)
-        && (m.from.kind === "session" && m.to.kind === "session" || m.to.kind === "role" && m.to.role === "orchestrator"));
+        && (m.from.kind === "session" && m.to.kind === "session" || m.to.kind === "role" && m.to.role === "orchestrator"
+          || m.from.kind === "role" && m.from.role === "orchestrator" && m.to.kind === "program"));
       if (prior?.key === key || (!direct && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
       const bundled = !direct && DELIVERY_BUNDLE_SEC > 0;
       const verdict = await canDeliver(s, { now, idleMs: direct ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,
@@ -29473,6 +29648,69 @@ const mergeInflight = new Map<number, Promise<void>>();
 // quick POSTs would both start a job — two concurrent `git rebase`s on one worktree
 const mergeStart = new Set<number>();
 const mergeLast = new Map<number, MergeLast>();
+// ONE SLOT'S LAND STATE, as GET /api/slots/:id/merge serves it for a lane and GET /api/self/merges serves it per row
+// (bau/ohne-owner-token Schnitt 2). `lane` is null only on the self view's rows for a seat whose lane is gone and whose
+// verdict is still held (mergeLast outlives the teardown, see `ctl.sh merges`).
+type MergeView = { running: boolean; last: MergeLast | null; lastIs: "verdict" | "intent" | "interrupted" | null;
+  lane: { repo: string; branch: string } | null; waitRound?: number; retryAt?: number };
+function mergeViewOf(s: Slot): MergeView {
+  // M2 · a land that was denied the suite mutex is RUNNING, not settled, and until the round
+  // count was here the two were indistinguishable from outside: `running:true` with a `last`
+  // that is still the durable-intent row says "a job is going on", never "it is queueing for
+  // the machine and will ask again". Both fields absent is the normal case (the gate is
+  // running, or nothing is), so this adds nothing to the poll of a fleet that is not waiting.
+  // `retryAt` is when the round now being spent ASKED — the budget it will spend is
+  // `waitMs` on /api/self/gate, which is where every other land clock is already read.
+  const waiting = mergeWaiting.get(s.id);
+  const lastRow = mergeLast.get(s.id) ?? null;
+  // WHAT `last` IS RIGHT NOW, derived HERE so that no reader has to re-derive it and one of
+  // them can get it wrong (Befund A: a session read a healthy run's intent marker as a server
+  // crash, 2026-09-08). `interrupted` is the only status that is not a settled outcome — it is
+  // the marker a run writes ABOUT ITSELF before it starts — so it is the only one this has to
+  // split, and `mergeIntent` splits it by the row rather than by the slot:
+  //   "verdict"     — a settled outcome, whatever else is going on
+  //   "intent"      — THIS row is the durable intent of the job now in flight: nothing is wrong
+  //   "interrupted" — an intent marker no running job owns: the genuine mid-run death, and
+  //                   the one thing the boot restore is entitled to claim
+  //   null          — no row at all
+  // `running` stays exactly what it was and is still the field a poller keys on; this only
+  // stops the pair from having to be reasoned about.
+  const lastIs: "verdict" | "intent" | "interrupted" | null = !lastRow ? null
+    : lastRow.status !== "interrupted" ? "verdict"
+    : mergeInflight.has(s.id) && mergeIntent.get(s.id) === lastRow.at ? "intent"
+    : "interrupted";
+  // …and WHO this answer is about. A slot is a reusable seat: a land frees it and the tick can
+  // fill it with a different lane inside one poll period, after which every field above is
+  // about a lane the caller never asked for — `running:false`, `last:null`, and nothing to say
+  // so. That is the whole of Befund B (`ctl.sh land --wait` polled 3600 s for a verdict that
+  // belonged to a torn-down lane, 2026-09-08 02:22). The route knows the answer; it just never
+  // said it. Always present on the owner route, which 400s a slot without a worktree.
+  return { running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: lastRow, lastIs,
+    lane: s.worktree ? { repo: s.worktree.repo, branch: s.worktree.branch } : null,
+    ...(waiting ? { waitRound: waiting.round, retryAt: waiting.retryAt } : {}) };
+}
+// THE LAND SENSOR WITHOUT THE OWNER TOKEN (GET /api/self/merges): every lane's view above in one read, plus the seats
+// whose verdict outlived their lane, and `busy` by `ctl.sh merges`' rule — a running job, or an `interrupted` row without
+// a verify. The Orchestratorin reads the fleet. A bound MAIN reads the lanes of its own repo (same --git-common-dir), so
+// another project's branches stay out of its view; a held verdict without a lane names no repo and is left out for it.
+type SelfMergeRow = MergeView & { slot: number; name: string | null };
+async function selfMergesView(s: Slot, role: SelfDoorRole): Promise<{ scope: "fleet" | "repo"; rows: SelfMergeRow[]; busy: number[] }> {
+  const commons = new Map<string, string | null>();
+  const commonOf = async (dir: string): Promise<string | null> => {
+    if (!commons.has(dir)) commons.set(dir, await gitCommonDirOf(dir));
+    return commons.get(dir) ?? null;
+  };
+  const own = role === "program-main" && s.cwd ? await commonOf(s.cwd) : null;
+  const rows: SelfMergeRow[] = [];
+  for (const x of slots) {
+    const lane = x.cwd && x.worktree ? x.worktree : null;
+    if (!lane && !mergeLast.has(x.id)) continue;
+    if (role === "program-main" && (!lane || own === null || await commonOf(lane.repo) !== own)) continue;
+    rows.push({ slot: x.id, name: laneNameOf(x), ...mergeViewOf(x) });
+  }
+  const busy = rows.filter((r) => r.running || (r.last?.status === "interrupted" && !r.last.verify)).map((r) => r.slot);
+  return { scope: role === "orchestrator" ? "fleet" : "repo", rows, busy };
+}
 // M2 · THE LANDS THAT ARE BETWEEN HOLD ROUNDS RIGHT NOW. A denied hold no longer ends the job, so
 // there is a state the board and a polling MAIN could not see before: running, nothing verified,
 // nothing to show, and the only honest thing to say is which round it is in. Kept HERE and not on
@@ -32579,7 +32817,7 @@ async function postLandAuditSummary(): Promise<PostLandAuditInfo | null> {
     ...(ping ? { ping: { status: ping.status, ...(ping.slot !== undefined ? { slot: ping.slot } : {}),
       ...(ping.deliveredAt !== undefined ? { deliveredAt: ping.deliveredAt } : {}),
       ...(ping.status === "delivered" ? { sameSession: !!pingSlot?.cwd && backlogSessionKey(pingSlot) === ping.session } : {}) } } : {}),
-    ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: typeof adj.by === "string" ? adj.by : "rule" } } : {}) } : null;
+    ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at, by: adjudicationByWord(adj.by, () => "rule") } } : {}) } : null;
 }
 // ...and the projection for the run that has NOT finished. Deliberately a SECOND carrier rather
 // than fields bolted onto the one above: `postLandAudit` is the newest RESULT and a reader may keep
@@ -35182,7 +35420,13 @@ const MAX_ADJUDICATION_NOTE = MAX_COMMENT_TEXT;
 // is weaker evidence than one somebody did, and hiding that would be the whole point, inverted.
 // …and a third principal since 2026-09-13: the RULE `carried-flake` (see carryFlakeReading), which
 // names the owner judgement it carried forward — `from` is that adjudication's key (auditAt + at).
-type AdjudicationBy = "owner" | "backfill" | { rule: "carried-flake"; from: { auditAt: number; at: number } };
+// …and the Orchestratorin by her occupation (bau/ohne-owner-token Schnitt 3): slot + openedAt, so a recycled slot cannot
+// be mistaken for her. Never a carried-flake source — that rule follows the owner's judgement only (carryFlakeReading).
+type AdjudicationBy = "owner" | "backfill" | { rule: "carried-flake"; from: { auditAt: number; at: number } }
+  | { role: "orchestrator"; slot: number; openedAt: number };
+// the one word a projection shows for `by`: the principal, or `rule` for a carried judgement
+const adjudicationByWord = (by: AdjudicationBy, rule: (name: string) => string): string =>
+  typeof by === "string" ? by : "rule" in by ? rule(by.rule) : `orchestrator:${by.slot}`;
 interface AuditAdjudication {
   at: number;                  // when the judgement was made
   auditAt: number;             // the audit row it judges (that row's `at`)
@@ -35199,6 +35443,12 @@ interface AuditAdjudication {
 }
 // A rule row reads back as the rule ONLY when its whole shape is there; anything else falls through
 // to the loader's historical default rather than inventing a source judgement.
+function orchestratorBy(raw: unknown): AdjudicationBy | null {
+  if (!raw || typeof raw !== "object") return null;
+  const by = raw as { role?: unknown; slot?: unknown; openedAt?: unknown };
+  return by.role === "orchestrator" && Number.isInteger(by.slot) && typeof by.openedAt === "number"
+    ? { role: "orchestrator", slot: by.slot as number, openedAt: by.openedAt } : null;
+}
 function carriedFlakeBy(raw: unknown): AdjudicationBy | null {
   if (!raw || typeof raw !== "object") return null;
   const by = raw as { rule?: unknown; from?: { auditAt?: unknown; at?: unknown } };
@@ -35217,7 +35467,7 @@ async function adjudicationsByAudit(): Promise<Map<number, AuditAdjudication>> {
     if (!Number.isFinite(auditAt) || !ADJUDICATION_VERDICTS.includes(verdict as AdjudicationVerdict)) continue;
     const rec: AuditAdjudication = {
       at: typeof r.at === "number" ? r.at : 0, auditAt, verdict: verdict as AdjudicationVerdict,
-      by: r.by === "backfill" ? "backfill" : carriedFlakeBy(r.by) ?? "owner",
+      by: r.by === "backfill" ? "backfill" : carriedFlakeBy(r.by) ?? orchestratorBy(r.by) ?? "owner",
       // PRESENCE-GATED, never defaulted: loadLandActor turns anything unreadable into the honest
       // `unknown` arm, but a row that never had the key at all must stay WITHOUT the field. Reading
       // it unconditionally would stamp every historical judgement with an actor nobody measured.
@@ -35380,7 +35630,9 @@ async function carryFlakeAdjudications(origin: "boot" | "audit", only?: number):
   return carried;
 }
 // the owner write: validate and append in one place, return the Response.
-async function writeAuditAdjudication(body: Record<string, unknown> | null, req: Request): Promise<Response> {
+// `orchestrator`: the Orchestratorin's self door (bau/ohne-owner-token Schnitt 3) — the same validation and rail, `by` names
+// her occupation, and no owner channel is measured because no owner credential was used
+async function writeAuditAdjudication(body: Record<string, unknown> | null, req: Request, orchestrator?: Slot): Promise<Response> {
   if (!body) return json({ error: "invalid json" }, 400);
   const auditAt = typeof body.at === "number" ? body.at : NaN;
   const verdict = body.verdict;
@@ -35404,6 +35656,15 @@ async function writeAuditAdjudication(body: Record<string, unknown> | null, req:
   // board — judging an audit that covers a land of an ACTIVE Program whose bound MAIN is LIVE.
   // A row this server cannot read AS an audit row proves no coverage, so it draws no flag: the
   // absence of the flag always means "not shown", never "shown to be safe".
+  if (orchestrator) {
+    const rec: AuditAdjudication = { at: Date.now(), auditAt, verdict: verdict as AdjudicationVerdict,
+      by: { role: "orchestrator", slot: orchestrator.id, openedAt: orchestrator.openedAt }, ...(note ? { note } : {}) };
+    auditAdjudicationClaims.add(auditAt);
+    appendEvent(AUDIT_ADJUDICATION_FILE, rec as unknown as Record<string, unknown>);
+    audit("postland_audit", undefined, `adjudicated ${verdict} — ${String(target.result)} audit at ${auditAt} `
+      + `(orchestrator slot=${orchestrator.id} openedAt=${orchestrator.openedAt})${note ? `: ${note}` : ""}`.slice(0, 240));
+    return json({ ok: true, adjudication: rec, result: target.result });
+  }
   const via = tokenChannel(req) ?? "cookie";
   const validTarget = validAuditRow(target);
   const byProgram = validTarget ? await programsForAuditRow(validTarget) : new Map<string, AuditCover[]>();
@@ -47335,7 +47596,7 @@ async function deployGateOnlyOf(repo: string, target: string): Promise<DeployGat
 // `sha` is the caller's GUARD, not a choice of tree: ctl.sh commit main sends the commit it just
 // made, and a tip that is not that commit — main moved on under it, or the door belongs to another
 // checkout's server — queues nothing. The tip that moved on was a land's, and brings its own audit.
-async function auditTipVerb(body: Record<string, unknown> | null): Promise<Response> {
+async function auditTipVerb(body: Record<string, unknown> | null, by = "owner"): Promise<Response> {
   const want = body?.sha;
   if (want !== undefined && (typeof want !== "string" || !/^[0-9a-f]{40,64}$/.test(want)))
     return json({ queued: false, why: "sha, when given, must be a full git object id" }, 400);
@@ -47358,6 +47619,8 @@ async function auditTipVerb(body: Record<string, unknown> | null): Promise<Respo
     return json({ queued: false, state: tip.state, target, audit: tip.stamp,
       why: tip.stamp.result === "green" ? `its full audit is already GREEN (row at ${tip.stamp.at}) — nothing was queued`
         : `its full audit (row at ${tip.stamp.at}) is red and adjudicated ${tip.stamp.adjudication} — nothing was queued` });
+  // the asker in its own words — the audit row's actor names the credential, `by` the role it was used in
+  audit("audit_tip", undefined, `${by} target=${target.slice(0, 12)} queued=${tip.queued} state=${tip.state}`);
   return json({ queued: tip.queued, state: tip.state, target, repo: tip.repo, why: tip.why, next: tip.next,
     ...(tip.redAt ? { redAt: tip.redAt } : {}) });
 }
@@ -47786,7 +48049,7 @@ async function ledgersView(prior: Record<string, unknown> | null): Promise<Ledge
           covers: covers.map((c) => str((c as { branch?: unknown } | null)?.branch)).filter(Boolean).slice(0, 12),
           ...(typeof r.reason === "string" ? { reason: r.reason.slice(0, 200) } : {}),
           ...(adj ? { adjudication: { verdict: adj.verdict, at: adj.at,
-            by: typeof adj.by === "string" ? adj.by : `rule:${adj.by.rule}`,
+            by: adjudicationByWord(adj.by, (rule) => `rule:${rule}`),
             ...(adj.note ? { note: adj.note.slice(0, 200) } : {}) } } : {}),
           ...((): Record<string, unknown> => { // the artefact rail, joined here too
             const a = artifactViewFor(num(r.at));
@@ -48985,6 +49248,59 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // Z87: „[Zitat entfernt]“): the token names the session, its checkout names repo and
     // branch — a body that names another branch is refused. The owner door's core (server/branch-land.ts), plus „[Zitat entfernt]“
     // on exactly this tip and a usable merge check. A deploy stays with the owner.
+    // THE TIP'S AUDIT WITHOUT THE OWNER TOKEN (bau/ohne-owner-token Schnitt 1): the same verb as POST
+    // /api/repos/audit-tip, for the two roles that commit straight to main. It queues at most once and moves nothing.
+    // the board's branches without the owner token (bau/ohne-owner-token Schnitt 6): selfBranchRequest bounds them
+    if ((url.pathname === "/api/self/branches" || url.pathname === "/api/self/branches/open") && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const asked = await selfBranchRequest(s, await readJson(req));
+      if (!asked.ok) return asked.response;
+      if (url.pathname === "/api/self/branches") {
+        if (typeof asked.body.name === "string" && roleLabelOf(asked.body.name))
+          return json({ error: "a Board-Name becomes the session's label — a role label (Orchestrator, steward) is the owner's to give" }, 409);
+        return await createBoardBranch(asked.body);
+      }
+      const record = typeof asked.body.branch === "string" ? findBranch(branchBook, String(asked.body.repo), asked.body.branch) : undefined;
+      if (record?.name && roleLabelOf(record.name))
+        return json({ error: "this branch's Board-Name is a role label — the owner opens it" }, 409);
+      return await openBoardBranch(asked.body, s, "self");
+    }
+    // THE ORCHESTRATORIN JUDGES A RED AUDIT WITHOUT THE OWNER TOKEN (bau/ohne-owner-token Schnitt 3): the owner door's writer,
+    // with her occupation as `by`. A Program-MAIN raises attention instead (auditRedSubject's door), every other session 409.
+    if (url.pathname === "/api/self/post-land-audits/adjudicate" && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (selfDoorRoleOf(s) !== "orchestrator")
+        return json({ error: "adjudication is the Orchestratorin's or the owner's — a Program-MAIN raises attention, every other session has no role here" }, 409);
+      return await writeAuditAdjudication(await readJson(req), req, s);
+    }
+    // THE LAND SENSOR WITHOUT THE OWNER TOKEN (bau/ohne-owner-token Schnitt 2): read-only, selfMergesView scopes it
+    if (url.pathname === "/api/self/merges" && req.method === "GET") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const role = selfDoorRoleOf(s);
+      if (!role) return json({ error: SELF_DOOR_ROLE_REFUSAL }, 409);
+      return json(await selfMergesView(s, role));
+    }
+    if (url.pathname === "/api/self/repos/audit-tip" && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const role = selfDoorRoleOf(s);
+      if (!role) return json({ error: SELF_DOOR_ROLE_REFUSAL }, 409);
+      // the tip asked about is this server's repo, so a MAIN asks only from a checkout of it (Gegenspieler S1-1: the
+      // MAIN of another project queued Fleet's audit); the Orchestratorin speaks for the whole fleet
+      if (role === "program-main") {
+        const [mine, server] = await Promise.all([gitCommonDirOf(s.cwd), gitCommonDirOf(REPO_DIR)]);
+        if (mine === null || mine !== server)
+          return json({ error: "this door queues the audit of this server's own repo — a Program-MAIN asks from a checkout of that repo" }, 409);
+      }
+      return await auditTipVerb(await readJson(req), `${role} slot=${s.id} openedAt=${s.openedAt}`);
+    }
     if (url.pathname === "/api/self/branches/land" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
@@ -51140,61 +51456,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // open a branch on the board: a NEW one (no `branch`: a name derived from `name`; or a free
     // `branch` name), or an EXISTING one — checked out into a worktree if it has none. A name another
     // branch of the repo carries is refused with that branch, before anything is created.
-    if (url.pathname === "/api/branches" && req.method === "POST") {
-      const body = await readJson(req);
-      const points = body?.points;
-      if (!body || typeof body.name !== "string" || (body.branch !== undefined && typeof body.branch !== "string")
-        || (body.base !== undefined && typeof body.base !== "string")
-        || (points !== undefined && !(Array.isArray(points) && points.every((x) => typeof x === "string"))))
-        return json({ error: "expected { repo, name, branch?, base?, points?: string[], harness? }" }, 400);
-      // the private scaffold follows the harness that will work in the tree (laneScaffoldFor)
-      const ho = harnessIdOf(body);
-      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
-      const h = harnessOf(ho.harness);
-      if (!h.allowsLanes) return json({ error: `harness ${h.id} is main-session only — it cannot work on a branch` }, 400);
-      const fo = laneFormOf(body, h);
-      if (!fo.ok || fo.form !== "worktree") return json({ error: "form must be 'worktree' — a branch is checked out as a worktree" }, 400);
-      const ro = await branchRepoOf(body.repo);
-      if (!ro.ok) return json({ error: ro.error }, 400);
-      const repo = ro.repo, wanted = typeof body.branch === "string" ? body.branch.trim() : "";
-      const base = typeof body.base === "string" && body.base.trim() ? body.base.trim() : null;
-      if (base && (await gitRead(repo, "rev-parse", "--verify", "--quiet", `${base}^{commit}`)).code !== 0)
-        return json({ error: `no such base: ${base}` }, 400);
-      let branch = wanted;
-      if (!branch) {
-        const slug = taskBranchSlug(body.name) || "ohne-name";
-        branch = `branch/${slug}`;
-        if (await branchExists(repo, branch)) branch = `branch/${slug}-${randomBytes(2).toString("hex")}`;
-      }
-      if ((await git(repo, "check-ref-format", "--branch", branch)).code !== 0) return json({ error: `invalid branch name: ${branch}` }, 400);
-      const opening = { repo, branch, name: body.name, base,
-        points: Array.isArray(points) ? points.filter((x): x is string => typeof x === "string") : [] };
-      const dry = openBranch(branchBook, { ...opening, at: Date.now() });
-      if (!dry.ok) return json({ error: dry.error, ...(dry.existing ? { existing: dry.existing } : {}) }, dry.status);
-      const existed = await branchExists(repo, branch);
-      const primaryBranch = (await listWorktrees(repo)).find((w) => w.primary)?.branch;
-      if (branch === primaryBranch || branch === await integrationBranch(repo))
-        return json({ error: `${branch} is the repo's own line, not a branch to work on` }, 400);
-      if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
-      let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
-      try {
-        if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h, null, false)).path;
-        else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
-      } catch (e) {
-        const error = e instanceof Error ? e.message : "worktree failed";
-        return json({ error }, /already exists/.test(error) ? 409 : 400);
-      }
-      // the book may have moved during the git work: the name is judged again on the current one
-      const done = openBranch(branchBook, { ...opening, at: Date.now() });
-      if (!done.ok) return json({ error: `${done.error} — the worktree ${path} stands without a Board-Name`,
-        ...(done.existing ? { existing: done.existing } : {}) }, done.status);
-      branchBook = done.book;
-      await saveStateNow();
-      workplacesCache = null;
-      void tickGit().catch(() => {});
-      return json({ ok: true, repo, branch, path, created: !existed, name: done.record.name, text: done.record.text,
-        rev: done.record.rev }, existed ? 200 : 201);
-    }
+    if (url.pathname === "/api/branches" && req.method === "POST") return await createBoardBranch(await readJson(req));
     // the points (= notepad text) of a branch, written whole against the `rev` the writer read: a
     // stale rev answers 409 with the stored text and rev, and nothing is overwritten. The same door
     // sets the branch's land form alone ({ repo, branch, landForm }, K16): how a charge lands when
@@ -51274,73 +51536,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // continues the worktree's newest conversation unless `fresh`; `goal` becomes its first message.
     // A branch whose worktree a session already holds answers 409 with that slot.
     if (url.pathname === "/api/branches/open" && req.method === "POST") {
-      const body = await readJson(req);
-      if (!body || typeof body.branch !== "string" || (body.goal !== undefined && typeof body.goal !== "string")
-        || (body.fresh !== undefined && typeof body.fresh !== "boolean"))
-        return json({ error: "expected { repo, branch, goal?, fresh?, model?, effort?, harness?, rechte? }" }, 400);
-      const goal = typeof body.goal === "string" ? body.goal.trim() : "";
-      if (goal.length > BRANCH_GOAL_MAX) return json({ error: `goal has ${goal.length} characters — the cap is ${BRANCH_GOAL_MAX}` }, 400);
-      const ho = harnessIdOf(body);
-      if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
-      const h = harnessOf(ho.harness);
-      const paused = harnessPausedError(h);
-      if (paused) return json({ error: paused }, 409);
-      const mo = modelOf(body, h);
-      if (!mo.ok) return json({ error: mo.error }, 400);
-      const eo = effortOf(body, h);
-      if (!eo.ok) return json({ error: effortErrFor(h) }, 400);
-      const pe = permissionsOf(body, h);
-      if (!pe.ok) return json({ error: pe.error }, 400);
-      const rt = rechteDerTuer(body, h.id);
-      if (!rt.ok) return json({ error: rt.error }, 400);
-      const ro = await branchRepoOf(body.repo);
-      if (!ro.ok) return json({ error: ro.error }, 400);
-      const record = findBranch(branchBook, ro.repo, body.branch);
-      if (!record?.name || !(await branchExists(ro.repo, body.branch)))
-        return json({ error: `${body.branch} is no board branch here — open it with POST /api/branches first` }, 404);
-      let path = (await listWorktrees(ro.repo)).find((w) => w.branch === body.branch)?.path ?? null;
-      const holder = path ? workplaceHolder(path) : null;
-      if (holder) return json({ error: `${record.name} läuft schon in Slot ${holder.slot}`, session: { slot: holder.slot, openedAt: holder.openedAt } }, 409);
-      const free = freeSessionSlot("main");
-      if (!free) return json({ error: sessionLimitError() ?? "no free slot — the branch stays with its points; open it again when a place is free" }, 409);
-      laneSpawn.add(free.id); // reserve before the first await — the same reservation /api/lanes takes
-      try {
-        if (!path) path = await checkoutBranchWorktree(ro.repo, body.branch, h);
-        if (attachBusy.has(path) || slots.some((x) => x.cwd === path)) return json({ error: "the worktree is being opened right now" }, 409);
-        attachBusy.add(path);
-        try {
-          const resumeId = body.fresh === true ? null : lastConversationIn(path);
-          const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
-            null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte);
-          if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
-            throw new Error("slot occupant changed during branch open");
-          // K13: a session that opens with its self token beside the owner bearer becomes the branch's
-          // opener (server/auth.ts#resolvePrincipal), and the two may write each other in the postfach
-          const caller = resolvePrincipal(req);
-          const seat = caller?.kind === "owner" ? caller.session : undefined;
-          const by = seat ? slotFrom(seat.slot) : null;
-          if (seat && by?.cwd && by.openedAt === seat.openedAt && by !== free) {
-            branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: by.id, cwd: by.cwd, at: Date.now() }).book;
-            await saveStateNow();
-          }
-          void tickGit().catch(() => {});
-          // the goal follows once the pane is ready — the board has its slot at once; a goal that is
-          // held or uncertain is a server error the owner sees, never a silent loss
-          if (goal) void deliverBranchGoal(free, goal).then((d) => {
-            if (!d.delivered) logError("branch-goal", new Error(`slot ${free.id} (${record.name}): ${d.reason ?? "not delivered"}`));
-          });
-          return json({ ok: true, slot: free.id, openedAt: free.openedAt, cwd: free.cwd, label: free.label,
-            resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: goal ? "follows" : null,
-            ...(free.rechte ? { rechte: free.rechte } : {}) });
-        } finally {
-          attachBusy.delete(path);
-        }
-      } catch (e) {
-        return json({ error: e instanceof Error ? e.message : "branch open failed" },
-          e instanceof TmuxNewSessionUnavailable ? 503 : 400);
-      } finally {
-        laneSpawn.delete(free.id);
-      }
+      // K13: a session that opens with its self token beside the owner bearer becomes the branch's opener
+      // (server/auth.ts#resolvePrincipal)
+      const caller = resolvePrincipal(req);
+      const seat = caller?.kind === "owner" ? caller.session : undefined;
+      const by = seat ? slotFrom(seat.slot) : null;
+      return await openBoardBranch(await readJson(req), by && by.openedAt === seat?.openedAt ? by : null, "owner");
     }
     // the merge check of a charge, from the board: <repo>/ci/merge-check.ts on the branch against the
     // charge's base, in the background — GET /api/branches says running, then green or red
@@ -51612,42 +51813,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (mgMatch && (req.method === "GET" || req.method === "POST")) {
       const s = slotFrom(mgMatch[1]);
       if (!s || !s.cwd || !s.worktree) return json({ error: "not a fleet-created worktree lane" }, 400);
-      if (req.method === "GET") {
-        // M2 · a land that was denied the suite mutex is RUNNING, not settled, and until the round
-        // count was here the two were indistinguishable from outside: `running:true` with a `last`
-        // that is still the durable-intent row says "a job is going on", never "it is queueing for
-        // the machine and will ask again". Both fields absent is the normal case (the gate is
-        // running, or nothing is), so this adds nothing to the poll of a fleet that is not waiting.
-        // `retryAt` is when the round now being spent ASKED — the budget it will spend is
-        // `waitMs` on /api/self/gate, which is where every other land clock is already read.
-        const waiting = mergeWaiting.get(s.id);
-        const lastRow = mergeLast.get(s.id) ?? null;
-        // WHAT `last` IS RIGHT NOW, derived HERE so that no reader has to re-derive it and one of
-        // them can get it wrong (Befund A: a session read a healthy run's intent marker as a server
-        // crash, 2026-09-08). `interrupted` is the only status that is not a settled outcome — it is
-        // the marker a run writes ABOUT ITSELF before it starts — so it is the only one this has to
-        // split, and `mergeIntent` splits it by the row rather than by the slot:
-        //   "verdict"     — a settled outcome, whatever else is going on
-        //   "intent"      — THIS row is the durable intent of the job now in flight: nothing is wrong
-        //   "interrupted" — an intent marker no running job owns: the genuine mid-run death, and
-        //                   the one thing the boot restore is entitled to claim
-        //   null          — no row at all
-        // `running` stays exactly what it was and is still the field a poller keys on; this only
-        // stops the pair from having to be reasoned about.
-        const lastIs: "verdict" | "intent" | "interrupted" | null = !lastRow ? null
-          : lastRow.status !== "interrupted" ? "verdict"
-          : mergeInflight.has(s.id) && mergeIntent.get(s.id) === lastRow.at ? "intent"
-          : "interrupted";
-        // …and WHO this answer is about. A slot is a reusable seat: a land frees it and the tick can
-        // fill it with a different lane inside one poll period, after which every field above is
-        // about a lane the caller never asked for — `running:false`, `last:null`, and nothing to say
-        // so. That is the whole of Befund B (`ctl.sh land --wait` polled 3600 s for a verdict that
-        // belonged to a torn-down lane, 2026-09-08 02:22). The route knows the answer; it just never
-        // said it. Always present on a 200: this handler already 400s a slot without a worktree.
-        return json({ running: mergeInflight.has(s.id) || mergeStart.has(s.id), last: lastRow, lastIs,
-          lane: { repo: s.worktree.repo, branch: s.worktree.branch },
-          ...(waiting ? { waitRound: waiting.round, retryAt: waiting.retryAt } : {}) });
-      }
+      if (req.method === "GET") return json(mergeViewOf(s));
       // DOOR 1 OF 2 ONTO THE LAND PATH, and the follower's lock sits FIRST — before the inflight
       // reservation, before the body is read, before a single git call. A refusal further down
       // would still be a refusal, but it would have written something on the way: `mergeStart`,

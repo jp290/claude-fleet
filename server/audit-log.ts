@@ -244,6 +244,8 @@ type AuditEvent =
   // recovered (note + tier-2 audit written late) or unaccountable (audited, dropped)
   | "land_recovered" | "land_recover_fail"
   | "postland_audit"
+  // POST /api/repos/audit-tip and its self door: who asked for the tip's audit, and what was queued
+  | "audit_tip"
   // THE REMOTE HELPER PORTAL (stage 1). Three events, and each names a boundary the local machine
   // cannot otherwise account for: a job LEFT this machine, a job CAME BACK with a verdict, and a
   // claim DIED without one. The third is the load-bearing one — a helper that vanishes must be a

@@ -34,6 +34,7 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    (owner; the self token for /api/self) — --keys prints the shape,
                                    not the body. GET only, /api/ only, both refusals by name.
   merges [--json]                  which lands are persisted/unfinished; exit 1 while one is in flight
+                                   (in a Fleet pane: GET /api/self/merges — Orchestratorin, bound MAIN)
   lock [--reap] [--json]           suite-mutex health; --reap removes a lock whose holder is dead
   ctx [slot] [--json]              measured context fill of a slot (default: your own)
   report <taskId> [--full] [--json]   the newest fleet-report filed for that task
@@ -50,10 +51,11 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
   file <cardjson> [--program <id>] [--json]   file a pending task with an author card; self credential when present
   land <slot> [--wait] [--json]    POST the land; --wait blocks to the verdict and arms the audit watch
   dispatch <taskId> [--force] [--json]   hand-start a queued row, refusing over the lane cap
-  wait merge <slot> [--json]       block until that lane's merge is terminal
+  wait merge <slot> [--json]       block until that lane's merge is terminal (in a pane: GET /api/self/merges)
   wait change [--tasks a,b,c] [--json]   block until fleet state moves, then print what moved
   send --main <programId> <textfile> [--json]
                                    resolve the Program's bound MAIN slot NOW, refuse a lane/dead/recycled one, then /send
+                                   (in a Fleet pane: the Program's inbox through /api/self/messages, notice typed at once)
   send --orchestrator <textfile> [--program <id>] [--json]
                                    address the Orchestrator through /api/self/messages with the self token
   send --lane <slot> <textfile> [--json]
@@ -62,7 +64,8 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    wait (bounded) for `merges` exit 0, git commit the staged index in the main
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
                                    (exit 3 = committed here, NOT on the hub; the line names the repair),
-                                   then ask POST /api/repos/audit-tip to queue the tip's full audit once
+                                   then ask POST /api/self/repos/audit-tip (in a Fleet pane; the owner door
+                                   POST /api/repos/audit-tip without a self token) to queue the tip's full audit once
 
 <slot> is a slot number or a lane name like 4A (band + letter, the `name` GET /api/sessions serves);
 a name no lane holds exits 1 and says the name. `send --lane` accepts either form.
@@ -122,6 +125,11 @@ need_owner() {
   fi
   export CTL_TOKEN
 }
+# A FLEET PANE SPEAKS WITH ITS OWN CREDENTIAL (bau/ohne-owner-token): a verb with a self door takes it whenever this
+# shell carries FLEET_SELF_TOKEN and no owner token was handed to it explicitly (FLEET_CTL_TOKEN/FLEET_TOKEN — the owner's
+# terminal, the suite). owner_token's fleet.json lookup is then never reached; that lookup is how a session borrowed the
+# owner's credential without anyone handing it over.
+pane_self() { [ -n "${FLEET_SELF_TOKEN:-}" ] && [ -z "${FLEET_CTL_TOKEN:-}" ] && [ -z "${FLEET_TOKEN:-}" ]; }
 need_self() {
   if [ -z "${FLEET_SELF_TOKEN:-}" ]; then
     printf 'ctl.sh %s: no self token — FLEET_SELF_TOKEN is exported into every Fleet pane; this shell has none\n' "$1" >&2
@@ -542,10 +550,39 @@ merges)
 # are reported, and the absence of the live half is stated rather than filled in with the persisted
 # one: "no land is recorded" and "no land is running" are different sentences.
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; *) printf 'merges: unknown flag %s\n' "$a" >&2; exit 2 ;; esac; done
-  need_state merges
-  CTL_TOKEN=$(owner_token 2>/dev/null || true); export CTL_TOKEN
+  # IN A FLEET PANE BOTH HALVES COME FROM GET /api/self/merges (bau/ohne-owner-token Schnitt 2): no fleet.json read and no
+  # owner token. The Orchestratorin reads the fleet, a bound MAIN its own repo; any other session hears the door's refusal
+  # and the live half stays UNKNOWN. A shell with an explicit owner token or without a self token keeps the owner path.
+  if pane_self; then
+    CTL_SELF="$FLEET_SELF_TOKEN"; export CTL_SELF
+  else
+    need_state merges
+    CTL_TOKEN=$(owner_token 2>/dev/null || true); export CTL_TOKEN
+  fi
   js_head
   cat >> "$CTL_TMP" <<'EOF'
+if (process.env.CTL_SELF) {
+  const r = await api("/api/self/merges", { headers: selfH() });
+  if (!r.ok) {
+    const why = `GET /api/self/merges ${r.status}: ${r.body?.error ?? "refused"}`;
+    out({ rows: [], busy: [], liveKnown: false, why },
+      [`live half UNKNOWN — ${why} (not the same as no)`]);
+    process.exit(1);
+  }
+  const rows = (r.body.rows ?? []).map((x) => ({
+    slot: x.slot, status: x.last ? x.last.status : null, landed: x.last ? x.last.landed === true : false,
+    hasVerify: !!x.last?.verify, verify: verifyWord(x.last?.verify),
+    branch: x.last?.branch ?? x.lane?.branch ?? null, at: x.last?.at ?? null, running: x.running === true,
+  }));
+  const busy = r.body.busy ?? [];
+  const lines = rows.length === 0 ? [`no lane is open and no merge verdict is held (scope ${r.body.scope})`]
+    : rows.map((x) => `slot ${x.slot}  ${x.status ?? "no verdict yet"}  landed=${x.landed ? "YES" : "no"}  verify=${x.verify}`
+      + `  running=${x.running ? "YES" : "no"}  ${x.branch ?? ""}`);
+  if (r.body.scope === "repo") lines.push("scope: the lanes of your own repo (a bound MAIN's view)");
+  if (busy.length) lines.push(`WAIT: ${busy.join(", ")} — a land is running or was interrupted without a verdict`);
+  out({ rows, busy, liveKnown: true, scope: r.body.scope }, lines);
+  process.exit(busy.length ? 1 : 0);
+}
 const st = readState();
 const merges = st.merges ?? {};
 // THE UNION, and the reason it is a union and not the merges map: a lane's FIRST land has no
@@ -1295,15 +1332,40 @@ wait-merge)
   slot=""
   for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --*) printf 'wait merge: unknown flag %s\n' "$a" >&2; exit 2 ;; *) slot=$a ;; esac; done
   [ -n "$slot" ] || { printf 'wait merge: give a slot number or a lane name\n' >&2; exit 2; }
-  need_owner "wait merge"
-  slot_arg "wait merge" "$slot"
+  # in a Fleet pane the wait reads GET /api/self/merges and resolves a lane name off its rows (Schnitt 2)
+  if pane_self; then
+    need_self "wait merge"
+    printf '%s' "$slot" | grep -Eq '^[0-9]+([A-Z]+)?$' || {
+      printf 'ctl.sh wait merge: "%s" is neither a slot number nor a lane name like 4A\n' "$slot" >&2; exit 2; }
+    export CTL_SLOT="$slot"
+  else
+    need_owner "wait merge"
+    slot_arg "wait merge" "$slot"
+  fi
   export CTL_POLL_SEC="${FLEET_CTL_POLL_SEC:-15}" CTL_WAIT_MAX_SEC="${FLEET_CTL_WAIT_MAX_SEC:-3600}"
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 // a name is resolved ONCE, to the place its lane holds now; from there the wait binds to the lane
 // it first sees (below), so a letter handed on later cannot redirect it
-const slot = /^\d+[A-Z]+$/.test(process.env.CTL_SLOT)
+const self = !!process.env.CTL_SELF;
+const selfRows = async () => {
+  const r = await api("/api/self/merges", { headers: selfH() });
+  if (!r.ok) { console.error(`wait merge: GET /api/self/merges ${r.status} ${r.body?.error ?? ""}`); process.exit(2); }
+  return r.body.rows ?? [];
+};
+let slot;
+if (self && /^\d+[A-Z]+$/.test(process.env.CTL_SLOT)) {
+  const hit = (await selfRows()).find((x) => x.name === process.env.CTL_SLOT);
+  if (!hit) { console.error(`wait merge: no lane named ${process.env.CTL_SLOT} in your view of this fleet`); process.exit(1); }
+  slot = hit.slot;
+} else slot = /^\d+[A-Z]+$/.test(process.env.CTL_SLOT)
   ? slotArg(process.env.CTL_SLOT, await sessionRows("wait merge"), "wait merge").id : Number(process.env.CTL_SLOT);
+// the self view answers per row; a slot with no lane row reads as the owner route's 400 (the land took the lane down)
+const poll = async () => {
+  if (!self) return api(`/api/slots/${slot}/merge`, { headers: ownerH() });
+  const row = (await selfRows()).find((x) => x.slot === slot && x.lane);
+  return row ? { status: 200, ok: true, body: row } : { status: 400, ok: false, body: null };
+};
 const pollMs = Math.max(1, Number(process.env.CTL_POLL_SEC || 15)) * 1000;
 const deadline = Date.now() + Math.max(1, Number(process.env.CTL_WAIT_MAX_SEC || 3600)) * 1000;
 // WHICH LANE THIS WAIT IS ABOUT, learned from the endpoint's first answer rather than assumed from
@@ -1312,7 +1374,7 @@ const deadline = Date.now() + Math.max(1, Number(process.env.CTL_WAIT_MAX_SEC ||
 // "my lane is gone and a new one is sitting in its seat" — and the second one polls to the budget.
 let watched = null;
 for (;;) {
-  const g = await api(`/api/slots/${slot}/merge`, { headers: ownerH() });
+  const g = await poll();
   if (g.status === 400) { out({ gone: true, watched, last: null }, [`slot ${slot} is gone — the land took the lane down`]); process.exit(0); }
   const seat = g.body?.lane ?? null;
   if (!watched && seat) watched = seat;
@@ -1530,6 +1592,33 @@ EOF
   [ -n "$program" ] || { printf 'send --main: give a program id\n' >&2; exit 2; }
   [ -n "$textfile" ] || { printf 'send --main %s: give the file holding the text\n' "$program" >&2; exit 2; }
   [ -s "$textfile" ] || { printf 'send --main %s: %s is missing or empty — nothing sent\n' "$program" "$textfile" >&2; exit 2; }
+  # IN A FLEET PANE the message goes through the Program's inbox under this session's own address (the Orchestratorin
+  # sends as role:orchestrator); the server resolves the bound MAIN and types its notice at once
+  # (server.ts#tickMessageNudge). A MAIN that is gone keeps the message for the next one (`note`).
+  if pane_self; then
+    need_self send
+    export CTL_PROGRAM="$program" CTL_TEXTFILE="$textfile"
+    js_head
+    cat >> "$CTL_TMP" <<'EOF'
+const want = process.env.CTL_PROGRAM;
+const text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8");
+const key = "ctl-main-" + require("node:crypto").randomBytes(12).toString("hex");
+const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
+  body: JSON.stringify({ to: { kind: "program", id: want }, payload: { kind: "text", text }, idempotencyKey: key }) });
+const error = r.ok ? null : selfError(r, "send --main");
+const holder = r.body?.holder ?? null;
+const note = r.body?.note ?? null;
+// an escalated message names the Orchestratorin (or nobody) as holder, never the MAIN: only a direct holder is its slot
+const main = r.body?.escalatedTo ? null : holder;
+const lines = [`send --main ${want}: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}${main ? ` → MAIN slot ${main.slot}` : ""}` : error}`];
+if (r.ok && note) lines.push(`  ${note}`);
+out({ ok: r.ok, sent: r.ok, program: want, status: r.status, message: r.body?.message ?? null, holder, note,
+  escalatedTo: r.body?.escalatedTo ?? null, error }, lines);
+process.exit(r.ok ? 0 : 1);
+EOF
+    js_run
+    exit $?
+  fi
   need_owner send
   export CTL_PROGRAM="$program" CTL_TEXTFILE="$textfile"
   js_head
@@ -1640,7 +1729,11 @@ commit-main)
   export CTL_HUB_REMOTE="${FLEET_HUB_REMOTE:-}"
   # the audit-tip door below is an owner route; resolved the way `merges` resolves it — lazily, and
   # its absence is a line about the door, never a refusal of the commit
-  CTL_TOKEN=$(owner_token 2>/dev/null || true); export CTL_TOKEN
+  # …and the self door instead of it in a Fleet pane (bau/ohne-owner-token Schnitt 1): the Orchestratorin and a bound
+  # MAIN ask with their own token, the audit row names their role, and every other session hears the door's refusal
+  if pane_self; then CTL_SELF="$FLEET_SELF_TOKEN"; CTL_TOKEN=""
+  else CTL_SELF=""; CTL_TOKEN=$(owner_token 2>/dev/null || true); fi
+  export CTL_SELF CTL_TOKEN
   js_head
   cat >> "$CTL_TMP" <<'EOF'
 const { spawnSync } = require("child_process");
@@ -1665,7 +1758,8 @@ for (;;) {
     continue;
   }
   if (sensor.liveKnown !== true)
-    refuse(1, "the live half of merges is UNKNOWN (no owner token) — a lane's first land has no persisted verdict while it runs");
+    refuse(1, `the live half of merges is UNKNOWN (${sensor.why ?? "no owner token"}) — a lane's first land has no persisted verdict while it runs`
+      + (process.env.CTL_SELF ? ". In a Fleet pane commit main is the door of the Orchestratorin and of a bound Program-MAIN; in the owner's terminal it runs with FLEET_CTL_TOKEN" : ""));
   if (r.status === 0 && (sensor.busy ?? []).length === 0) break;
   if (Date.now() >= deadline)
     refuse(1, `a land is running (slot ${(sensor.busy ?? []).join(", ")})`, { busy: sensor.busy ?? [], budgetSec: Number(process.env.CTL_BUDGET_SEC) });
@@ -1685,19 +1779,25 @@ const hub = (process.env.CTL_HUB_REMOTE ?? "").trim();
 // refused push, whose sha the repair's rebase will replace. The sha just made rides as the door's
 // guard: a server whose integration tip is not this commit queues nothing. The commit stands
 // whatever the door says, so its answer is one line and never this verb's exit code.
-const auditTip = async () => {
-  if (!process.env.CTL_TOKEN) return { asked: false, why: "no owner token — the door was not asked" };
+const askTip = async (path, headers) => {
   try {
-    const r = await api("/api/repos/audit-tip", { method: "POST", headers: ownerH(), body: JSON.stringify({ sha }),
-      signal: AbortSignal.timeout(15_000) });
-    return { asked: true, status: r.status, ...r.body };
+    const r = await api(path, { method: "POST", headers, body: JSON.stringify({ sha }), signal: AbortSignal.timeout(15_000) });
+    return { asked: true, status: r.status, door: path, ...r.body };
   } catch (e) {
     return { asked: false, why: `the door did not answer (${e instanceof Error ? e.message : String(e)})` };
   }
 };
+// A Fleet pane asks the self door and takes its answer, a refusal included: falling back to the owner door there
+// would hand the owner's credential to exactly the sessions the door refused (Gegenspieler S1-2). The owner door is
+// for a shell without a self token — the owner's own terminal.
+const auditTip = async () => {
+  if (process.env.CTL_SELF) return askTip("/api/self/repos/audit-tip", selfH());
+  if (!process.env.CTL_TOKEN) return { asked: false, why: "no owner token — the door was not asked" };
+  return askTip("/api/repos/audit-tip", ownerH());
+};
 const tipLine = (t) => t.asked && t.status === 200
   ? `commit-main: audit of the tip — queued ${t.queued} — ${t.why}`
-  : `commit-main: audit of the tip NOT queued (${t.asked ? `${t.status} ` : ""}${t.why ?? JSON.stringify(t).slice(0, 200)})`
+  : `commit-main: audit of the tip NOT queued (${t.asked ? `${t.status} ` : ""}${t.why ?? t.error ?? JSON.stringify(t).slice(0, 200)})`
     + ` — the commit stands; POST /api/repos/audit-tip {"sha":"${sha}"} asks again`;
 // a door that did not say 200 is said on stderr in both modes, beside the JSON — the commit's own
 // line and object stay what they were

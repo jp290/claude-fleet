@@ -484,6 +484,16 @@ curl -X POST http://<fleet-host>:<port>/api/self/succeed \
   -d '{"intent":"Absicht, Korrekturen, Reihenfolge — höchstens 2000 Zeichen"}'
 ```
 
+`label` im Body benennt die Nachfolgerin, ohne `label` erbt sie das der Vorgängerin. Ein Rollen-Label
+wird dabei nicht vergeben (seit 2026-10-19, bau/ohne-owner-token Schnitt 0):
+- Ein **Orchestrator-Label** (🎛 oder „orchestrator“, `server.ts#isOrchestratorLabel`) gibt nur eine
+  Session weiter, die selbst eines trägt. Jede andere Nicht-Lane-Session bekommt 409. Das Label macht die
+  Orchestratorin (`#orchestratorLabelHolders`).
+- Das **Steward-Label** `⚙ steward` gibt keine Session weiter, auch keine Lane: 409. Es allein exportiert den
+  Steward-Token (`#ensureSlot`).
+
+In beide Rollen setzt der Owner per `POST /api/slots/:id/rename`.
+
 **Die Linie bleibt auf ihrem Slot (seit 2026-09-22, `server.ts#respawnInPlace`; Owner 2026-09-21: „[Zitat entfernt]“
 ).** Jede Schiene — generisch,
 Program-MAIN, wie seit 2026-09-12 die Lane — beendet die Vorgängerin (`handoff`) und öffnet die
@@ -967,6 +977,61 @@ curl -X POST http://<fleet-host>:<port>/api/self/branches/land -H "x-fleet-self-
   `squash` wie an der Owner-Tür; „[Zitat entfernt]“ gibt es hier nicht.
 - Derselbe Kern wie `POST /api/branches/land` (server/branch-land.ts). Die Antwort sagt `deploy`, wenn der Server aus
   diesem Repo läuft — deployen tut weiter der Owner bzw. die Bauleitung.
+
+## repos audit-tip — `POST /api/self/repos/audit-tip` (seit 2026-10-19, bau/ohne-owner-token)
+
+Dasselbe Verb wie die Owner-Tür `POST /api/repos/audit-tip` (`server.ts#auditTipVerb`). Es reiht den vollen
+Audit der Integrationsspitze des Server-Repos höchstens einmal ein und bewegt nichts. Die Tür beantwortet die
+Orchestratorin und eine gebundene Program-MAIN (`server.ts#selfDoorRoleOf`; die Bindung geht vor dem Label).
+Eine MAIN fragt nur aus einem Checkout des Server-Repos (gleiches `--git-common-dir`); aus einem anderen
+Projekt bekommt sie 409. Lane, Steward und jede ungebundene Session bekommen 409, ohne Token gibt es 401. Body und Antworten wie an der
+Owner-Tür: `{"sha"}` als Sperre, 409 bei einer anderen Spitze. Das Audit-Log schreibt `audit_tip` mit der
+Session als `actor` und `<rolle> slot=… openedAt=…` im Detail. `ctl.sh commit main` fragt in einer Fleet-Pane nur diese Tür und
+nimmt auch ihre Ablehnung als Antwort. Die Owner-Tür fragt es nur mit ausdrücklichem Owner-Token oder ohne
+Self-Token, also im Terminal des Owners (`ctl.sh#pane_self`).
+
+## merges — `GET /api/self/merges` (seit 2026-10-19, bau/ohne-owner-token)
+
+Der Land-Sensor ohne Owner-Token, nur lesend. Er antwortet `{scope, rows, busy}`. Je Zeile steht
+`{slot, name, running, last, lastIs, lane, waitRound?, retryAt?}`, genau die Felder von `GET /api/slots/:id/merge`
+(`server.ts#mergeViewOf`). `busy` folgt der Regel von `ctl.sh merges`: ein laufender Job oder eine
+`interrupted`-Zeile ohne verify.
+- **Orchestratorin:** `scope: "fleet"`, jede Lane, dazu die Sitze, deren Urteil die Lane überlebt hat (`lane: null`).
+- **Gebundene MAIN:** `scope: "repo"`, nur die Lanes ihres eigenen Repos (gleiches `--git-common-dir`). Die
+  Branches eines anderen Projekts sieht sie nicht.
+- Lane, Steward und ungebundene Session bekommen 409, ohne Token 401.
+
+`ctl.sh merges`, `wait merge` und damit `commit main` lesen in einer Fleet-Pane nur diese Tür, ohne `fleet.json`
+und ohne Owner-Token (`ctl.sh#pane_self`). Lehnt sie ab, bleibt die Live-Hälfte UNKNOWN. Den Owner-Weg nehmen sie
+nur mit ausdrücklich gesetztem `FLEET_CTL_TOKEN`/`FLEET_TOKEN` oder ohne Self-Token.
+
+## adjudicate — `POST /api/self/post-land-audits/adjudicate` (seit 2026-10-19, bau/ohne-owner-token)
+
+Die Orchestratorin beurteilt ein rotes Post-Land-Audit mit ihrem eigenen Token. Body, Prüfung und Rail sind die der
+Owner-Tür (`{at, verdict, note?}`, `server.ts#writeAuditAdjudication`). In `audit-adjudications.jsonl` steht
+`by: {role:"orchestrator", slot, openedAt}` statt `by:"owner"`, und der Lader liest es so zurück
+(`#orchestratorBy`). Ein Urteil der Orchestratorin ist keine Quelle für die carried-flake-Regel; die trägt nur
+Owner-Flakes weiter. Eine gebundene MAIN bekommt 409 (sie hebt `attention`), jede andere Session ebenso.
+
+## branches — `POST /api/self/branches`, `POST /api/self/branches/open` (seit 2026-10-19, bau/ohne-owner-token)
+
+Eine Session öffnet einen Board-Branch und eine zweite Session darauf, ohne Owner-Token. Body und Antworten sind die
+der Owner-Türen `POST /api/branches` und `/api/branches/open` (`server.ts#createBoardBranch`, `#openBoardBranch`).
+`repo` ist optional und meint dann das eigene Repo:
+
+```sh
+curl -X POST "$FLEET_SELF_URL/api/self/branches" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -H 'content-type: application/json' -d '{"name":"Partner"}'
+curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -H 'content-type: application/json' -d '{"branch":"branch/partner","goal":"…"}'
+```
+
+- Erlaubt für jede Nicht-Lane-Session außer dem Steward, nur im eigenen Repo (gleiches `--git-common-dir`). Sonst 409.
+- Die aufrufende Session wird Öffnerin. Sie und die neue Session schreiben sich im Postfach
+  (`{to:{kind:"session",slot}}`, §messages, K13).
+- Das Ziel kommt als erste Nachricht. Es beginnt mit „geöffnet von der Session in Slot N über ihren Self-Token“, der
+  Kopf lautet „Ziel eines Branches (vom Öffner, …)“.
+- Ein Board-Name, der ein Rollen-Label ist (Orchestrator, `⚙ steward`), gibt 409. Er würde das Label der neuen Session.
 
 ## Bindung — eine MAIN, n Programs (seit 2026-10-06)
 

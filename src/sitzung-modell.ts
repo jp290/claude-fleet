@@ -197,7 +197,7 @@ export function sitzungModell(a: Answer, e: Eingaben, bausteinName: (b: Baustein
 
   // DER AUFTRAG: bei einem Branch das Ziel als erste Nachricht; ohne Branch nimmt die Tür heute keinen
   const ziel = e.auftrag.trim();
-  const kopf = `[fleet-zustellung · Ziel eines Branches (Owner-Credential, POST /api/branches/open) · path=branch-goal${e.slot !== null ? ` · Slot ${e.slot}` : ""} · naechster Schritt: arbeite am Ziel dieses Branches · Grenze: sein Worktree und Branch]`;
+  const kopf = `[fleet-zustellung · Ziel eines Branches (vom Öffner, POST /api/branches/open) · path=branch-goal${e.slot !== null ? ` · Slot ${e.slot}` : ""} · naechster Schritt: arbeite am Ziel dieses Branches · Grenze: sein Worktree und Branch]`;
   const auftragText = e.rolle === "branch" && ziel ? `${kopf} ${ziel}` : null;
   teil({ id: "auftrag", frage: "auftrag", name: e.rolle === "branch" ? "Ziel des Branches" : "Dein Auftrag", herkunft: "du",
     stand: auftragText ? "an" : "aus", tokens: auftragText ? bytesVon(auftragText) / fl : 0,

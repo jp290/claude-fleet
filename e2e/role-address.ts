@@ -50,8 +50,9 @@ export async function messageDeliveryChecks(): Promise<void> {
     laneSeats: { openedAt: number }[]; lineageId?: string };
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
   type RoleAddress = { kind: "role"; role: "orchestrator" };
-  type MessageRow = { id: string; to: Address | RoleAddress; from: { kind: "program"; id: string } | Address; readBy: object | null };
-  type Options = { deliveryClass?: string; address?: { kind: string; id: number };
+  type ProgramAddress = { kind: "program"; id: string };
+  type MessageRow = { id: string; to: Address | RoleAddress | ProgramAddress; from: ProgramAddress | Address | RoleAddress; readBy: object | null };
+  type Options = { path?: string; deliveryClass?: string; address?: { kind: string; id: number };
     bypassQueue?: boolean; beforePaste?: (current: Occupant) => void;
     beforeSend?: (current: Occupant) => Promise<void> };
   const source = readFileSync(`${ROOT}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
@@ -67,14 +68,16 @@ export async function messageDeliveryChecks(): Promise<void> {
     section("let messageNudgeBusy =", "const MIGRATE_MAX_NUDGES =")].join("\n");
   const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
   const now = Date.now();
-  // orchestrator: the slot is the one holder of the role address, and the message goes to that role
-  const make = (lane = true, orchestrator = false) => {
+  // orchestrator: the slot is the one holder of the role address, and the message goes to that role;
+  // bound: the slot is the bound MAIN of that Program, and the message goes to the Program
+  const make = (lane = true, orchestrator = false, bound?: string) => {
     const slot: Occupant = { id: 29, cwd: "/fixture/lane", openedAt: 100, sessionId: "old",
       worktree: lane ? {} : null, lastOutput: now - 400_000, label: orchestrator ? "🎛 Orchestratorin" : "fixture",
       history: [], laneSeats: [] };
     const lineage: { lineageId: string; from: { slot: number; openedAt: number } }[] = [];
     const rows: MessageRow[] = [{ id: "old-message",
-      to: orchestrator ? { kind: "role", role: "orchestrator" } : { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
+      to: orchestrator ? { kind: "role", role: "orchestrator" } : bound ? { kind: "program", id: bound }
+        : { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
       from: { kind: "program", id: "main" }, readBy: null }];
     const sent: { openedAt: number; options: Options }[] = [];
     let quiet = false, automatable = true, alive = true, rotateAtProbe = false, rotateAtSend = false;
@@ -82,7 +85,7 @@ export async function messageDeliveryChecks(): Promise<void> {
     const cancelled: unknown[] = [];
     class Cancelled extends Error {}
     const deps = { slots: [slot], messages: { entries: rows }, STEWARD_LABEL: "steward", lineageHandovers: lineage,
-      boundProgramsForMain: () => [], programs: [], deliveryRecipient: () => orchestrator ? slot : null,
+      boundProgramsForMain: () => bound ? [{ id: bound }] : [], programs: [], deliveryRecipient: () => orchestrator ? slot : null,
       isOrchestratorLabel: () => orchestrator, slotFrom: () => slot,
       pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
       backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
@@ -244,6 +247,40 @@ export async function messageDeliveryChecks(): Promise<void> {
     `sent=${orchNight.sent.length}`);
   const orchBusy = orchestratorFixture(); orchBusy.slot.lastOutput = Date.now(); await orchBusy.tick();
   check("role message: an active Orchestratorin pane is still held", orchBusy.sent.length === 0);
+
+  // bau/ohne-owner-token Schnitt 4 · der Rückweg: Post der Orchestratorin an ein Program erreicht dessen MAIN so
+  // schnell wie ihr /send unter dem Owner-Token, aber als Inbox-Hinweis statt als „[Zitat entfernt]“
+  // (server/recall.ts#ownerPrompt nimmt ihn deshalb nicht als Owner-Eingabe zurück).
+  const toMain = (from: MessageRow["from"], p: { quiet?: boolean; automatable?: boolean } = {}) => {
+    const fixture = make(false, false, "p1");
+    fixture.rows[0] = { ...fixture.rows[0]!, from };
+    fixture.slot.lastOutput = now - 10_000;
+    fixture.policy(p);
+    return fixture;
+  };
+  const fromOrch = toMain({ kind: "role", role: "orchestrator" });
+  check("program message: the bound MAIN holds its Program's address and reads the Orchestratorin's message",
+    JSON.stringify(fromOrch.api.messageAddressesFor(fromOrch.slot)) === JSON.stringify([{ kind: "program", id: "p1" }])
+      && fromOrch.api.messageInboundFor(fromOrch.slot, fromOrch.rows[0]!),
+    JSON.stringify(fromOrch.api.messageAddressesFor(fromOrch.slot)));
+  await fromOrch.tick();
+  check("program message: ten-second idle delivers the Orchestratorin's message to the MAIN's exact slot, without the bundle",
+    fromOrch.sent.length === 1 && fromOrch.sent[0]?.options.deliveryClass === "sofort"
+      && fromOrch.sent[0]?.options.address?.kind === "slot" && fromOrch.sent[0]?.options.address?.id === 29
+      && fromOrch.sent[0]?.options.bypassQueue === true && fromOrch.sent[0]?.options.path === "inbox-nudge",
+    `sent=${fromOrch.sent.length} options=${JSON.stringify(fromOrch.sent[0]?.options ?? null)}`);
+  await fromOrch.tick();
+  check("program message: the same unread set is nudged once", fromOrch.sent.length === 1, `sent=${fromOrch.sent.length}`);
+  const fromOrchNight = toMain({ kind: "role", role: "orchestrator" }, { quiet: true, automatable: false });
+  await fromOrchNight.tick();
+  check("program message: quiet hours and harness policy do not hold the Orchestratorin's message",
+    fromOrchNight.sent.length === 1, `sent=${fromOrchNight.sent.length}`);
+  const fromOrchBusy = toMain({ kind: "role", role: "orchestrator" }); fromOrchBusy.slot.lastOutput = Date.now();
+  await fromOrchBusy.tick();
+  check("program message: an active MAIN pane is still held", fromOrchBusy.sent.length === 0);
+  const fromProgram = toMain({ kind: "program", id: "p2" }); await fromProgram.tick();
+  check("program message from another Program still waits for the backlog's quiet", fromProgram.sent.length === 0,
+    `sent=${fromProgram.sent.length}`);
 }
 
 // MANGEL 79 THROUGH THE DOORS. Owner-Satz der Bauleitung (15.10.): „[Zitat entfernt]“

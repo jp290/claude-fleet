@@ -259,7 +259,9 @@ const SESSIONS = [
   { slot: 4, label: "⚙ steward", cwd: other, harness: "pi" },
   { slot: 5, label: "Astra", cwd: other, harness: "codex" },
   { slot: 6, label: "GLM Sammelzeile", cwd: repo, harness: "pi-zai" },
-  { slot: 7, label: "Shell", cwd: process.env.HOME ?? repo },
+  // The instance's own HOME (testinstanz.sh starts the server with HOME=$DIR/home), not the
+  // caller's: this script runs with the real HOME, and an upload through this slot made ~/drops.
+  { slot: 7, label: "Shell", cwd: `${DIR}/home` },
   { slot: 8, label: "Sol", cwd: repo, harness: "codex" },
 ];
 // `full` means all sixteen places taken, and a LANE TAKES A PLACE — so the full stand is thirteen

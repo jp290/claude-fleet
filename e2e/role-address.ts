@@ -49,7 +49,8 @@ export async function messageDeliveryChecks(): Promise<void> {
     worktree: object | null; lastOutput: number; label: string; history: unknown[];
     laneSeats: { openedAt: number }[]; lineageId?: string };
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
-  type MessageRow = { id: string; to: Address; from: { kind: "program"; id: string } | Address; readBy: object | null };
+  type RoleAddress = { kind: "role"; role: "orchestrator" };
+  type MessageRow = { id: string; to: Address | RoleAddress; from: { kind: "program"; id: string } | Address; readBy: object | null };
   type Options = { deliveryClass?: string; address?: { kind: string; id: number };
     bypassQueue?: boolean; beforePaste?: (current: Occupant) => void;
     beforeSend?: (current: Occupant) => Promise<void> };
@@ -66,11 +67,14 @@ export async function messageDeliveryChecks(): Promise<void> {
     section("let messageNudgeBusy =", "const MIGRATE_MAX_NUDGES =")].join("\n");
   const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync(code);
   const now = Date.now();
-  const make = (lane = true) => {
+  // orchestrator: the slot is the one holder of the role address, and the message goes to that role
+  const make = (lane = true, orchestrator = false) => {
     const slot: Occupant = { id: 29, cwd: "/fixture/lane", openedAt: 100, sessionId: "old",
-      worktree: lane ? {} : null, lastOutput: now - 400_000, label: "fixture", history: [], laneSeats: [] };
+      worktree: lane ? {} : null, lastOutput: now - 400_000, label: orchestrator ? "🎛 Orchestratorin" : "fixture",
+      history: [], laneSeats: [] };
     const lineage: { lineageId: string; from: { slot: number; openedAt: number } }[] = [];
-    const rows: MessageRow[] = [{ id: "old-message", to: { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
+    const rows: MessageRow[] = [{ id: "old-message",
+      to: orchestrator ? { kind: "role", role: "orchestrator" } : { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
       from: { kind: "program", id: "main" }, readBy: null }];
     const sent: { openedAt: number; options: Options }[] = [];
     let quiet = false, automatable = true, alive = true, rotateAtProbe = false, rotateAtSend = false;
@@ -78,8 +82,8 @@ export async function messageDeliveryChecks(): Promise<void> {
     const cancelled: unknown[] = [];
     class Cancelled extends Error {}
     const deps = { slots: [slot], messages: { entries: rows }, STEWARD_LABEL: "steward", lineageHandovers: lineage,
-      boundProgramsForMain: () => [], programs: [], deliveryRecipient: () => null,
-      isOrchestratorLabel: () => false, slotFrom: () => slot,
+      boundProgramsForMain: () => [], programs: [], deliveryRecipient: () => orchestrator ? slot : null,
+      isOrchestratorLabel: () => orchestrator, slotFrom: () => slot,
       pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
       backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
       BACKLOG_IDLE_MS: 300_000, REPORT_DECISION_IDLE_MS: 3000, INBOX_NUDGE_COOLDOWN_MS: 600_000,
@@ -104,7 +108,7 @@ export async function messageDeliveryChecks(): Promise<void> {
     const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickMessageNudge, messageInboundFor, messageAddressesFor }; }`)(deps) as {
       tickMessageNudge: () => Promise<void>;
       messageInboundFor: (s: Occupant, m: MessageRow) => boolean;
-      messageAddressesFor: (s: Occupant) => Address[];
+      messageAddressesFor: (s: Occupant) => (Address | RoleAddress)[];
     };
     const tick = async () => { await api.tickMessageNudge(); await Bun.sleep(0); };
     return { slot, rows, sent, api, tick, cancelled, lineage,
@@ -207,6 +211,39 @@ export async function messageDeliveryChecks(): Promise<void> {
   check("branch pair message: an active pane is still held", pairBusy.sent.length === 0);
   const ambient = make(false); ambient.slot.lastOutput = now - 10_000; await ambient.tick();
   check("session message from a Program or the Orchestrator still waits for the backlog's quiet", ambient.sent.length === 0);
+
+  // MANGEL 141 (Vorführung 19.10.): messages to the role "orchestrator" lay unread for 16 minutes and longer.
+  // In the bundle every further message cancelled the waiting notice at its deadline and the next tick
+  // queued a fresh fifteen minutes (audit: "orchestrator messages for slot 6 changed before paste"). A
+  // message to the role is direct traffic like a MAIN's lane message: short idle, the exact slot, no bundle.
+  const orchestratorFixture = (p: { quiet?: boolean; automatable?: boolean } = {}) => {
+    const fixture = make(false, true);
+    fixture.slot.lastOutput = now - 10_000;
+    fixture.policy(p);
+    return fixture;
+  };
+  const orch = orchestratorFixture();
+  check("role message: the Orchestratorin holds the role address and reads a message to it",
+    JSON.stringify(orch.api.messageAddressesFor(orch.slot)) === JSON.stringify([{ kind: "role", role: "orchestrator" }])
+      && orch.api.messageInboundFor(orch.slot, orch.rows[0]!),
+    JSON.stringify(orch.api.messageAddressesFor(orch.slot)));
+  await orch.tick();
+  check("role message: ten-second idle delivers the Orchestratorin's notice to her exact slot, without the bundle",
+    orch.sent.length === 1 && orch.sent[0]?.options.deliveryClass === "sofort"
+      && orch.sent[0]?.options.address?.kind === "slot" && orch.sent[0]?.options.address?.id === 29
+      && orch.sent[0]?.options.bypassQueue === true,
+    `sent=${orch.sent.length} options=${JSON.stringify(orch.sent[0]?.options ?? null)}`);
+  await orch.tick();
+  check("role message: the same unread set is nudged once", orch.sent.length === 1, `sent=${orch.sent.length}`);
+  orch.rows.push({ ...orch.rows[0]!, id: "further-message" });
+  await orch.tick();
+  check("role message: a further message is announced at once instead of restarting a wait",
+    orch.sent.length === 2, `sent=${orch.sent.length}`);
+  const orchNight = orchestratorFixture({ quiet: true, automatable: false }); await orchNight.tick();
+  check("role message: quiet hours and harness policy do not hold it, as for a lane", orchNight.sent.length === 1,
+    `sent=${orchNight.sent.length}`);
+  const orchBusy = orchestratorFixture(); orchBusy.slot.lastOutput = Date.now(); await orchBusy.tick();
+  check("role message: an active Orchestratorin pane is still held", orchBusy.sent.length === 0);
 }
 
 // MANGEL 79 THROUGH THE DOORS. Owner-Satz der Bauleitung (15.10.): „[Zitat entfernt]“

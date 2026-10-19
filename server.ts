@@ -25950,9 +25950,13 @@ async function tickMessageNudge(): Promise<void> {
       // A MAIN's addressed lane message is direct traffic, like a report decision: short idle,
       // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle. So is a
       // branch pair's message (K13: only the opener and the session on its branch write session to
-      // session). Every other session's notice waits in the bundle, as the inbox hint does (tickInboxNudge).
+      // session). So is a message to the role "orchestrator" (Mangel 141): in the bundle, every further
+      // message cancelled the waiting notice at its deadline (checkRecipient) and the next tick queued a
+      // fresh fifteen minutes — a steadily asked Orchestratorin was never reached, and the clarification
+      // chain MAIN → Orchestratorin hangs on this link. Every other session's notice waits in the bundle,
+      // as the inbox hint does (tickInboxNudge).
       const direct = !!s.worktree || messages.entries.some((m) => unreadIds.includes(m.id)
-        && m.from.kind === "session" && m.to.kind === "session");
+        && (m.from.kind === "session" && m.to.kind === "session" || m.to.kind === "role" && m.to.role === "orchestrator"));
       if (prior?.key === key || (!direct && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
       const bundled = !direct && DELIVERY_BUNDLE_SEC > 0;
       const verdict = await canDeliver(s, { now, idleMs: direct ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,

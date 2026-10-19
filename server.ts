@@ -51371,8 +51371,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const run = await testinstanzCommand(import.meta.dir, ["list"], 15_000);
         if (run.code !== 0) return json({ error: "testinstanz list failed" }, 409);
         // owner-only by POSITION (below the tokenGate): the one place a test instance's token
-        // leaves its file — steward, self and share credentials all stop at the gate with a 401
-        return json({ testinstanzen: testinstanzList(run.out, true) });
+        // leaves its file — steward, self and share credentials all stop at the gate with a 401.
+        // NOT IN A TEST INSTANCE (Mangel 115): there the owner token is that instance's own, and the
+        // list is machine-wide, so one instance's token would open every other one — no openUrl
+        return json({ testinstanzen: testinstanzList(run.out, !INSTANCE_SOURCE) });
       } catch (error) {
         return json({ error: "testinstanz list could not run" }, 409);
       }

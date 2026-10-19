@@ -1700,6 +1700,22 @@ export async function run(lc: LaneCtx): Promise<void> {
           (res.status === 401 || res.status === 403) && !text.includes(tiToken) && !text.includes("openUrl"),
           `${res.status} ${text.slice(0, 200)}`);
       }
+      // Mangel 115: IN a test instance the owner token is that instance's own and the list is
+      // machine-wide — the same owner call must not hand out another instance's token. Same fixture,
+      // the server restarted with the mark ti_serve sets (FLEET_INSTANCE_SOURCE).
+      // Mutation: `testinstanzList(run.out, true)` at the route puts openUrl back → red.
+      const noOpenUrl = (text: string) => !text.includes(tiToken) && !text.includes("openUrl");
+      try {
+        await restartSrv({ FLEET_INSTANCE_SOURCE: "{}" });
+        const marked = await get("/api/testinstanzen");
+        const text = await marked.text();
+        let rows: Array<Record<string, unknown>> = [];
+        try { rows = (JSON.parse(text) as { testinstanzen?: typeof rows }).testinstanzen ?? []; } catch { /* asserted below */ }
+        check("testinstanz list IN a test instance keeps the rows but carries no openUrl and no token of another instance",
+          marked.status === 200 && rows.length === 1 && rows[0]?.port === 8912 && noOpenUrl(text),
+          `${marked.status} rows=${rows.length} openUrl=${text.includes("openUrl")} token=${text.includes(tiToken)}`);
+        check("testinstanz list MUTATION: the no-openUrl predicate is red on the live owner's answer", !noOpenUrl(JSON.stringify(body)));
+      } finally { await restartSrv(); }
     } finally {
       if (original) { writeFileSync(listScript, original.bytes); chmodSync(listScript, original.mode); }
       else rmSync(listScript, { force: true });

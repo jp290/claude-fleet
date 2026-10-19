@@ -168,7 +168,9 @@ unter dem Worktree jeder laufenden Instanz die Zeile „[Zitat entfernt]“ mit 
 Token aus `testinstanz.sh status` (`server.ts#testinstanzFact`). `GET /api/testinstanzen` mit
 `openUrl` bleibt: der Server liest es nur auf dem Owner-Pfad (unter dem `tokenGate`) aus der
 `.testinstanz.token` der Instanz (`server.ts#testinstanzList`) — Steward-, Self-, Share-Credential
-und anonym enden vorher mit 401/403 und sehen nie ein Token.
+und anonym enden vorher mit 401/403 und sehen nie ein Token. In einer Testinstanz selbst
+(`FLEET_INSTANCE_SOURCE` gesetzt, `ti_serve`) fehlt `openUrl` ganz: dort ist das Owner-Token das
+der Instanz, und die Liste ist maschinenweit (Mangel 115).
 
 Danach schaltet der **Instanz-Chip** um, im selben Tab und ohne Token: der Live-Server hängt die
 laufenden Testinstanzen aus Worktrees seines eigenen Repos (`server.ts#instanceChipLinks`, dieselbe

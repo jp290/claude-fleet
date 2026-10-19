@@ -1,16 +1,30 @@
 // The one register of Fleet-added session material; GET /api/founding-plan resolves it, no spawn path reads it yet.
 import { createHash } from "node:crypto";
+import { CONTEXT_PACKS, type ContextPack, type ContextPartSorte } from "./context-packs";
+import type { AnatomieGruppeId } from "./src/k15-anatomie";
+import type { SessionFrage } from "./session-fragen";
 
 export type SessionRole = "lane" | "main" | "orchestratorin" | "nur-ordner";
 export type SessionFunction = "vertrag" | "auftrag" | "rueckweg" | "beweis" | "orientierung" | "gedaechtnis-zeiger";
 export type SessionSource = `${string}.ts#${string}` | `${string}.md#${string}`;
 export type SessionDefault = "an" | "aus" | { readonly zustand: "bedingt"; readonly grund: string };
 
+// THE FIVE QUESTIONS (S14, owner 18.10.: „[Zitat entfernt]“): every Baustein, every section of a large text and every
+// part Claude Code brings itself answers one of them, and the window reads the same field the server sets. The list
+// itself lives in session-fragen.ts, which the browser bundle can import (this file cannot: node:crypto).
+// docs/session-ui/befund-fuenf-fragen.md maps the register onto them (tables A and B); each row below names its line.
+export { SESSION_FRAGEN, type SessionFrage } from "./session-fragen";
+// a section of a text that answers several questions: `teil` is its heading or first words, verbatim from the text
+export interface SessionAbschnitt { readonly teil: string; readonly frage: SessionFrage }
+
 export interface SessionBlock {
   readonly id: string;
   readonly wort: string;
   readonly satz: string;
   readonly funktion: readonly SessionFunction[];
+  /** the question it answers first; a text that answers several names its sections in `abschnitte` */
+  readonly frage: SessionFrage;
+  readonly abschnitte?: readonly SessionAbschnitt[];
   // `gesperrt`: owner decision — required AND not replaceable, not even by an equal function
   readonly grenze: { readonly art: "noetig"; readonly grund: string; readonly gesperrt?: true } | { readonly art: "frei" };
   readonly schicht: string;
@@ -38,6 +52,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Agent · Modell · Effort",
     satz: "Agent, Modell und Effort bestimmen, womit und wo die Session arbeitet.",
     funktion: ["orientierung"],
+    // Frage: Befund A1/B „orientierung → Außen“, keine der fünf; womit und wo die Session arbeitet: Umstände
+    frage: "umstaende",
     grenze: {"art": "noetig", "grund": "Ohne Agent und Arbeitsordner startet keine Session."},
     schicht: "model-register.ts + Slot",
     autor: ["Fleet", "MAIN"],
@@ -54,6 +70,17 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Vertrag",
     satz: "Der Vertrag legt Rolle, Grenzen und Nachweise fest.",
     funktion: ["vertrag"],
+    // Frage: Befund B „vertrag → How-to (portable-contract)“; Abschnitte aus .fleet/vertraege/lane.md §Portable operating contract
+    frage: "howto",
+    abschnitte: [
+      { teil: "### Identity and vocabulary (§1, §3)", frage: "konzepte" },
+      { teil: "### Role contract (§2)", frage: "umstaende" },
+      { teil: "### Hard invariants", frage: "howto" },
+      { teil: "### Overridable defaults", frage: "howto" },
+      { teil: "### Filing a queue row — the card template", frage: "howto" },
+      { teil: "### Rows for a repo that is not claude-fleet", frage: "howto" },
+      { teil: "### Context self-management (§6, §8)", frage: "howto" },
+    ],
     grenze: {"art": "noetig", "grund": "Owner-Entscheid: nötig und gesperrt; ohne Vertrag kennt die Session ihre Grenzen nicht.", "gesperrt": true},
     schicht: ".fleet/vertraege/lane.md §Portable operating contract",
     autor: ["Owner-Promotion"],
@@ -70,6 +97,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Owner-Korrekturen",
     satz: "Ein Hinweis führt die Session zu deinen geltenden Korrekturen.",
     funktion: ["vertrag"],
+    // Frage: Befund B „vertrag → Hintergrund (owner-heft)“
+    frage: "hintergrund",
     grenze: {"art": "noetig", "grund": "Owner-Entscheid: nötig und gesperrt wie der Vertrag; ohne ihn kennt die Session deine geltenden Korrekturen nicht.", "gesperrt": true},
     schicht: "Konzept k-owner-korrekturen",
     autor: ["Owner-Promotion"],
@@ -86,6 +115,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Regelbuch (privat)",
     satz: "Claude lädt den Teil des privaten Regelbuchs, der zu seiner Rolle passt.",
     funktion: ["vertrag"],
+    // Frage: Befund B „vertrag → How-to (private-rulebook)“
+    frage: "howto",
     grenze: {"art": "frei"},
     schicht: "rulebook/ → Rollen-Render CLAUDE.md",
     autor: ["Owner-Promotion", "MAIN"],
@@ -102,6 +133,19 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Rolle",
     satz: "Die Rollenkarte sagt, wo die Session steht, an wen sie meldet und welche Schnittstellen zu Fleet sie hat.",
     funktion: ["vertrag"],
+    // Frage: Befund B „vertrag → Umstände (role-card)“; A15a: Empfänger und Türen Umstände, Scope Auftrag, Loop How-to. LANE_ROLE_CARD und MAIN_ROLE_CARD
+    frage: "umstaende",
+    abschnitte: [
+      { teil: "--- ROLLE ---", frage: "auftrag" },
+      { teil: "--- DEIN EMPFAENGER ---", frage: "umstaende" },
+      { teil: "--- DU ENTSCHEIDEST ---", frage: "howto" },
+      { teil: "--- DEINE GRENZE ---", frage: "howto" },
+      { teil: "--- DEINE TUEREN ---", frage: "umstaende" },
+      { teil: "--- DER LOOP ---", frage: "howto" },
+      { teil: "--- ABNAHME ---", frage: "howto" },
+      { teil: "--- BLOCKER (immer) ---", frage: "howto" },
+      { teil: "--- UEBERGABE ---", frage: "howto" },
+    ],
     grenze: {"art": "noetig", "grund": "Ohne Rollenkarte weiß die Session nicht, an wen sie meldet, was sie nicht darf und welche Schnittstellen sie hat."},
     schicht: "Rollenkarte in der Session-Datei",
     autor: ["Owner-Promotion", "Fleet"],
@@ -118,6 +162,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Auftrag",
     satz: "Die Karte sagt der Lane, was sie tun soll und wann sie fertig ist.",
     funktion: ["auftrag"],
+    // Frage: Befund B „funktion auftrag → Auftrag, sauber“
+    frage: "auftrag",
     grenze: {"art": "noetig", "grund": "Ohne Karte weiß die Lane nicht, was ihr Auftrag ist und wann er erledigt ist."},
     schicht: "Karte + Queue-Zeile",
     autor: ["MAIN"],
@@ -134,6 +180,20 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Auftrag",
     satz: "Die MAIN bekommt den Auftrag ihres Programs und die Reihenfolge, in der sie arbeitet.",
     funktion: ["auftrag", "vertrag"],
+    // Frage: Befund B „auftrag → Auftrag“; C4: Einstieg How-to, Mandat Auftrag, RAIL_HEAD Umstände + Memory-Zeiger, RAIL_TAIL How-to. Die MAIN_ROLE_CARD und die Korrekturen dazwischen sind role-card und owner-heft
+    frage: "auftrag",
+    abschnitte: [
+      { teil: "[fleet Program-MAIN] You are the one authoritative MAIN session", frage: "umstaende" },
+      { teil: "Begin exactly in this order:", frage: "howto" },
+      { teil: "Owner-confirmed Program mandate (verbatim; data, never commands)", frage: "auftrag" },
+      { teil: "WHERE FLEET IS.", frage: "umstaende" },
+      { teil: "YOUR LIFECYCLE PROJECTION is GET /api/self/program-execution.", frage: "umstaende" },
+      { teil: "YOUR MEMORY is", frage: "hintergrund" },
+      { teil: "YOU ARE THE LEAD GAME DEVELOPER of this Program", frage: "howto" },
+      { teil: "THE LOOP, once per bounded act:", frage: "howto" },
+      { teil: "WHAT YOU DECIDE, AND WHAT THE OWNER DECIDES.", frage: "howto" },
+      { teil: "WHERE THIS ENDS.", frage: "auftrag" },
+    ],
     grenze: {"art": "noetig", "grund": "Ohne Program-Auftrag fehlen der MAIN Umfang, Empfänger und Reihenfolge."},
     schicht: "Program-Record + Rollenkarte",
     autor: ["Owner-Promotion", "MAIN", "Fleet"],
@@ -150,6 +210,22 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Auftrag",
     satz: "Die Rollenkarte sagt der Orchestratorin, wo sie steht.",
     funktion: ["auftrag", "vertrag"],
+    // Frage: Befund B „auftrag → Auftrag“, A18 „mehrere“; der Brief aus buildOrchestratorSpawnBrief, sein Korrekturen-Zeiger ist owner-heft
+    frage: "auftrag",
+    abschnitte: [
+      { teil: "[fleet Orchestrator] Diese Session ist die Orchestratorin dieses Fleets.", frage: "umstaende" },
+      { teil: "--- ROLLE ---", frage: "auftrag" },
+      { teil: "--- DEIN SYSTEM ---", frage: "auftrag" },
+      { teil: "--- DEIN EMPFAENGER ---", frage: "umstaende" },
+      { teil: "--- DU ENTSCHEIDEST ---", frage: "howto" },
+      { teil: "--- DER OWNER ENTSCHEIDET ---", frage: "howto" },
+      { teil: "--- DEINE TUEREN ---", frage: "umstaende" },
+      { teil: "--- DER LOOP ---", frage: "howto" },
+      { teil: "--- BLOCKER (immer) ---", frage: "howto" },
+      { teil: "--- UEBERGABE ---", frage: "howto" },
+      { teil: "--- KONTEXT ---", frage: "howto" },
+      { teil: "Beginne exakt in dieser Reihenfolge:", frage: "howto" },
+    ],
     grenze: {"art": "noetig", "grund": "Ohne Rollenkarte fehlen ihr Empfänger, Auftrag und Grenzen."},
     schicht: "Rollenkarte der Orchestratorin",
     autor: ["Owner-Promotion", "Fleet"],
@@ -166,6 +242,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Rückweg und Ende",
     satz: "Mit ihrem Ausweis erreicht die Session ihre eigenen Schnittstellen bei Fleet.",
     funktion: ["rueckweg"],
+    // Frage: Befund B „rueckweg → Umstände (self-credential)“
+    frage: "umstaende",
     grenze: {"art": "noetig", "grund": "Berichte und der Arbeitsstand bei Fleet brauchen den Ausweis der Session."},
     schicht: "Slot-Occupant + Prozess-Env",
     autor: ["Fleet"],
@@ -182,6 +260,17 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Rückweg und Ende",
     satz: "Der Abschluss sagt, an wen die Lane meldet, wie sie berichtet und wie sie aufhört.",
     funktion: ["rueckweg"],
+    // Frage: Befund B „rueckweg → How-to (lane-footer)“; A15e: der Empfänger ist Umstände, Korrekturen und Memory-Zeiger im Lane-Ende sind owner-heft und memory-pointer
+    frage: "howto",
+    abschnitte: [
+      { teil: "--- HOW THIS LANE ENDS", frage: "howto" },
+      { teil: "Empfaenger:", frage: "umstaende" },
+      { teil: "Live-Quelle fuer den aktuellen Empfaenger", frage: "umstaende" },
+      { teil: "1. COMMIT.", frage: "howto" },
+      { teil: "2. FILE ONE TYPED FLEET-REPORT", frage: "howto" },
+      { teil: "3. THEN GO IDLE.", frage: "howto" },
+      { teil: "--- VOR DEM LAND (Live-Bau)", frage: "howto" },
+    ],
     grenze: {"art": "noetig", "grund": "Ohne Rückweg kann die Lane keinen Bericht abgeben."},
     schicht: "Lane-Footer",
     autor: ["Fleet"],
@@ -198,6 +287,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Rückweg und Ende",
     satz: "Soll die Arbeit übernommen werden, braucht es einen Commit und einen sauberen Stand.",
     funktion: ["beweis"],
+    // Frage: Befund B „beweis → How-to (commit-expectation)“
+    frage: "howto",
     grenze: {"art": "noetig", "grund": "Soll die Arbeit übernommen werden, sind Commit und sauberer Stand nötig; eine reine Lese-Aufgabe braucht das nicht."},
     schicht: "Lane-Footer, erster Akt",
     autor: ["Fleet"],
@@ -214,6 +305,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Lesehinweise",
     satz: "Die Lesehinweise zeigen auf die Quellen, die die Session lesen soll.",
     funktion: ["orientierung"],
+    // Frage: Befund B „orientierung → How-to/Konzepte (context-anchors)“; die Zeiger führen meist auf Anleitungen
+    frage: "howto",
     grenze: {"art": "frei"},
     schicht: "ContextPlan v2 aus Packs",
     autor: ["Repo-Autor", "MAIN", "Fleet"],
@@ -230,6 +323,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Pack · <Name>",
     satz: "Ein gewähltes Pack legt der Session seine Quellen bereit.",
     funktion: ["orientierung"],
+    // Frage: Vorlage; eine Instanz nimmt die Frage ihres Packs (packFrage), ein Pack ohne Sorte diese
+    frage: "howto",
     grenze: {"art": "frei"},
     schicht: "pack",
     autor: ["Repo-Autor", "MAIN", "Fleet"],
@@ -246,6 +341,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Konzept · <Name>",
     satz: "Ein Konzept zeigt seine freigegebene Fassung und die Anmerkungen dazu.",
     funktion: ["orientierung"],
+    // Frage: Befund B „grundlagen: konzept-claude-fleet = Konzepte“; Vorlage wie founding-packs
+    frage: "konzepte",
     grenze: {"art": "frei"},
     schicht: "konzept",
     autor: ["Owner-Promotion", "Session selbst"],
@@ -262,6 +359,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Notizen zur Zeile",
     satz: "Passende Notizen zu ihrer Karte werden der Lane gezeigt.",
     funktion: ["orientierung"],
+    // Frage: Befund B „orientierung → Hintergrund (lane-notes)“
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "task-notes",
     autor: ["MAIN", "Owner-Promotion"],
@@ -278,6 +377,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Quellpaket Zeiger",
     satz: "Hinweise auf die Code-Stellen zur Karte, mit Stand und dem, was weggelassen ist.",
     funktion: ["orientierung"],
+    // Frage: Befund B nennt How-to/Konzepte (Quellstellen); gewählt: Code-Stellen zur Karte sind Wissen über das Projekt
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "Quellen der Karten-FLAECHE",
     autor: ["Fleet"],
@@ -294,6 +395,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Quellpaket Code",
     satz: "Der Code dieser Stellen selbst; die Lane liest die Dateien aber ohnehin selbst.",
     funktion: ["orientierung"],
+    // Frage: wie source-pointers
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "Quellen der Karten-FLAECHE",
     autor: ["Fleet"],
@@ -310,6 +413,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Gedächtnis-Hinweis",
     satz: "Ein Hinweis führt zum Arbeitsstand, den Fleet für die Session hält.",
     funktion: ["gedaechtnis-zeiger"],
+    // Frage: Befund B „gedaechtnis-zeiger → Hintergrund, sauber“
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "/api/self/memory, Program-Record + Reports + Inbox",
     autor: ["Fleet", "MAIN"],
@@ -326,6 +431,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Lädt nativ",
     satz: "Claude Code lädt die Regeln des gewählten Ordners selbst.",
     funktion: ["vertrag"],
+    // Frage: Befund B „vertrag → Hintergrund (native-agents)“, A14
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "Native Repo-Regeln, AGENTS.md/Override",
     autor: ["Repo-Autor"],
@@ -343,6 +450,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Lädt nativ",
     satz: "Claude lädt seine eigenen Notizen (Auto-Memory).",
     funktion: ["orientierung"],
+    // Frage: Befund B „orientierung → Hintergrund (auto-memory)“
+    frage: "hintergrund",
     grenze: {"art": "frei"},
     schicht: "~/.claude/projects/*/memory",
     autor: ["Session selbst"],
@@ -360,6 +469,8 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     wort: "Zustell-Kopf",
     satz: "Der Kopf jeder Zustellung sagt, woher sie kommt.",
     funktion: ["beweis"],
+    // Frage: Befund B „beweis → Umstände (delivery-header)“, A21
+    frage: "umstaende",
     grenze: {"art": "frei"},
     schicht: "Transportprovenienz",
     autor: ["Fleet"],
@@ -384,17 +495,35 @@ export interface ClaudeCodeZeile {
   readonly wort: string;
   readonly satz: string;
   readonly quelle: SessionSource;
+  /** the systemprompt's own sections each get theirs from anatomieFrage; this is the row's as a whole */
+  readonly frage: SessionFrage;
 }
 export const CLAUDE_CODE_ZEILEN: readonly ClaudeCodeZeile[] = [
   { id: "systemprompt", wort: "Systemprompt", satz: "Claude Code schreibt Regeln, Umgebung und Modus selbst hinein.",
-    quelle: "docs/messungen/2026-10-10-kontext-bestandteile.md#H — Was Claude Code selbst hineinlegt (alle Rollen)" },
-  { id: "werkzeuge", wort: "Werkzeuge", satz: "Jedes Werkzeug der Liste bringt sein Schema mit.", quelle: "server.ts#SESSION_TOOLS" },
-  { id: "listen", wort: "Skills und Agenten", satz: "Claude Code listet Skills und Agenten, Fleet kürzt die Liste je Rolle.", quelle: "server.ts#SESSION_LIST_CUT" },
-  { id: "listenschnitt", wort: "Listenschnitt", satz: "Eine Zeile nennt, was fehlt und wie es zurückkommt.", quelle: "server.ts#sessionListCut" },
-  { id: "gepflogenheiten", wort: "Gepflogenheiten", satz: "Die Gepflogenheiten hängen am Systemprompt, wenn der Server sie einschaltet.", quelle: "server.ts#agentCmd" },
-  { id: "globale-regeln", wort: "Globale Regeln", satz: "Claude lädt deine globalen Regeln aus seinem Konfig-Ordner.", quelle: "server.ts#nativeLoaderBytes" },
-  { id: "mcp", wort: "MCP", satz: "Eine Text-Lane startet ohne MCP-Server, jede andere Session mit denen des Accounts.", quelle: "server.ts#agentCmd" },
+    quelle: "docs/messungen/2026-10-10-kontext-bestandteile.md#H — Was Claude Code selbst hineinlegt (alle Rollen)", frage: "howto" },
+  { id: "werkzeuge", wort: "Werkzeuge", satz: "Jedes Werkzeug der Liste bringt sein Schema mit.", quelle: "server.ts#SESSION_TOOLS", frage: "umstaende" },
+  { id: "listen", wort: "Skills und Agenten", satz: "Claude Code listet Skills und Agenten, Fleet kürzt die Liste je Rolle.", quelle: "server.ts#SESSION_LIST_CUT", frage: "howto" },
+  { id: "listenschnitt", wort: "Listenschnitt", satz: "Eine Zeile nennt, was fehlt und wie es zurückkommt.", quelle: "server.ts#sessionListCut", frage: "howto" },
+  { id: "gepflogenheiten", wort: "Gepflogenheiten", satz: "Die Gepflogenheiten hängen am Systemprompt, wenn der Server sie einschaltet.", quelle: "server.ts#agentCmd", frage: "howto" },
+  // Befund A14: native Dateien sind Hintergrund
+  { id: "globale-regeln", wort: "Globale Regeln", satz: "Claude lädt deine globalen Regeln aus seinem Konfig-Ordner.", quelle: "server.ts#nativeLoaderBytes", frage: "hintergrund" },
+  { id: "mcp", wort: "MCP", satz: "Eine Text-Lane startet ohne MCP-Server, jede andere Session mit denen des Accounts.", quelle: "server.ts#agentCmd", frage: "umstaende" },
 ];
+const zeilenFrage = (id: ClaudeCodeZeile["id"]): SessionFrage => CLAUDE_CODE_ZEILEN.find((z) => z.id === id)!.frage;
+
+// THE QUESTION OF ONE PART OF CLAUDE CODE'S START (server/claude-code-anatomie.ts#anatomieFuerRolle sets it on every
+// part). The systemprompt: its identity line and „# Environment“ are Umstände, „# Memory“ is Hintergrund, the rest
+// How-to. Fleet's appendix by name: the Auto-Mode line is Umstände, Listenschnitt and Gepflogenheiten How-to. Tools
+// and MCP servers are Umstände; skills, agents and the plugins that bring them How-to.
+export function anatomieFrage(gruppe: AnatomieGruppeId, teil: { readonly name: string; readonly text?: string }, identitaet = false): SessionFrage {
+  if (gruppe === "systemprompt") {
+    const kopf = (teil.text ?? `# ${teil.name}`).trimStart();
+    return identitaet || /^# Environment\b/.test(kopf) ? "umstaende" : /^# Memory\b/.test(kopf) ? "hintergrund" : zeilenFrage("systemprompt");
+  }
+  if (gruppe === "fleet")
+    return teil.name === "Auto-Mode" ? "umstaende" : zeilenFrage(teil.name === "Gepflogenheiten" ? "gepflogenheiten" : "listenschnitt");
+  return zeilenFrage(gruppe === "werkzeuge" ? "werkzeuge" : gruppe === "mcp" ? "mcp" : "listen");
+}
 // THE MEASURED START OF EACH SPAWN ROLE: input tokens of the first answer (input + cache_creation +
 // cache_read) of an interactive claude pane in an EMPTY scratch folder, private tmux socket, started
 // with the role's own line from server.ts#agentCmd at d266a070 (--dangerously-skip-permissions,
@@ -439,6 +568,19 @@ export type HarnessFamilie = "claude" | "codex" | "pi" | "container";
 export type PlanBytes = number | "unknown";
 
 export const SESSION_BLOCK_VORLAGEN = ["founding-packs", "konzept"] as const;
+
+// THE QUESTION OF A PACK INSTANCE: the sorte of its Kern parts — one Anleitung makes it How-to, Wissen alone
+// Konzepte (Befund B, Pack-`sorte`) — and a Kern without any sorte takes its template's (founding-packs How-to,
+// konzept Konzepte). resolveSessionPlan reads the Kern of Fleet's own seeds (CONTEXT_PACKS); a repo manifest's
+// pack reaches it without its sources and so takes its template's question.
+export function packFrage(vorlage: (typeof SESSION_BLOCK_VORLAGEN)[number], kern: readonly { readonly sorte?: ContextPartSorte }[]): SessionFrage {
+  const sorten = kern.flatMap((part) => part.sorte ? [part.sorte] : []);
+  return sorten.includes("anleitung") ? "howto" : sorten.length ? "konzepte" : SESSION_BLOCKS.find((block) => block.id === vorlage)!.frage;
+}
+const seedKern = (packId: string): readonly { readonly sorte?: ContextPartSorte }[] => {
+  const seed: ContextPack | undefined = CONTEXT_PACKS.find((pack) => pack.id === packId);
+  return seed?.sources ?? [];
+};
 export const ROLLE_WORT: Readonly<Record<SessionRole, string>> =
   { lane: "Lane", main: "MAIN", orchestratorin: "Orchestratorin", "nur-ordner": "Nur Ordner" };
 
@@ -488,6 +630,9 @@ export interface SessionPlanBaustein {
   readonly satz: string;
   readonly breaksWithout: string;
   readonly funktion: readonly SessionFunction[];
+  /** the register's question; a pack instance's from packFrage */
+  readonly frage: SessionFrage;
+  readonly abschnitte?: readonly SessionAbschnitt[];
   readonly grenze: SessionBlock["grenze"];
   readonly schicht: string;
   readonly lieferart: SessionBlock["lieferart"];
@@ -602,7 +747,9 @@ export function resolveSessionPlan(input: SessionPlanInput, messe: (zustaende: R
     const bedingung = bedingungOf(row);
     const enthaltenIn = messung.enthaltenIn[row.id];
     return {
-      id: row.id, wort: row.wort, satz: row.block.satz, breaksWithout: row.block.breaksWithout, funktion: row.block.funktion, grenze: row.block.grenze,
+      id: row.id, wort: row.wort, satz: row.block.satz, breaksWithout: row.block.breaksWithout, funktion: row.block.funktion,
+      frage: row.pack ? packFrage(row.pack.vorlage, seedKern(row.pack.packId)) : row.block.frage,
+      ...(row.block.abschnitte ? { abschnitte: row.block.abschnitte } : {}), grenze: row.block.grenze,
       schicht: row.block.schicht, lieferart: row.block.lieferart,
       zustand: zustand.get(row.id)!, quelle: gesetzt.has(row.id) ? "schalter" : "default",
       rollenDefault: defaultOf(row), ...(bedingung ? { bedingung } : {}),

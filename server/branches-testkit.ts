@@ -97,5 +97,5 @@ export function branchTestkit() {
     rmSync(TMP, { recursive: true, force: true });
     rmSync(SOCKETS, { recursive: true, force: true });
   }
-  return { TMP, PROJECTS, BIN, fixture, life, cleanup };
+  return { TMP, PROJECTS, BIN, SOCKETS, fixture, life, cleanup };
 }

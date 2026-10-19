@@ -7890,6 +7890,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
   if (!builtK15.success) throw new Error(builtK15.logs.join("\n"));
   const k15Js = await builtK15.outputs[0].text();
   const k15Css = readFileSync(resolve(sourceRoot, "public/k15.css"), "utf8");
+  // ...and the stylesheet of its view „Eine Session“, which the loader waits for beside k15.css (server/transport.ts serves both)
+  const sitzungCss = readFileSync(resolve(sourceRoot, "public/sitzung.css"), "utf8");
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const xtermCssPath = resolve(sourceRoot, "node_modules/@xterm/xterm/css/xterm.css");
   const xtermCss = exists(xtermCssPath) ? readFileSync(xtermCssPath, "utf8") : "";
@@ -7996,6 +7998,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/k15.js") return void reply(requestId, 200, k15Js, "text/javascript");
       if (p === "/k15.css") return void reply(requestId, 200, k15Css, "text/css");
+      if (p === "/sitzung.css") return void reply(requestId, 200, sitzungCss, "text/css");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") { fx.sessions++; return void json(requestId, { now: 10 * 60_000, chips: ["/review", "/compact"], slots, tasks: [],
         ...(fx.alarm ? { postLandAudit: { at: 9 * 60_000, result: "red", repo: "/fixture/alpha", main: "main", mainSha: "a".repeat(40), covers: ["fleet/261007-insel-1b2c"] } } : {}) }); }

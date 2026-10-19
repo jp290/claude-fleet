@@ -1,0 +1,206 @@
+/* NEUE SESSION · EINE SESSION AUFSETZEN (src/sitzung.ts, Entwurf Runde 4): links aufsetzen, in der Mitte die Übersicht nach den fünf Fragen,
+   rechts der Text, den der Agent liest. Am Handy drei Reiter. Lädt mit public/k15.css (src/k15-lader.ts); die Kopf-Knöpfe des Aufbaus
+   gehören hier nicht hin */
+#shell-found.k15sitz { --ks-cc: #d97757; --ks-du: #d8d8de; --ks-ordner: #9a9aa4; --ks-fleet: #8fb8ff; --ks-feder: cubic-bezier(.2, .9, .3, 1.05); }
+#shell-found.k15sitz .k15hb { display: none; }
+#shell-found.k15 .k15zursitz svg { transform: rotate(90deg); }
+.k15sitz .ks { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(300px, 360px) minmax(260px, 310px) minmax(0, 1fr); }
+.k15sitz .ks.laedt .ksindex, .k15sitz .ks.laedt .kstext { opacity: .7; transition: opacity .2s; }
+.k15sitz .ksreiter { display: none; }
+.k15sitz .kscol { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--chat-edge) transparent; }
+.k15sitz .kslinks { border-right: 1px solid var(--chat-edge-soft); padding: 16px 18px 28px; }
+.k15sitz .ksindex { border-right: 1px solid var(--chat-edge-soft); background: color-mix(in srgb, var(--chat-void) 70%, #000); }
+.k15sitz .kstext { position: relative; }
+.k15sitz .ksleer { padding: 22px; color: var(--chat-faint); }
+.k15sitz .kszahl, .k15sitz .kstk { font-variant-numeric: tabular-nums; }
+.k15sitz .kswahl { display: inline-flex; background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: 9px; padding: 3px; gap: 2px; }
+.k15sitz .kswahl button { border-radius: 6px; padding: 4px 11px; color: var(--chat-mute); white-space: nowrap; font-size: 12.5px; }
+.k15sitz .kswahl button[aria-pressed="true"] { background: var(--chat-raised); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+
+/* links */
+.k15sitz .ksabschn { margin-bottom: 20px; }
+.k15sitz .ksabschn h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--chat-ink); }
+.k15sitz .ksdeine { background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: 14px; padding: 13px 15px 11px; }
+.k15sitz .ksdeine p { margin: 0 0 8px; line-height: 1.6; }
+.k15sitz .ksdeine b { color: var(--chat-ink); font-weight: 600; }
+.k15sitz .ksvonhand { margin-top: 6px; color: var(--chat-ink); }
+.k15sitz .ksklein { color: var(--chat-mute); font-size: 12.5px; line-height: 1.5; }
+.k15sitz .kswarn { color: #ffb38a; font-size: 12.5px; margin-top: 6px; }
+.k15sitz .ksagent { display: flex; flex-wrap: wrap; gap: 6px; }
+.k15sitz .kschip { position: relative; display: inline-flex; align-items: center; gap: 6px; background: var(--chat-surface); border: 1px solid var(--chat-edge);
+  border-radius: 9px; padding: 0 4px 0 8px; font-size: 13px; }
+.k15sitz .kschip small { color: var(--chat-mute); font-size: 11.5px; }
+.k15sitz .kschip select { appearance: none; background: transparent; border: 0; color: var(--chat-ink); font: inherit; padding: 6px 18px 6px 0; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--chat-mute) 50%), linear-gradient(135deg, var(--chat-mute) 50%, transparent 50%);
+  background-position: right 7px top 52%, right 3px top 52%; background-size: 4px 4px; background-repeat: no-repeat; }
+.k15sitz .kschip select:focus-visible { outline: none; }
+.k15sitz .kschip:focus-within { box-shadow: 0 0 0 1px var(--chat-mute); }
+.k15sitz .ksabschn h2[title] { cursor: help; }
+.k15sitz .ksrollen { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.k15sitz .ksrolle, .k15sitz .ksstufe { display: flex; gap: 9px; align-items: flex-start; text-align: left; border: 1px solid var(--chat-edge-soft); border-radius: 11px;
+  padding: 9px 10px; color: var(--chat-mute); }
+.k15sitz .ksrolle svg, .k15sitz .ksstufe svg { width: 17px; height: 17px; flex: none; margin-top: 1px; }
+.k15sitz .ksrolle:hover:not(:disabled), .k15sitz .ksstufe:hover { background: var(--chat-surface); color: var(--chat-ink); }
+.k15sitz .ksrolle[aria-pressed="true"], .k15sitz .ksstufe[aria-pressed="true"] { border-color: var(--chat-mute); background: var(--chat-surface); color: var(--chat-ink); }
+.k15sitz .ksrolle:disabled { opacity: .45; }
+.k15sitz .kskt { min-width: 0; }
+.k15sitz .kskt b { display: block; font-weight: 600; font-size: 13px; color: var(--chat-ink); }
+.k15sitz .kskt span { display: block; color: var(--chat-mute); font-size: 12px; line-height: 1.35; margin-top: 1px; }
+.k15sitz .ksrecht { border: 1px solid var(--chat-edge-soft); border-radius: 12px; padding: 10px 12px 8px; }
+.k15sitz .ksrsatz { display: flex; gap: 9px; align-items: flex-start; color: var(--chat-ink); font-size: 13.5px; line-height: 1.5; }
+.k15sitz .ksrsatz svg { width: 17px; height: 17px; flex: none; margin-top: 2px; color: var(--chat-mute); }
+.k15sitz .ksrsatz span { flex: 1; }
+.k15sitz .ksrstufe { display: block; color: var(--chat-mute); font-size: 11.5px; margin-bottom: 1px; }
+.k15sitz .ksstufen { display: grid; gap: 5px; margin: 10px 0 4px; }
+.k15sitz .ksstufe { padding: 8px 10px; }
+.k15sitz .ksstufe .kskt b { font-weight: 500; }
+.k15sitz .ksstufe[aria-pressed="true"] .kskt b { font-weight: 600; }
+.k15sitz .ksbefehl small { display: block; color: #f2c48d; font-size: 11.5px; }
+.k15sitz .ksrecht > .ksmehr { margin-top: 4px; }
+.k15sitz .ksdetailk { color: var(--chat-mute); font-size: 12px; text-decoration: underline; text-decoration-color: var(--chat-edge); text-underline-offset: 3px; flex: none; }
+.k15sitz .ksbefehle { margin: 8px 0 6px; border: 1px solid var(--chat-edge-soft); border-radius: 11px; overflow: hidden; }
+.k15sitz .ksbefehl { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 11px; border-top: 1px solid var(--chat-edge-soft); }
+.k15sitz .ksbefehl:first-child { border-top: 0; }
+.k15sitz .ksbefehl b { display: block; font-weight: 500; font-size: 13px; color: var(--chat-ink); }
+.k15sitz .ksbefehl code { font: 11.5px var(--chat-mono); color: var(--chat-mute); }
+.k15sitz .ksbefehl.aus b { color: var(--chat-mute); }
+.k15sitz .ksprobe { display: flex; flex-direction: column; gap: 6px; }
+.k15sitz .ksprobek { display: flex; align-items: center; gap: 8px; border: 1px dashed var(--chat-edge); border-radius: 10px; padding: 8px 10px; color: var(--chat-ink); font-size: 13px; }
+.k15sitz .ksprobek svg { width: 15px; height: 15px; }
+.k15sitz .ksprobek small { margin-left: auto; color: var(--chat-faint); font-size: 11px; }
+.k15sitz .ksprobek:disabled { color: var(--chat-mute); cursor: default; }
+.k15sitz .ksprobek.klein { padding: 5px 8px; font-size: 12px; margin-top: 4px; }
+.k15sitz .ksein { display: block; width: 100%; box-sizing: border-box; background: var(--chat-surface); border: 1px solid var(--chat-edge); border-radius: 10px;
+  padding: 8px 10px; color: var(--chat-ink); font: inherit; font-size: 13.5px; margin-bottom: 8px; }
+.k15sitz .ksziel { resize: vertical; min-height: 76px; }
+.k15sitz .ksein::placeholder { color: var(--chat-faint); }
+
+/* Mitte: die Übersicht */
+.k15sitz .ksikopf { position: sticky; top: 0; z-index: 2; background: inherit; padding: 14px 16px 10px; border-bottom: 1px solid var(--chat-edge-soft); }
+.k15sitz .ksikopf h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--chat-ink); display: flex; gap: 8px; align-items: baseline; }
+.k15sitz .ksikopf h2 .kszahl { margin-left: auto; font: 600 13px var(--chat-mono); }
+.k15sitz .ksikopf p { margin: 2px 0 0; color: var(--chat-mute); font-size: 12px; line-height: 1.45; }
+.k15sitz .kskap { border-bottom: 1px solid var(--chat-edge-soft); }
+.k15sitz .kskapk { display: grid !important; grid-template-columns: 20px minmax(0, 1fr) auto 14px; gap: 1px 6px; align-items: baseline; width: 100%;
+  padding: 11px 12px 10px 16px !important; text-align: left; }
+.k15sitz .kskapk:hover { background: var(--chat-surface); }
+.k15sitz .kskapk svg { width: 14px; height: 14px; color: var(--chat-mute); align-self: center; grid-row: 1; grid-column: 4; transform: rotate(-90deg); transition: transform .2s; }
+.k15sitz .kskap.auf .kskapk svg { transform: none; }
+.k15sitz .ksnr { color: var(--chat-faint); font: 600 12px var(--chat-mono); }
+.k15sitz .kskapk b { font-weight: 600; font-size: 14px; color: var(--chat-ink); }
+.k15sitz .kskapk .kstk { font: 600 12.5px var(--chat-mono); color: var(--chat-ink); }
+.k15sitz .ksfr { grid-column: 2 / 3; color: var(--chat-mute); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k15sitz .ksanz { grid-column: 3 / 5; justify-self: end; color: var(--chat-mute); font-size: 11.5px; }
+.k15sitz .kskap.hier .ksnr { color: var(--chat-ink); }
+.k15sitz .ksbalken { grid-column: 2 / 5; display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--chat-surface); margin-top: 6px; }
+.k15sitz .ksbalken i { display: block; height: 100%; transition: width .5s var(--ks-feder); }
+.k15sitz .ksteile { list-style: none; margin: 0; padding: 0 12px 10px 36px; }
+.k15sitz .kskap:not(.auf) .ksteile { display: none; }
+.k15sitz .ksteil { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 4px 4px; border-radius: 7px; cursor: pointer; min-height: 28px; }
+.k15sitz .ksteil:hover, .k15sitz .ksteil.offen { background: var(--chat-surface); }
+.k15sitz .ksteil.hier { background: var(--chat-raised); }
+.k15sitz .ksd { width: 8px; height: 8px; border-radius: 50%; background: var(--h); }
+.k15sitz .h-cc { --h: var(--ks-cc); } .k15sitz .h-du { --h: var(--ks-du); } .k15sitz .h-ordner { --h: var(--ks-ordner); } .k15sitz .h-fleet { --h: var(--ks-fleet); }
+.k15sitz .ksn { font-size: 13px; color: var(--chat-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k15sitz .ksn small { color: var(--chat-mute); font-size: 11.5px; margin-left: 5px; }
+.k15sitz .ksteil .kstk { font: 11.5px var(--chat-mono); color: var(--chat-mute); white-space: nowrap; }
+.k15sitz .ksteil.aus .ksn { color: var(--chat-mute); }
+.k15sitz .ksteil.aus .ksd { background: transparent; box-shadow: inset 0 0 0 1.4px var(--h); }
+.k15sitz .ksteil.nv { cursor: help; }
+.k15sitz .ksteil.nv .ksn { color: var(--chat-faint); }
+.k15sitz .ksteil.nv .ksd { background: var(--chat-edge); }
+.k15sitz .ksnvz { list-style: none; }
+.k15sitz .ksnvk { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 4px !important; color: var(--chat-faint); font-size: 12px; text-align: left; }
+.k15sitz .ksnvk:hover { color: var(--chat-mute); }
+.k15sitz .ksnvk svg { width: 12px; height: 12px; transform: rotate(-90deg); transition: transform .2s; }
+.k15sitz .ksnvk[aria-expanded="true"] svg { transform: none; }
+.k15sitz .ksnv { list-style: none; margin: 0; padding: 0; }
+.k15sitz .ksnv:not(.auf) { display: none; }
+.k15sitz .ksdetail { list-style: none; margin: 2px 0 8px 18px; padding: 8px 10px; border-left: 2px solid var(--chat-edge); font-size: 12px; color: var(--chat-prose); }
+.k15sitz .ksdetail div { display: grid; grid-template-columns: 90px 1fr; gap: 8px; line-height: 1.5; }
+.k15sitz .ksdetail div span:first-child { color: var(--chat-faint); }
+.k15sitz .kssw { justify-self: end; width: 32px; height: 19px; border-radius: 10px !important; background: #2e2e35 !important; position: relative; transition: background .2s; flex: none; }
+.k15sitz .kssw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: #bdbdc6; transition: transform .25s var(--ks-feder), background .2s; }
+.k15sitz .kssw[aria-checked="true"] { background: #3b5b8f !important; }
+.k15sitz .kssw[aria-checked="true"]::after { transform: translateX(13px); background: #fff; }
+.k15sitz .kslegende { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 12px 16px 18px; color: var(--chat-mute); font-size: 12px; }
+.k15sitz .kslegende i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+/* rechts: der Text */
+.k15sitz .kstkopf { position: sticky; top: 0; z-index: 3; background: color-mix(in srgb, var(--chat-void) 94%, transparent); -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px); border-bottom: 1px solid var(--chat-edge-soft); padding: 11px 24px 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.k15sitz .kstkopf h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--chat-ink); display: inline-flex; align-items: center; gap: 7px; }
+.k15sitz .kstkopf h2 svg { width: 16px; height: 16px; color: var(--chat-mute); }
+.k15sitz .kszweck { margin: 14px 0 8px; max-width: 640px; color: var(--chat-mute); font-size: 12.5px; line-height: 1.55; }
+.k15sitz .ksablage { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1.5px dashed var(--chat-edge); border-radius: 12px;
+  color: var(--chat-mute); font-size: 13px; cursor: default; }
+.k15sitz .ksablage svg { width: 18px; height: 18px; flex: none; }
+.k15sitz .ksablage small, .k15sitz .ksprobek small { margin-left: auto; border: 1px solid var(--chat-edge); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--chat-faint); }
+.k15sitz .ksaussen { margin: 12px 0 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--chat-faint); }
+.k15sitz .kstkopf .kszahl { font: 600 14px var(--chat-mono); color: var(--chat-ink); }
+.k15sitz .kstkopf .ksausz { font: 12px var(--chat-mono); color: var(--chat-mute); }
+.k15sitz .kstkopf .kswahl { margin-left: auto; }
+.k15sitz .ksdok { padding: 4px 24px 50vh; max-width: 980px; }
+.k15sitz .kskapitel { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 6px; padding-bottom: 5px; border-bottom: 1px solid var(--chat-edge-soft); }
+.k15sitz .kskapitel h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--chat-ink); }
+.k15sitz .kskapitel span:not(.ksnr) { color: var(--chat-mute); font-size: 12.5px; }
+.k15sitz .kskapitel.ort h3 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--chat-mute); }
+.k15sitz .ksleerh { color: var(--chat-faint); font-size: 12.5px; font-style: italic; padding: 4px 0 2px 16px; }
+.k15sitz .ksblk { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .5s var(--ks-feder), opacity .4s; }
+.k15sitz .ksblk.zu { grid-template-rows: 0fr; opacity: 0; }
+.k15sitz .ksin { overflow: hidden; min-height: 0; }
+.k15sitz .ksrahmen { margin: 6px 0; border-left: 2px solid transparent; padding: 4px 0 4px 14px; border-radius: 2px; }
+.k15sitz .ksblk.h-fleet .ksrahmen { border-left-color: var(--ks-fleet); background: rgba(143, 184, 255, .06); }
+.k15sitz .ksblk.h-cc .ksrahmen { border-left-color: rgba(217, 119, 87, .4); }
+.k15sitz .ksblk.h-du .ksrahmen { border-left-color: rgba(216, 216, 222, .3); }
+.k15sitz .ksblk.h-ordner .ksrahmen { border-left-color: rgba(154, 154, 164, .28); }
+.k15sitz .ksmeta { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 11.5px; color: var(--chat-faint); margin-bottom: 3px; }
+.k15sitz .ksmeta .kst { flex-basis: 100%; color: var(--chat-prose); font: 500 12px var(--chat-mono); word-break: break-all; }
+.k15sitz .ksmeta .kstk { margin-left: auto; font-family: var(--chat-mono); }
+.k15sitz .ksplatz { color: var(--chat-prose); border: 1px solid var(--chat-edge); border-radius: 6px; padding: 0 6px; }
+.k15sitz .ksdauer { cursor: help; }
+.k15sitz .ksdauer.jetzt { color: #f2c48d; }
+.k15sitz .ksblk.p-datei .ksrahmen { background: color-mix(in srgb, var(--chat-surface) 75%, transparent); border-radius: 0 9px 9px 0; padding: 8px 12px 8px 14px; }
+.k15sitz .ksblk.p-datei .ksplatz { border-color: var(--chat-mute); color: var(--chat-ink); }
+.k15sitz .ksblk pre { margin: 0; font: 12.5px/1.62 var(--chat-mono); color: var(--chat-prose); white-space: pre-wrap; word-break: break-word; }
+.k15sitz .ksblk.leise pre { color: var(--chat-faint); font-style: italic; }
+.k15sitz .ksmehr { padding: 2px 0 0 !important; color: var(--chat-mute); font-size: 12px; text-decoration: underline; text-decoration-color: var(--chat-edge); text-underline-offset: 3px; }
+.k15sitz .ksblk.blitz-an .ksrahmen { animation: ksan 2.2s ease-out; }
+.k15sitz .ksblk.blitz-weg .ksrahmen { background: rgba(255, 120, 120, .12); border-left-color: #ff8f8f; }
+.k15sitz .ksblk.blitz-weg pre { text-decoration: line-through; text-decoration-color: rgba(255, 143, 143, .6); color: var(--chat-faint); }
+.k15sitz .puls .ksrahmen, .k15sitz .kskapitel.puls { animation: kspuls 1.6s ease-out; }
+@keyframes ksan { 0% { background: rgba(143, 184, 255, .30); } 100% {} }
+@keyframes kspuls { 0% { background: rgba(255, 255, 255, .10); } 100% {} }
+
+/* unten */
+#shell-found.k15sitz .shellfoot.ksfuss { justify-content: space-between; }
+.k15sitz .kssatzc { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.k15sitz .kssay { color: var(--chat-mute); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k15sitz .kssay b { color: var(--chat-ink); font-weight: 600; }
+.k15sitz .kssatz { color: var(--chat-faint); font-size: 12.5px; }
+.k15sitz .kssatz.warn { color: #ffb38a; }
+.k15sitz .ksfussr { display: flex; align-items: center; gap: 18px; flex: none; }
+.k15sitz .kssumme { text-align: right; font: 600 15px var(--chat-mono); color: var(--chat-ink); white-space: nowrap; }
+.k15sitz .kssumme small { display: block; font: 12px var(--chat-sans); color: var(--chat-mute); }
+.k15sitz .ksgo { background: var(--chat-ink) !important; color: var(--chat-void) !important; border-radius: 10px !important; font-weight: 600; padding: 11px 22px !important; font-size: 15px; white-space: nowrap; }
+.k15sitz .ksgo:disabled { opacity: .45; }
+
+/* Tablet: die Übersicht schmaler; Handy: drei Reiter */
+@media (max-width: 1100px) { .k15sitz .ks { grid-template-columns: 300px 260px minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .k15sitz .ks { display: flex; flex-direction: column; }
+  .k15sitz .ksreiter { display: block; padding: 8px 12px; border-bottom: 1px solid var(--chat-edge-soft); }
+  .k15sitz .ksreiter .kswahl { display: flex; width: 100%; }
+  .k15sitz .ksreiter .kswahl button { flex: 1; text-align: center; font-size: 13px; padding: 6px; }
+  .k15sitz .kscol { flex: 1; border-right: 0; }
+  .k15sitz .ks:not([data-reiter="aufsetzen"]) .kslinks, .k15sitz .ks:not([data-reiter="uebersicht"]) .ksindex,
+  .k15sitz .ks:not([data-reiter="text"]) .kstext { display: none; }
+  .k15sitz .kslinks { padding: 14px 14px 24px; }
+  .k15sitz .kstkopf { padding: 9px 14px; }
+  .k15sitz .kstkopf .kswahl { margin-left: 0; }
+  .k15sitz .ksdok { padding: 4px 14px 30vh; }
+  .k15sitz .kssay, .k15sitz .kssatz { display: none; }
+  .k15sitz .kssumme { text-align: left; font-size: 14px; }
+  .k15sitz .ksfussr { flex: 1; justify-content: space-between; }
+  .k15sitz .ksgo { padding: 10px 16px !important; }
+}

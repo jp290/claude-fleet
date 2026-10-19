@@ -607,6 +607,8 @@ export async function checkCodexSpawnFixtures(source: string,
           // the closures' MCP hand-over (card a8bc6c54): the generic rail carries the predecessor's
           // selection, the Program rail its plan's — none here, a codex fixture spawns without one
           carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
+          // ...and its rights (server/rechte.ts), claude only — a codex fixture carries none
+          carriedRechte: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });

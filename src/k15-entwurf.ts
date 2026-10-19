@@ -32,6 +32,7 @@ import { startZahl } from "./k15-startzahl";
 import { katalogAus } from "./k15-agent";
 import { beimFuss, startKnopf, startStand0 } from "./k15-start";
 import type { Eingang } from "./k15-lader";
+import { sitzStand0, zeichneSitzung } from "./sitzung";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -53,7 +54,7 @@ export function openK15Entwurf(eingang?: Eingang): void {
   shell.root.classList.add("k15");
   shell.root.querySelector(".shellclose")?.replaceChildren(icon("x"));
   // keine Flocken hinter den Spalten (Bauleitung 15.10., AAA „ruhig“)
-  const h = location.hash.match(/^#k15(?:-(eine|export|profil|minimal))?(?:-t([0-3]))?(?:@(\/[^#]+))?/);
+  const h = location.hash.match(/^#k15(?:-(eine|export|profil|minimal|sitzung))?(?:-t([0-3]))?(?:@(\/[^#]+))?/);
   const konst = structuredClone(KONST0);
   const k = konst.find((x) => x.id === (h?.[1] === "eine" ? "eine" : h?.[1] === "minimal" ? "main-eigen" : "orch")) ?? konst[0];
   let repo: string | null = eingang && "repo" in eingang ? eingang.repo : null;
@@ -70,7 +71,10 @@ export function openK15Entwurf(eingang?: Eingang): void {
     repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(), katalog: undefined,
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
     fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt",
-    eingang: eingang ?? null, start: startStand0() };
+    eingang: eingang ?? null, start: startStand0(),
+    // EINE SESSION AUFSETZEN ist der Einstieg vom freien Platz und vom Handy (Owner 18.10.: „[Zitat entfernt]“); ein Repo-+,
+    // ⎇+ und die alten Adressen #k15… öffnen den Aufbau
+    ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau", sitz: sitzStand0() };
   setzeS(s);
   ladeEigenes(s);
   beimZeichnen(render);
@@ -120,7 +124,11 @@ function kopf(s: St): void {
   alles.title = "Tokens, Einstellungen und Erklärungen überall zeigen, nicht erst beim Darüberfahren";
   alles.append(icon("list"), el("span", "", "Alles zeigen"));
   alles.onclick = () => setzeAlles(s, !s.alles);
-  box.append(tour, alles, imp, exp);
+  // zurück zur Ansicht „Eine Session“ (src/sitzung.ts), aus der „Mit anderen Sessions arbeiten“ hierher führt
+  const eine = el("button", "k15hbtn k15zursitz");
+  eine.append(icon("chevron"), el("span", "", "Eine Session"));
+  eine.onclick = () => { s.ansicht = "sitzung"; render(); };
+  box.append(eine, tour, alles, imp, exp);
   s.shell.root.querySelector(".shellclose")?.before(box);
 }
 
@@ -168,6 +176,17 @@ function render(): void {
   const s = S;
   if (!s) return;
   if (!s.repo) s.repo = repos()[0] ?? null;
+  s.shell.root.classList.toggle("k15sitz", s.ansicht === "sitzung");
+  if (s.ansicht === "sitzung") {
+    s.shell.root.querySelector(".k15menu")?.remove();
+    s.shell.root.querySelector(".k15repomenu")?.remove();
+    s.shell.root.querySelector(".k15tour")?.remove();
+    repoKopf(s);
+    zeichneSitzung(s);
+    const menue = repoMenue(s);
+    if (menue) legeMenue(s, menue);
+    return;
+  }
   s.shell.root.classList.toggle("k15alles", s.alles);
   s.shell.root.querySelector(".k15alleb")?.classList.toggle("on", s.alles);
   s.shell.root.querySelector(".k15alleb")?.setAttribute("aria-pressed", String(s.alles));
@@ -235,6 +254,7 @@ function fuss(s: St): void {
   const f = s.shell.foot;
   const hatte = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("k15go") && f.contains(document.activeElement);
   f.replaceChildren();
+  f.classList.remove("ksfuss");
   f.classList.add("k15foot");
   const n = alle(s.k.wurzeln).length;
   const links = el("div", "k15sayc");

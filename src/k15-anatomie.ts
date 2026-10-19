@@ -1,7 +1,8 @@
 // K15 · „SYSTEMPROMPT UND WERKZEUGE“ AUFGESCHLÜSSELT (Owner 16.10. 11:3x: „[Zitat entfernt]“
 // ; Schnitt 889ad0ab, Entscheid der Bauleitung 80917044: Quelle B). Die Form, in der der Gründungsplan es liefert
 // (server.ts#claudeCodeStart → claudeCode.anatomie, gebaut in server/claude-code-anatomie.ts#anatomieFuerRolle) und das Fenster es
-// liest (anatomieVon). Kein DOM und keine Werte-Importe: Server und k15.js nehmen dieselbe Datei.
+// liest (anatomieVon). Kein DOM und nur der eine Werte-Import ohne Abhängigkeiten (session-fragen.ts): Server und k15.js nehmen dieselbe Datei.
+import { istFrage, type SessionFrage } from "../session-fragen";
 
 export type AnatomieGruppeId = "systemprompt" | "fleet" | "werkzeuge" | "skills" | "agenten" | "plugins" | "mcp";
 // an: kommt mit Text in den Start · abruf: nur der Name, den Rest lädt die Session bei Bedarf · name: Fleet lässt nur den Namen in der
@@ -17,6 +18,8 @@ export interface AnatomieTeil {
   readonly weg: string;
   readonly satz: string;
   readonly text?: string;
+  /** die Frage, die der Teil für den Agenten beantwortet (S14, session-blocks.ts#anatomieFrage); fehlt bei einem älteren Server */
+  readonly frage?: SessionFrage;
 }
 export interface AnatomieGruppe { readonly id: AnatomieGruppeId; readonly wort: string; readonly satz: string; readonly teile: readonly AnatomieTeil[] }
 // die Session, an deren Start Claude Codes Teil gemessen ist: Slot (null = beendet), Rolle beim Start, Ordner, Version, Modell, Startzeit (ms), die
@@ -38,8 +41,8 @@ const istGruppe = (v: unknown): v is AnatomieGruppeId => GRUPPEN_IDS.some((x) =>
 function teilVon(v: unknown): AnatomieTeil | null {
   const r = rec(v);
   if (!r || !str(r.name) || !zahlOderNull(r.bytes) || !istStand(r.stand) || !str(r.weg) || !str(r.satz)
-    || (r.text !== undefined && !str(r.text))) return null;
-  return { name: r.name, bytes: r.bytes, stand: r.stand, weg: r.weg, satz: r.satz, ...(str(r.text) ? { text: r.text } : {}) };
+    || (r.text !== undefined && !str(r.text)) || (r.frage !== undefined && !istFrage(r.frage))) return null;
+  return { name: r.name, bytes: r.bytes, stand: r.stand, weg: r.weg, satz: r.satz, ...(str(r.text) ? { text: r.text } : {}), ...(istFrage(r.frage) ? { frage: r.frage } : {}) };
 }
 function quelleVon(v: unknown): AnatomieQuelle | null | undefined {
   if (v === null) return null;

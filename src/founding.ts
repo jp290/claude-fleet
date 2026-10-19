@@ -3,15 +3,19 @@
 // Startfenster; das neue hat es abgelöst (Owner 17.10.: „[Zitat entfernt]“), seine Starts gehen über src/start-tuer.ts. Was blieb, liest
 // das neue Fenster über src/k15-lader.ts.
 import type { FoundingPlanOmission, FoundingPlanPack, FoundingPlanPart, FoundingSessionAgents, PackAnchors } from "./protocol";
+import { istFrage, type SessionFrage } from "../session-fragen";
 
 // the four roles of the register (session-blocks.ts#SessionRole); the server's own word for each
 // comes with the plan (`rollen[].wort`), the sentence is the window's (Konzept 3, Blatt 20)
 type Role = "lane" | "main" | "orchestratorin" | "nur-ordner";
 const ROLE_IDS: readonly Role[] = ["lane", "main", "orchestratorin", "nur-ordner"];
+// the five questions of the register (session-fragen.ts), the order the window reads them in
+type Frage = SessionFrage;
 // one Baustein of the plan (session-blocks.ts#SessionPlanBaustein), read as the server sent it
 type Zustand = string; // "an" | "aus" | "ersetzt:<id>"
 export interface Baustein {
   id: string; wort: string; satz: string; breaksWithout?: string; funktion: string[];
+  frage?: Frage; abschnitte?: { teil: string; frage: Frage }[];
   grenze: { art: "noetig"; grund: string; gesperrt?: true } | { art: "frei" };
   schicht: string; zustand: Zustand; quelle: "default" | "schalter";
   rollenDefault: "an" | "aus" | { zustand: "bedingt"; grund: string };
@@ -40,7 +44,7 @@ export interface Answer extends Plan {
   lieferung?: Lieferung; claudeCode?: ClaudeCode | null; startSumme?: StartSumme;
 }
 interface Lieferung { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] }
-interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string; details?: unknown }
+interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string; frage?: Frage; details?: unknown }
 interface CcMessung { rolle: string; tokens: number; am: string; claude: string; modell: string; quelle: string; gilt: boolean; grund?: string }
 interface ClaudeCode { rolle: string; zeilen: CcZeile[]; messung: CcMessung; danach?: CcMessung }
 interface StartSumme { fleetBytes: number; fleetUnbekannt: string[]; fleetTokens: number; bytesJeToken: { wert: number; quelle: string };
@@ -106,6 +110,8 @@ function validPlan(j: unknown): j is Plan {
 
 // the session plan of dd3d548a: a present plan in a wrong shape is unreadable, never half-believed
 const isRole = (v: unknown): v is Role => typeof v === "string" && (ROLE_IDS as readonly string[]).includes(v);
+const isFrage = istFrage;
+const validAbschnitte = (v: unknown): boolean => Array.isArray(v) && v.every((x) => isStr(rec(x)?.teil) && isFrage(rec(x)?.frage));
 function validBaustein(v: unknown): v is Baustein {
   if (!v || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
@@ -119,7 +125,8 @@ function validBaustein(v: unknown): v is Baustein {
     && (rd === "an" || rd === "aus" || (!!rd && typeof rd === "object" && (rd as Record<string, unknown>).zustand === "bedingt"))
     && !!h && typeof h === "object" && typeof h.gueltig === "boolean"
     && !!sb && typeof sb === "object" && (sb.ja === true || (sb.ja === false && isStr(sb.grund)))
-    && (isNum(r.bytes) || r.bytes === "unknown") && strs(r.ersatzKandidaten) && optional(r, "enthaltenIn", isStr);
+    && (isNum(r.bytes) || r.bytes === "unknown") && strs(r.ersatzKandidaten) && optional(r, "enthaltenIn", isStr)
+    && optional(r, "frage", isFrage) && optional(r, "abschnitte", validAbschnitte);
 }
 export function validAnswer(j: unknown): j is Answer {
   if (!validPlan(j)) return false;
@@ -148,7 +155,7 @@ function validMessung(v: unknown): boolean {
 function validClaudeCode(v: unknown): boolean {
   const r = rec(v);
   return !!r && isStr(r.rolle) && validMessung(r.messung) && optional(r, "danach", validMessung) && Array.isArray(r.zeilen)
-    && r.zeilen.every((x) => { const z = rec(x); return !!z && isStr(z.id) && isStr(z.wort) && isStr(z.satz) && isStr(z.quelle) && isStr(z.weg) && isStr(z.wert) && sizeOk(z.bytes); });
+    && r.zeilen.every((x) => { const z = rec(x); return !!z && isStr(z.id) && isStr(z.wort) && isStr(z.satz) && isStr(z.quelle) && isStr(z.weg) && isStr(z.wert) && sizeOk(z.bytes) && optional(z, "frage", isFrage); });
 }
 function validStartSumme(v: unknown): boolean {
   const r = rec(v), q = rec(r?.bytesJeToken);

@@ -19,6 +19,7 @@ import { SPEICHER_ROUTE } from "./k15-speicher";
 import type { Ablauf } from "./k15-agentmd";
 import type { Eingang } from "./k15-lader";
 import type { StartStand } from "./k15-start";
+import type { SitzStand } from "./sitzung";
 
 export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
 // DER DETAILGRAD (Owner 12:3x) zeigt die Gruppen zu oder auf; was sonst erst beim Darüberfahren erscheint, zeigt „[Zitat entfernt]“
@@ -49,6 +50,8 @@ export interface St {
   ablauf: Ablauf | null; warnAm: number; speicher: "laedt" | "da" | { fehler: string };
   // woher das Fenster kam (ein freier Platz, das + eines Repos, ⎇+ an einer Session; null = #k15) und was der Start braucht
   eingang: Eingang | null; start: StartStand;
+  // welche Ansicht das Fenster zeigt: „sitzung“ (eine Session aufsetzen, src/sitzung.ts) oder „aufbau“ (die vier Spalten unten); ihr Stand
+  ansicht: "sitzung" | "aufbau"; sitz: SitzStand;
 }
 export let S: St | null = null;
 export const setzeS = (s: St | null): void => { S = s; };

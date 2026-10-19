@@ -2111,6 +2111,9 @@ interface Slot {
   // adapter; every other harness spawns without it. Set at open (body `remote`) or on a live slot by
   // the owner (POST /api/slots/:id/remote), effective from the pane's next spawn — the flag is on
   // the command line, like the label-keyed exports. Persisted; cleared on open/kill.
+  rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
+  // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
+  // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.
   packMcp: readonly ContextPackMcpServer[]; // the MCP servers this occupant's FOUNDING PLAN chose (a pack
   // Zusatz with `mcp`, context-plan.ts#planMcpServers), stamped by the founding door through openSlot
   // and handed by ensureSlot to EVERY spawn — open, heal, restart, wake — as claudeMcpConfigFlag's one

@@ -9,6 +9,7 @@
 // dessen Dateien (claudeNamen). Die Auszüge sind rein; Dateien lesen nur transkriptKopf, kopfVon, claudeNamen und repoMcp.
 import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import type { AnatomieGruppe, AnatomieQuelle, AnatomieTeil, CcAnatomie } from "../src/k15-anatomie";
+import { anatomieFrage, type SessionFrage } from "../session-blocks";
 
 const BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 
@@ -269,6 +270,9 @@ export interface FleetTeil {
   readonly ohneMcp: boolean;
 }
 export interface Orte { readonly konfig: Namen; readonly repo: Namen; readonly quelleRepo: Namen | null; readonly repoMcp: readonly string[]; readonly quelleMcp: readonly string[] }
+// every part carries the question it answers (S14), set from the register (session-blocks.ts#anatomieFrage)
+export type FrageTeil = AnatomieTeil & { readonly frage: SessionFrage };
+export type FrageAnatomie = Omit<CcAnatomie, "gruppen"> & { readonly gruppen: readonly (Omit<AnatomieGruppe, "teile"> & { readonly teile: readonly FrageTeil[] })[] };
 
 const bytesVon = (t: string): number => Buffer.byteLength(t);
 const titelVon = (t: string): string => {
@@ -280,7 +284,7 @@ const mcpSchluessel = (n: string): string => n.replace(/[^A-Za-z0-9]/g, "_");
 const NICHT_GEMESSEN_REPO = "nicht gemessen: kommt aus dem Repo, die Quell-Session lief in einem anderen Ordner";
 const NICHT_GEMESSEN_AUS = "nicht gemessen: die Quell-Session hatte es nicht in ihrer Liste";
 
-export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | null, grund: string | null, fleet: FleetTeil, orte: Orte): CcAnatomie {
+export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | null, grund: string | null, fleet: FleetTeil, orte: Orte): FrageAnatomie {
   const a = quelle?.a ?? null;
   const fleetTexte = new Set(fleet.anhang.flatMap((x) => x.text ? [x.text.trim()] : []));
   const inRepo = (n: string, art: "befehle" | "skills" | "agenten") => orte.repo[art].includes(n);
@@ -292,9 +296,10 @@ export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | 
 
   // SYSTEMPROMPT · was Claude Code selbst schreibt: ohne Fleets Anhang (den der Quelle; der dieser Rolle steht in „fleet“)
   const abschnitte = (a?.systemprompt ?? []).filter((x) => !x.text.startsWith("FLEET-LISTENSCHNITT") && !fleetTexte.has(x.text.trim()));
+  const identitaet: AnatomieTeil | null = a?.identitaet ? { name: titelVon(a.identitaet.text), bytes: a.identitaet.bytes, stand: "an", weg: "mitgeliefert",
+    satz: "der erste Satz jeder Anfrage, vor dem Systemprompt", text: a.identitaet.text } : null;
   const system: AnatomieTeil[] = [
-    ...(a?.identitaet ? [{ name: titelVon(a.identitaet.text), bytes: a.identitaet.bytes, stand: "an" as const, weg: "mitgeliefert",
-      satz: "der erste Satz jeder Anfrage, vor dem Systemprompt", text: a.identitaet.text }] : []),
+    ...(identitaet ? [identitaet] : []),
     ...abschnitte.map((x): AnatomieTeil => x.text.startsWith("# Memory") && fleet.ohneMemory
       ? { name: titelVon(x.text), bytes: x.bytes, stand: "aus", weg: "--settings autoMemoryEnabled", satz: "Eine Lane startet ohne Auto-Memory; ihren Stand liest sie über den Zeiger in der Session-Datei.", text: x.text }
       : { name: titelVon(x.text), bytes: x.bytes, stand: "an", weg: "mitgeliefert", satz: "schreibt Claude Code selbst in den Systemprompt", text: x.text }),
@@ -419,7 +424,8 @@ export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | 
     plugins.set(p, { teile: [...x.teile, `${art} ${t.name}`], an: x.an || t.stand !== "aus" });
   }
 
-  const gruppe = (id: AnatomieGruppe["id"], wort: string, satz: string, teile: AnatomieTeil[]): AnatomieGruppe => ({ id, wort, satz, teile });
+  const gruppe = (id: AnatomieGruppe["id"], wort: string, satz: string, teile: AnatomieTeil[]): FrageAnatomie["gruppen"][number] =>
+    ({ id, wort, satz, teile: teile.map((t): FrageTeil => ({ ...t, frage: anatomieFrage(id, t, t === identitaet) })) });
   return {
     quelle: quelle ? quelleVon(quelle.kandidat, quelle.a) : null,
     grund: quelle ? null : grund,

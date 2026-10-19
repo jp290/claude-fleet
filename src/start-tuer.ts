@@ -7,6 +7,7 @@
 // Dieses Modul liegt im Haupt-Bundle (es braucht post und revealStartedSlot aus client.ts) und geht über src/k15-lader.ts ans Fenster.
 import { api, post, revealStartedSlot } from "./client";
 import type { BranchesView, BranchOtherView, LaneAnchor } from "./protocol";
+import type { Rechte } from "../session-rechte";
 
 export interface Dreier { harness?: string; model?: string; effort?: string }
 // der Plan, wie ihn die Tür prüft (server.ts#acceptFoundingPlan): Hash, Rolle und die Schalter, mit denen das Fenster ihn las, in der
@@ -15,9 +16,9 @@ export interface PlanKoerper { hash: string; role: string; bausteine?: string }
 export type Auftrag =
   | { tuer: "lane"; repo: string; dreier: Dreier; plan: PlanKoerper; slot?: number; parent?: LaneAnchor }
   | { tuer: "lane-fort"; repo: string; worktree: string; dreier: Dreier; slot?: number }
-  | { tuer: "open"; cwd: string; slot: number; dreier: Dreier; plan: PlanKoerper | null; label?: string }
+  | { tuer: "open"; cwd: string; slot: number; dreier: Dreier; plan: PlanKoerper | null; label?: string; rechte?: Rechte }
   | { tuer: "main"; program: string; cwd: string; dreier: Dreier }
-  | { tuer: "branch"; repo: string; name: string; punkte: string[]; ziel: string; dreier: Dreier; bestehend?: string; gemacht?: string };
+  | { tuer: "branch"; repo: string; name: string; punkte: string[]; ziel: string; dreier: Dreier; bestehend?: string; gemacht?: string; rechte?: Rechte };
 // `bewegt`: die Antwort des Plans von jetzt (409 staleHash); `gemacht`: der Branch steht schon, nur seine Session startete nicht;
 // `vorhanden`: den Board-Namen trägt in diesem Repo schon ein anderer Branch
 export type Antwort =
@@ -37,7 +38,8 @@ export async function starte(a: Auftrag): Promise<Antwort> {
     }
     if (a.tuer === "lane-fort")
       return await tuer("/api/lanes", { repo: a.repo, attach: a.worktree, ...(a.slot !== undefined ? { slot: a.slot } : {}), ...a.dreier }, a.slot);
-    return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}) }, a.slot);
+    return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}),
+      ...(a.rechte ? { rechte: a.rechte } : {}) }, a.slot);
   } catch (e) {
     return nichtErreichbar(e);
   }
@@ -89,7 +91,7 @@ async function oeffneBranch(a: Extract<Auftrag, { tuer: "branch" }>): Promise<An
     if (!r.ok || typeof j?.branch !== "string") return { ok: false, fehler: `Der Branch entstand nicht: ${typeof j?.error === "string" ? j.error : `Antwort ${r.status}`}` };
     branch = j.branch;
   }
-  const r = await post("/api/branches/open", { repo: a.repo, branch, ...(a.ziel ? { goal: a.ziel } : {}), ...a.dreier });
+  const r = await post("/api/branches/open", { repo: a.repo, branch, ...(a.ziel ? { goal: a.ziel } : {}), ...a.dreier, ...(a.rechte ? { rechte: a.rechte } : {}) });
   const j = rec(await r.json().catch(() => null));
   if (!r.ok || typeof j?.slot !== "number")
     return { ok: false, fehler: `„${a.name}“ steht mit seinen Punkten, die Session startete nicht: ${typeof j?.error === "string" ? j.error : `Antwort ${r.status}`}`, gemacht: branch };

@@ -2641,8 +2641,13 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
   const acceptEnd = acceptDef < 0 ? -1 : serverSrc.indexOf("\n}\n", acceptDef);
   const answerCalls = [...serverSrc.matchAll(/\bfoundingPlanAnswer\(/g)].map((m) => m.index!)
     .filter((at) => at !== answerDef + "async function ".length);
-  pin("S3 session blocks: server.ts is the only reader, and only the one plan answer (route + start check) resolves the register",
-    tracked.status === 0 && readers.join() === "server.ts" && !serverSrc.includes("defaultOn")
+  // Two more read it without resolving a plan (S14, the five questions): server/claude-code-anatomie.ts takes each
+  // part's question (session-blocks.ts#anatomieFrage), and a unit test (*.test.ts) proves the register's behaviour.
+  const ANATOMIE = "server/claude-code-anatomie.ts";
+  const resolvers = readers.filter((path) => !path.endsWith(".test.ts") && path !== ANATOMIE);
+  pin("S3 session blocks: server.ts is the only resolving reader, and only the one plan answer (route + start check) resolves the register",
+    tracked.status === 0 && resolvers.join() === "server.ts" && !(exists(ANATOMIE) && read(ANATOMIE).includes("resolveSessionPlan"))
+      && !serverSrc.includes("defaultOn")
       && [...serverSrc.matchAll(/\bresolveSessionPlan\(/g)].length === 1 && serverSrc.indexOf("resolveSessionPlan(") > planDef
       && planCalls.length === 2 && planCalls.includes(planDef + "async function ".length)
       && planCalls.every((at) => at === planDef + "async function ".length || (at > answerDef && at < answerEnd))

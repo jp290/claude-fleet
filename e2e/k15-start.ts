@@ -14,7 +14,7 @@ export interface K15StartLiveResult { claims: Record<string, boolean>; facts: Re
 export interface K15StartLiveMutant { name: string; claim: keyof typeof K15_START_LIVE_CLAIM; file: string; needle: string; with: string }
 
 export const K15_START_LIVE_CLAIM = {
-  opens: "a click on a free place of the bar opens the window „Neue Session“ (K15) with a lane chosen — the old start window does not open",
+  opens: "a click on a free place of the bar opens the window „Neue Session“ (K15) in its view „Eine Session“; „Mit anderen Sessions arbeiten“ leads to the build with a lane chosen — the old start window does not open",
   values: "„… starten“ gives a session on that place with the repo, the agent, the model and the effort chosen in the window, as the server reports them",
   closes: "after the start the window is gone, and the place it started stands with a session",
 } as const;
@@ -136,9 +136,12 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 15000);
     await evaluate(`localStorage.setItem('fleet.k15.rundgang', '1')`);
 
-    // 1. the free place opens the window, a lane chosen
+    // 1. the free place opens the window in its view „Eine Session“ (src/sitzung.ts); „Mit anderen Sessions arbeiten“ leads to the
+    // build, a lane chosen
     await click(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`);
-    const opened = await wait(`document.querySelector('#shell-found.k15 .k15go')`, 10000);
+    const eine = await wait(`document.querySelector('#shell-found.k15sitz .ksgo')`, 10000);
+    if (eine) await click(`document.querySelector('#shell-found .ksrolle[data-rolle="andere"]')`);
+    const opened = eine && await wait(`document.querySelector('#shell-found.k15 .k15go')`, 10000);
     facts.opened = await evaluate(`({ k15: !!document.querySelector('#shell-found.k15'), old: !!document.querySelector('.fdgo, .fdkind'),
       knopf: document.querySelector('.k15go')?.textContent ?? null })`);
     claims.opens = opened && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind') && /^Lane \\d+ starten$/.test(document.querySelector('.k15go')?.textContent ?? '')`);

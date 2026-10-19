@@ -18,13 +18,14 @@ export type Eingang = { slot: number } | { repo: string; parent?: LaneAnchor };
 type K15 = typeof import("./k15-entwurf");
 let geladen: Promise<K15> | null = null;
 
-function stil(): Promise<void> {
+// das Fenster und seine Ansicht „Eine Session“ (public/sitzung.css, src/sitzung.ts)
+function stil(datei: string): Promise<void> {
   return new Promise((fertig, fehlt) => {
     const l = document.createElement("link");
     l.rel = "stylesheet";
-    l.href = "/k15.css";
+    l.href = `/${datei}`;
     l.onload = () => fertig();
-    l.onerror = () => { l.remove(); fehlt(new Error("k15.css")); };
+    l.onerror = () => { l.remove(); fehlt(new Error(datei)); };
     document.head.append(l);
   });
 }
@@ -32,7 +33,7 @@ function stil(): Promise<void> {
 export function openK15Entwurf(eingang?: Eingang): void {
   (globalThis as unknown as { k15Haupt: K15Haupt }).k15Haupt = haupt;
   // die Adresse wird erst zur Laufzeit gebildet; ein fester Text würde der Bundler als eigenes Modul auflösen wollen
-  geladen ??= Promise.all([import(new URL("/k15.js", location.href).href) as Promise<K15>, stil()]).then(([m]) => m);
+  geladen ??= Promise.all([import(new URL("/k15.js", location.href).href) as Promise<K15>, stil("k15.css"), stil("sitzung.css")]).then(([m]) => m);
   geladen.then((m) => m.openK15Entwurf(eingang), () => {
     geladen = null;
     toast("Das Fenster „Neue Session“ ließ sich nicht laden.");

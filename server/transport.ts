@@ -16,6 +16,7 @@ export const STATIC: Record<string, { path: string; type: string }> = {
   "/helper.js": { path: `${PUB}/public/helper.js`, type: "text/javascript" },
   "/k15.js": { path: `${PUB}/public/k15.js`, type: "text/javascript" },
   "/k15.css": { path: `${PUB}/public/k15.css`, type: "text/css" },
+  "/sitzung.css": { path: `${PUB}/public/sitzung.css`, type: "text/css" },
   "/xterm.css": { path: `${PUB}/node_modules/@xterm/xterm/css/xterm.css`, type: "text/css" },
   "/manifest.webmanifest": { path: `${PUB}/public/manifest.webmanifest`, type: "application/manifest+json" },
   "/icon.svg": { path: `${PUB}/public/icon.svg`, type: "image/svg+xml" },

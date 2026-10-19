@@ -10,7 +10,9 @@
 // /api/harnesses, /api/programs, /api/branches, /api/dirinfo, /api/dirs, /api/machine-settings, /api/worktrees and the
 // window's store (src/k15-speicher.ts#SPEICHER_ROUTE) answer as the server writes them, and every POST is recorded with
 // its body. Every case loads the page fresh, so no case reads what another left behind; clicks and taps are real input
-// over CDP. Claims 1–14 are read at 1200 × 900 (K15's narrow mode: one column at a time), claim 1b at 390 × 844. Every
+// over CDP. Claims 1–14 are read at 1200 × 900 (K15's narrow mode: one column at a time), claim 1b at 390 × 844. Since the view
+// „Eine Session“ (src/sitzung.ts, Entwurf Runde 4) a free place opens that view; the cases of the build (K15) reach it over
+// „Mit anderen Sessions arbeiten“, and claims 15–18 and 20–22 read the view itself (19 its tabs on the phone). Every
 // claim has a MUTANT in K15_START_MUTANTS that swaps one needle in a source file and must turn that claim red; a needle
 // that left the source throws, so a mutant that could not apply fails as itself.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,13 +22,14 @@ import { resolve } from "node:path";
 export interface K15StartDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export interface K15StartMutant {
   name: string; claim: string;
-  file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts" | "src/k15-repo.ts";
+  file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts" | "src/k15-repo.ts"
+    | "src/sitzung.ts" | "src/sitzung-modell.ts" | "src/sitzung-links.ts";
   needle: string; with: string; width?: 1200 | 390;
 }
 
 export const K15_START_CLAIM = {
-  open: "a click on a free place of the left bar opens the window „Neue Session“ (#shell-found.k15, its head „Neue Session in …“), and no element of the old start window (.fdgo, .fdkind) stands anywhere",
-  openPhone: "on the phone „Neue Session“ in the Sessions sheet opens the same window „Neue Session“, and no element of the old start window stands anywhere",
+  open: "a click on a free place of the left bar opens the window „Neue Session“ in its view „Eine Session“ (#shell-found.k15.k15sitz, its head „Neue Session in …“, its button „Session starten“), and no element of the old start window (.fdgo, .fdkind) stands anywhere",
+  openPhone: "on the phone „Neue Session“ in the Sessions sheet opens the same window in its view „Eine Session“, and no element of the old start window stands anywhere",
   lane: "a lane from free place N sends exactly one POST /api/slots/N/open-worktree with { repo, branch: \"\", harness, model, effort, plan: { hash, role: \"lane\" } }: the triple is the role's standard from the plan (rollen[].standard), the hash that of the plan the window read with it, no bausteine without a switch",
   wahl: "model and effort changed at the chosen session (its choice in column 3) stand in the plan the window reads and in the start's body, and the start carries the hash of that read",
   quick: "⎇+ under a session sends POST /api/lanes with parent { slot, openedAt } and without slot; a position that is not a lane is blocked there, its sentence names ⎇+, and nothing is sent",
@@ -36,11 +39,21 @@ export const K15_START_CLAIM = {
   main: "a MAIN lists the active Programs, free first, a living MAIN not choosable; its start is POST /api/programs/<id>/bootstrap-main { cwd, harness, model, effort } without plan; existing:true stands as a sentence naming the living MAIN's slot, 409 and 503 with the server's words verbatim, nothing starts, the Programs are read again; Programs that cannot be read block with a sentence",
   branch: "a Branch-Session (Konstellation „Eine Session“) is blocked without a name; Neu sends POST /api/branches { repo, name, points }, then POST /api/branches/open { repo, branch, goal }; a 409 with existing says so and offers „Zu …“, which opens that branch",
   stale: "a 409 with staleHash starts nothing, the sentence says „Der Plan hat sich … bewegt“, and the next start carries the hash of the plan of now",
-  unreadable: "a plan that cannot be read (500, network, malformed) blocks the start with a sentence that says so, and nothing is sent",
+  unreadable: "a plan that cannot be read (500, network, malformed) blocks the start with a sentence that says so, in „Eine Session“ and in the build, and nothing is sent",
   datei: "Lane 2 of the default constellation (its own file review-regeln.md) is blocked, the sentence names the file, and nothing is sent",
   eine: "in a constellation of several sessions the button names the one that starts („Lane 1 starten“) and the sentence says only she starts",
   zu: "after a successful start the window closes and the started slot is the one shown",
+  spalten: "„Eine Session“ stands in three columns side by side, left to right: Aufsetzen, the Übersicht with the five questions as chapters, the text with the same five chapters in the same order",
+  sprung: "a click on a part in the Übersicht brings its block into the text column: before, the block stood below the column's view; after, it stands inside it",
+  schalter: "a switch in the Übersicht changes what the start gets: the plan is read again with it, the part's block appears in the text, the token sums of the Übersicht, the text and the foot grow by the part's tokens, and the start carries the switch (plan.bausteine) beside the default rights",
+  frage: "every part stands under the question its plan row names: its row in that chapter of the Übersicht, its block in that chapter of the text",
+  reiter: "on the phone „Eine Session“ has three tabs Aufsetzen · Übersicht · Agent.md, and each tab shows its own column and none of the other two",
+  kapitel: "the Übersicht opens folded (owner 19.10. 09:5x „[Zitat entfernt]“): the five questions, each with its tokens, a bar and „N im Start“, and no part visible; a click on a question shows its parts, a second click folds them again",
+  nv: "a part that is not available here stands folded under one line „N weitere(r) hier nicht verfügbar“; that line shows the N parts, and a click on one of them names „Warum nicht“",
+  rechte: "„Was darf er?“ goes with the start (A, owner 19.10. 08:5x): with Claude Code the start's body carries rechte { stufe, an, aus } — „Bauen“ by default, a level chosen under „ändern“ and an exception under „+ Ausnahme“ as chosen, and the sentence says what he may do; with another agent the section says it is Claude Code's and the body carries none",
 } as const;
+// the claims read on the phone; every other one at 1200
+const PHONE: ReadonlySet<string> = new Set([K15_START_CLAIM.openPhone, K15_START_CLAIM.reiter]);
 
 const C = K15_START_CLAIM;
 export const K15_START_MUTANTS: readonly K15StartMutant[] = [
@@ -93,9 +106,35 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     needle: "if (n > 1) return `Startet nur ${q.name}", with: "if (n > 1) return null; if (n > 1) return `Startet nur ${q.name}" },
   { name: "the window stays open after a start", claim: C.zu, file: "src/k15-start.ts",
     needle: "    s.shell.close();\n    zeigeSlot(r.slot);", with: "    zeigeSlot(r.slot);" },
+  { name: "an unreadable plan reads as loading in „Eine Session“", claim: C.unreadable, file: "src/sitzung.ts",
+    needle: "return fehler ? `Der Plan für diesen Start ist nicht lesbar: ${fehler}` :", with: "return fehler ? \"Der Plan für diesen Start wird gelesen …\" :" },
+  { name: "the Übersicht is missing", claim: C.spalten, file: "src/sitzung.ts",
+    needle: "grid.append(reiter, links, mitte, rechts);", with: "grid.append(reiter, links, rechts);" },
+  { name: "a part in the Übersicht shows nothing in the text", claim: C.sprung, file: "src/sitzung.ts",
+    needle: "    if (zu !== \"nv\" && !schmal()) imText();\n  };", with: "  };" },
+  { name: "a switch in the Übersicht switches nothing", claim: C.schalter, file: "src/sitzung.ts",
+    needle: "s.sitz.schalter = { ...s.sitz.schalter, [id]: an ? \"aus\" : \"an\" };", with: "void id; void an;" },
+  { name: "the start drops the switches", claim: C.schalter, file: "src/sitzung.ts",
+    needle: "role: \"nur-ordner\", ...(sw ? { bausteine: sw } : {}) }", with: "role: \"nur-ordner\" }" },
+  { name: "the window files every part under one question", claim: C.frage, file: "src/sitzung-modell.ts",
+    needle: "SessionFrage => \"frage\" in v && istFrage(v.frage) ? v.frage : sonst;", with: "SessionFrage => sonst;" },
+  { name: "a tab shows no column of its own", claim: C.reiter, file: "src/sitzung.ts", width: 390,
+    needle: "grid.dataset.reiter = z.reiter;", with: "grid.dataset.reiter = \"aufsetzen\";" },
+  { name: "the Übersicht opens unfolded", claim: C.kapitel, file: "src/sitzung.ts",
+    needle: "const auf = z.kapOffen.has(f.id);", with: "const auf = true;" },
+  { name: "a part not available here stands among the others", claim: C.nv, file: "src/sitzung.ts",
+    needle: "t.stand !== \"aus\" ? \"drin\" : t.schalter ? \"aus\" : \"nv\";", with: "t.stand !== \"aus\" ? \"drin\" : \"aus\";" },
+  { name: "the start drops the rights", claim: C.rechte, file: "src/sitzung.ts",
+    needle: "const rechte = ag === \"claude\" ? { rechte: z.rechte } : {};", with: "const rechte = {};" },
+  { name: "the rights go to every agent", claim: C.rechte, file: "src/sitzung.ts",
+    needle: "ag === \"claude\" ? { rechte: z.rechte } : {}", with: "{ rechte: z.rechte }" },
+  { name: "a level is not taken", claim: C.rechte, file: "src/sitzung-links.ts",
+    needle: "() => { z.rechte = { stufe: st.id, an: [], aus: [] }; z.rechteWahl = \"zu\"; render(); }", with: "() => { z.rechteWahl = \"zu\"; render(); }" },
 ];
 
 const REPO = "/fixture/claude-fleet";
+// the five questions in their order (owner 18.10., session-fragen.ts): both sides of „[Zitat entfernt]“ are chaptered by them
+const FRAGEN = ["auftrag", "umstaende", "hintergrund", "howto", "konzepte"];
 // the free place every case from the left bar clicks; slot 1 runs, slot 2 is the first free one (or the Orchestratorin's)
 const FREE = 4;
 const STD: Record<string, { harness: string; modell: string; effort: string } | null> = {
@@ -107,14 +146,22 @@ const STD: Record<string, { harness: string; modell: string; effort: string } | 
 const ROLE_WORD: Record<string, string> = { lane: "Lane", main: "MAIN", orchestratorin: "Orchestratorin", "nur-ordner": "Nur Ordner" };
 type Rd = Record<string, "an" | "aus">;
 const ALL = (v: "an" | "aus", ordner: "an" | "aus"): Rd => ({ lane: v, main: v, orchestratorin: v, "nur-ordner": ordner });
-// a small register of its own: what each role gets, and the two rows a free session's /open door gives without a plan
-const ROWS: { id: string; wort: string; funktion: string[]; noetig: boolean; rd: Rd; bytes: number; fest?: string }[] = [
-  { id: "spawn-profile", wort: "Agent · Modell · Effort", funktion: ["orientierung"], noetig: true, rd: ALL("an", "aus"), bytes: 0 },
-  { id: "role-card", wort: "Rolle", funktion: ["vertrag"], noetig: true, rd: { lane: "an", main: "an", orchestratorin: "aus", "nur-ordner": "aus" }, bytes: 100 },
-  { id: "self-credential", wort: "Rückweg", funktion: ["rueckweg"], noetig: true, rd: ALL("an", "aus"), bytes: 0 },
-  { id: "context-anchors", wort: "Lesehinweise", funktion: ["orientierung"], noetig: false, rd: ALL("an", "aus"), bytes: 76 },
-  { id: "native-agents", wort: "Lädt nativ", funktion: ["vertrag"], noetig: false, rd: ALL("an", "an"), bytes: 1000, fest: "Der Agent lädt den Ordner selbst." },
+// a small register of its own: what each role gets, the two rows a free session's /open door gives without a plan, each row's
+// question (`frage`, session-fragen.ts), and one row a free session may switch — only here: the real register switches nothing in
+// „Nur Ordner“ (luecken.md S1), so this row is what claim 17 reads the window's switch on
+const ROWS: { id: string; wort: string; funktion: string[]; noetig: boolean; rd: Rd; bytes: number; frage: string; fest?: string; ordner?: true }[] = [
+  { id: "spawn-profile", wort: "Agent · Modell · Effort", funktion: ["orientierung"], noetig: true, rd: ALL("an", "aus"), bytes: 0, frage: "umstaende" },
+  { id: "role-card", wort: "Rolle", funktion: ["vertrag"], noetig: true, rd: { lane: "an", main: "an", orchestratorin: "aus", "nur-ordner": "aus" }, bytes: 100, frage: "howto" },
+  { id: "self-credential", wort: "Rückweg", funktion: ["rueckweg"], noetig: true, rd: ALL("an", "aus"), bytes: 0, frage: "umstaende" },
+  { id: "context-anchors", wort: "Lesehinweise", funktion: ["orientierung"], noetig: false, rd: ALL("an", "aus"), bytes: 76, frage: "hintergrund" },
+  { id: "native-agents", wort: "Lädt nativ", funktion: ["vertrag"], noetig: false, rd: ALL("an", "an"), bytes: 1000, frage: "hintergrund", fest: "Der Agent lädt den Ordner selbst." },
+  { id: "lesehilfe", wort: "Lesehilfe", funktion: ["orientierung"], noetig: false, rd: ALL("aus", "aus"), bytes: 840, frage: "konzepte", ordner: true },
 ];
+// the files Claude Code loads by itself in the fixture repo (native-agents' details): three of yours, two of the folder, each long
+// enough that the text column has to scroll to the folder's
+const NATIV = [["/fixture/home/.claude/CLAUDE.md", 3000], ["/fixture/home/.claude/rules/typescript.md", 2000], ["/fixture/home/AGENTS.md", 2500],
+  [`${REPO}/AGENTS.md`, 4000], [`${REPO}/docs/CLAUDE.md`, 1000]] as const;
+const fileText = (pfad: string): string => Array.from({ length: 40 }, (_, i) => `${pfad} · Zeile ${i + 1}`).join("\n");
 // what the /open door gives a free session although its plan says „aus“ (server.ts#planDoorVerdict), in the window's words
 const ORDNER_TROTZDEM = "Agent · Modell · Effort, Rückweg";
 const hash = (s: string): string => {
@@ -162,6 +209,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`k15 start mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const k15Css = readFileSync(resolve(sourceRoot, "public/k15.css"), "utf8");
+  const sitzungCss = readFileSync(resolve(sourceRoot, "public/sitzung.css"), "utf8");
   // the constellation a case drags in: one session „Nur Ordner“ (the only way the window makes one is a drop or an import)
   const ordnerJson = resolve(scratch, "nur-ordner.fleet.json");
   writeFileSync(ordnerJson, JSON.stringify({ format: 1, fleet: "konstellation", name: "Nur Ordner", version: 1, satz: "eine Session ohne Rolle", autor: "Fleet",
@@ -192,13 +240,14 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
     for (const e of (q.get("bausteine") ?? "").split(",").filter(Boolean)) { const at = e.indexOf("="); sw[e.slice(0, at)] = e.slice(at + 1); }
     const ordner = role === "nur-ordner";
     const bausteine = ROWS.map((r) => {
-      const zu = ordner && r.id !== "native-agents";
+      const zu = ordner && r.id !== "native-agents" && !r.ordner;
       const zustand = sw[r.id] ?? r.rd[role] ?? "aus";
       return { id: r.id, wort: r.wort, satz: `Satz ${r.id}.`, funktion: r.funktion,
         grenze: r.noetig ? { art: "noetig", grund: `ohne ${r.wort} kein Start` } : { art: "frei" }, schicht: "fixture", zustand,
         quelle: r.id in sw ? "schalter" : "default", rollenDefault: r.rd[role] ?? "aus", harness: { gueltig: true, grund: null },
         schaltbar: r.fest ? { ja: false, grund: r.fest } : zu ? { ja: false, grund: "Nur Ordner liefert nur, was der Ordner selbst lädt." } : { ja: true },
-        bytes: r.bytes, ersatzKandidaten: [] };
+        bytes: r.bytes, ersatzKandidaten: [], frage: r.frage,
+        ...(r.id === "native-agents" ? { details: { dateien: NATIV.map(([pfad, bytes]) => ({ pfad, bytes })), nachgeladen: [] } } : {}) };
     });
     const startbar = !ordner || fx.ordnerStartbar;
     return { head: fx.head, branch: "main", harness, plannedAt: 1000, selected: [], omitted: [], role,
@@ -317,6 +366,8 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       if (p === "/app.js") return reply(requestId, 200, appJs, "text/javascript");
       if (p === "/k15.js") return reply(requestId, 200, k15Js, "text/javascript");
       if (p === "/k15.css") return reply(requestId, 200, k15Css, "text/css");
+      if (p === "/sitzung.css") return reply(requestId, 200, sitzungCss, "text/css");
+      if (p === "/api/file") return json(requestId, { text: fileText(u.searchParams.get("path") ?? "") });
       if (p === "/api/sessions") return json(requestId, { now: Date.now(), chips: [], tasks: [], slots: slots(), instance: { name: "mac" }, programs: [] });
       if (p === "/api/harnesses") return json(requestId, KATALOG);
       if (p === "/api/machine-settings") return json(requestId, { settings: [{ name: "FLEET_MIGRATE_PCT", value: 40 }, { name: "FLEET_LANE_MIGRATE_PCT", value: 37 },
@@ -435,7 +486,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
     let targetId = "";
     for (const [width, height, phone] of ([[1200, 900, false], [390, 844, true]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
       // every claim of this width starts red: a case that throws leaves its claim false, never absent
-      const claims: Record<string, boolean> = Object.fromEntries(Object.values(C).filter((c) => (c === C.openPhone) === phone).map((c) => [c, false]));
+      const claims: Record<string, boolean> = Object.fromEntries(Object.values(C).filter((c) => PHONE.has(c) === phone).map((c) => [c, false]));
       const facts: Record<string, unknown> = {};
       // ONE CASE, A FRESH PAGE: the fixture's state, the recorded requests and the window's module state start empty
       const fresh = async (set: Partial<Fx> = {}) => {
@@ -459,12 +510,19 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           throw new Error(`the board never showed slot 1 and free slot ${FREE}: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
         await idle();
       };
-      // the window from the free place, ready: its plan read, its foot drawn
-      const fromFree = async () => {
+      // the window from the free place in its view „Eine Session“, ready: its plan read, its foot drawn
+      const eineSession = async () => {
         await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
-        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("the window „Neue Session“ did not open from the free place");
+        if (!await wait(`!!${WIN}?.querySelector('.ksgo')`, 10000)) throw new Error("the window „Neue Session“ did not open „Eine Session“ from the free place");
         await idle();
       };
+      // …and its build (K15) over „Mit anderen Sessions arbeiten“
+      const zumAufbau = async () => {
+        await click(`${WIN}?.querySelector('.ksrolle[data-rolle="andere"]')`);
+        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("„Mit anderen Sessions arbeiten“ did not open the build");
+        await idle();
+      };
+      const fromFree = async () => { await eineSession(); await zumAufbau(); };
       // K15 at this width shows one column at a time: the constellation's own row leads to its build, a card to the session
       const toSession = async (id: string) => {
         await click(`${WIN}?.querySelector('.k15konst.on')`); await idle();
@@ -489,10 +547,28 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           await wait("!!document.querySelector('#msheet .mshnew')", 3000);
           await settle(250);
           await tap("document.querySelector('#msheet .mshnew')");
-          const ok = await wait(`!!document.querySelector('#shell-found.k15 .k15go')`, 10000);
+          const ok = await wait(`!!document.querySelector('#shell-found.k15.k15sitz .ksgo')`, 10000);
           const seen = await evaluate<{ h2: string | null; old: number }>(`({ h2: ${WIN}?.querySelector('h2')?.textContent ?? null, old: document.querySelectorAll('.fdgo, .fdkind').length })`);
           facts.openPhone = { ok, ...seen };
           claims[C.openPhone] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0;
+          // 19 · the three tabs, each with its own column
+          await idle();
+          const sicht = () => evaluate<{ tabs: string[]; an: string | null; zu: string[] }>(`(() => { const sieht = (q) => { const e = ${WIN}?.querySelector(q);
+            return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; };
+            const tabs = [...(${WIN}?.querySelectorAll('.ksreiter button') ?? [])];
+            return { tabs: tabs.map((b) => b.textContent), an: tabs.find((b) => b.getAttribute('aria-pressed') === 'true')?.textContent ?? null,
+              zu: ['.kslinks', '.ksindex', '.kstext'].filter(sieht) }; })()`);
+          const tab = (wort: string) => tap(`[...document.querySelectorAll('#shell-found .ksreiter button')].find((b) => b.textContent === ${JSON.stringify(wort)})`);
+          const auf = await sicht();
+          await tab("Übersicht"); await idle();
+          const ueb = await sicht();
+          await tab("Agent.md"); await idle();
+          const txt = await sicht();
+          facts.reiter = { auf, ueb, txt };
+          claims[C.reiter] = JSON.stringify(auf.tabs) === JSON.stringify(["Aufsetzen", "Übersicht", "Agent.md"])
+            && auf.an === "Aufsetzen" && JSON.stringify(auf.zu) === JSON.stringify([".kslinks"])
+            && ueb.an === "Übersicht" && JSON.stringify(ueb.zu) === JSON.stringify([".ksindex"])
+            && txt.an === "Agent.md" && JSON.stringify(txt.zu) === JSON.stringify([".kstext"]);
         });
         results.push({ width, height, claims, facts });
         continue;
@@ -502,10 +578,13 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       await caseOf("lane", async () => {
         await fresh();
         await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
-        const ok = await wait(`!!document.querySelector('#shell-found.k15 .k15go')`, 10000);
-        const seen = await evaluate<{ h2: string | null; old: number }>(`({ h2: ${WIN}?.querySelector('h2')?.textContent ?? null, old: document.querySelectorAll('.fdgo, .fdkind').length })`);
+        const ok = await wait(`!!document.querySelector('#shell-found.k15.k15sitz .ksgo')`, 10000);
+        const seen = await evaluate<{ h2: string | null; old: number; go: string | null }>(`({ h2: ${WIN}?.querySelector('h2')?.textContent ?? null,
+          old: document.querySelectorAll('.fdgo, .fdkind').length, go: ${WIN}?.querySelector('.ksgo')?.textContent ?? null })`);
         facts.open = { ok, ...seen };
-        claims[C.open] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0;
+        claims[C.open] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0 && seen.go === "Session starten";
+        await idle();
+        await zumAufbau();
         await goReady();
         const f = await foot();
         facts.eine = f;
@@ -768,10 +847,16 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       for (const mode of ["500", "network", "malformed"] as const) {
         await caseOf(`plan-${mode}`, async () => {
           await fresh({ plan: mode });
-          await fromFree();
+          await eineSession();
+          const eine = await evaluate<{ satz: string | null; disabled: boolean | null }>(`({ satz: ${WIN}?.querySelector('.kssatz')?.textContent ?? null,
+            disabled: ${WIN}?.querySelector('.ksgo')?.disabled ?? null })`);
+          await click(`${WIN}?.querySelector('.ksgo')`); await idle();
+          const sentEine = starts().length;
+          await zumAufbau();
           const f = await goBlocked();
-          facts[`plan-${mode}`] = { foot: f, posts: starts() };
-          unreadable.push(f.disabled === true && f.warn && !!f.satz?.startsWith("Der Plan für diesen Start ist nicht lesbar:") && starts().length === 0);
+          facts[`plan-${mode}`] = { eine, sentEine, foot: f, posts: starts() };
+          unreadable.push(eine.disabled === true && !!eine.satz?.startsWith("Der Plan für diesen Start ist nicht lesbar:") && sentEine === 0
+            && f.disabled === true && f.warn && !!f.satz?.startsWith("Der Plan für diesen Start ist nicht lesbar:") && starts().length === 0);
         });
       }
       claims[C.unreadable] = unreadable.length === 3 && unreadable.every(Boolean);
@@ -784,6 +869,184 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const f = await goBlocked();
         facts.datei = { foot: f, posts: starts() };
         claims[C.datei] = f.disabled === true && f.warn && !!f.satz?.includes("die Datei review-regeln.md") && starts().length === 0;
+      });
+
+      // 15–18, 20–22 · THE VIEW „EINE SESSION“ ITSELF
+      const kapitel = (sel: string, attr: string) => `[...(${WIN}?.querySelectorAll('${sel}') ?? [])].map((k) => k.dataset.${attr})`;
+      // the Übersicht opens folded (src/sitzung.ts#index): a case that reads a part opens its question first
+      const kapitelAuf = async (kap: string) => {
+        await click(`${WIN}?.querySelector('.kskap[data-kap="${kap}"] .kskapk')`);
+        if (!await wait(`${WIN}?.querySelector('.kskap[data-kap="${kap}"].auf')`, 4000)) throw new Error(`the question ${kap} did not open`);
+        await idle();
+      };
+      // the text column scrolls smoothly: wait until it has held still for a few frames
+      const textRuht = () => evaluate(`new Promise((ok) => { const sp = ${WIN}?.querySelector('.kstext'); let last = -1, still = 0;
+        const tick = () => { const t = sp?.scrollTop ?? 0; still = t === last ? still + 1 : 0; last = t; if (still >= 6) return ok(true); requestAnimationFrame(tick); };
+        tick(); setTimeout(() => ok(false), 3000); })`);
+      // 15 · three columns side by side, the five questions as chapters on both sides
+      await caseOf("spalten", async () => {
+        await fresh();
+        await eineSession();
+        const v = await evaluate<{ cols: [string, number, number, boolean][]; reiter: boolean; index: string[]; text: string[] }>(`(() => {
+          const ks = ${WIN}?.querySelector('.ks');
+          const col = (q) => { const e = ks?.querySelector(q); const r = e?.getBoundingClientRect();
+            return [q, r ? Math.round(r.left) : -1, r ? Math.round(r.width) : 0, !!e && getComputedStyle(e).display !== 'none' && !!r && r.right <= innerWidth + 1 && r.bottom > r.top]; };
+          const reiter = ks?.querySelector('.ksreiter');
+          return { cols: ['.kslinks', '.ksindex', '.kstext'].map(col), reiter: !!reiter && getComputedStyle(reiter).display !== 'none',
+            index: ${kapitel(".ksindex .kskap", "kap")}, text: ${kapitel(".kstext .kskapitel", "kapitelT")} }; })()`);
+        facts.spalten = v;
+        const [l, m, r] = v.cols;
+        claims[C.spalten] = v.cols.length === 3 && v.cols.every((c) => c[3] && c[2] >= 200) && l![1] < m![1] && m![1] < r![1] && !v.reiter
+          && JSON.stringify(v.index) === JSON.stringify(FRAGEN) && JSON.stringify(v.text) === JSON.stringify(FRAGEN);
+      });
+
+      // 16 · a part in the Übersicht shows its block in the text: the folder's rules stand below three of your files. Opening their
+      // question moves the text to the question's head; the column goes back to its top before the part is clicked
+      await caseOf("sprung", async () => {
+        await fresh();
+        await eineSession();
+        await wait(`(${WIN}?.querySelector('.ksblk[data-teil-b="regeln-ordner"]:not(.zu) pre')?.textContent ?? '').includes('Zeile 1')`, 6000);
+        await kapitelAuf("hintergrund");
+        await settle(200);
+        await textRuht();
+        await evaluate(`${WIN}?.querySelector('.kstext')?.scrollTo({ top: 0, behavior: 'instant' })`);
+        await idle();
+        const lage = () => evaluate<{ oben: number; hoehe: number; scroll: number } | null>(`(() => { const sp = ${WIN}?.querySelector('.kstext');
+          const b = sp?.querySelector('.ksblk[data-teil-b="regeln-ordner"]:not(.zu)'); if (!sp || !b) return null;
+          return { oben: Math.round(b.getBoundingClientRect().top - sp.getBoundingClientRect().top), hoehe: sp.clientHeight, scroll: Math.round(sp.scrollTop) }; })()`);
+        const vor = await lage();
+        await click(`${WIN}?.querySelector('.ksteil[data-teil="regeln-ordner"]')`);
+        await settle(200);
+        await textRuht();
+        const nach = await lage();
+        facts.sprung = { vor, nach };
+        claims[C.sprung] = !!vor && !!nach && vor.oben >= vor.hoehe && nach.oben >= 0 && nach.oben < nach.hoehe - 40 && nach.scroll > 0;
+      });
+
+      // 17 · a switch in the Übersicht: the fixture's one row a free session may switch, with a door that starts the plan
+      await caseOf("schalter", async () => {
+        await fresh({ ordnerStartbar: true });
+        await eineSession();
+        const summen = () => evaluate<{ index: number; text: number; fuss: number; zu: boolean; wort: string }>(`(() => {
+          const n = (q) => Number((${WIN}?.querySelector(q)?.textContent ?? '').replace(/[^0-9]/g, '') || -1);
+          const b = ${WIN}?.querySelector('.ksblk[data-b="lesehilfe"]');
+          return { index: n('.ksikopf .kszahl'), text: n('.kstkopf .kszahl'), fuss: n('.kssumme span'), zu: !b || b.classList.contains('zu'),
+            wort: b?.querySelector('pre')?.textContent ?? '' }; })()`);
+        await kapitelAuf("konzepte");
+        const vor = await summen();
+        await click(`${WIN}?.querySelector('.ksteil[data-teil="lesehilfe"] .kssw')`);
+        await idle();
+        await wait(`${WIN}?.querySelector('.ksblk[data-b="lesehilfe"]:not(.zu)')`, 4000);
+        const nach = await summen();
+        const gelesen = planReads.some((q) => q.role === "nur-ordner" && q.bausteine === "lesehilfe=an");
+        await wait(`${WIN}?.querySelector('.ksgo') && !${WIN}.querySelector('.ksgo').disabled`, 6000);
+        await click(`${WIN}?.querySelector('.ksgo')`);
+        await wait(`!${WIN}`, 6000); await idle();
+        const s = starts();
+        const h = hash(planKey(new URLSearchParams({ repo: REPO, role: "nur-ordner", bausteine: "lesehilfe=an" }), fx.head));
+        facts.schalter = { vor, nach, gelesen, posts: s, expectHash: h };
+        // 840 bytes at the window's 2,1 bytes per token (sitzung-modell.ts#fleetJe without startSumme), each sum rounded on its own
+        const mehr = (a: number, b: number) => b - a >= 399 && b - a <= 401;
+        claims[C.schalter] = vor.zu && !nach.zu && nach.wort.startsWith("Lesehilfe: kommt in den Start") && gelesen
+          && mehr(vor.index, nach.index) && mehr(vor.text, nach.text) && mehr(vor.fuss, nach.fuss)
+          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open`
+          && canon(s[0]!.body) === canon({ cwd: REPO, plan: { hash: h, role: "nur-ordner", bausteine: "lesehilfe=an" },
+            rechte: { stufe: "bauen", an: [], aus: [] } });
+      });
+
+      // 18 · every part under its question, in the Übersicht and in the text
+      await caseOf("frage", async () => {
+        await fresh();
+        await eineSession();
+        const soll: [string, string][] = [["spawn-profile", "umstaende"], ["self-credential", "umstaende"], ["context-anchors", "hintergrund"],
+          ["regeln-du", "hintergrund"], ["regeln-ordner", "hintergrund"], ["role-card", "howto"], ["lesehilfe", "konzepte"]];
+        const ist = await evaluate<[string, string | null, string | null][]>(`${JSON.stringify(soll.map(([id]) => id))}.map((id) => {
+          const zeile = ${WIN}?.querySelector('.ksteil[data-teil="' + id + '"]')?.closest('.kskap')?.dataset.kap ?? null;
+          let k = ${WIN}?.querySelector('.ksblk[data-teil-b="' + id + '"]')?.previousElementSibling ?? null;
+          while (k && !k.classList.contains('kskapitel')) k = k.previousElementSibling;
+          return [id, zeile, k?.dataset.kapitelT ?? null]; })`);
+        facts.frage = ist;
+        claims[C.frage] = ist.length === soll.length && ist.every(([id, zeile, block], i) => id === soll[i]![0] && zeile === soll[i]![1] && block === soll[i]![1]);
+      });
+
+      // 20 · the Übersicht opens folded and unfolds one question at a time
+      await caseOf("kapitel", async () => {
+        await fresh();
+        await eineSession();
+        const blick = () => evaluate<{ kap: [string, string, boolean, string, boolean][]; sichtbar: number }>(`(() => {
+          const zu = (e) => !e || e.getClientRects().length === 0;
+          const kap = [...(${WIN}?.querySelectorAll('.ksindex .kskap') ?? [])].map((k) => [k.dataset.kap, k.querySelector('.kstk')?.textContent ?? '',
+            !!k.querySelector('.ksbalken i'), k.querySelector('.ksanz')?.textContent ?? '', k.classList.contains('auf')]);
+          const sichtbar = [...(${WIN}?.querySelectorAll('.ksindex .ksteil') ?? [])].filter((t) => !zu(t)).length;
+          return { kap, sichtbar }; })()`);
+        const zu = await blick();
+        await kapitelAuf("hintergrund");
+        const auf = await blick();
+        await click(`${WIN}?.querySelector('.kskap[data-kap="hintergrund"] .kskapk')`);
+        await idle();
+        const wieder = await blick();
+        facts.kapitel = { zu, auf, wieder };
+        claims[C.kapitel] = JSON.stringify(zu.kap.map((k) => k[0])) === JSON.stringify(FRAGEN) && zu.sichtbar === 0 && zu.kap.every((k) => !k[4])
+          && zu.kap.some((k) => /\d/.test(k[1]) && k[2] && /^\d+ im Start$/.test(k[3]))
+          && auf.sichtbar > 0 && auf.kap.filter((k) => k[4]).map((k) => k[0]).join() === "hintergrund"
+          && wieder.sichtbar === 0 && wieder.kap.every((k) => !k[4]);
+      });
+
+      // 21 · what is not available here stands folded under one line, and says why
+      await caseOf("nv", async () => {
+        await fresh();
+        await eineSession();
+        const kap = await evaluate<string | null>(`[...(${WIN}?.querySelectorAll('.ksindex .kskap') ?? [])].find((k) => k.querySelector('.ksnvk'))?.dataset.kap ?? null`);
+        if (!kap) throw new Error("no question has a part that is not available here");
+        await kapitelAuf(kap);
+        const blick = () => evaluate<{ zeile: string; n: number; sichtbar: number; detail: string }>(`(() => {
+          const k = ${WIN}?.querySelector('.kskap[data-kap="${kap}"]');
+          const nv = [...(k?.querySelectorAll('.ksnv .ksteil') ?? [])];
+          return { zeile: k?.querySelector('.ksnvk')?.textContent ?? '', n: nv.length, sichtbar: nv.filter((t) => t.getClientRects().length > 0).length,
+            detail: k?.querySelector('.ksnv .ksdetail')?.textContent ?? '' }; })()`);
+        const zu = await blick();
+        await click(`${WIN}?.querySelector('.kskap[data-kap="${kap}"] .ksnvk')`);
+        await idle();
+        const auf = await blick();
+        await click(`${WIN}?.querySelector('.kskap[data-kap="${kap}"] .ksnv .ksteil')`);
+        await idle();
+        const detail = await blick();
+        facts.nv = { kap, zu, auf, detail };
+        claims[C.nv] = zu.n > 0 && zu.sichtbar === 0 && zu.zeile === `${zu.n} ${zu.n === 1 ? "weiterer" : "weitere"} hier nicht verfügbar`
+          && auf.sichtbar === zu.n && detail.detail.includes("Warum nicht");
+      });
+
+      // 22 · what he may do goes with the start: the default, a level and a switch; another agent gets none
+      await caseOf("rechte", async () => {
+        const startMit = async (wahl: () => Promise<void>) => {
+          await fresh();
+          await eineSession();
+          await wahl();
+          await wait(`${WIN}?.querySelector('.ksgo') && !${WIN}.querySelector('.ksgo').disabled`, 6000);
+          await click(`${WIN}?.querySelector('.ksgo')`);
+          await wait(`!${WIN}`, 6000); await idle();
+          return starts().map((x) => ({ url: x.url, rechte: (x.body as Record<string, unknown>).rechte ?? null, harness: (x.body as Record<string, unknown>).harness ?? null }));
+        };
+        const standard = await startMit(async () => {});
+        let fremd = "";
+        let satz = "";
+        const gewaehlt = await startMit(async () => {
+          await click(`${WIN}?.querySelector('.ksrecht [data-tu="stufe"]')`); await idle();
+          await click(`${WIN}?.querySelector('.ksstufe[data-stufe="lesen"]')`); await idle();
+          await click(`${WIN}?.querySelector('.ksrecht [data-tu="ausnahme"]')`); await idle();
+          await click(`${WIN}?.querySelector('.kssw[data-befehl="landen"]')`); await idle();
+          satz = await evaluate<string>(`${WIN}?.querySelector('.ksrsatz span')?.textContent ?? ''`);
+        });
+        const codex = await startMit(async () => {
+          await evaluate(`(() => { const sel = ${WIN}?.querySelector('select[aria-label="Agent"]'); sel.value = 'codex'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+          await idle();
+          fremd = await evaluate<string>(`[...(${WIN}?.querySelectorAll('.ksabschn') ?? [])].find((a) => a.querySelector('h2')?.textContent === 'Was darf er?')?.textContent ?? ''`);
+        });
+        facts.rechte = { standard, gewaehlt, satz, codex, fremd };
+        const eins = (xs: { url: string; rechte: unknown }[], r: unknown) => xs.length === 1 && xs[0]!.url === `/api/slots/${FREE}/open` && canon(xs[0]!.rechte) === canon(r);
+        claims[C.rechte] = eins(standard, { stufe: "bauen", an: [], aus: [] }) && eins(gewaehlt, { stufe: "lesen", an: ["landen"], aus: [] })
+          && satz === "Stufe „Nur lesen“Er darf seine Arbeit selbst übernehmen. Dateien ändern, Fleet neu aufspielen und Arbeitskopien wegwerfen machst du."
+          && eins(codex, null) && codex[0]!.harness === "codex" && fremd.includes("nur für Claude Code");
       });
 
       results.push({ width, height, claims, facts });

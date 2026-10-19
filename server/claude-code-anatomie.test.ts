@@ -210,8 +210,8 @@ describe("anatomieFuerRolle", () => {
   });
   test("Fleets Anhang wörtlich aus dem Code, was aus ist, ohne Text", () => {
     expect(gruppe(lane, "fleet")).toEqual([
-      { name: "Listenschnitt", bytes: 38, stand: "an", weg: "--append-system-prompt", satz: "s", text: "FLEET-LISTENSCHNITT (main): eine Zeile" },
-      { name: "Gepflogenheiten", bytes: null, stand: "aus", weg: "--append-system-prompt-file", satz: "aus" }]);
+      { name: "Listenschnitt", bytes: 38, stand: "an", weg: "--append-system-prompt", satz: "s", text: "FLEET-LISTENSCHNITT (main): eine Zeile", frage: "howto" },
+      { name: "Gepflogenheiten", bytes: null, stand: "aus", weg: "--append-system-prompt-file", satz: "aus", frage: "howto" }]);
   });
   test("Werkzeuge: mit Liste legt Fleet an und aus fest, ein Server-Werkzeug bleibt Claude Codes, was die Quelle nicht hatte, ist nicht gemessen", () => {
     expect(kurz(lane, "werkzeuge")).toEqual(["Bash:an:--tools", "Read:an:--tools", "Workflow:aus:--tools", "advisor:abruf:mitgeliefert", "Monitor:abruf:--tools", "Edit:an:--tools"]);
@@ -233,12 +233,27 @@ describe("anatomieFuerRolle", () => {
   });
   test("Plugins sind eine Zuordnung aus den Präfixen, ohne eigene Größe", () => {
     expect(gruppe(generic, "plugins")).toEqual([
-      { name: "figma", bytes: null, stand: "an", weg: "Plugin figma", satz: "bringt Skill figma:figma-use" },
-      { name: "playwright", bytes: null, stand: "an", weg: "Plugin playwright", satz: "bringt MCP-Server playwright" }]);
+      { name: "figma", bytes: null, stand: "an", weg: "Plugin figma", satz: "bringt Skill figma:figma-use", frage: "howto" },
+      { name: "playwright", bytes: null, stand: "an", weg: "Plugin playwright", satz: "bringt MCP-Server playwright", frage: "howto" }]);
   });
   test("kein sichtbarer Satz nennt einen Schalter der Startzeile, der steht im Weg (Prüfung Punkt 12)", () => {
     const saetze = [lane, generic].flatMap((a) => a.gruppen.flatMap((g) => g.teile.map((t) => `${t.name}: ${t.satz}`)));
     expect(saetze.filter((x) => /(^|\s)--[a-z]/.test(x))).toEqual([]);
+  });
+  test("jeder Teil trägt seine Frage aus dem Register (S14): Identität und Environment Umstände, Memory Hintergrund, der Rest How-to", () => {
+    const mitUmgebung: Anatomie = { ...VOLL, systemprompt: [...VOLL.systemprompt, { text: "# Environment\nYou have been invoked in the following environment:", bytes: 61 }] };
+    const autoMode = { name: "Auto-Mode", weg: "--append-system-prompt", text: "Sperrt der Klassifizierer, sag es und frag.", satz: "s" };
+    const a = anatomieFuerRolle(QUELLE(mitUmgebung), null, FLEET({ anhang: [...FLEET().anhang, autoMode] }), orte);
+    const fragen = (x: ReturnType<typeof anatomieFuerRolle>, id: string) => gruppe(x, id).map((t) => `${t.name}:${t.frage}`);
+    expect(fragen(a, "systemprompt")).toEqual(["Du bist Claude Code.:umstaende", "Du bist ein Agent.:howto", "Memory:hintergrund", "Environment:umstaende"]);
+    expect(fragen(a, "fleet")).toEqual(["Listenschnitt:howto", "Gepflogenheiten:howto", "Auto-Mode:umstaende"]);
+    // die Lane startet ohne Memory: der Abschnitt ist aus und bleibt Hintergrund; eine Quelle ohne Memory-Abschnitt ebenso
+    expect(fragen(lane, "systemprompt").at(-1)).toBe("Memory:hintergrund");
+    const ohneMemory = anatomieFuerRolle(QUELLE({ ...VOLL, systemprompt: [VOLL.systemprompt[0]!] }), null, FLEET(), orte);
+    expect(gruppe(ohneMemory, "systemprompt").find((t) => t.name === "Memory")?.frage).toBe("hintergrund");
+    expect(new Set(gruppe(lane, "werkzeuge").map((t) => t.frage))).toEqual(new Set(["umstaende"]));
+    expect(new Set(gruppe(generic, "mcp").map((t) => t.frage))).toEqual(new Set(["umstaende"]));
+    expect(new Set(["skills", "agenten", "plugins"].flatMap((id) => gruppe(generic, id).map((t) => t.frage)))).toEqual(new Set(["howto"]));
   });
   test("die Quelle trägt das gemessene Verhältnis Bytes je Token ihrer ersten Anfrage", () => {
     expect(lane.quelle).toEqual({ slot: null, rolle: "Lane", ort: "bau-x", claude: "2.1.301", modell: "claude-opus-5-5", seit: Date.parse("2026-10-16T09:00:00.000Z"),
@@ -247,6 +262,6 @@ describe("anatomieFuerRolle", () => {
   test("ohne Quelle: der Grund, Claude Codes Teil leer, Fleets Teil und die Werkzeugliste aus dem Code", () => {
     const a = anatomieFuerRolle(null, "noch nicht gemessen", FLEET({ werkzeuge: ["Bash"] }), LEER);
     expect([a.quelle, a.grund, gruppe(a, "systemprompt").length, gruppe(a, "fleet").length]).toEqual([null, "noch nicht gemessen", 0, 2]);
-    expect(gruppe(a, "werkzeuge")).toEqual([{ name: "Bash", bytes: null, stand: "an", weg: "--tools", satz: "auf Fleets Werkzeugliste dieser Rolle; Größe noch nicht gemessen" }]);
+    expect(gruppe(a, "werkzeuge")).toEqual([{ name: "Bash", bytes: null, stand: "an", weg: "--tools", satz: "auf Fleets Werkzeugliste dieser Rolle; Größe noch nicht gemessen", frage: "umstaende" }]);
   });
 });

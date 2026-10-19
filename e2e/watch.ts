@@ -3751,7 +3751,17 @@ export async function run(): Promise<void> {
           knobLatchOk = false;
           break;
         }
+        const parkedAt = (await reportRow(rowId))?.attempts ?? -1;
         writeFileSync(`${recoveryLatch}.release`, "ok\n", { mode: 0o600 });
+        // THE ROUND'S COUNT IS HELD, NOT RACED (Mangel 116): with receiverIdleSec 0 the row is due
+        // again on the next tick, and a retry between this release and the next stopSrv adds a
+        // count no round asked for — abc then reaches the default cap of 5 and the cap-6 ladder
+        // never parks (Q6), or the retry dies mid-flight at the stop (restart gate). So once the
+        // parked attempt has left the latch (its count went up), the release is taken back: every
+        // further retry parks BEFORE its count and marker, uncounted, until the stop kills it.
+        await waitReportRow(rowId, (row) => row.attempts > parkedAt);
+        rmSync(`${recoveryLatch}.reached`, { force: true });
+        rmSync(`${recoveryLatch}.release`, { force: true });
         // The counter is monotonic; the observation ends at the FIRST decisive rest: the round's
         // count reached at rest (retryable, prose naming the observed count — never equality,
         // which two attempts inside one poll window lose forever, §11.2q), OR the row leaving

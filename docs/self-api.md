@@ -4153,7 +4153,16 @@ keine zweite automatische Zeile. Die Zeile bindet Slot, `openedAt` und Session-I
 Occupation; eine Ersatz-Occupation erhält sie nicht. Die bestehenden Zustell-Gates und der
 Zustell-Deckel gelten weiterhin; bei vollem Budget nennt `watch_skip` die Command-Job-Id und den Grund.
 MAIN-Sessions nutzen weiterhin eine `job`-Watch. Die Quittung bleibt über die Lesetür verfügbar.
-`GET /api/self/jobs/:id` antwortet nur der anbietenden Session (sonst 404, nie fremde Arbeit).
+`GET /api/self/jobs/:id` antwortet der anbietenden Session und daneben genau einem Leser: der
+aktuell gebundenen MAIN des Programs der anbietenden Lane, damit sie die Gate-Schritte ihrer Lane
+selbst nachliest (Mangel 143). Dafür muss `slot` + `openedAt` des Jobs noch eine lebende
+Lane-Belegung (kein Steward) nennen, deren `programId` eines der Programs ist, an das die MAIN mit
+Slot UND `openedAt` gebunden ist (`server.ts#boundProgramForMain`); die MAIN selbst hat keinen
+Worktree. Endet die Lane-Belegung, endet auch dieser Lesepfad. Die MAIN liest dieselbe
+`server.ts#commandJobView` wie die Lane (`id`, `state`, `cmd`, `argv`, `timeoutMs`,
+`artifactGlobs`, `branch`, `offeredAt`, `commitSha`, `treeSha`, `untracked`, `claim{name,claimedAt,expiresAt}`,
+`result`, ggf. `land`; ohne `deviceId` und Bundle-Pfad); zurückziehen darf sie nicht (409). Jeder
+andere Prinzipal — fremde MAIN, andere Lane, Steward — erhält 404, nie fremde Arbeit.
 `POST /api/self/jobs/:id/withdraw` gilt für die anbietende Session (Slot und `openedAt`), Lane
 oder MAIN. Ein offener Job wird `withdrawn`: 200 mit `{ok:true,job:{...},mayRunLocally:true}`;
 er verschwindet aus der Helper-Liste und kann nicht mehr geclaimt werden. Ein geclaimter Job

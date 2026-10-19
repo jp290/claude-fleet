@@ -49221,8 +49221,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return json({ jobId: job.id, job: commandJobView(job) });
     }
 
-    // …and its read half. Bound to the OFFERING session: a job is readable by the slot that made it
-    // and by nobody else on this door, so the receipt cannot be collected by whoever guesses an id.
+    // …and its read half. Bound to the OFFERING session, plus exactly one reader beside it: the
+    // current bound MAIN of the program of the lane that offered it, so the MAIN reads its lane's
+    // gate steps instead of taking them as a claim (Mangel 143). That half needs the job's
+    // slot + slotOpenedAt to still name a living non-steward lane occupation, and that lane's
+    // programId to be one of the caller's own bound programs (boundProgramForMain: slot AND
+    // openedAt). Read only — withdraw stays with the offering session — and it ends with the lane
+    // occupation. Everyone else gets the same 404, so the receipt cannot be collected by whoever
+    // guesses an id.
     {
       const m = /^\/api\/self\/jobs\/([0-9a-f]{12})$/.exec(url.pathname);
       if (m && req.method === "GET") {
@@ -49231,7 +49237,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
         expireHelperClaims();
         const job = commandJobs.get(m[1]!);
-        if (!job || job.slot !== s.id || job.slotOpenedAt !== s.openedAt)
+        const own = !!job && job.slot === s.id && job.slotOpenedAt === s.openedAt;
+        const lane = job && !own && !s.worktree
+          ? slots.find((x) => x.id === job.slot && x.openedAt === job.slotOpenedAt
+            && x.cwd && x.worktree && x.label !== STEWARD_LABEL)
+          : undefined;
+        if (!job || (!own && !(lane?.programId && boundProgramForMain(s, lane.programId).ok)))
           return json({ error: "no such command job on this session" }, 404);
         return json({ job: commandJobView(job) });
       }

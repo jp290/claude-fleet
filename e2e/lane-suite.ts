@@ -1541,6 +1541,36 @@ export async function run(): Promise<void> {
       check("(LS.12 main) an unknown self token is refused 401 on the MAIN's door",
         (await selfPost(mainDoor(pileSlot), "0".repeat(32))).status === 401);
 
+      // --- THE LANE'S COMMAND JOBS, READ BY ITS MAIN (Mangel 143) -----------------------------------
+      // GET /api/self/jobs/:id answers the offering lane and the bound MAIN of that lane's program —
+      // exact occupation on both sides — and nobody else: a MAIN reading a lane of another program and
+      // a lane reading a sibling's job get the same 404 a guessed id gets. Read only: withdraw stays 409.
+      const otherTok = await selfTokenOf(otherSlot);
+      const laneCmdId = (await bodyOf<{ jobId?: string }>(
+        await selfPost("/api/self/jobs", pileTok, { cmd: "./e2e-security.sh" }))).jobId ?? "";
+      const otherCmdId = (await bodyOf<{ jobId?: string }>(
+        await selfPost("/api/self/jobs", otherTok, { cmd: "./e2e-security.sh" }))).jobId ?? "";
+      const mainReads = await selfGet(`/api/self/jobs/${laneCmdId}`, mainTok);
+      const mainReadsBody = await bodyOf<{ job?: { id?: string; cmd?: string; branch?: string; state?: string } }>(mainReads);
+      check("(LS.12 jobs) the bound MAIN reads its program lane's command job on GET /api/self/jobs/:id — id, cmd, branch, state",
+        /^[0-9a-f]{12}$/.test(laneCmdId) && mainReads.status === 200 && mainReadsBody.job?.id === laneCmdId
+          && mainReadsBody.job.cmd === "./e2e-security.sh" && mainReadsBody.job.branch === laneRow?.worktree?.branch
+          && mainReadsBody.job.state === "open",
+        `${mainReads.status} ${JSON.stringify(mainReadsBody).slice(0, 200)}`);
+      const readable: string[] = [];
+      for (const [who, id, tok] of [["the MAIN, on another program's lane", otherCmdId, mainTok],
+        ["a lane of another program", laneCmdId, otherTok], ["the program lane, on another program's lane", otherCmdId, pileTok]]) {
+        const r = await selfGet(`/api/self/jobs/${id}`, tok);
+        const e = (await bodyOf(r)).error ?? "";
+        if (r.status !== 404 || e !== "no such command job on this session") readable.push(`${who}: ${r.status} ${e.slice(0, 80)}`);
+      }
+      const mainWithdraws = await selfPost(`/api/self/jobs/${laneCmdId}/withdraw`, mainTok);
+      check("(LS.12 jobs) every other reader gets 404 — a MAIN on another program's lane, a lane on a sibling's job — and the MAIN may not withdraw (409)",
+        /^[0-9a-f]{12}$/.test(otherCmdId) && readable.length === 0 && mainWithdraws.status === 409,
+        `${readable.join(" · ")} withdraw=${mainWithdraws.status}`);
+      await selfPost(`/api/self/jobs/${laneCmdId}/withdraw`, pileTok);
+      await selfPost(`/api/self/jobs/${otherCmdId}/withdraw`, otherTok);
+
       // --- ONE ANLAGE: all three doors call the same function, and nothing else mints a row ------
       const srv = readFileSync(`${ROOT}/server.ts`, "utf8");
       check("(LS.12) one anlage: laneSuiteOfferDoor is declared once and called by exactly three doors, and it holds the only minting laneSuiteJobs.set",

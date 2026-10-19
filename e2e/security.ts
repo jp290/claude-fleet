@@ -420,7 +420,8 @@ const PRE_AUTH_ROUTES = [
   //     NOTHING is uploaded in this slice — the receipt names files, it does not carry them;
   //   · caps: 3 open jobs per session, timeoutMs in [10s, 60min]. It starts nothing on this box,
   //     writes into no pane and reaches no foreign slot. The GET half answers the OFFERING session
-  //     alone (404 for anyone else's token), and the bundle goes out through the EXISTING
+  //     and the current bound MAIN of that lane's program (exact slot + openedAt on both sides,
+  //     read only; 404 for anyone else's token), and the bundle goes out through the EXISTING
   //     /api/helper/bundle route, so the helper perimeter is unchanged by this feature too.
   '= /api/self/jobs',
   String.raw`~ /^\/api\/self\/jobs\/([0-9a-f]{12})$/`,

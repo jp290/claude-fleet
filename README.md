@@ -124,9 +124,15 @@ A reachable fleet is **remote code execution as your user** — every session is
 5. **Cross-site guards** — `SameSite=Strict` cookie plus Origin and Host checks
    (`server/auth.ts#guard`) block cross-site WebSocket hijacking, CSRF and DNS rebinding. Reaching
    the fleet by hostname needs that name in `FLEET_ALLOWED_HOSTS`.
-6. **Session command** — defaults to the plain CLI with its own permission prompts; unattended mode
-   is an explicit opt-in via `FLEET_CMD`. Stream files and state are chmod 600/700, because terminal
-   output contains secrets.
+6. **Session command** — `FLEET_CMD` (default `claude`) is the base line. Every claude session Fleet
+   spawns outside a container runs in Claude Code's auto mode: Fleet sets `--permission-mode auto`
+   per role and passes the classifier environment per launch in `--settings`
+   (`server/session-start.ts#startAspects`), and it takes `--dangerously-skip-permissions` off the
+   line, so the old bypass opt-in in `FLEET_CMD` no longer applies there
+   (`server/session-start.ts#withoutSkipPermissions`). The worker tier (summaries, reviews, merge
+   resolver) runs `--permission-mode dontAsk` with a fixed tool profile. A line Fleet sets no mode on
+   — the container adapter, a foreign harness, a non-claude `FLEET_CMD` — runs `FLEET_CMD` as it is.
+   Stream files and state are chmod 600/700, because terminal output contains secrets.
 
 Not provided: TLS, multiple users, rate limiting. Two suites hold the perimeter rather than one:
 `e2e/security.ts` pins which routes are reachable *above* the owner gate at source level, and

@@ -316,8 +316,11 @@ const STATE_SNAPSHOT_FILE = `${STATE_DIR}/state-snapshots.jsonl`;
 const POSTLAND_AUDIT_QUEUE_FILE = `${STATE_DIR}/post-land-audit-queue.json`;
 const HOME = process.env.HOME!;
 const SHELL = process.env.SHELL ?? "/bin/sh";
-// Safe default: claude WITH its permission prompts. Opt into unattended mode explicitly:
-//   FLEET_CMD='claude --dangerously-skip-permissions'
+// The base line, default `claude`. The permission mode is not FLEET_CMD's: agentCmd sets
+// `--permission-mode auto` on every claude session whose role the spawn knows (server/session-start.ts#startAspects)
+// and strips `--dangerously-skip-permissions`, the old unattended opt-in, from it
+// (server/session-start.ts#withoutSkipPermissions);
+// a line with no known role (the container adapter) or a non-claude FLEET_CMD runs as given.
 // New panes inherit the tmux SERVER's environment — often the bare launchd/ssh default
 // (no ~/.local/bin, no brew), NOT this process's env and NOT tmux's global env table.
 // Bake our PATH into the command so `claude` resolves no matter who started tmux.

@@ -1,14 +1,17 @@
 // WHAT A CLAUDE SESSION FLEET STARTS GETS ON ITS LINE BEYOND MODEL AND CUT (K16 E6 + E10a,
 // docs/neuaufbau/befunde/18-einstellungen.md §3.2 and §5.1). Owner 15.10.: „[Zitat entfernt]“
 //  and „[Zitat entfernt]“
-// . One pure function, so the
-// spawn line (server.ts#agentCmd) and its tests read the same answer.
+//  — the compaction half is
+// overtaken since 05f21764e (owner Z129/Z132, befunde/23): Claude Code's own compaction stays the fallback
+// and is switched off only where Fleet itself acts at the cap (StartFacts.handoverOn,
+// server/succession.ts#autoCompactOff). One pure function, so the spawn line (server.ts#agentCmd) and its
+// tests read the same answer.
 //
 // Measured on claude 2.1.300 (befunde/18 §3.2): with the built-in classifier environment, auto blocks
 // exactly POST /api/deploy and a tmux delivery into a sibling pane; with the Fleet environment below both
-// pass and a push to GitHub stays blocked. `--settings` is a per-launch source for `autoMode` and for
-// `autoCompactEnabled` (§5.1: no autocompact check at all, 265 869 tokens without compaction, /compact by
-// hand still works) — nothing is written to ~/.claude/settings.json or ~/.claude.json.
+// pass and a push to GitHub stays blocked. `--settings` is a per-launch source for `autoMode` and, with the
+// handover on, for `autoCompactEnabled: false` (§5.1: no autocompact check at all, 265 869 tokens without
+// compaction, /compact by hand still works) — nothing is written to ~/.claude/settings.json or ~/.claude.json.
 import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
 
 export type ClaudeStartRole = "lane" | "main" | "orchestrator" | "generic";
@@ -26,9 +29,10 @@ export const AUTO_MODE_BRIEF = "AUTO-MODE: Du läufst im Auto-Mode. Eine Sperre 
 
 export interface StartFacts {
   role: ClaudeStartRole;
-  // the session's handover is on at this spawn (server.ts#thresholdFor basePct > 0): Fleet hands over
-  // before the window ends, so Claude Code's own compaction is switched off. With the handover off it
-  // stays on as the last hold at the window's end (owner 10:4x „[Zitat entfernt]“).
+  // Fleet acts at the cap for this spawn (server.ts#ensureSlot: claude, not the steward, and
+  // server/succession.ts#autoCompactOff — basePct > 0 and a choice other than "hint"): Fleet hands over
+  // before the window ends, so Claude Code's own compaction is switched off. Otherwise it stays on as the
+  // last hold at the window's end (owner 10:4x „[Zitat entfernt]“).
   handoverOn: boolean;
   fleetUrl: string;
   tmuxSocket: string;

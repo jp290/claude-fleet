@@ -12,8 +12,8 @@ const facts = (over: Partial<StartFacts> = {}): StartFacts =>
   ({ role: "lane", handoverOn: true, fleetUrl: "http://10.9.9.9:8790", tmuxSocket: "fleetsock", hub: HUB, ...over });
 
 describe("Owner 15.10.: „[Zitat entfernt]“", () => {
-  test("every role Fleet spawns starts in auto", () => {
-    for (const role of ROLES) expect(startAspects(facts({ role })).mode).toBe("auto");
+  test("every role Fleet spawns starts in auto, the Orchestratorin in bypass (owner 20.10.)", () => {
+    for (const role of ROLES) expect(startAspects(facts({ role })).mode).toBe(role === "orchestrator" ? "bypassPermissions" : "auto");
     expect(Object.keys(PERMISSION_MODE).sort()).toEqual([...ROLES].sort());
   });
 
@@ -25,8 +25,8 @@ describe("Owner 15.10.: „[Zitat entfernt]“", () => {
     expect(withoutSkipPermissions("claude --allow-dangerously-skip-permissions")).toBe("claude --allow-dangerously-skip-permissions");
   });
 
-  test("every session reads the auto-mode brief line at its start", () => {
-    for (const role of ROLES) expect(startAspects(facts({ role })).briefLine).toBe(AUTO_MODE_BRIEF);
+  test("every auto session reads the auto-mode brief line at its start, a bypass session none", () => {
+    for (const role of ROLES) expect(startAspects(facts({ role })).briefLine).toBe(role === "orchestrator" ? null : AUTO_MODE_BRIEF);
     expect(AUTO_MODE_BRIEF).toContain("nicht umgehen");
   });
 });

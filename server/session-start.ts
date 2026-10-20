@@ -15,12 +15,14 @@
 import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
 
 export type ClaudeStartRole = "lane" | "main" | "orchestrator" | "generic";
-export type ClaudePermissionMode = "auto";
+export type ClaudePermissionMode = "auto" | "bypassPermissions";
 
-// Every role Fleet spawns runs in auto (Bauleitung 15.10.: Lane, Bau, MAIN, Orchestratorin). The worker
-// tier keeps `--permission-mode dontAsk` with its allowlist on its own line (server.ts CLAUDE_HARNESS.worker).
+// Lane, Bau and MAIN run in auto (Bauleitung 15.10.). The Orchestratorin runs in bypass (owner 20.10.: „[Zitat entfernt]“
+// ): the classifier blocked her setting up and
+// reviewing a build seat as „Create Unsafe Agents“, down to a grep. The worker tier keeps
+// `--permission-mode dontAsk` with its allowlist on its own line (server.ts CLAUDE_HARNESS.worker).
 export const PERMISSION_MODE: Readonly<Record<ClaudeStartRole, ClaudePermissionMode>> = {
-  lane: "auto", main: "auto", orchestrator: "auto", generic: "auto",
+  lane: "auto", main: "auto", orchestrator: "bypassPermissions", generic: "auto",
 };
 
 // the brief sentence every auto session reads at its start (befunde/18 §3.2)
@@ -43,7 +45,8 @@ export interface StartFacts {
 export interface StartAspects {
   mode: ClaudePermissionMode;
   settings: { autoMode: { environment: string[] }; autoCompactEnabled?: false };
-  briefLine: string;
+  // the auto-mode sentence, null for a session that runs without the classifier
+  briefLine: string | null;
 }
 
 const PLACEHOLDER = /\{(fleetUrl|tmuxSocket|hubRemote|hubUrl|hubHost)\}/g;
@@ -63,7 +66,7 @@ export function startAspects(f: StartFacts, template: readonly string[] = AUTOMO
     mode: PERMISSION_MODE[f.role],
     settings: { autoMode: { environment: fillEnvironment(template, f) },
       ...(f.handoverOn ? { autoCompactEnabled: false as const } : {}) },
-    briefLine: AUTO_MODE_BRIEF,
+    briefLine: PERMISSION_MODE[f.role] === "auto" ? AUTO_MODE_BRIEF : null,
   };
 }
 

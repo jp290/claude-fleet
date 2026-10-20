@@ -5882,7 +5882,7 @@ nicht als neue Familie gezaehlt. Wrapper-Rot ausserhalb des Fensters (`a8fec55a`
 (`0065d176`), Temp-/ENOSPC (`7b87ff1c`) und stummer Agent-Tod (`66b47e57`) sind in der Notiz
 benannte Grenzen, keine erfundenen Checknamen. Fuer diese Inventur wurde keine Suite gefahren.
 
-### 11.2ag Eine dreiunddreißigste Familie: der hold-until-Nachfolge-Check in `e2e/watch.ts` — der fake-pi schrieb seinen Zustand pro Byte (2026-10-19 registriert; Ursache in der [Messnotiz](messungen/2026-10-19-hold-until-nachfolge-wackler.md) belegt; sondenseitig REPARIERT in `<LAND-SHA, setzt die MAIN>`)
+### 11.2ag Eine dreiunddreißigste Familie: der hold-until-Nachfolge-Check in `e2e/watch.ts` — der fake-pi schrieb seinen Zustand pro Byte (2026-10-19 registriert; Ursache in der [Messnotiz](messungen/2026-10-19-hold-until-nachfolge-wackler.md) belegt; sondenseitig REPARIERT in `e28b4b3fb`)
 
 **Check:** „hold-until across MAIN succession: the successor's repeated hold re-arms a NEW Watch
 under its occupant, and its next repeat mints none". **Signatur:** `succeeded.ok` false, im Detail

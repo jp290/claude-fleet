@@ -229,6 +229,10 @@ import { k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
 import { k15Laeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht } from "./server/laeufe";
 import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
+import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR_CONTEXT_LINE_CODEX,
+  ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
+import { baueFassung, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
+  type FassungAnlass } from "./server/fassung";
 import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
@@ -20397,6 +20401,366 @@ function selfPosition(s: Slot, outcomes: Record<string, unknown>[] = []) {
     programId: s.programId ?? (binding.ok && binding.programs.length === 1 ? binding.programs[0]!.id : null),
     ...(binding.ok ? { programIds: binding.programs.map((p) => p.id) } : {}),
     receiver, harness: s.harness, model: s.model, waitingOnMe };
+}
+
+// --- DIE FASSUNG EINES SLOTS (docs/agent-objekt.md, Schnitt 1) -------------------------------
+// Was diese Session beim Start bekommt, in den fünf Teilen. Jeder Baustein kommt aus der Funktion,
+// die auch der Spawn benutzt: die Rollenkarte aus server/rollenkarten.ts, die Projektregeln aus dem
+// Loader (nativeLoaderBytes), die Anker aus laneContextDelivery/orchestratorFoundingContext/
+// programMainContextPlan, die Übergabe aus dem Record, den die Nachfolge liest, die Rechte aus
+// rechteSatz und die Endbedingung aus laneExitFooter. Was hier fehlt, wird NICHT geschätzt: der
+// Abschnitt steht als `unknown` mit Grund in der Fassung.
+
+function fassungCardAbschnitt(card: string, prefix: string): string {
+  const lines = card.split("\n");
+  const start = lines.findIndex((line) => line.startsWith(prefix));
+  if (start < 0) return "";
+  let end = start + 1;
+  while (end < lines.length && !lines[end]!.startsWith("--- ")) end++;
+  return lines.slice(start, end).join("\n").trim();
+}
+
+type FassungRolle = ReturnType<typeof positionRole>;
+
+/** SessionRole (Gründungsplan) → die Rolle, die positionRole einer laufenden Session gibt. */
+const fassungRolleVon = (rolle: SessionRole): FassungRolle =>
+  rolle === "main" ? "program-main" : rolle === "orchestratorin" ? "orchestrator" : rolle === "lane" ? "lane" : "generic";
+
+// DER ROLLEN-RENDER IST DIE PROJEKTREGEL (server.ts#slotCmd: claudeMdExcludes nimmt den Monolithen
+// heraus, --add-dir lädt den Render). `rulebookRoleForSpawn` entscheidet dasselbe für den Spawn; hier
+// steht die reine Form seiner Bedingung, damit eine Fassung ohne Spawn-Occupant dieselbe Wahl trifft.
+function fassungRulebookRole(cwd: string, rolle: FassungRolle, worktree: unknown): "main" | "orchestrator" | null {
+  if (RULEBOOK_CUT_MODE === "voll" || worktree || realpathLoose(resolve(cwd)) !== realpathLoose(import.meta.dir)) return null;
+  return rolle === "orchestrator" ? "orchestrator" : "main";
+}
+
+// Die Bedingung ist genau agentCmd's: die vier Pfade, die claudeMdExcludes by absolute path nimmt.
+function fassungClaudeMdExcludes(cwd: string): ReadonlySet<string> {
+  return new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${cwd}/AGENTS.md`].map((p) => resolve(p)));
+}
+
+// Jede geladene Datei bekommt im Text einen Kopf aus ihrer STELLE in der Ladereihenfolge, nicht aus
+// ihrem absoluten Pfad: der Pfad steht in `quelle`/`dateien`, und der Hash soll nicht am Ort hängen.
+const fassungDateiKopf = (index: number, anzahl: number, pfad: string): string =>
+  `--- ${index + 1}/${anzahl} ${basename(pfad)} ---\n`;
+
+function fassungDateiText(dateien: readonly { pfad: string; bytes: number }[]):
+  { ok: true; text: string; bytes: number } | { ok: false; grund: string } {
+  const teile: string[] = [];
+  for (const [index, datei] of dateien.entries()) {
+    try { teile.push(`${fassungDateiKopf(index, dateien.length, datei.pfad)}${readFileSync(datei.pfad, "utf8")}`); }
+    catch { return { ok: false, grund: `${datei.pfad} ist nicht lesbar` }; }
+  }
+  return { ok: true, text: teile.join("\n\n"), bytes: dateien.reduce((sum, datei) => sum + datei.bytes, 0) };
+}
+
+// Die Rolle und die Bytes eines Rollen-Renders, ohne ihn zu schreiben (roleRulebookBytes nimmt
+// dieselbe Wahl). null = der Spawn fällt auf den Monolithen zurück.
+function fassungRoleRender(role: "main" | "orchestrator", sessionId: string | null): { path: string; text: string } | null {
+  if (RULEBOOK_CUT_MODE === "voll") return null;
+  const fragments = readRulebookFragments(import.meta.dir);
+  if (!fragments) return null;
+  let voll: string;
+  try { voll = renderRulebook("voll", fragments); } catch { return null; }
+  const own = readPresent(`${import.meta.dir}/CLAUDE.md`);
+  if (!own.ok || own.bytes?.toString("utf8") !== voll) return null;
+  const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
+  const arm: "main" | "orchestrator" | "voll" | null = RULEBOOK_CUT_MODE === "ab"
+    ? (sessionId === null ? null : parseInt(sessionId[0] ?? "0", 16) % 2 === 0 ? "voll" : role)
+    : role;
+  if (arm === null) return null;
+  try {
+    const text = arm === "voll" ? voll : renderRoleRulebook(arm, fragments,
+      { repoRoot: import.meta.dir, anchorDir: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`, sourceHash }).text;
+    return { path: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/${arm}`, text };
+  } catch { return null; }
+}
+
+function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "main" | "orchestrator" | null,
+  sessionId: string | null): FassungAbschnittEingang[] {
+  const loaded = nativeLoaderBytes(cwd, harness);
+  if ("grund" in loaded) return [unknownAbschnitt("projektregeln", loaded.grund)];
+  if (!rulebookRole) {
+    if (!loaded.dateien.length)
+      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0)];
+    const gelesen = fassungDateiText(loaded.dateien);
+    if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
+    return [textAbschnitt("projektregeln", loaded.dateien.map((datei) => datei.pfad).join("\n"),
+      gelesen.text, true, gelesen.bytes, loaded.dateien)];
+  }
+  // Der Render hängt bei RULEBOOK_CUT_MODE=ab an der Session-Id; vor dem Start ist sie unbekannt.
+  if (RULEBOOK_CUT_MODE === "ab" && sessionId === null)
+    return [unknownAbschnitt("projektregeln", "der A/B-Arm des Rollen-Renders hängt an der Session-Id, die vor dem Start nicht feststeht")];
+  // GEMESSEN, NICHT GESCHRIEBEN: dieselbe Wahl und dieselben Bytes wie roleRulebookRender, aber
+  // ohne die Render-Datei anzulegen. Die Route ist lesend; nur der Spawn schreibt das Render.
+  const render = fassungRoleRender(rulebookRole, sessionId);
+  if (!render) {
+    // Genau der Rückfall des Spawns: ohne Render lädt claude den Monolithen. Der Grund steht dabei.
+    if (!loaded.dateien.length)
+      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0,
+        undefined, "Rollen-Render nicht verfügbar (kein lesbares rulebook/ oder CLAUDE.md ist nicht sein Render); Claude lädt den Monolithen")];
+    const gelesen = fassungDateiText(loaded.dateien);
+    if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
+    return [{ id: "projektregeln", quelle: loaded.dateien.map((datei) => datei.pfad).join("\n"), aenderbar: true,
+      text: gelesen.text, bytes: gelesen.bytes, dateien: loaded.dateien,
+      grund: "Rollen-Render nicht verfügbar (kein lesbares rulebook/ oder CLAUDE.md ist nicht sein Render); Claude lädt den Monolithen" }];
+  }
+  const excludes = fassungClaudeMdExcludes(cwd);
+  const global = loaded.dateien.filter((datei) => !excludes.has(resolve(datei.pfad)));
+  const gelesen = fassungDateiText(global);
+  if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
+  const renderPfad = `${render.path}/CLAUDE.md`;
+  const renderBytes = Buffer.byteLength(render.text);
+  const dateien = [...global, { pfad: renderPfad, bytes: renderBytes }];
+  const text = [gelesen.text, `${fassungDateiKopf(global.length, global.length + 1, renderPfad)}${render.text}`]
+    .filter(Boolean).join("\n\n");
+  return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"), text, true,
+    gelesen.bytes + renderBytes, dateien)];
+}
+
+async function fassungGedaechtnisAus(repoRoot: string, rolle: FassungRolle, harness: string): Promise<FassungAbschnittEingang[]> {
+  if (harnessFamilie(harness) !== "claude")
+    return [unknownAbschnitt("gedaechtnis", "nur Claude lädt ein Auto-Memory; dieser Harness liest es nicht")];
+  if (rolle === "lane")
+    return [unknownAbschnitt("gedaechtnis", "aus: eine Claude-Lane startet mit autoMemoryEnabled:false (server.ts#agentCmd)")];
+  const memory = await autoMemoryBytes(repoRoot);
+  if (memory.bytes === "unknown") return [unknownAbschnitt("gedaechtnis", `Auto-Memory nicht gemessen (${memory.pfad})`)];
+  if (!memory.bytes) return [unknownAbschnitt("gedaechtnis", `kein Auto-Memory unter ${memory.pfad}`)];
+  try {
+    const text = readFileSync(memory.pfad, "utf8");
+    return [textAbschnitt("gedaechtnis", memory.pfad, text, true, Buffer.byteLength(text), [{ pfad: memory.pfad, bytes: Buffer.byteLength(text) }])];
+  } catch { return [unknownAbschnitt("gedaechtnis", `${memory.pfad} ist nicht lesbar`)]; }
+}
+
+async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string): Promise<FassungAbschnittEingang[]> {
+  if (rolle === "lane" && s.worktree) {
+    const rows = waveRowsOf(s.id);
+    const sourceRows = rows[0]?.variantOf ? [variantSourceOf(rows[0])] : rows;
+    const sourceBrief = sourceRows.map((row) => withCardHead(row.card?.valid ? row.card : null,
+      row.brief?.text ?? row.text, row.comments)).join("\n\n");
+    try {
+      const ctx = await laneContextDelivery(s, { repo: s.worktree.repo, path: cwd, branch: s.worktree.branch },
+        sourceBrief, sourceRows, sourceRows[0] ? briefSourceOf(sourceRows[0], false) : "raw");
+      return [textAbschnitt("wissen", "renderContextAnchorBlock(ContextPlan) aus laneContextDelivery",
+        ctx.anchorBlock || "(keine Kontext-Anker in diesem Plan)", false, Buffer.byteLength(ctx.anchorBlock))];
+    } catch (e) {
+      return [unknownAbschnitt("wissen", `laneContextDelivery: ${e instanceof Error ? e.message : String(e)}`)];
+    }
+  }
+  if (rolle === "orchestrator") {
+    try {
+      const ctx = await orchestratorFoundingContext(cwd, s.harness);
+      if (!ctx.ok) return [unknownAbschnitt("wissen", ctx.error)];
+      return [textAbschnitt("wissen", "renderContextAnchorBlock(ContextPlan) aus orchestratorFoundingContext",
+        ctx.value.anchorBlock || "(keine Kontext-Anker in diesem Plan)", false, Buffer.byteLength(ctx.value.anchorBlock))];
+    } catch (e) {
+      return [unknownAbschnitt("wissen", `orchestratorFoundingContext: ${e instanceof Error ? e.message : String(e)}`)];
+    }
+  }
+  if (rolle === "program-main") {
+    try {
+      const pre = await preflightProgramMain(cwd);
+      if (!pre.ok) return [unknownAbschnitt("wissen", pre.error)];
+      const plan = availableContextPlan(await programMainContextPlan(pre.value,
+        programMainContextFacts(pre.value.frame, s.harness)));
+      const anchorBlock = renderContextAnchorBlock(plan);
+      return [textAbschnitt("wissen", "renderContextAnchorBlock(ContextPlan) aus programMainContextPlan",
+        anchorBlock || "(keine Kontext-Anker in diesem Plan)", false, Buffer.byteLength(anchorBlock))];
+    } catch (e) {
+      return [unknownAbschnitt("wissen", `programMainContextPlan: ${e instanceof Error ? e.message : String(e)}`)];
+    }
+  }
+  return [unknownAbschnitt("wissen", "diese Session hat keine stehende Rolle und damit keinen Kontextplan")];
+}
+
+// Die Fassung eines NEUEN Starts: derselbe Gründungsplan, dieselben Bauteile, nur ohne Slot. Was
+// der Plan vor dem Start nicht wissen kann (Aufgabe, Übergabe, Empfänger), steht als `unknown` mit
+// Grund da — nie geschätzt. Damit ist es dieselbe Form mit derselben Hash-Funktion (`anlass=neu`).
+async function fassungWissenFuerPlan(rolle: FassungRolle, repoRoot: string, harness: string): Promise<FassungAbschnittEingang[]> {
+  if (rolle === "orchestrator") {
+    try {
+      const ctx = await orchestratorFoundingContext(repoRoot, harness);
+      if (!ctx.ok) return [unknownAbschnitt("wissen", ctx.error)];
+      return [textAbschnitt("wissen", "renderContextAnchorBlock(ContextPlan) aus orchestratorFoundingContext",
+        ctx.value.anchorBlock || "(keine Kontext-Anker in diesem Plan)", false, Buffer.byteLength(ctx.value.anchorBlock))];
+    } catch (e) {
+      return [unknownAbschnitt("wissen", `orchestratorFoundingContext: ${e instanceof Error ? e.message : String(e)}`)];
+    }
+  }
+  if (rolle === "lane")
+    return [unknownAbschnitt("wissen", "die Lane hat vor dem Start keinen Worktree — ihr Kontextplan entsteht erst beim Anlegen")];
+  if (rolle === "program-main")
+    return [unknownAbschnitt("wissen", "vor dem Start ist kein Program an diese MAIN gebunden — der Kontextplan entsteht beim Start")];
+  return [unknownAbschnitt("wissen", "eine freie Session hat keinen Kontextplan")];
+}
+
+function fassungRolleKarte(rolle: FassungRolle, harness: string): FassungAbschnittEingang {
+  return rolle === "lane" ? textAbschnitt("rolle", "server/rollenkarten.ts#LANE_ROLE_CARD", LANE_ROLE_CARD, false)
+    : rolle === "program-main" ? textAbschnitt("rolle", "server/rollenkarten.ts#MAIN_ROLE_CARD", MAIN_ROLE_CARD, false)
+    : rolle === "orchestrator" ? textAbschnitt("rolle", "server/rollenkarten.ts#ORCHESTRATOR_ROLE_CARD", orchestratorRoleCard(harness), false)
+    : unknownAbschnitt("rolle", "keine stehende Rolle — eine freie Session startet ohne Rollenkarte");
+}
+
+function fassungAufgabeFuerPlan(rolle: FassungRolle): FassungAbschnittEingang[] {
+  if (rolle === "orchestrator") {
+    const satz = fassungCardAbschnitt(ORCHESTRATOR_ROLE_CARD, "--- ROLLE ---");
+    return [textAbschnitt("aufgabe", "server/rollenkarten.ts#ORCHESTRATOR_ROLE_CARD (ROLLE)", satz, false)];
+  }
+  if (rolle === "lane")
+    return [unknownAbschnitt("aufgabe", "vor dem Start hält die Lane keine Queue-Zeile — der Auftrag wird mit ihr angelegt")];
+  if (rolle === "program-main")
+    return [unknownAbschnitt("aufgabe", "vor dem Start ist kein Program an diese MAIN gebunden — die Aufgabe kommt mit der Bindung")];
+  return [unknownAbschnitt("aufgabe", "eine freie Session bekommt ihren Auftrag erst mit dem ersten Owner-Prompt")];
+}
+
+function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string): FassungAbschnittEingang[] {
+  const empf = "Empfänger: unbekannt";
+  if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter", laneExitFooter(harness, null), false)];
+  if (rolle === "orchestrator") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#ORCHESTRATOR_ROLE_CARD + Kontext-Zeile",
+    [fassungCardAbschnitt(ORCHESTRATOR_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
+      ORCHESTRATOR_CONTEXT_LINE].filter(Boolean).join("\n"), false)];
+  if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
+    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false)];
+  return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
+    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true)];
+}
+
+async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; modell: string | null; effort: string | null;
+  repoRoot: string; claudeCode?: unknown }): Promise<Fassung> {
+  const claude = harnessFamilie(o.harness) === "claude";
+  const modell = o.modell ?? (claude ? DEFAULT_MODEL : null);
+  const rulebookRole = fassungRulebookRole(o.repoRoot, o.rolle, null);
+  return baueFassung({
+    slot: 0, anlass: "neu",
+    wer: [
+      textAbschnitt("harness", "Slot.harness (Adapter)", o.harness, true),
+      textAbschnitt("modell", "Slot.model bzw. Fleet-Standard", modell ?? "kein eigenes Modell — der Harness entscheidet", true),
+      textAbschnitt("effort", "Slot.effort", o.effort ?? "kein Effort gesetzt", true),
+    ],
+    aufgabe: fassungAufgabeFuerPlan(o.rolle),
+    liest: [
+      fassungRolleKarte(o.rolle, o.harness),
+      ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null),
+      ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
+      ...(await fassungGedaechtnisAus(o.repoRoot, o.rolle, o.harness)),
+      unknownAbschnitt("eigenes", !claude ? "dieser Harness liest keine Agent-MD (nur Claude Code)"
+        : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
+    ],
+    darf: !claude ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
+      : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
+        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true)],
+    arbeitet: fassungArbeitetFuerPlan(o.rolle, o.harness),
+    claudeCode: o.claudeCode ?? null,
+  });
+}
+
+async function fassungAufgabe(s: Slot, rolle: FassungRolle): Promise<FassungAbschnittEingang[]> {
+  if (rolle === "lane") {
+    const rows = waveRowsOf(s.id);
+    if (!rows.length)
+      return [unknownAbschnitt("aufgabe", "diese Lane hält keine Queue-Zeile — der Auftrag steht nur in der Pane-Historie ihrer Vorgängerin")];
+    return [textAbschnitt("aufgabe", `Queue-Zeile(n) ${rows.map((row) => row.id).join(", ")}`,
+      laneSuccessionRowLines(rows), true)];
+  }
+  if (rolle === "program-main") {
+    const program = boundProgramsForMain(s)[0];
+    return program ? [textAbschnitt("aufgabe", `Program ${program.id}`, programMandateLines(program).join("\n"), true)]
+      : [unknownAbschnitt("aufgabe", "kein aktives Program an diese MAIN gebunden")];
+  }
+  if (rolle === "orchestrator") {
+    const satz = fassungCardAbschnitt(ORCHESTRATOR_ROLE_CARD, "--- ROLLE ---");
+    return [textAbschnitt("aufgabe", "server/rollenkarten.ts#ORCHESTRATOR_ROLE_CARD (ROLLE)", satz, false)];
+  }
+  const prompt = s.history.find((entry) => entry.source === "owner")?.text ?? s.history[0]?.text ?? null;
+  return prompt ? [textAbschnitt("aufgabe", "Slot.history (erster Prompt dieser Session)", prompt, true)]
+    : [unknownAbschnitt("aufgabe", "freie Session ohne Karte, Program oder stehende Rolle und ohne überlieferten Prompt")];
+}
+
+async function fassungUebergabe(s: Slot, rolle: FassungRolle): Promise<FassungAbschnittEingang[]> {
+  if (rolle === "lane") {
+    const report = laneHandoffReportFor(s);
+    return report ? [textAbschnitt("uebergabe", `fleet-report ${report.id} (handoff)`,
+      `Behauptung deiner Vorgängerin — fleet-report ${report.id} (am Baum und Verify prüfen):\n${report.text}`, false)]
+      : [unknownAbschnitt("uebergabe", "kein handoff-Report — die Vorgängerin hat keinen gefiled")];
+  }
+  if (rolle === "program-main") {
+    const program = boundProgramsForMain(s)[0];
+    const handover = program?.handover;
+    return handover ? [textAbschnitt("uebergabe", `Program ${program!.id} (handover)`,
+      JSON.stringify(handover, null, 2), false)]
+      : [unknownAbschnitt("uebergabe", "das Program trägt keinen Handover-Record")];
+  }
+  const standing = liveStandingHandover(s);
+  if (standing) return [textAbschnitt("uebergabe", `Slot.standingHandover (${new Date(standing.at).toISOString()})`,
+    [standing.intent ?? `pointer: ${standing.pointer}`, standing.pointer ? `pointer: ${standing.pointer}` : ""].filter(Boolean).join("\n"), false)];
+  const record = s.lineageId ? lineageHandovers.filter((r) => r.lineageId === s.lineageId).at(-1) : undefined;
+  if (record) return [textAbschnitt("uebergabe", `lineage ${record.lineageId}`,
+    handoverLines(handoverFactsOf(record, null)).join("\n"), false)];
+  return [unknownAbschnitt("uebergabe", "kein stehender Record und kein Linien-Record für diese Session")];
+}
+
+function fassungArbeitet(s: Slot, rolle: FassungRolle): FassungAbschnittEingang[] {
+  const receiver = selfPosition(s).receiver;
+  const empf = receiver ? `Empfänger: ${receiver.role} Slot ${receiver.slot}` : "Empfänger: unbekannt";
+  if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter",
+    laneExitFooter(s.harness, receiver), false)];
+  if (rolle === "orchestrator") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#ORCHESTRATOR_ROLE_CARD + Kontext-Zeile",
+    [fassungCardAbschnitt(ORCHESTRATOR_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
+      ORCHESTRATOR_CONTEXT_LINE].filter(Boolean).join("\n"), false)];
+  if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
+    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false)];
+  return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
+    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true)];
+}
+
+async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung> {
+  const rolle = positionRole(s);
+  const nachfolge = anlass === "nachfolge";
+  // Der Nachfolger erbt Agent, Modell und Effort; nur der Wechsel ist eine andere Wahl.
+  const pick = successorSpawnOf(null, { harness: harnessOf(s.harness).id, model: s.model, effort: s.effort });
+  const spawnPick = pick.ok ? pick.pick : { harness: harnessOf(s.harness).id, model: s.model, effort: s.effort };
+  const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" ? DEFAULT_MODEL : null);
+  // EINE PFADFORM: der Gründungsplan rechnet mit dem realpath (repoRootOf/repoCanon), der Slot
+  // trägt den cwd, wie er gestartet wurde (auf macOS /var gegen /private/var). Die Fassung nimmt
+  // denselben realpath, damit „Liest“ und der Hash dieselben Quellen nennen.
+  const cwd = realpathLoose(s.cwd!);
+  const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
+  const liest: FassungAbschnittEingang[] = [
+    fassungRolleKarte(rolle, spawnPick.harness),
+    ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId),
+    ...(await fassungWissen(s, rolle, cwd)),
+    ...(await fassungGedaechtnisAus(repoRoot, rolle, spawnPick.harness)),
+    ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
+    s.agentMd ? textAbschnitt("eigenes", `Slot.agentMd (Profil „${s.agentMd.profil}“)`, agentMdBlock(s.agentMd), true)
+      : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
+        ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
+        : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
+  ];
+  const claudeCode = harnessFamilie(spawnPick.harness) === "claude" && s.cwd
+    ? claudeCodeStart(rolle === "program-main" ? "main" : rolle === "orchestrator" ? "orchestratorin" : rolle === "lane" ? "lane" : "nur-ordner",
+      spawnPick.harness, { repo: cwd, modell: modell ?? DEFAULT_MODEL })
+    : null;
+  return baueFassung({
+    slot: s.id, anlass,
+    wer: [
+      textAbschnitt("harness", "Slot.harness (Adapter)", spawnPick.harness, true),
+      textAbschnitt("modell", "Slot.model bzw. Fleet-Standard", modell ?? "kein eigenes Modell — der Harness entscheidet", true),
+      textAbschnitt("effort", "Slot.effort", spawnPick.effort ?? "kein Effort gesetzt", true),
+    ],
+    aufgabe: await fassungAufgabe(s, rolle),
+    liest,
+    darf: harnessFamilie(spawnPick.harness) !== "claude"
+      ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
+      : s.rechte ? [textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)]
+        : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
+          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true)],
+    arbeitet: fassungArbeitet(s, rolle),
+    claudeCode,
+  });
 }
 function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null,
   variante: ContextPositionVariante | null = null): string {
@@ -41146,7 +41510,8 @@ function startSumme(plan: SessionPlan, lieferung: PlanDoorVerdict, claudeCode: R
 type FoundingPlanQuery = { readonly repo: string; readonly role: string | null; readonly ort: string | null;
   readonly mode: string | null; readonly harness: string | undefined; readonly model: string | undefined;
   readonly effort: string | undefined; readonly bausteine: string | null; readonly packs: string | null;
-  readonly parts: string | null };
+  readonly parts: string | null; /** `neu` asks for the same five-part Fassung a new session would start with */
+  readonly anlass?: string | null };
 type FoundingPlanAnswer = { readonly ok: false; readonly status: number; readonly error: string }
   | { readonly ok: true; readonly body: Record<string, unknown>; readonly fp: FoundingPlan; readonly plan: SessionPlan;
     readonly sessionAgents: SessionAgents | null; readonly rolle: SessionRole; readonly harness: string | null;
@@ -41157,6 +41522,8 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   const refuse = (error: string): FoundingPlanAnswer => ({ ok: false, status: 400, error });
   const { repo, role: roleParam, ort: ortParam } = q;
   if (!repo) return refuse("repo is required");
+  if (q.anlass !== undefined && q.anlass !== null && q.anlass !== "neu")
+    return refuse("anlass must be 'neu' (the Fassung a new session would start with)");
   const modeParam = q.mode ?? (roleParam === null ? "" : null);
   if (modeParam !== null && modeParam !== "main" && modeParam !== "lane") return refuse("mode must be 'main' or 'lane'");
   const ho = harnessIdOf({ harness: q.harness });
@@ -41247,9 +41614,17 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // MAIN, which the window founds over bootstrap-main ("main", display only) and not over /open
   const lieferung = rolle === "main" ? planDoorVerdict(resolved.plan, fp.value, "main", false, false) : verdict;
   const claudeCode = claudeCodeStart(rolle, resolveContextHarness(ho.harness), { repo: fp.value.repoRoot, modell: mo.model ?? DEFAULT_MODEL });
+  // 4b: EINE Form, EIN Hash. `anlass=neu` liefert dieselbe Fünf-Teile-Fassung wie
+  // `?anlass=laufend` eines Slots direkt nach seinem Start; `plan.planHash` bleibt der interne
+  // Plan-Beleg und wird NICHT als Fassungs-Hash ausgegeben.
+  const fassung = q.anlass === "neu"
+    ? await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
+      effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode })
+    : null;
   return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
     lieferung: { tuer: rolle === "main" ? "main" : tuer, geliefert: lieferung.geliefert, ausgelassen: lieferung.ausgelassen },
-    claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode) },
+    claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode),
+    ...(fassung ? { fassung, fassungsHash: fassung.hash } : {}) },
     fp: fp.value, plan: resolved.plan, sessionAgents, rolle, harness: ho.harness, selection, packs: resolved.packs, ownerHeft: resolved.ownerHeft };
 }
 
@@ -42307,46 +42682,6 @@ function buildProgramMainSuccessionBrief(program: Program, carry: string | null,
 }
 
 // --- ROLE CARDS — verbatim from docs/rollenkarten.md -------------------------------------------
-const MAIN_ROLE_CARD = `--- ROLLE --- Program-MAIN: fuehrt genau ein Program. Du briefst, beurteilst und landest; was eine Lane bauen kann, baut eine Lane. Je Projekt eine MAIN; was frueher eigene Programs am selben Repo waren, sind Straenge darin.
---- DEIN EMPFAENGER --- die Orchestratorin: Rueckfragen, Ausnahmen, Program-Abschluss. Eine Frage an den Owner geht ueber sie, nie direkt. Deine Lanes melden an dich.
---- DU ENTSCHEIDEST --- Schnitt und Reihenfolge der Zeilen deines Programs, Schaerfe der Karten, Freigabe und Halt, Annahme oder Rueckgabe eines Reports, Landen, Reparaturzeile nach rotem Audit (zweimal dasselbe Rot = sofort).
---- DEINE GRENZE --- Scope ueber dein Program hinaus, fremde Programs und Slots, alles unter BLOCKER: fragen statt tun.
---- DEINE TUEREN --- self/program-execution (Stand, Handover, Phase) · self/tasks (POST, brief, release, hold) · clarifications reply · fleet-report accept|reject · watch lane|merge|audit · ctl.sh land --wait · ctl.sh send an die Orchestratorin.
---- DER LOOP --- Standard-Fleet-Einstieg: state.sh --brief, benannte Detailtuer bei Bedarf; program-execution lesen → Produkt-Program ohne bestaetigten Entwurf: Prototyp, Kritik, Entwurf, Review, Bestaetigung (Orchestratorin; neues oder geaendertes Erfolgskriterium: Owner), erst dann Zeilen → naechste Zeile schaerfen (nennt den Entwurf, DONE mit Integrationspruefung), bis die Karte gueltig ist → release → Watch auf die Lane → Report = Behauptung: Diff und Verify-Tail lesen → annehmen und landen oder mit Grund zurueck → Audit-Ergebnis lesen → nach je drei Lands Integrations-Checkpoint gegen das Erfolgskriterium → naechste Zeile.
---- ABNAHME --- Sichtbare Arbeit (FLAECHE an src/ oder public/) nimmst du erst an, wenn du sie in der laufenden Testinstanz der Lane selbst durchgeklickt hast und der Report den token-freien Link und ein Bild des fertigen Ablaufs traegt. Ein fertig ohne gesehene Wirkung geht zurueck.
---- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- offene Pflichten bleiben in Program-, Task- und Report-Sichten mit ID; succeed auf der Standard-Schiene, kein HANDOFF-Commit; der letzte Integrations-Checkpoint im Entwurf ist der Kopfstand der Nachfolge. Was nicht uebergehen kann, als verloren benennen. Uebernahme liest den Stand, Material erst fuer den gewaehlten Akt.`;
-
-const LANE_ROLE_CARD = `--- ROLLE --- Lane: fuehrst genau eine Karte aus und meldest an deine MAIN. Die Karte ist dein Scope: ZIEL, FLAECHE, VERIFY, DONE, VERBOTEN.
---- DEIN EMPFAENGER --- deine MAIN: Rueckfragen per POST /api/self/clarifications, Abschluss per POST /api/self/fleet-report. Nie der Owner direkt.
---- DU ENTSCHEIDEST --- wie du das DONE erreichst, innerhalb von FLAECHE und VERBOTEN.
---- DEINE GRENZE --- alles ausserhalb der Karte, andere Repos, ~/.claude, geteilte Ports, Sockets und der Live-Server: stoppen und fragen. Nie landen, nie deployen.
---- DEINE TUEREN --- self/gate (was dich gated, welche Beweismenge) · self/drift (vor dem Report) · self/tasks/<deine taskId> (deine Karte, der Weg zurueck nach einer Kompaktierung) · criterion · suite-offer · clarifications · fleet-report · succeed (Lane-Schiene, nur wenn HOW THIS LANE ENDS sie fuer deinen Harness nennt).
---- DER LOOP --- zuerst Lesart und Plan: wozu die Karte dient, welchen Satz des Program-Ziels sie traegt, Plan in hoechstens fuenf Zeilen, sichtbar in der Pane → DONE und Pruefkommando in einem Satz festlegen → bauen → committen, keine ungetrackten Dateien → Beweismenge aus self/gate fahren → drift pruefen → Report: was, Pruef-Tail woertlich, eine Zeile Offenes. Ein roter Check ist deiner, bis du das Gegenteil beweist.
---- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- wer abgibt, committet und filed einen fleet-report mit status handoff (fertig / offen / naechster Schritt / offene Zahlen). Wann abgegeben wird und ob eine Nachfolgerin auf deinem Worktree folgt, ist Harness-Laufzeit: das sagt HOW THIS LANE ENDS.`;
-
-const ORCHESTRATOR_ROLE_CARD = `--- ROLLE --- Orchestratorin: uebersetzt Owner-Absicht in Programs und Karten, beaufsichtigt die MAINs und bringt dem Owner nur echte Grenzfragen. Fuehrt keine Lane, landet auf Owner-Delegation.
---- DEIN SYSTEM --- Claude Fleet selbst ist dein Produkt und dein Werkzeug: du haeltst es am Laufen (Dispatcher, Lands, Audits, Deploys, Host, Lanes), treibst seine Weiterentwicklung und laesst keine Regression stehen. Ein rotes Audit, ein stiller Tick, eine knappe Platte, ein ungesehen deployter Sichtbau sind deine Befunde und deine Reparaturen, nicht die eines Programs. Kleine, umkehrbare Verbesserungen setzt du direkt im Haupt-Checkout um, mit Beleg und ctl.sh commit main; eine Zeile ist fuer substanzielle, parallele oder eigens zu beweisende Arbeit. Jeder Antritt beginnt mit der Gesundheitslesung, jeder Rundgang fragt: laeuft alles, was ist seit gestern schlechter?
---- DEIN EMPFAENGER --- der Owner. Fragen der MAINs kommen zu dir: was du beantworten kannst, beantwortest du; den Rest bringst du dem Owner zweimal, als Push und im Gespraech.
---- DU ENTSCHEIDEST --- Reihenfolge, Zerlegung, Klasse und Worker je Zeile; knappe Faelle per Default-Regel + Ledger; Reports der MAINs beurteilen, nur Ausnahmen an den Owner; kleine reversible Akte selbst (Archiv, Ersatzzeile, Antwort mit Begruendung); Deploy nach mechanischer Vorbedingungspruefung.
---- DER OWNER ENTSCHEIDET --- Scope-Wachstum, Irreversibles, Geld, Veroeffentlichung und alles nach aussen, erklaerter Geschmack, die Verfassung selbst. Genau EINE Frage je Grenze.
---- DEINE TUEREN --- programs (lesen, vorschlagen) · tasks (POST im Karten-Format, archive, comment) · self · watch lane|merge|audit (idleSec 0, Events quittieren) · ctl.sh (merges vor jedem Direkt-Commit, ctx gemessen, dispatch nur mit Owner-Delegation) · deploy (Verdikt am naechsten Boot lesen).
---- DER LOOP --- state.sh --brief → benannte Detailtuer bei Bedarf; kleinster Akt → Zeile im Format → Karte gueltig? → Rueckweg als Mechanismus legen, warten ohne Beobachten → ein Report ist eine Behauptung, bis Diff und Pruefung gelesen sind → naechster Akt.
---- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe · Geld, Veroeffentlichung und Aussenwirkung beim Owner.
---- UEBERGABE --- Linien-Record: jede offene Pflicht mit ID, was nicht uebergehen kann als verloren benannt; intent ≤ 2000 Zeichen (Absicht, Korrekturen, Reihenfolge, Warum); succeed mit model/effort explizit. Wann eine Nachfolge ansteht, sagt die KONTEXT-Zeile deines Harness.`;
-
-// THE HARNESS HALF OF THE CARD (owner correction 2026-09-30: „[Zitat entfernt]“
-// ). The card above is the
-// ROLE: what a succession owes, for every harness alike. WHEN a session hands over is runtime
-// behaviour of the harness it runs on, so it is a second, separately chosen line — never folded
-// into the role text, or a codex Orchestratorin reads a percentage stop its harness does not have.
-// Both lines stand in docs/rollenkarten.md §Kontext je Harness; the claude one is built from her row of
-// the threshold table (server/succession.ts#orchestratorContextLine, K9 S3c), the codex one e2e/pins.ts holds.
-const ORCHESTRATOR_CONTEXT_LINE = orchestratorContextLine(thresholdOf("orchestrator", null, null));
-
-const ORCHESTRATOR_CONTEXT_LINE_CODEX = `--- KONTEXT --- Codex verdichtet seinen Kontext nativ und automatisch. Ein gemessener Fuellstand ist Anzeige: kein Grund, die Arbeit anzuhalten, und kein Anlass fuer eine Nachfolge. Eine Nachfolge ist nur ein bewusster Akt, und dann traegt sie die UEBERGABE oben vollstaendig.`;
-
 const orchestratorRoleCard = (harness: string | null): string =>
   `${ORCHESTRATOR_ROLE_CARD}\n${nativeCompaction(harness) ? ORCHESTRATOR_CONTEXT_LINE_CODEX : ORCHESTRATOR_CONTEXT_LINE}`;
 
@@ -51091,6 +51426,17 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return json({ ...p, worktree: s.worktree, setup: await sessionSetup(s, p.branch),
         succession: successionFacts(s) });
     }
+    // DIE FASSUNG (docs/agent-objekt.md, Schnitt 1): was dieser Slot beim Start bekommt, in den fünf
+    // Teilen, mit Hash über ihren Inhalt; `anlass=nachfolge` zeigt die Fassung der Nachfolgerin.
+    const fassungMatch = /^\/api\/slots\/(\d+)\/fassung$/.exec(url.pathname);
+    if (req.method === "GET" && fassungMatch) {
+      const s = slotFrom(fassungMatch[1]);
+      if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
+      const anlass = url.searchParams.get("anlass");
+      if (anlass !== "laufend" && anlass !== "nachfolge")
+        return json({ error: "anlass must be laufend or nachfolge" }, 400);
+      return json(await fassungFuerSlot(s, anlass));
+    }
     const chainMatch = /^\/api\/slots\/(\d+)\/succession$/.exec(url.pathname);
     if (req.method === "GET" && chainMatch) {
       const s = slotFrom(chainMatch[1]);
@@ -52524,7 +52870,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const q = url.searchParams;
       const answer = await foundingPlanAnswer({ repo: q.get("repo") ?? "", role: q.get("role"), ort: q.get("ort"),
         mode: q.get("mode"), harness: q.get("harness") ?? undefined, model: q.get("model") ?? undefined,
-        effort: q.get("effort") ?? undefined, bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts") });
+        effort: q.get("effort") ?? undefined, bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts"),
+        anlass: q.get("anlass") });
       return answer.ok ? json(answer.body) : json({ error: answer.error }, answer.status);
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:
@@ -54159,4 +54506,6 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry, crossSessionEntry };
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry, crossSessionEntry,
+  fassungFuerSlot, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
+  buildSuccessionBrief, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD };

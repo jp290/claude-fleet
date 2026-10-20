@@ -1378,10 +1378,19 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
   const tree = realManifestTree();
   if ("error" in tree) { check("session agents: source tree is readable", false, tree.error); return; }
   const server = readFileSync(join(tree.root, "server.ts"), "utf8");
+  // The role cards and the codex context line live in server/rollenkarten.ts since the agent object's
+  // cut 1 (they were lifted out of server.ts without a byte of change); every other constant and
+  // function this probe lifts is still in server.ts. Both are read, in this order, so the probe does
+  // not care which of the two files a template stands in.
+  const quellen = [server];
+  try { quellen.push(readFileSync(join(tree.root, "server/rollenkarten.ts"), "utf8")); } catch { /* pre-cut tree */ }
   const constant = (name: string): string => {
-    const match = new RegExp("const " + name + " = (`(?:\\\\.|[^`])*`);", "s").exec(server);
-    if (!match) throw new Error(`session agents probe: missing ${name}`);
-    return match[0];
+    const pattern = new RegExp("const " + name + " = (`(?:\\\\.|[^`])*`);", "s");
+    for (const source of quellen) {
+      const match = pattern.exec(source);
+      if (match) return match[0];
+    }
+    throw new Error(`session agents probe: missing ${name}`);
   };
   const fn = (name: string): string => {
     const start = server.indexOf(`function ${name}(`);

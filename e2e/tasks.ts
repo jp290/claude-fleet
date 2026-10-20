@@ -527,8 +527,11 @@ export async function run(ctx: Ctx): Promise<void> {
     } finally { rmSync(repo, { recursive: true, force: true }); }
   }
 
-  const LANE_ROLE_CARD = /const LANE_ROLE_CARD = `([^`]*)`;/
-    .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
+  // Die Rollenkarte steht seit Schnitt 1 des Agenten-Objekts in server/rollenkarten.ts; ältere Bäume
+  // tragen sie noch in server.ts, deshalb beide, in dieser Reihenfolge.
+  const LANE_ROLE_CARD = ["server/rollenkarten.ts", "server.ts"].map((path) => {
+    try { return readFileSync(resolve(ROOT, path), "utf8"); } catch { return ""; }
+  }).map((source) => /const LANE_ROLE_CARD = `([^`]*)`;/.exec(source)?.[1] ?? "").find((card) => card !== "") ?? "";
   const laneCardCount = (prompt: string): number =>
     LANE_ROLE_CARD === "" ? 0 : prompt.split(LANE_ROLE_CARD).length - 1;
   const repo2VerifyCommand = (() => {

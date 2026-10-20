@@ -5728,8 +5728,11 @@ export async function run(ctx: Ctx): Promise<void> {
     ["fleet-bootstrap", fleetPrompt], ["fleet-succession", fleetSuccessionPrompt],
     ["target-bootstrap", deliveredPrompt], ["target-succession", successionPrompt],
   ];
-  const MAIN_ROLE_CARD = /const MAIN_ROLE_CARD = `([^`]*)`;/
-    .exec(readFileSync(resolve(ROOT, "server.ts"), "utf8"))?.[1] ?? "";
+  // Die Rollenkarte steht seit Schnitt 1 des Agenten-Objekts in server/rollenkarten.ts; ältere Bäume
+  // tragen sie noch in server.ts, deshalb beide, in dieser Reihenfolge.
+  const MAIN_ROLE_CARD = ["server/rollenkarten.ts", "server.ts"].map((path) => {
+    try { return readFileSync(resolve(ROOT, path), "utf8"); } catch { return ""; }
+  }).map((source) => /const MAIN_ROLE_CARD = `([^`]*)`;/.exec(source)?.[1] ?? "").find((card) => card !== "") ?? "";
   const mainCardCount = (prompt: string): number =>
     MAIN_ROLE_CARD === "" ? 0 : prompt.split(MAIN_ROLE_CARD).length - 1;
   const rails = railShapes.map(([, prompt]) => railOf(prompt));

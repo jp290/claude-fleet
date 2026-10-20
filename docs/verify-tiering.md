@@ -5882,6 +5882,34 @@ nicht als neue Familie gezaehlt. Wrapper-Rot ausserhalb des Fensters (`a8fec55a`
 (`0065d176`), Temp-/ENOSPC (`7b87ff1c`) und stummer Agent-Tod (`66b47e57`) sind in der Notiz
 benannte Grenzen, keine erfundenen Checknamen. Fuer diese Inventur wurde keine Suite gefahren.
 
+### 11.2ag Eine dreiunddreißigste Familie: der hold-until-Nachfolge-Check in `e2e/watch.ts` — der fake-pi schrieb seinen Zustand pro Byte (2026-10-19 registriert; Ursache in der [Messnotiz](messungen/2026-10-19-hold-until-nachfolge-wackler.md) belegt; sondenseitig REPARIERT in `<LAND-SHA, setzt die MAIN>`)
+
+**Check:** „hold-until across MAIN succession: the successor's repeated hold re-arms a NEW Watch
+under its occupant, and its next repeat mints none". **Signatur:** `succeeded.ok` false, im Detail
+`composer still holds N chars after 800ms` (lokal N = 25/39/39/53/71). **Kosten:** 3 von 92 Audits
+seit `0ee14099`, 5 von 28 lokalen Trail-Läufen (Notiz, Tabelle „Beleg aus dem Bestand").
+
+**Mechanismus.** Der Stand-in `fake-pi` (Heredoc in `e2e-isolated.sh`) schrieb nach JEDEM Byte die
+State-Datei (`save_state("typing")`) und malte den Composer neu. Den 13 278-B-Nachfolgebrief nahm er so
+erst nach 856–1348 ms an; `server.ts#succeedProgramMain` verlangt nach `acceptWaitMs` (800 ms in der
+Suite) einen leeren Composer und antwortet sonst 500. Der Brief kam trotzdem an, der Server sah nur zu
+früh nach. Ein Produktfehler ist das nicht: Live gilt 3000 ms, und ein echtes TUI nimmt eine Paste als
+Block.
+
+**Reparatur, nur am Stand-in.** `pending()` (`poll(stdin, 0) > 0`) meldet ein noch anstehendes Byte;
+beide `save_state("typing")` laufen nur ohne anstehendes Byte, und das Neumalen am Schleifenende
+entfällt, solange eines ansteht. `"entered"`, `"backspace"`, `"released"` und der Turn-Ledger bleiben
+pro Ereignis; die Familie §11.2ab (Lesung mitten im Backspace-Burst) ist davon nicht berührt. Die
+ACP-27-Prefix-Checks lesen Zustand und Turns erst nach dem Burst und bleiben scharf.
+`acceptWaitMs` und `server.ts` sind unverändert.
+
+**Beleg (Probe der Notiz, Stand-in allein, 200×50-Pane, Server-Reader):** Original 4 von 10 rot,
+Abfluss 899 / 938 / 1130 ms (min / median / max); mit der Reparatur zwei Runden je 0 von 30 rot
+(Abfluss 77 / 114 / 1107 und 87 / 106 / 289 ms; der eine Ausreißer über 800 ms war grün, weil der
+Reader an einer Zeilengrenze einen leeren Composer sah) und mit 300 ms SIGSTOP nach der Paste 0 von
+10 rot. Die Modulläufe stehen im Report der Fix-Lane. Ein Rot dieses Checks
+NACH dem Reparatur-Sha ist wieder echt.
+
 ## 18. Die Quarantaene — `e2e/quarantine.json`
 
 Ein bekannter Flake soll weiter LAUFEN, aber kein Urteil mehr faellen. Die Liste dafuer ist

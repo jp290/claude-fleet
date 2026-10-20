@@ -317,6 +317,17 @@ static void composer(void) {
   if (zai_footer) fputs("0.0%/1.0M (auto)  glm-5.3 \xe2\x80\xa2 high\n", stdout);
   fflush(stdout);
 }
+/* A byte still queued on stdin means the paste is mid-burst. State file and frame are written once
+   the burst is drained, like a TUI that paints after a paste: per byte, a 13 KB brief took
+   856-1348 ms to land and missed the 800 ms acceptance window
+   (docs/messungen/2026-10-19-hold-until-nachfolge-wackler.md). */
+static int pending(void) {
+  struct pollfd q;
+  q.fd = STDIN_FILENO;
+  q.events = POLLIN;
+  q.revents = 0;
+  return poll(&q, 1, 0) > 0;
+}
 static int has_arg(int argc, char **argv, const char *needle) {
   int i;
   for (i = 1; i < argc; i++) if (!strcmp(argv[i], needle)) return 1;
@@ -403,11 +414,12 @@ int main(int argc, char **argv) {
                && (hold_len > 0 || len >= PREFIX_VISIBLE) && hold_len < sizeof hold - 1) {
       if (hold_len == 0) release_at = now_ms() + PREFIX_HOLD_MS;
       hold[hold_len++] = (char)c;
-      save_state("typing");
+      if (!pending()) save_state("typing");
     } else if (len < sizeof buf - 1) {
       buf[len++] = (char)c;
-      save_state("typing");
+      if (!pending()) save_state("typing");
     }
+    if (pending()) continue;
     composer();
   }
   return 0;

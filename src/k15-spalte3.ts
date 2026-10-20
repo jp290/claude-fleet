@@ -14,6 +14,7 @@ import {
   type Detail, type Lage, type QuelleId, type St,
 } from "./k15-zustand";
 import { startFelder } from "./k15-start";
+import { nachDemKlick } from "./nach-dem-klick";
 import { chip, istSchalter, kennzeichen, kopfzeile, nachZahl, schalt, waehle, type Option } from "./k15-teile";
 import { agentOptionen, agentWort, effortVon, modelleVon, passtEffort, passtModell } from "./k15-agent";
 import { werBestimmt } from "./k15-wer";
@@ -142,6 +143,19 @@ export async function setzeBaustein(s: St, q: Position | null, p: Profil, b: Bau
   toast(`${bausteinName(b)}: Die Schalter haben sich während der Prüfung mehrmals geändert. Schalte noch einmal.`);
 }
 
+// DER NAME EINER SESSION IM AUFBAU (Partner 20.10.: „[Zitat entfernt]“ und „[Zitat entfernt]“ hießen „[Zitat entfernt]“ und „[Zitat entfernt]“); nur in einer
+// eigenen Konstellation, eine Fleet-Vorlage bleibt, wie sie ist. Er steht in der Fassung, Speichern legt ihn fest
+function namensFeld(s: St, q: Position): HTMLElement {
+  const f = document.createElement("input");
+  f.className = "k15shn k15shname";
+  f.value = q.name;
+  f.maxLength = 80;
+  f.dataset.feld = "pos-name";
+  f.setAttribute("aria-label", "Name der Session");
+  f.oninput = () => { const n = f.value.trim(); if (n && n !== q.name) { q.name = n; s.konstNeu.add(s.k.id); } };
+  f.onchange = () => { f.value = q.name; nachDemKlick(render); };
+  return f;
+}
 export function spalteSession(): HTMLElement {
   const s = S;
   const col = el("section", "k15col k15c3");
@@ -154,7 +168,7 @@ export function spalteSession(): HTMLElement {
   const t = el("span", "k15kt");
   const vater = q ? eltern(s.k, q.id) : null;
   const n = alle(s.k.wurzeln).filter((x) => x.profil === p.id).length;
-  t.append(el("span", "k15shn", q ? q.name : `Profil ${p.name}`),
+  t.append(q && s.k.eigen ? namensFeld(s, q) : el("span", "k15shn", q ? q.name : `Profil ${p.name}`),
     el("span", "k15ks", q ? `Profil ${p.name} v${p.v}${vater ? ` · meldet an ${vater.name}` : ""}`
       : `${n ? `${plural(n, "Session", "Sessions")} im Aufbau` : "im Aufbau nicht genutzt"} · ältere Versionen: ${p.v > 1 ? Array.from({ length: p.v - 1 }, (_, i) => `v${p.v - 1 - i}`).join(", ") : "keine"}`));
   head.append(g, t);

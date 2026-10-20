@@ -537,7 +537,7 @@ export async function checkCodexSpawnFixtures(source: string,
       parkMergeVerdict: () => {}, audit: () => { effects.push("audit"); }, saveState: () => { effects.push("save"); },
       saveStateNow: async () => { effects.push("persist"); await barrier("persist"); },
       ensureSlot: async () => { effects.push("ensure"); await barrier("ensure"); },
-      NO_BOX: { container: null, containerContext: null }, singletonSpawn: new Set(),
+      NO_BOX: { container: null, containerContext: null }, singletonSpawn: new Set(), merkeStart: async () => {}, STATE_DIR: "/fixture-state",
     });
     try {
       const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
@@ -608,7 +608,7 @@ export async function checkCodexSpawnFixtures(source: string,
           // selection, the Program rail its plan's — none here, a codex fixture spawns without one
           carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
           // ...and its rights (server/rechte.ts), claude only — a codex fixture carries none
-          carriedRechte: null,
+          carriedRechte: null, carriedAgentMd: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });
@@ -1439,6 +1439,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const aliveInfo=new Map(),paneModelInfo=new Map(),gitOpInfo=new Map(),laneHunkInfo=new Map(),gitInfo=new Map(),repoInfo=new Map();
       const inboxNudgeTried=new Set();
       const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
+      const merkeStart=async()=>{},STATE_DIR="/fixture-state";
       ${open}
       let error=null; try {
         if(scenario.startsWith("open-")) await openSlot(s,"/fixture",null,null,null,"codex",null,{},null,false,null,false,

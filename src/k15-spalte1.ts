@@ -2,12 +2,15 @@
 // Das Repo steht seit dem Owner-Urteil vom 16.10. im Kopf des Fensters („[Zitat entfernt]“, src/k15-repo.ts).
 import { el } from "./k15-haupt";
 import { icon } from "./icons";
-import { alle, herkunftVon, pos, type Konst, type Position } from "./k15-entwurf-modell";
-import { S, gehe, gewaehlt, toast } from "./k15-zustand";
-import { fleetKopf, geaendertTag, herkunftTitel, herkunftWenn, kopfzeile, profilHerkunft, unterkopf } from "./k15-teile";
+import { KONST0, alle, herkunftVon, pos, type Konst, type Position } from "./k15-entwurf-modell";
+import { S, gehe, gewaehlt, nurImFenster, plural, render, toast } from "./k15-zustand";
+import { einfuegenFeld } from "./k15-export";
+import { fleetKopf, geaendertTag, herkunftTitel, herkunftWenn, kopfzeile, nichtGespeichertTag, profilHerkunft, unterkopf } from "./k15-teile";
 import { oeffneAblauf } from "./k15-agentmd";
 
 export const ROLLE_MIME = "text/x-k15-rolle";
+// das Feld unter „JSON einfügen“ ist offen (am Handy ohne ⌘V, k15-export.ts#einfuegenFeld)
+let einfuegen = false;
 
 // eine kleine Zeichnung der Konstellation: Punkte je Session, Linien je Meldeweg
 function mini(k: Konst): SVGSVGElement {
@@ -37,6 +40,13 @@ function mini(k: Konst): SVGSVGElement {
   return svg;
 }
 
+// der Satz einer neuen Konstellation, bis sie gespeichert ist (k15-spalte2.ts#speichere setzt dann, wie viele Sessions sie hat)
+export const NEU_SATZ = "beginnt mit einer Session";
+// der Satz einer eigenen Konstellation ist die Zahl ihrer Sessions, solange niemand einen anderen geschrieben hat (Partner 20.10.: eine Kopie
+// trug weiter den Satz ihrer Vorlage; ältere Kopien haben ihn schon gespeichert, daran erkannt, dass er wörtlich eine Vorlage ist)
+export const satzVon = (k: Konst): string => k.eigen && (k.satz === NEU_SATZ || /^\d+ Sessions?$/.test(k.satz) || KONST0.some((v) => v.satz === k.satz))
+  ? plural(alle(k.wurzeln).length, "Session", "Sessions") : k.satz;
+
 export function spalteLinks(): HTMLElement {
   const s = S;
   const col = el("section", "k15col k15c1");
@@ -52,7 +62,8 @@ export function spalteLinks(): HTMLElement {
     g.append(mini(k));
     const t = el("span", "k15kt");
     const ks = el("span", "k15ks");
-    ks.append(...herkunftWenn(herkunftVon(k)), ...(s.konstNeu.has(k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []), k.satz);
+    ks.append(...herkunftWenn(herkunftVon(k)), ...(s.konstNeu.has(k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")]
+      : nurImFenster(s, k) ? [nichtGespeichertTag()] : []), satzVon(k));
     b.title = `${k.name}: ${herkunftTitel(herkunftVon(k), k.v)}`;
     t.append(el("span", "k15kn", k.name), ks);
     b.append(g, t);
@@ -71,9 +82,10 @@ export function spalteLinks(): HTMLElement {
   n1.append(icon("plus"), el("span", "", "Neue Konstellation"));
   n1.onclick = () => {
     const id = `n${Date.now()}`;
-    const k: Konst = { id, name: "Neue Konstellation", v: 1, satz: "beginnt mit einer Session", eigen: true, wurzeln: [pos(`${id}-1`, "Branch-Session", "bau")] };
+    const k: Konst = { id, name: "Neue Konstellation", v: 1, satz: NEU_SATZ, eigen: true, wurzeln: [pos(`${id}-1`, "Branch-Session", "bau")] };
     s.konst.push(k);
     s.k = k;
+    s.konstNeu.add(id);
     s.sel = { art: "pos", id: k.wurzeln[0].id };
     s.quelle = "landet";
     toast("Neue Konstellation angelegt. Zieh Rollen aus der linken Spalte auf eine Session, um sie darunter einzuhängen.");
@@ -81,9 +93,11 @@ export function spalteLinks(): HTMLElement {
   };
   const n2 = el("button", "k15ghost");
   n2.append(icon("copy"), el("span", "", "JSON einfügen"));
-  n2.onclick = () => toast("Füg eine exportierte Konstellation mit ⌘V ein oder zieh die Datei ins Fenster.");
+  n2.setAttribute("aria-expanded", String(einfuegen));
+  n2.onclick = () => { einfuegen = !einfuegen; render(); };
   neu.append(n1, n2);
   col.append(neu);
+  if (einfuegen) col.append(einfuegenFeld(() => { einfuegen = false; }));
 
   const rollenKopf = unterkopf("Rollen", "Profile · auf eine Session ziehen");
   rollenKopf.querySelector(".k15subw")?.append(fleetKopf());

@@ -3,7 +3,7 @@
 // Schritt zeigt eine Sache: 1 die Datei (wählen, hineinziehen, neu beginnen), 2 ihre Abschnitte (lesen, ändern, anfügen), 3 was Fleet
 // darum herum mitgibt (wie viel davon, regelt ein Regler in Graustufen: src/k15-anbindung-ui.ts; dazu Kontextpacks), 4 als Profil speichern. Das Profil lebt wie
 // gespeichert wie Fassungen und Packs auf dem Server (k15-zustand.ts#speichereEigenes); deine Datei und Packs gibt Fleet beim
-// Start noch nicht mit (Schnittplan Schritt 4).
+// Start mit Claude Code in den Systemprompt mit (server/agentmd.ts); die Packs noch nicht.
 import { el, baseName, bausteinName } from "./k15-haupt";
 import { icon } from "./icons";
 import { modelLabel } from "./modelname";
@@ -208,7 +208,7 @@ function schrittFleet(s: St, a: Ablauf): HTMLElement[] {
     tab.append(r);
   };
   zeile("Deine Datei", a.datei ? `${a.datei.titel} · ${plural(a.datei.abschnitte.length, "Abschnitt", "Abschnitte")}` : "noch keine",
-    `${a.stufe === "ordner" ? "käme als eigene Datei dazu" : "stünde vor dem, was Fleet schreibt"}; heute gibt Fleet sie noch nicht mit`, true);
+    "kommt beim Start mit Claude Code in den Systemprompt, als Block hinter dem, was Fleet schreibt", true);
   if (!plan) tab.append(el("div", "k15leer", !s.repo ? "Kein Repo gewählt." : wahl?.fehler ? `Der Plan lehnt ab: ${wahl.fehler}` : "Der Gründungsplan wird gelesen …"));
   else {
     // was ankommt (src/k15-anbindung.ts#ankommend, wie Spalte 3); was gegenüber der Stufe darunter dazukommt, steht hervorgehoben
@@ -294,7 +294,7 @@ function schrittSpeichern(s: St, a: Ablauf): HTMLElement[] {
     reihe(feld("Modell", auswahl(liste(s.katalog ? modelleVon(s.katalog, std) : [], a.modell), a.modell, (v) => v ? modelLabel(v) : "Standard der Rolle", (v) => { a.modell = v; })),
       feld("Effort", auswahl(liste(s.katalog ? effortVon(s.katalog, std) : [], a.effort), a.effort, (v) => v ? EFFORT_WORT[v] ?? v : "Standard der Rolle", (v) => { a.effort = v; }))),
     dl,
-    el("div", "k15hinweis", "Noch ein Entwurf: Beim Start gibt Fleet deine Datei und die Packs heute nicht mit, dafür fehlt noch ein Schritt am Server. Gespeichert wird das Profil schon."),
+    el("div", "k15hinweis", "Beim Start mit Claude Code gibt Fleet deine Datei mit, in den Systemprompt; auch nach einem Neustart und bei einer Nachfolgerin. Die Packs gibt Fleet heute noch nicht mit."),
     ...(fehler ? [el("div", "k15abf", fehler)] : [])];
 }
 

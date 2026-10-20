@@ -2,12 +2,14 @@
 // vollständig); zurück kommt es per Hineinziehen oder ⌘V. Der vollständige Export trägt die eigenen Fassungen und die Kontextpacks als
 // Entwurf mit ihrem Text.
 import { el, copyText } from "./k15-haupt";
+import { erlaubtOeffnen } from "./k15-erlaubt";
+import { fassungenNeu } from "./k15-konst-fassungen";
 import { icon } from "./icons";
 import { abwZahl, alle, exportJson, type Ebene, type Profil } from "./k15-entwurf-modell";
-import { MAX_FASSUNGEN, MAX_PACKS, abschnitte, importKonst } from "./k15-import";
+import { MAX_FASSUNGEN, MAX_PACKS, abschnitte, dateiPasst, importKonst } from "./k15-import";
 import { fassungenExport, fassungenImport } from "./k15-wortlaut";
 import { istPackRolle, packsExport, packsImport, type PackEntwurf } from "./k15-kontextpack";
-import { S, gehe, gewaehlt, plural, profilVon, render, speichereEigenes, toast, type St } from "./k15-zustand";
+import { S, gehe, gewaehlt, plural, profilVon, render, speichereEigenes, speichereKonst, toast, type St } from "./k15-zustand";
 import { unterkopf } from "./k15-teile";
 
 // welche Pack-Entwürfe auf einer Ebene mitreisen: im System alle, in einer Konstellation die, die eine ihrer Rollen bekommt, in einer
@@ -82,6 +84,40 @@ export function exportPanel(): HTMLElement {
   return box;
 }
 
+// IMPORT OHNE ZIEHEN UND ⌘V (Partner 20.10.: am Handy kam man nicht hinein): eine Datei wählen, oder JSON in ein Feld einfügen; beides geht
+// den Weg von Hineinziehen und ⌘V
+export function dateiWaehlen(): void {
+  const i = document.createElement("input");
+  i.type = "file";
+  i.accept = ".json,.md,application/json,text/markdown";
+  i.onchange = () => {
+    const f = i.files?.[0];
+    if (!f) return;
+    const passt = dateiPasst(f.name, f.size);
+    if (passt) { toast(passt); return; }
+    f.text().then((t) => nimm(f.name, t)).catch(() => toast(`${f.name}: Der Browser konnte die Datei nicht lesen.`));
+  };
+  i.click();
+}
+export function einfuegenFeld(fertig: () => void): HTMLElement {
+  const box = el("div", "k15einf");
+  const t = document.createElement("textarea");
+  t.className = "k15packin";
+  t.rows = 4;
+  t.placeholder = "Exportierte Konstellation hier einfügen (JSON)";
+  const los = el("button", "k15ghost", "Einsetzen") as HTMLButtonElement;
+  los.onclick = () => {
+    const text = t.value.trim();
+    if (!text) { toast("Das Feld ist leer."); return; }
+    const passt = dateiPasst("eingefügt.json", new TextEncoder().encode(text).length);
+    if (passt) { toast(passt); return; }
+    fertig();
+    nimm("eingefügt.json", text);
+  };
+  box.append(t, los);
+  return box;
+}
+
 // HINEINZIEHEN UND EINFÜGEN: eine .md wird die eigene Datei der gewählten Session, ein JSON landet auf seiner Ebene; eigene Fassungen und
 // Pack-Entwürfe eines Exports kommen mit, auf jeder Ebene. Was es hier schon gibt (derselbe Abschnitt, derselbe Pack), bleibt das hiesige.
 export function nimm(name: string, text: string): void {
@@ -121,9 +157,14 @@ function nimmRoh(s: St, name: string, text: string): void {
     s.konst = [...s.konst, k];
     s.k = k;
     s.sel = { art: "pos", id: alle(k.wurzeln)[0]?.id ?? "" };
-    const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene.${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
-    if (dazu || r0.neueProfile.some((p) => p.datei)) void speichereEigenes(s).then((ok) => { if (ok) toast(satz); });
-    else toast(satz);
+    erlaubtOeffnen(k.id);
+    const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene und auf dem Server gespeichert; was sie erlaubt, steht im Aufbau.${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
+    // eine importierte Konstellation ist gleich gespeichert (Konstellation Stück 1): Hineinziehen ist schon die Entscheidung, sie zu behalten
+    // gespeichert, liest die Ansicht ihre Fassungen neu (wie nach jedem Speichern, k15-spalte2.ts): vorher fragte sie zu früh und sah keine
+    void speichereKonst(s, k.id, k).then((ok) => {
+      if (ok) fassungenNeu(k.id);
+      if (ok && S === s) { toast(satz); render(); } else if (S === s) { s.konstNeu.add(k.id); render(); }
+    });
     gehe(1, 1);
     return;
   }

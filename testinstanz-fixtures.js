@@ -316,6 +316,22 @@ for (const [parentSlot, count] of [[2, 3], [3, 1]]) {
 }
 await Bun.sleep(6000);
 
+// OPENED BY A SESSION (Konstellation Stück 2): the Orchestrator in slot 1 opens a free session with its self token beside the
+// owner bearer, the way the live one opened „[Zitat entfernt]“ — the constellation window hangs it under her (server/opener.ts).
+// The token is read from THIS instance's state file and goes only to this instance's own door; it is never printed. `mixed` only:
+// `full` has no free place left for it.
+if (MODE === "mixed") {
+  let self = "";
+  for (let i = 0; i < 20 && !self; i++) {
+    try { self = JSON.parse(await Bun.file(`${DIR}/fleet.json`).text())?.slots?.["1"]?.selfToken ?? ""; } catch { self = ""; }
+    if (!self) await Bun.sleep(500);
+  }
+  const r = self ? await fetch(`${BASE}/api/slots/13/open`, { method: "POST", headers: { ...H, "x-fleet-self-token": self },
+    body: JSON.stringify({ cwd: other, label: "Grok-Auswertung" }) }) : null;
+  if (!r) notes.push("slot 13 NOT opened: no self token of slot 1 in the state file");
+  else if (r.status >= 300) notes.push(`slot 13 NOT opened (${r.status})`);
+}
+
 // BROKEN: the window stays (so the server sees nothing to heal), the process behind it does not.
 // Both calls name the SESSION on this instance's own socket — never a name pattern, and never a
 // socket this script did not create.

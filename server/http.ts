@@ -3,8 +3,7 @@
 // `server/auth.ts` (and every later module that answers a request) import it without the
 // `server/` → `server.ts` cycle rule 2 of the Slice-Protokoll forbids.
 
-export const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+export { json } from "./json";
 
 // Defaults to localhost — nothing is network-reachable until you explicitly set FLEET_HOST
 // (e.g. your Tailscale IP via `tailscale ip -4`). Even then, every request needs the access

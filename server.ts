@@ -9,6 +9,8 @@ import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
 import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn } from "./server/session-start";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
+import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { openerGeladen, openerVon } from "./server/opener";
 import type { Rechte } from "./session-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
 import type { CcAnatomie } from "./src/k15-anatomie";
@@ -224,8 +226,12 @@ import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choi
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { k15Speicher } from "./server/k15-speicher";
+import { konstFassungen } from "./server/konst-fassungen";
+import { k15Laeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht } from "./server/laeufe";
+import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
+import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
-import { SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
+import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
@@ -456,8 +462,8 @@ function sessionListCut(role: SessionListRole): { skillOverrides: Record<string,
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
-  remoteName: string | null = null, rechte: Rechte | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte)}; exec ${SHELL}`;
+  remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -465,7 +471,7 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
-  handoverOn = false, rechte: Rechte | null = null): string {
+  handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
@@ -514,8 +520,10 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const cut = listRole ? sessionListCut(listRole === "generic" ? "main" : listRole) : null;
     if (cut?.disallowed) cmd += ` --disallowedTools ${shellSingleQuote(cut.disallowed)}`;
     // WAS DIESE SESSION DARF (Slot.rechte, server/rechte.ts): ein Satz hinter dem Listenschnitt, die Regeln im --settings unten
-    if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, rechte ? rechteSatz(rechte) : null].filter(Boolean).join("\n"))}`;
-    else if (rechte) cmd += ` --append-system-prompt ${shellSingleQuote(rechteSatz(rechte))}`;
+    // ...und die Agent-MD seines Profils (Slot.agentMd, server/agentmd.ts) als eigener Block dahinter
+    const anhang = [rechte ? rechteSatz(rechte) : null, agentMd ? agentMdBlock(agentMd) : null];
+    if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, ...anhang].filter(Boolean).join("\n"))}`;
+    else if (rechte || agentMd) cmd += ` --append-system-prompt ${shellSingleQuote(anhang.filter(Boolean).join("\n\n"))}`;
     if (listRole && listRole !== "generic") cmd += ` --tools ${shellSingleQuote(SESSION_TOOLS[listRole].join(","))}`;
     // A LANE STARTS WITHOUT AUTO-MEMORY (Z3, docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md
     // M1): the shared project index stays MAIN's and the Orchestratorin's; a lane reads its state through
@@ -678,7 +686,9 @@ interface Harness {
     // the session's handover is on at this spawn (thresholdFor); claude alone reads it (server/session-start.ts)
     handoverOn?: boolean;
     // what this session may do (Slot.rechte, server/rechte.ts); claude alone reads it, null = no rules
-    rechte?: Rechte | null }): string;
+    rechte?: Rechte | null;
+    // the Agent-MD of the profile it started from (Slot.agentMd, server/agentmd.ts); claude alone reads it
+    agentMd?: AgentMd | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -915,7 +925,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -2670,7 +2680,10 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   browser: false,
   webSearch: false,
   remote: false,
+  openedBy: null,
+  lauf: null,
   rechte: null,
+  agentMd: null,
   packMcp: [],
   context: null,
   permissions: null,
@@ -5871,7 +5884,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}) } } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -8576,8 +8589,12 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
 async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | null, opener: "owner" | "self"): Promise<Response> {
   if (!body || typeof body.branch !== "string" || (body.goal !== undefined && typeof body.goal !== "string")
     || (body.fresh !== undefined && typeof body.fresh !== "boolean"))
-    return json({ error: "expected { repo, branch, goal?, fresh?, model?, effort?, harness?, rechte? }" }, 400);
-  const goal = typeof body.goal === "string" ? body.goal.trim() : "";
+    return json({ error: "expected { repo, branch, goal?, aufgabe?, fresh?, model?, effort?, harness?, rechte?, profil? }" }, 400);
+  // die Aufgabe (src/aufgabe.ts) ist das Ziel mit Grenze, fertig wenn, Beleg und Rückweg; ihr Text wird die erste Nachricht
+  if (body.goal !== undefined && body.aufgabe !== undefined) return json({ error: "goal oder aufgabe, nicht beides" }, 400);
+  const aufgabe = body.aufgabe === undefined ? null : aufgabeAus(body.aufgabe);
+  if (typeof aufgabe === "string") return json({ error: aufgabe }, 400);
+  const goal = aufgabe ? aufgabeAlsText(aufgabe) : typeof body.goal === "string" ? body.goal.trim() : "";
   if (goal.length > BRANCH_GOAL_MAX) return json({ error: `goal has ${goal.length} characters — the cap is ${BRANCH_GOAL_MAX}` }, 400);
   const ho = harnessIdOf(body);
   if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((x) => x.id).join(", ")})` }, 400);
@@ -8592,6 +8609,8 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
   if (!pe.ok) return json({ error: pe.error }, 400);
   const rt = rechteDerTuer(body, h.id);
   if (!rt.ok) return json({ error: rt.error }, 400);
+  const am = await agentMdDerTuer(body, h.id, STATE_DIR);
+  if (!am.ok) return json({ error: am.error }, 400);
   const ro = await branchRepoOf(body.repo);
   if (!ro.ok) return json({ error: ro.error }, 400);
   const record = findBranch(branchBook, ro.repo, body.branch);
@@ -8610,13 +8629,17 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
     try {
       const resumeId = body.fresh === true ? null : lastConversationIn(path);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
-        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte);
+        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte, am.agentMd);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
+      // eine Branch-Session hat keinen Lane-Worktree: ihr Branch steht in der Historie, damit „Erneut starten“ ihn fortsetzt
+      void merkeNachtrag(free.id, free.openedAt, { branch: body.branch, repo: ro.repo, ...(goal ? { goal } : {}), ...(aufgabe ? { aufgabe } : {}) }, STATE_DIR);
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
       // door — is recorded, and the two may write each other in the postfach
       if (by?.cwd && by !== free) {
         branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: by.id, cwd: by.cwd, at: Date.now() }).book;
+        free.openedBy = { slot: by.id, openedAt: by.openedAt, cwd: by.cwd };
+        void merkeNachtrag(free.id, free.openedAt, { openedBy: free.openedBy }, STATE_DIR);
         await saveStateNow();
       }
       void tickGit().catch(() => {});
@@ -8630,7 +8653,7 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
       });
       return json({ ok: true, slot: free.id, openedAt: free.openedAt, cwd: free.cwd, label: free.label,
         resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: goal ? "follows" : null,
-        ...(free.rechte ? { rechte: free.rechte } : {}) });
+        ...(free.rechte ? { rechte: free.rechte } : {}), ...(free.agentMd ? { agentMd: { profil: free.agentMd.profil, titel: free.agentMd.titel, sha256: free.agentMd.sha256 } } : {}) });
     } finally {
       attachBusy.delete(path);
     }
@@ -9632,6 +9655,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   browser: boolean;
   remote: boolean;
   rechte: Rechte | null;
+  agentMd: AgentMd | null;
   context: SlotContext | null;
   permissions: SlotPermissions | null;
   container: string | null;
@@ -9642,7 +9666,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, remote: s.remote, rechte: s.rechte, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, rechte: s.rechte, agentMd: s.agentMd, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
   webSearch: s.webSearch,
 } : null;
 
@@ -9867,7 +9891,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
-          handoverOn, rechte: h.id === "claude" ? occupant.rechte : null })}`);
+          handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -9998,7 +10022,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // when its transcript exists, else it starts a new one as on every other open
   resumeSessionId?: string,
   // what the session may do (server/rechte.ts), already judged by its door; claude only
-  rechte: Rechte | null = null): Promise<SlotOpenResult> {
+  rechte: Rechte | null = null,
+  // the Agent-MD of its profile (server/agentmd.ts), already read by its door; claude only
+  agentMd: AgentMd | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10118,6 +10144,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.rechte = h.id === "claude" ? rechte : null; // ...nor its rules
+  s.agentMd = h.id === "claude" ? agentMd : null; // ...nor its Agent-MD
+  s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
+  s.lauf = null; // ...nor its run: the window binds THIS one after the start (server/laeufe.ts)
   // ...nor a pane the previous occupant's MCP servers: only THIS founding's plan names them, claude only
   s.packMcp = h.id === "claude" ? [...(packMcp ?? (foundingPlan ? acceptedPlanMcp(foundingPlan) : []))] : [];
   s.permissions = po.permissions;
@@ -10205,6 +10234,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
   if (!openOccupantCurrent()) return { superseded: true, occupant: expected, modelSupport: modelSupport
     ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
+  // jeder Start eine Zeile in der Historie (server/start-historie.ts); best effort, wie jedes Ereignisprotokoll
+  void merkeStart(s, STATE_DIR);
   return { superseded: false, occupant: expected, modelSupport };
   } finally {
     openSlotIntents.delete(openIntent);
@@ -10332,6 +10363,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   rmSync(historyPath(streamOccupant.slot), { force: true });
   audit("slot_kill", streamOccupant.slot, why);
   closeProgramLineageForOccupant(s.id, s.openedAt, Date.now());
+  if (s.lauf) void laufZu(s.lauf, s.id, s.openedAt, STATE_DIR); // ...and its run learns that this session is closed (server/laeufe.ts)
   s.label = null;
   s.openedAt = 0;
   s.successionRetirement = null;
@@ -10356,7 +10388,10 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.browser = false;
   s.webSearch = false;
   s.remote = false;
+  s.openedBy = null;
+  s.lauf = null;
   s.rechte = null;
+  s.agentMd = null;
   s.packMcp = [];
   s.context = null;
   s.permissions = null;
@@ -12887,6 +12922,8 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   // THE OWNER'S SETTING IS THE LINE'S (server/succession.ts): read in the last synchronous step before
   // the kill, so an owner PATCH that landed while the brief was built is the one that rides on
   const lineSetting = ownSetting(s.handover, predecessor);
+  const lineOpener = s.openedBy; // ...and so is who opened it: the successor hangs where the predecessor hung
+  const lineLauf = s.lauf; // ...and the run it sits in, on the same position
   let ownEndedSlot = false;
   try {
     await killSlot(s, "handoff");
@@ -12930,6 +12967,11 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
   if (lineSetting && s.cwd === predecessor.cwd) {
     s.handover = settingForSuccessor(lineSetting, { slot: s.id, openedAt: s.openedAt }, Date.now());
     keepCacheRuns.delete(s.id);
+  }
+  if (s.cwd === predecessor.cwd) {
+    s.openedBy = lineOpener;
+    s.lauf = lineLauf;
+    if (lineLauf) void laufNachfolge(lineLauf, s.id, s.openedAt, predecessor.openedAt, STATE_DIR);
   }
   // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
   // binds or saves — so the rail's own state cut persists them. Only a SUCCESSFUL open reaches this
@@ -14162,6 +14204,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const carriedMcp = [...s.packMcp];
   // ...and what it may do, as long as the successor is Claude Code too (server/rechte.ts)
   const carriedRechte = harnessOf(harness).id === "claude" ? s.rechte : null;
+  const carriedAgentMd = harnessOf(harness).id === "claude" ? s.agentMd : null;
   const planned = await carrySlotPlan(s.plan, { harness, model: opts.spawn.model, effort: opts.spawn.effort }, "Nachfolge");
   if (opts.beforeKill) {
     const refused = await opts.beforeKill();
@@ -14174,7 +14217,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte),
+        undefined, carriedRechte, carriedAgentMd),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -17441,6 +17484,9 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     const current = resolveMessageAddress(to);
     if (current.ok) resolved = current;
   }
+  // EIN LAUF BEHÄLT DIE NACHRICHTEN SEINER SESSIONS selbst, nicht nur im Ring (server/laeufe.ts, Harness 2.0 4b)
+  const laeufe = [s.lauf?.id, resolved.ok ? resolved.holder?.lauf?.id : undefined].filter((x): x is string => !!x);
+  if (laeufe.length) void merkeLaufNachricht(laeufe, { id: entry.id, at: entry.at, from: entry.from, to: entry.to, text: entry.payload.text, replyTo: entry.replyTo }, STATE_DIR);
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
@@ -40376,6 +40422,9 @@ const subjectNameStamp = (s: Slot | undefined, branch: string): { subjectName: s
   return name ? { subjectName: name } : {};
 };
 
+// the session that opened `s` with its self token beside the owner bearer (server/opener.ts)
+const openerOf = (req: Request, s: Slot) => openerVon(resolvePrincipal(req), slots, s);
+
 function slotFrom(raw: unknown): Slot | null {
   if (typeof raw === "string" && LANE_NAME_RE.test(raw)) return slots.find((s) => laneNameOf(s) === raw) ?? null;
   const id = Number(raw);
@@ -44563,6 +44612,12 @@ if (existsSync(file)) {
         if ((v as { remote?: unknown }).remote === true && hOf.id === "claude") s.remote = true;
         // ...and what the session may do, only readable rules and only on Claude Code (server/rechte.ts)
         s.rechte = rechteGeladen((v as { rechte?: unknown }).rechte, hOf.id);
+        // ...and the Agent-MD of its profile, only on Claude Code (server/agentmd.ts)
+        s.agentMd = agentMdGeladen((v as { agentMd?: unknown }).agentMd, hOf.id);
+        // ...and who opened it, only a whole record
+        s.openedBy = openerGeladen((v as { openedBy?: unknown }).openedBy);
+        // ...and the run of a constellation it sits in (server/laeufe.ts)
+        s.lauf = laufGeladen((v as { lauf?: unknown }).lauf);
         // ...and the founding's MCP servers, on the one adapter that reads them, each re-judged by the
         // shape check a manifest Zusatz passes: one broken entry drops the whole list, never half of it
         const pmcp = (v as { packMcp?: unknown }).packMcp;
@@ -49975,7 +50030,34 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
 
     // K15: eigene Profile, Fassungen und Packs des Fensters „Neue Session“, eine Datei im Zustandsverzeichnis (server/k15-speicher.ts)
-    if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req);
+    if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req, STATE_DIR);
+    if (url.pathname.startsWith(`${K15_KONST_ROUTE}/`)) return await konstFassungen(req, url, STATE_DIR);
+    if (url.pathname === K15_HISTORIE_ROUTE) return await startHistorie(req, url, STATE_DIR);
+    if (url.pathname === K15_LAEUFE_ROUTE || url.pathname.startsWith(`${K15_LAEUFE_ROUTE}/`)) return await k15Laeufe(req, url, {
+      binde: (id, openedAt, b) => {
+        const s = slotFrom(id);
+        if (!s?.cwd || (openedAt !== null && s.openedAt !== openedAt)) return null;
+        s.lauf = b;
+        saveState();
+        return { openedAt: s.openedAt, cwd: s.cwd, branch: s.worktree?.branch ?? null, repo: s.worktree?.repo ?? null };
+      },
+      // ein Lauf, der von Hand endet, gibt seine Sessions frei: sie laufen weiter, schreiben aber nicht mehr in sein Protokoll
+      loese: (id) => {
+        for (const s of slots) if (s.lauf?.id === id) s.lauf = null;
+        saveState();
+      },
+      // die Commits über der Basis des Branches, wie sie der Board-Diff zeigt (/api/branches/diff)
+      commits: async (repo, branch) => {
+        const base = findBranch(branchBook, repo, branch)?.base ?? await integrationBranch(repo);
+        if (!base) return null;
+        const log = await gitRead(repo, "log", "-n", "200", "--format=%H%x00%ct%x00%s", `${base}..refs/heads/${branch}`);
+        if (log.code !== 0) return null;
+        return log.out.split("\n").filter(Boolean).map((line) => {
+          const [sha = "", ct = "0", subject = ""] = line.split("\0");
+          return { sha, at: Number(ct) * 1000, subject };
+        });
+      },
+    }, STATE_DIR);
 
     if (url.pathname === "/api/worktrees" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
@@ -50268,6 +50350,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
               return { taskId: t.id, taskHead: t.text.split("\n")[0].slice(0, 160), ...(title ? { taskTitle: title } : {}) };
             })() : {}),
             ...(s.programId ? { programId: s.programId } : {}),
+            // who opened this session (Slot.openedBy); the constellation hangs it under that one. Omitted when none
+            ...(s.cwd && s.openedBy ? { openedBy: s.openedBy } : {}),
+            // the run of a constellation it sits in (Slot.lauf, server/laeufe.ts). Omitted when none
+            ...(s.cwd && s.lauf ? { lauf: s.lauf } : {}),
             // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the
             // default harness". What each harness SUPPORTS is static and rides GET /api/harnesses once.
             ...(s.harness ? { harness: s.harness } : {}),
@@ -53484,6 +53570,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (!ro.ok) return json({ error: ro.error }, 400);
         const rt = rechteDerTuer(body, hh.id);
         if (!rt.ok) return json({ error: rt.error }, 400);
+        const am = await agentMdDerTuer(body, hh.id, STATE_DIR);
+        guard();
+        if (!am.ok) return json({ error: am.error }, 400);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -53516,11 +53605,13 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [], undefined, rt.rechte);
+            acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [], undefined, rt.rechte, am.agentMd);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;
           if (acc) s.plan = acc.request;
+          s.openedBy = openerOf(req, s);
+          if (s.openedBy) { saveState(); void merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),
@@ -53562,7 +53653,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             await writePlanReceipt(s, acc, planBlock);
           }
         }
-        return json({ ok: true, cwd: s.cwd, label: s.label, plan: planBlock, ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(roleCard ? { roleCard } : {}),
+        return json({ ok: true, cwd: s.cwd, label: s.label, plan: planBlock, ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256 } } : {}), ...(roleCard ? { roleCard } : {}),
           ...roleConflictFor(s),
           ...(modelSupport ? { modelSupport } : {}),
           ...(packsResult ? packsResult : {}),

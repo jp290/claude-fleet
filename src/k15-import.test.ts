@@ -3,7 +3,7 @@
 // 6 „[Zitat entfernt]“; 8 „[Zitat entfernt]“;
 // 9 „[Zitat entfernt]“.
 import { describe, expect, test } from "bun:test";
-import { DU, PROFILE0, alle, exportJson, pos, type Konst, type Profil } from "./k15-entwurf-modell";
+import { DU, KONST0, PROFILE0, alle, exportJson, exportObjekt, pos, type Konst, type Profil } from "./k15-entwurf-modell";
 import { MAX_POSITIONEN, abschnitte, dateiPasst, importKonst, profilAus } from "./k15-import";
 
 const imp = (o: unknown, profile: readonly Profil[] = PROFILE0) => importKonst(JSON.stringify(o), profile, 7);
@@ -76,6 +76,29 @@ describe("der vollständige Export verliert nichts (Punkt 6)", () => {
   });
 });
 
+describe("eine gespeicherte Konstellation (Konstellation Stück 1) kommt als derselbe Aufbau zurück", () => {
+  const orch = KONST0.find((x) => x.id === "orch")!;
+  const eigene: Konst = { ...structuredClone(orch), id: "n1", name: "Orchestratorin → freie Session", v: 3, eigen: true };
+  const roh = { id: eigene.id, ...exportObjekt({ ebene: "konst", voll: true, konst: [eigene], k: eigene, profile: PROFILE0, q: null, p: PROFILE0[0] }) };
+  test("Kennung, Fassung, Positionen und ihre Kennungen bleiben, und kein Profil kommt doppelt", () => {
+    const r = importKonst(JSON.stringify(roh), PROFILE0, 7, "n1");
+    if (typeof r === "string") throw new Error(r);
+    expect([r.k.id, r.k.name, r.k.v, r.k.eigen]).toEqual(["n1", "Orchestratorin → freie Session", 3, true]);
+    const zeile = (ps: ReturnType<typeof alle>) => ps.map((x) => [x.id, x.name, x.profil, x.kids?.map((c) => c.id) ?? []]);
+    expect(zeile(alle(r.k.wurzeln))).toEqual(zeile(alle(eigene.wurzeln)));
+    expect(alle(r.k.wurzeln).find((x) => x.id === "l2")?.abw).toEqual({ modell: "claude-sonnet-5-5", effort: "medium" });
+    expect(r.neueProfile).toEqual([]);
+  });
+  test("ohne Kennung bekommt die Konstellation eine neue, ihre Sessions behalten ihre (dieselbe Fassung, server/fassung-reise.test.ts)", () => {
+    const r = importKonst(JSON.stringify(roh), PROFILE0, 7);
+    if (typeof r === "string") throw new Error(r);
+    expect([r.k.id, alle(r.k.wurzeln)[0]?.id]).toEqual(["i7", "o"]);
+  });
+  test("eine schiefe gespeicherte Konstellation wird abgelehnt wie ein Import", () => {
+    expect(importKonst(JSON.stringify({ ...roh, positionen: [] }), PROFILE0, 7, "n1")).toBe("die Konstellation hat keine Sessions");
+  });
+});
+
 describe("ein Profil aus dem Speicher", () => {
   test("geht hin und zurück, mit seiner Datei", () => {
     const p: Profil = { ...PROFILE0[2], id: "md9", name: "X", autor: DU, datei: { id: "f", titel: "x.md", v: 1, pfad: "p", abschnitte: [{ titel: "# X", text: "t" }] } };
@@ -109,5 +132,30 @@ describe("welche Dateien das Fenster annimmt (Punkt 9)", () => {
     expect(dateiPasst("k.fleet.json", 2_000)).toBeNull();
     expect(dateiPasst("film.mp4", 2_000)).toBe("film.mp4: Nur eine .md (Agent-MD) oder eine exportierte .json lässt sich hineinziehen.");
     expect(dateiPasst("gross.md", 2_500_000)).toBe("gross.md: 2.500 KB sind zu groß; mehr als 1 MB liest das Fenster nicht.");
+  });
+});
+
+describe("das Protokoll einer Konstellation (Harness 2.0 Schritt 3) reist mit", () => {
+  const orch = KONST0.find((x) => x.id === "orch")!;
+  const form = (k: Konst) => exportObjekt({ ebene: "konst", voll: true, konst: [k], k, profile: PROFILE0, q: null, p: PROFILE0[0] });
+  test("Endbedingung, Rundendeckel und Prüfregel kommen gleich zurück", () => {
+    const protokoll = { ende: "Die CI des Repos ist grün.", runden: 3, regel: "Der Gegenspieler bricht den Schnitt nicht mehr." };
+    const r = importKonst(JSON.stringify(form({ ...structuredClone(orch), protokoll })), PROFILE0, 7);
+    if (typeof r === "string") throw new Error(r);
+    expect(r.k.protokoll).toEqual(protokoll);
+  });
+  test("eine abgeschaltete Endbedingung bleibt aus", () => {
+    const r = importKonst(JSON.stringify(form({ ...structuredClone(orch), protokoll: { ende: null, runden: 2, regel: null } })), PROFILE0, 7);
+    if (typeof r === "string") throw new Error(r);
+    expect(r.k.protokoll).toEqual({ ende: null, runden: 2, regel: null });
+  });
+  test("ein leeres Protokoll reist nicht mit: die Form bleibt die von vorher", () => {
+    expect(form({ ...structuredClone(orch), protokoll: { ende: null, runden: null, regel: null } })).toEqual(form(structuredClone(orch)));
+  });
+  test("ein schiefes Protokoll wird abgelehnt", () => {
+    const roh = form(structuredClone(orch));
+    expect(imp({ ...roh, protokoll: { ende: 3, runden: null, regel: null } })).toBe("das Protokoll passt nicht");
+    expect(imp({ ...roh, protokoll: { ende: null, runden: 0, regel: null } })).toBe("das Protokoll passt nicht");
+    expect(imp({ ...roh, protokoll: "CI" })).toBe("das Protokoll passt nicht");
   });
 });

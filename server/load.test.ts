@@ -244,6 +244,17 @@ describe("K15-Speicher über die Route", () => {
     expect(readFileSync(datei, "utf8")).toBe(vorher);
     expect(readdirSync(STATE_DIR).filter((f) => f.startsWith("k15-eigenes"))).toEqual(["k15-eigenes.json"]);
   });
+  test("Konstellationen bleiben, wenn ein Fenster von vorher nur drei Listen schickt; eine leere Liste leert sie", async () => {
+    const konst = { id: "n1", name: "Orchestratorin → freie Session", fleet: "konstellation", positionen: [{ id: "o", profil: "orchestratorin@2" }] };
+    // jede gespeicherte Konstellation bekommt eine feste Fassung (server/konst-fassungen.ts), die Antwort nennt sie
+    const erst = await call("PUT", { body: JSON.stringify({ ...gut, konstellationen: [konst] }) });
+    expect(erst.status).toBe(200);
+    expect(erst.body).toMatchObject({ ok: true, fassungen: { n1: { neu: true } } });
+    expect(await call("PUT", { body: JSON.stringify({ ...gut, packs: [] }) })).toEqual({ status: 200, body: { ok: true } });
+    expect(await call("GET")).toEqual({ status: 200, body: { eigenes: { ...gut, packs: [], konstellationen: [konst] } } });
+    expect(await call("PUT", { body: JSON.stringify({ ...gut, konstellationen: [] }) })).toEqual({ status: 200, body: { ok: true, fassungen: {} } });
+    expect(await call("GET")).toEqual({ status: 200, body: { eigenes: { ...gut, konstellationen: [] } } });
+  });
   test("ohne Credential oder mit falschem gibt es 401, und nichts wird gelesen oder geschrieben", async () => {
     await call("PUT", { body: JSON.stringify(gut) });
     const vorher = readFileSync(datei, "utf8");

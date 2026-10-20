@@ -87,6 +87,23 @@ describe("constellation", () => {
     expect(where(t)).toEqual({ orchester: [2], sessions: [1] });
   });
 
+  test("a session hangs under the session that opened it (openedBy), also after the opener's succession", () => {
+    const by = (s: number, cwd = `/w/${s}`) => ({ openedBy: { slot: s, openedAt: 1, cwd } });
+    const t = constellation([slot(6, { role: "orchestrator" }), slot(4, { label: "Grok-Auswertung", ...by(6) }),
+      slot(8, by(6)), slot(9, by(6, "/elsewhere"))], branches(["bau/k", 8, 8000]), []);
+    expect(where(t)).toEqual({ orchester: [6], sessions: [9] });
+    expect(t.groups[0]!.nodes[0]!.children.map((n) => [n.slot.id, n.kind])).toEqual([[4, "session"], [8, "bau"]]);
+    expect(ids(t).sort((a, b) => a - b)).toEqual([4, 6, 8, 9]);
+  });
+
+  test("an opener that is gone, or a session that would hang under itself or its own child, stands in its group", () => {
+    const by = (s: number) => ({ openedBy: { slot: s, openedAt: 1, cwd: `/w/${s}` } });
+    const t = constellation([slot(1, by(1)), slot(2, by(7)), slot(3, by(4)), slot(4, by(3)), free(7)], null, []);
+    expect(where(t)).toEqual({ sessions: [1, 2, 4] });
+    expect(t.groups[0]!.nodes[2]!.children.map((n) => n.slot.id)).toEqual([3]);
+    expect(ids(t).sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+  });
+
   test("nothing running: no group, count 0", () => {
     const t = constellation([free(1), free(2)], null, []);
     expect(t).toEqual({ groups: [], count: 0 });

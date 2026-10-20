@@ -1,7 +1,7 @@
 // K15 · was der Server als eigene Profile, Fassungen und Packs annimmt (src/k15-speicher.ts#speicherFehler): die Form, die das Fenster
 // schickt, geht durch; alles andere bekommt einen Satz, der sagt, was nicht passt
 import { describe, expect, test } from "bun:test";
-import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, speicherFehler } from "./k15-speicher";
+import { MAX_FASSUNGEN, MAX_KONSTELLATIONEN, MAX_PACKS, MAX_PROFILE, speicherFehler } from "./k15-speicher";
 
 const fassung = { abschnitt: "lane|regeln", text: "Meine Regeln", version: 2 };
 const pack = { id: "pk1", name: "Wissen", text: "Was die Lane wissen soll", orte: { lane: "text" } };
@@ -37,6 +37,14 @@ describe("speicherFehler", () => {
     expect(speicherFehler({ ...gut, packs: [{ ...pack, id: 7 }] })).toBe("Eintrag 1 in „packs“ braucht id, name, text als Text");
     expect(speicherFehler({ ...gut, profile: [profil, profil, null] })).toBe("Eintrag 3 in „profile“ braucht id, rolle, schiene als Text");
     expect(speicherFehler({ ...gut, profile: [[profil]] })).toBe("Eintrag 1 in „profile“ braucht id, rolle, schiene als Text");
+  });
+  test("Konstellationen: eine vierte Liste, die fehlen darf (ein Fenster von vorher), sonst wie die anderen geprüft", () => {
+    const konst = { id: "n1", name: "Orchestratorin → freie Session", fleet: "konstellation", positionen: [] };
+    expect(speicherFehler({ ...gut, konstellationen: [konst] })).toBeNull();
+    expect(speicherFehler({ ...gut, konstellationen: viele(MAX_KONSTELLATIONEN, konst) })).toBeNull();
+    expect(speicherFehler({ ...gut, konstellationen: viele(MAX_KONSTELLATIONEN + 1, konst) })).toBe("51 Konstellationen sind mehr als 50");
+    expect(speicherFehler({ ...gut, konstellationen: null })).toBe("„konstellationen“ fehlt oder ist keine Liste");
+    expect(speicherFehler({ ...gut, konstellationen: [{ id: "n1" }] })).toBe("Eintrag 1 in „konstellationen“ braucht id, name als Text");
   });
   test("ein geerbtes Feld zählt nicht als eigenes", () => {
     expect(speicherFehler({ ...gut, fassungen: [Object.create(fassung)] })).toBe("Eintrag 1 in „fassungen“ braucht abschnitt, text als Text");

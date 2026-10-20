@@ -7,9 +7,12 @@ import { modelLabel } from "./modelname";
 import {
   GRUPPEN, KONST0, abweichungen, ahnen, alle, eltern, herkunftVon, istName, orchHinweis, orchZahl, pos, umfangVon, type Konst, type Position, type Profil,
 } from "./k15-entwurf-modell";
-import { S, antwort, gehe, lage, plural, profilVon, schwelleWahl, toast, wahlVon, type St } from "./k15-zustand";
-import { geaendertTag, herkunftTitel, herkunftWenn, kennzeichen, kopfzeile, profilHerkunft } from "./k15-teile";
-import { ROLLE_MIME } from "./k15-spalte1";
+import { S, antwort, gehe, lage, nurImFenster, plural, profilVon, schwelleWahl, speichereKonst, toast, wahlVon, type St } from "./k15-zustand";
+import { geaendertTag, herkunftTitel, herkunftWenn, kennzeichen, kopfzeile, nichtGespeichertTag, profilHerkunft } from "./k15-teile";
+import { NEU_SATZ, ROLLE_MIME, satzVon } from "./k15-spalte1";
+import { fassungenNeu, fassungenTeil } from "./k15-konst-fassungen";
+import { protokollTeil } from "./k15-protokoll";
+import { erlaubtTeil } from "./k15-erlaubt";
 
 // der Name eines Bausteins, wie das Startfenster ihn nennt; die ID nur, wenn der Plan ihn nicht kennt
 export const nameVon = (s: St, p: Profil, id: string): string => {
@@ -32,13 +35,56 @@ function fuegeAn(s: St, vater: Position | null, profilId: string): void {
 }
 // eine Fleet-Vorlage bleibt, wie sie ist; geändert wird eine eigene Kopie
 function kopiere(s: St, k: Konst): void {
-  const neu: Konst = { ...structuredClone(k), id: `c${Date.now()}`, name: `${k.name} (Kopie)`, v: 1, eigen: true };
+  const neu: Konst = { ...structuredClone(k), id: `c${Date.now()}`, name: `${k.name} (Kopie)`, v: 1, eigen: true, satz: NEU_SATZ };
   s.konst.push(neu);
   s.k = neu;
+  s.konstNeu.add(neu.id);
   const ps = alle(neu.wurzeln);
   if (s.sel.art === "pos" && !ps.some((x) => x.id === s.sel.id)) s.sel = { art: "pos", id: ps[ps.length - 1]?.id ?? "" };
   toast(`${neu.name} v1 ist jetzt deine eigene Konstellation. Die Vorlage bleibt unverändert.`);
   gehe(1, 0);
+}
+// SPEICHERN (Konstellation Stück 1, Owner 19.10.): eine eigene Konstellation geht auf den Server (k15-zustand.ts#speichereKonst) und ist
+// nach dem Schließen noch da, eine schon gespeicherte als nächste Fassung. Eine geänderte Fleet-Vorlage wird dabei eine eigene, und die
+// Vorlage steht wieder, wie Fleet sie liefert. `name` ist, was im Feld davor steht.
+// was im Namensfeld getippt ist, je Konstellation: so übersteht es ein Neuzeichnen
+const nameEntwurf = new Map<string, string>();
+function speichere(s: St, name: string): void {
+  const k = s.k;
+  const orig = KONST0.find((x) => x.id === k.id && !x.eigen);
+  const neu: Konst = k.eigen ? { ...k, name: name || k.name, satz: satzVon(k), v: s.konstGespeichert.has(k.id) ? k.v + 1 : k.v }
+    : { ...k, id: `c${Date.now()}`, name: name || `${k.name} (eigene)`, v: 1, eigen: true, satz: satzVon({ ...k, eigen: true, satz: NEU_SATZ }) };
+  void speichereKonst(s, neu.id, neu).then((ok) => {
+    if (!ok || S !== s) return;
+    s.konst = k.eigen ? s.konst.map((x) => x === k ? neu : x) : [...s.konst.map((x) => x === k && orig ? structuredClone(orig) : x), neu];
+    if (s.k === k) s.k = neu;
+    s.konstNeu.delete(k.id);
+    s.konstNeu.delete(neu.id);
+    nameEntwurf.delete(k.id);
+    fassungenNeu(neu.id);
+    toast(`${neu.name} v${neu.v} ist auf dem Server gespeichert und nach dem Schließen noch da.`);
+    gehe(1, 1);
+  });
+}
+// LÖSCHEN nimmt sie vom Server; „Rückgängig“ im Satz legt sie wieder hin. Eine gespeicherte Fassung einer eigenen Fleet-Vorlage
+// („MAIN ↔ MAIN“) macht der Vorlage wieder Platz.
+function loesche(s: St, k: Konst): void {
+  const vorlage = KONST0.find((x) => x.id === k.id);
+  const zeige = (x: Konst) => { s.k = x; s.sel = { art: "pos", id: alle(x.wurzeln)[0]?.id ?? "" }; };
+  void speichereKonst(s, k.id, null).then((ok) => {
+    if (!ok || S !== s) return;
+    s.konst = vorlage ? s.konst.map((x) => x === k ? structuredClone(vorlage) : x) : s.konst.filter((x) => x !== k);
+    s.konstNeu.delete(k.id);
+    if (s.k === k) zeige(s.konst.find((x) => x.id === "orch") ?? s.konst[0]);
+    toast(`${k.name} ist gelöscht.`, { wort: "Rückgängig", tu: () => void speichereKonst(s, k.id, k).then((wieder) => {
+      if (!wieder || S !== s) return;
+      s.konst = vorlage ? s.konst.map((x) => x.id === k.id ? k : x) : [...s.konst, k];
+      zeige(k);
+      toast(`${k.name} v${k.v} ist wieder da.`);
+      gehe(1, 1);
+    }) });
+    gehe(0, 0);
+  });
 }
 export function entferne(s: St, q: Position): void {
   const vater = eltern(s.k, q.id);
@@ -63,13 +109,23 @@ export function spalteAufbau(ansichten: readonly string[]): HTMLElement {
   col.append(name);
   const meta = el("div", "k15kmeta");
   if (s.konstNeu.has(s.k.id)) meta.append(geaendertTag("ungespeicherte Änderung am Aufbau"));
+  else if (nurImFenster(s, s.k)) meta.append(nichtGespeichertTag());
   if (!s.k.eigen) {
     const kopie = el("button", "k15link", "Kopieren");
     kopie.title = "Eine Fleet-Vorlage bleibt, wie sie ist; die Kopie wird deine eigene.";
     kopie.onclick = () => kopiere(s, s.k);
     meta.append(kopie);
   }
+  if (s.konstGespeichert.has(s.k.id)) {
+    const weg = el("button", "k15link", "Löschen");
+    weg.title = "Nimmt diese Konstellation vom Server; der Satz danach holt sie mit „Rückgängig“ zurück.";
+    weg.onclick = () => loesche(s, s.k);
+    meta.append(weg);
+  }
   if (meta.childElementCount) col.append(meta);
+  const fass = fassungenTeil(s);
+  if (fass) col.append(fass);
+  col.append(protokollTeil(s), erlaubtTeil(s));
   if (s.k.heuteNicht) col.append(el("div", "k15hinweis", s.k.heuteNicht));
   const orch = orchHinweis(orchZahl(s.k, s.profile));
   if (orch) col.append(el("div", "k15hinweis", orch));
@@ -147,10 +203,20 @@ export function spalteAufbau(ansichten: readonly string[]): HTMLElement {
   col.append(baum);
   if (s.konstNeu.has(s.k.id)) {
     const box = el("div", "k15sfuss");
-    box.append(el("span", "k15labs", s.k.eigen ? "Der Aufbau ist geändert und noch nicht gespeichert." : "Die Vorlage ist geändert. Speichern legt eine eigene Konstellation an; die Vorlage bleibt."));
-    const a = el("button", "k15ghost", s.k.eigen ? `Als v${s.k.v + 1} speichern` : "Als eigene speichern");
-    a.onclick = () => toast("Entwurf: Speichern baut erst der Server-Teil. Bis zum Neuladen bleibt die Änderung hier.");
-    box.append(a);
+    const gespeichert = s.konstGespeichert.has(s.k.id);
+    box.append(el("span", "k15labs", !s.k.eigen ? "Die Vorlage ist geändert. Speichern legt eine eigene Konstellation an; die Vorlage bleibt."
+      : gespeichert ? "Der Aufbau ist geändert und noch nicht gespeichert." : "Diese Konstellation ist noch nicht gespeichert; ohne Speichern ist sie beim Schließen weg."));
+    const name = document.createElement("input");
+    name.className = "k15packin";
+    name.maxLength = 80;
+    name.value = nameEntwurf.get(s.k.id) ?? (s.k.eigen ? s.k.name : `${s.k.name} (eigene)`);
+    name.oninput = () => nameEntwurf.set(s.k.id, name.value);
+    name.setAttribute("aria-label", "Name der Konstellation");
+    name.dataset.feld = "konst-name";
+    const a = el("button", "k15ghost", !s.k.eigen ? "Als eigene speichern" : gespeichert ? `Als v${s.k.v + 1} speichern` : "Speichern");
+    a.onclick = () => speichere(s, name.value.trim());
+    name.onkeydown = (e) => { if (e.key === "Enter") a.click(); };
+    box.append(name, a);
     const orig = KONST0.find((x) => x.id === s.k.id);
     if (orig) {
       const z = el("button", "k15ghost", "Zurücksetzen");

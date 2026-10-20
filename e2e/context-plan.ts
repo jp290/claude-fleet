@@ -834,7 +834,7 @@ function packMcpChecks(check: ContextPlanCheck): void {
       && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 1, `branch=${claudeBranch.length}b`);
   check("pack mcp: only the claude adapter reads o.packMcp — the one harness the evidence table says apply to",
     (source.match(/o\.packMcp/g) ?? []).length === 1
-      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.rulebookRole, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null\)/.test(source),
+      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.rulebookRole, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null, o\.agentMd \?\? null\)/.test(source),
     `${(source.match(/o\.packMcp/g) ?? []).length} reads`);
 
   // THE HAND-OVER (card a8bc6c54 lifted the seed tripwire of clarification 51c72127): ensureSlot hands

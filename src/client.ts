@@ -69,7 +69,7 @@ import {
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
-import { openK15Entwurf } from "./k15-lader";
+import { flotteNeu, openAttrappe, openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
 
 if (/Chrome\/|Chromium\//.test(navigator.userAgent) && !/CriOS\//.test(navigator.userAgent)) {
@@ -567,6 +567,10 @@ export interface SlotInfo {
   harness?: string; effort?: string;
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
+  // the session that opened this one with its self token (server/opener.ts); matched by slot + cwd
+  openedBy?: { slot: number; openedAt: number; cwd: string };
+  // the run of a constellation it sits in, on which position (server/laeufe.ts)
+  lauf?: { id: string; pos: string };
   // the role the server gives this session (server.ts#positionRole), separate from the label the
   // owner typed. ABSENT = no role a label could claim: a lane (see `worktree`) or a plain session.
   role?: "program-main" | "orchestrator";
@@ -7808,6 +7812,7 @@ export async function refresh() {
       else if (data.v !== bundleV) armReload();
     }
     fleet = data.slots;
+    flotteNeu();
     restoreDrafts(); // the first read of the slot rows: a kept draft returns to its own occupation
     // a merge job that landed its lane leaves the slot inactive — release its panes
     // exactly like a manual ⏏ land click does
@@ -11833,4 +11838,5 @@ void (async () => {
   // no kept place: the focused pane takes them its own way — the chat view's field, or the terminal
   if (!keysWere && (!document.activeElement || document.activeElement === document.body)) panes[focused]?.focus();
   if (location.hash.startsWith("#k15")) openK15Entwurf();
+  else if (location.hash.startsWith("#attrappe")) openAttrappe();
 })();

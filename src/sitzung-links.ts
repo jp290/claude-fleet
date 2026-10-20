@@ -8,6 +8,9 @@ import { agentOptionen, agentVon, agentWort, effortVon, modelleVon, standardAgen
 import { modelLabel } from "./modelname";
 import { RECHTE_BEFEHLE, RECHTE_STUFEN, RECHTE_ZAUN, abweichung, befehlAn, rechteAlsSatz, stufeGibt, type RechteStufe } from "../session-rechte";
 import type { SitzungRolle } from "./sitzung-modell";
+import { attrappeFuer, attrappeLinks } from "./attrappe";
+import { AUFGABE_FELDER, type AufgabeFeld } from "./aufgabe";
+import { nachDemKlick } from "./nach-dem-klick";
 
 export const ROLLEN: readonly { id: SitzungRolle | "ohne" | "andere"; wort: string; zeile: string; hover: string; sym: IconName }[] = [
   { id: "ohne", wort: "Nur mein Agent", zeile: "Ohne Fleet", sym: "terminal",
@@ -44,7 +47,7 @@ function kachel(cls: string, sym: IconName, wort: string, zeile: string | null, 
 // `fuss` zeichnet nur den Fuß neu: beim Tippen bliebe sonst der Fokus nicht im Feld
 export function spalteLinks(s: St, hand: number, fuss: () => void): HTMLElement[] {
   const z = s.sitz;
-  const out: HTMLElement[] = [];
+  const out: HTMLElement[] = attrappeFuer(s) ? [attrappeLinks(s)] : [];
 
   const agent = abschnitt("Agent");
   const zl = el("div", "ksagent");
@@ -179,6 +182,10 @@ function wasDarfEr(s: St): HTMLElement {
   return a;
 }
 
+
+const AUFGABE_HINWEIS: Readonly<Record<AufgabeFeld, string>> = { grenze: "was er nicht anfasst", fertig: "woran man es sieht",
+  beleg: "welcher Check es zeigt", rueckweg: "an wen er meldet" };
+
 function ziel(s: St, fuss: () => void): HTMLElement {
   const z = s.sitz;
   const a = abschnitt("Ziel");
@@ -195,9 +202,22 @@ function ziel(s: St, fuss: () => void): HTMLElement {
   ta.placeholder = "Was auf dem Branch entstehen soll. Geht als erste Nachricht an ihn.";
   ta.value = z.ziel;
   ta.dataset.feld = "sitz-ziel";
-  ta.onchange = () => { z.ziel = ta.value; z.springen = true; render(); };
+  ta.onchange = () => { z.ziel = ta.value; z.springen = true; nachDemKlick(render); };
   ta.oninput = () => { z.ziel = ta.value; fuss(); };
-  a.append(name, ta);
+  // DIE AUFGABE UM DAS ZIEL (src/aufgabe.ts): je Feld eine Zeile, alle frei; sie gehen mit dem Ziel als erste Nachricht
+  const mehr = AUFGABE_FELDER.map(([k, wort]) => {
+    const i = document.createElement("input");
+    i.className = "ksein";
+    i.placeholder = AUFGABE_HINWEIS[k];
+    i.value = z.aufgabe[k];
+    i.dataset.feld = `sitz-${k}`;
+    i.oninput = () => { z.aufgabe = { ...z.aufgabe, [k]: i.value }; fuss(); };
+    i.onchange = () => { nachDemKlick(render); };
+    const l = el("label", "ksaufz");
+    l.append(el("small", "", wort), i);
+    return l;
+  });
+  a.append(name, ta, ...mehr);
   return a;
 }
 

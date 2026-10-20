@@ -4,16 +4,17 @@
 // MAIN, Name und Ziel einer Branch-Session, der Worktree einer fortgesetzten Lane). Was keine Tür mitnimmt, ist nicht wählbar und sagt in
 // einem Satz, warum: das Fenster startet dann nicht, statt es still zu übergehen. Mehrere Sessions als Einheit startet Fleet noch nicht
 // (k15-entwurf-modell.ts#OHNE_KIND_OEFFNEN); der Knopf nennt die eine, die startet.
-import { el, flotte, baseName, starte, liesPrograms, liesAndere, waehlbar, progSagt, zeigeSlot, meldung } from "./k15-haupt";
+import { el, api, flotte, baseName, starte, liesPrograms, liesAndere, waehlbar, progSagt, zeigeSlot, meldung } from "./k15-haupt";
 import { icon } from "./icons";
 import { knopf } from "./k15-teile";
 import type { Answer } from "./founding";
 import type { Auftrag, ProgZeile } from "./start-tuer";
 import type { BranchOtherView } from "./protocol";
 import type { Eingang } from "./k15-lader";
-import { S, antwort, dreier, info, lage, render, rollenStandardGelesen, wahlVon, type Lage, type St } from "./k15-zustand";
+import { S, antwort, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
 import { PROFILE0, alle, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
 import { eigeneVon } from "./k15-wortlaut-ui";
+import { bindeLauf, laufSatz } from "./k15-lauf";
 import { agentVon, agentWort, standardAgent } from "./k15-agent";
 import { modelLabel } from "./modelname";
 
@@ -74,19 +75,27 @@ function nichtMit(s: St, p: Profil, q: Position, l: Lage, a: Answer): string[] {
   const t = tuerVon(p);
   if ((t === "main" || t === "branch") && Object.keys(l.sch).length)
     out.push(`geänderte Bausteine (die Tür ${t === "main" ? "der MAIN" : "der Branch-Session"} nimmt keinen Plan)`);
-  if (q.datei) out.push(`die Datei ${q.datei.titel}`);
-  if (p.datei) out.push(`die Agent-MD ${p.datei.titel}`);
-  else if (p.id === "eigen") out.push("deine Agent-MD");
+  // die Datei der Session ist oft die des Profils (k15-agentmd.ts speichert beide): dann kommt sie mit dem Profil (Partner 20.10.)
+  if (q.datei && !(agentMdKommt(s, p, q) && JSON.stringify(q.datei) === JSON.stringify(p.datei))) out.push(`die Datei ${q.datei.titel}`);
+  // die Agent-MD eines gespeicherten Profils nimmt die Tür über `profil` mit (server/agentmd.ts), bei Claude Code und außer bei MAIN und Lane
+  if (p.datei && !agentMdKommt(s, p, q)) out.push(`die Agent-MD ${p.datei.titel}`);
+  else if (!p.datei && p.id === "eigen") out.push("deine Agent-MD");
   if (p.autonomie) out.push("deine Fassung der Autonomie");
   const fleet = PROFILE0.find((x) => x.id === p.id)?.werte ?? {};
   const werte = [...Object.keys(q.werteAbw ?? {}), ...Object.keys(p.werte).filter((k) => JSON.stringify(p.werte[k]) !== JSON.stringify(fleet[k]))];
   if (werte.length) out.push([...new Set(werte)].map(aspektName).join(", "));
-  if (typeof q.abw?.schwelle === "number" || typeof p.schwelle === "number") out.push("die Succession-Schwelle");
+  // die Schwelle setzt das Fenster nach dem Start über die Owner-Tür des Slots (PATCH …/handover); das Band gibt es nur für Claude Code
+  if ((typeof q.abw?.schwelle === "number" || typeof p.schwelle === "number") && wahlVon(s, p, q, "agent").wert !== "claude") out.push("die Succession-Schwelle");
   if (q.ohne?.length) out.push("weggelassene Teile der Session-Datei");
   const eigene = eigeneVon(s, p, q, a).size;
   if (eigene) out.push(`eigene Fassungen in ${eigene === 1 ? "einem Baustein" : `${eigene} Bausteinen`}`);
   return out;
 }
+
+// ob die Agent-MD des Profils mitkommt: die Türen /open und Branch nehmen `profil`, der Server liest es aus dem Speicher, und nur Claude Code
+// liest den Block; die Tür der MAIN und der Lane nehmen es noch nicht
+const agentMdKommt = (s: St, p: Profil, q: Position): boolean =>
+  !!p.datei && s.speicher === "da" && (tuerVon(p) === "open" || tuerVon(p) === "branch") && wahlVon(s, p, q, "agent").wert === "claude";
 
 // OB DIESER START JETZT GEHT — null, wenn ja. Der Satz steht neben dem Knopf, nie nur als graues Bedienelement
 export function startBlocker(s: St): string | null {
@@ -164,6 +173,7 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   if (t === "branch") {
     const b = st.branch;
     return { tuer: "branch", repo, name: b.name.trim(), ziel: b.ziel.trim(), punkte: b.punkte.split("\n").map((x) => x.trim()).filter(Boolean), dreier: d,
+      ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}),
       ...(b.modus === "bestehend" && b.wahl ? { bestehend: b.wahl } : {}), ...(b.gemacht?.repo === repo ? { gemacht: b.gemacht.branch } : {}) };
   }
   const plus = vonPlus(s.eingang);
@@ -179,7 +189,8 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   if (t === "lane") return { tuer: "lane", repo, dreier: d, plan, ...(slot !== undefined ? { slot } : {}), ...(plus?.parent ? { parent: plus.parent } : {}) };
   const frei = freierPlatz(s);
   if (frei === null) return null;
-  return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}) };
+  return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}),
+    ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}) };
 }
 
 export async function los(s: St): Promise<void> {
@@ -196,9 +207,13 @@ export async function los(s: St): Promise<void> {
   if (a.tuer === "main") void ladePrograms(s);
   if (r.ok) {
     const nach = gelesen(s, z.q, z.p, r.slot);
+    const sw = schwelleWahl(s, z.p, z.q);
     s.shell.close();
     zeigeSlot(r.slot);
-    if (r.hinweis || nach) meldung(`${z.q.name} steht auf Slot ${r.slot}${nach ? `, ${nach}` : ""}${r.hinweis ? `. ${r.hinweis}` : ""}`);
+    const schwelle = sw.gesetzt && sw.pct !== null ? await setzeSchwelle(r.slot, sw.pct) : null;
+    const lauf = await bindeLauf(s, z.q.id, r.slot, a.tuer === "branch" && a.ziel ? { ziel: a.ziel } : null);
+    if (r.hinweis || nach || schwelle || lauf)
+      meldung(`${z.q.name} steht auf Slot ${r.slot}${lauf ? ` ${lauf}` : ""}${nach ? `, ${nach}` : ""}${schwelle ? `. ${schwelle}` : ""}${r.hinweis ? `. ${r.hinweis}` : ""}`);
     return;
   }
   s.start.fehler = r.fehler;
@@ -207,6 +222,26 @@ export async function los(s: St): Promise<void> {
   // DER PLAN HAT SICH BEWEGT: der Plan von jetzt ersetzt den gezeigten; der nächste Klick nimmt seinen Hash
   if (r.bewegt) s.plaene.clear();
   render();
+}
+
+// DIE ÜBERGABE-SCHWELLE DES PROFILS (Harness 2.0 Schritt 2, modell.md Änderung 1) über die Tür, mit der der Owner sie je Slot setzt: in
+// 5er-Schritten von 5 bis 95; der Satz sagt, was gilt
+async function setzeSchwelle(slot: number, pct: number): Promise<string> {
+  const wert = Math.min(95, Math.max(5, Math.round(pct / 5) * 5));
+  try {
+    const j: unknown = await (await api("/api/sessions")).json();
+    const zeilen = j && typeof j === "object" && "slots" in j && Array.isArray(j.slots) ? j.slots : [];
+    const row: unknown = zeilen.find((x: unknown) => !!x && typeof x === "object" && "id" in x && x.id === slot);
+    const openedAt = row && typeof row === "object" && "openedAt" in row && typeof row.openedAt === "number" ? row.openedAt : null;
+    if (openedAt === null) return "Die Übergabe-Schwelle ist nicht gesetzt: die Session ist nicht zu finden";
+    const r = await api(`/api/slots/${slot}/handover`, { method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedOpenedAt: openedAt, thresholdPct: wert }) });
+    if (r.ok) return `Übergabe ab ${wert} %`;
+    const e: unknown = await r.json().catch(() => null);
+    return `Die Übergabe-Schwelle ist nicht gesetzt: ${e && typeof e === "object" && "error" in e && typeof e.error === "string" ? e.error : `Antwort ${r.status}`}`;
+  } catch (e) {
+    return `Die Übergabe-Schwelle ist nicht gesetzt: ${e instanceof Error ? e.message : "Server nicht erreichbar"}`;
+  }
 }
 
 // DER START, ZURÜCKGELESEN an der Zeile, die er ergab: weicht Agent, Modell oder Effort von der Wahl ab, sagt es die Meldung danach. Ein
@@ -389,7 +424,7 @@ export function startKnopf(s: St): { knopf: HTMLButtonElement; satz: HTMLElement
   go.textContent = s.start.busy ? "Startet …" : z ? `${z.q.name} starten` : "Starten";
   go.disabled = s.start.busy || block !== null;
   go.onclick = () => { void los(s); };
-  const text = s.start.fehler ?? block ?? startHinweis(s);
+  const text = s.start.fehler ?? block ?? [startHinweis(s), laufSatz(s)].filter(Boolean).join(" ");
   if (!text) return { knopf: go, satz: null };
   const satz = el("span", `k15stsatz${s.start.fehler || block ? " warn" : ""}`, text);
   satz.setAttribute("role", "status");

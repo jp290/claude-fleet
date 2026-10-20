@@ -25,14 +25,15 @@ import { spalteLinks } from "./k15-spalte1";
 import { spalteAufbau } from "./k15-spalte2";
 import { gemerktesDetail, spalteSession } from "./k15-spalte3";
 import { ANSICHTEN, spalteQuelle } from "./k15-spalte4";
-import { exportPanel, nimm } from "./k15-export";
+import { dateiWaehlen, exportPanel, nimm } from "./k15-export";
 import { ablaufNimmt, ablaufPanel } from "./k15-agentmd";
 import { anatomieKurz, anatomieVon } from "./k15-anatomie-ui";
 import { startZahl } from "./k15-startzahl";
 import { katalogAus } from "./k15-agent";
 import { beimFuss, startKnopf, startStand0 } from "./k15-start";
 import type { Eingang } from "./k15-lader";
-import { sitzStand0, zeichneSitzung } from "./sitzung";
+import { sitzStand0, sitzungFlotteNeu, zeichneSitzung } from "./sitzung";
+export { openAttrappe } from "./attrappe";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -44,6 +45,11 @@ function setzeAlles(s: St, an: boolean): void {
   s.alles = an;
   try { localStorage.setItem(ALLES_KEY, an ? "1" : "0"); } catch { /* ohne Speicher gilt die Wahl bis zum Schließen */ }
   render();
+}
+
+// das Board hat eine neue Flotte gelesen: die Ansicht „Eine Session“ prüft, ob ihr freier Platz noch stimmt
+export function flotteNeu(): void {
+  if (S?.ansicht === "sitzung") sitzungFlotteNeu(S);
 }
 
 export function openK15Entwurf(eingang?: Eingang): void {
@@ -70,7 +76,7 @@ export function openK15Entwurf(eingang?: Eingang): void {
     aktiv: h?.[1] ? 2 : 0, bst: null, tour: rundgangGesehen() ? null : 0, detail: gemerktesDetail(), alles: gemerktesAlles(),
     repo: repo ?? repos()[0] ?? null, env: undefined, fleetModell: null, plaene: new Map(), katalog: undefined,
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
-    fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt",
+    fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt", konstGespeichert: new Map(),
     eingang: eingang ?? null, start: startStand0(),
     // EINE SESSION AUFSETZEN ist der Einstieg vom freien Platz und vom Handy (Owner 18.10.: „[Zitat entfernt]“); ein Repo-+,
     // ⎇+ und die alten Adressen #k15… öffnen den Aufbau
@@ -108,9 +114,9 @@ export function openK15Entwurf(eingang?: Eingang): void {
 function kopf(s: St): void {
   const box = el("div", "k15hb");
   const imp = el("button", "k15hbtn");
-  imp.title = "JSON, Ordner oder .md hineinziehen oder mit ⌘V einfügen; es landet auf seiner Ebene";
+  imp.title = "Eine exportierte JSON-Datei oder eine .md wählen; Hineinziehen und ⌘V gehen auch. Es landet auf seiner Ebene";
   imp.append(icon("export"), el("span", "", "Importieren"));
-  imp.onclick = () => toast("Zieh eine exportierte JSON-Datei, eine .md oder einen Ordner ins Fenster, oder füge JSON mit ⌘V ein.");
+  imp.onclick = dateiWaehlen;
   const exp = el("button", "k15hbtn k15exp");
   exp.append(icon("share"), el("span", "", "Exportieren"));
   exp.onclick = () => { s.exp = !s.exp; render(); };

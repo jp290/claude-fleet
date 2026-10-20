@@ -17,9 +17,13 @@ import { agentVon, agentWort, standardAgent } from "./k15-agent";
 import { modelLabel } from "./modelname";
 import type { Answer } from "./founding";
 import type { Antwort } from "./start-tuer";
+import { aufgabeAlsText, type Aufgabe, type AufgabeFeld } from "./aufgabe";
+import { attrappeFortsetzen, attrappeFuer, attrappeFuss, attrappeGestartet, attrappeModell, attrappeProfil, attrappeVorbelegen } from "./attrappe";
 
 export interface SitzStand {
   rolle: SitzungRolle; agent: string; modell: string; effort: string; ziel: string; name: string;
+  // die Aufgabe um das Ziel herum (src/aufgabe.ts): Grenze, fertig wenn, Beleg, Rückweg; leer heißt „nicht gesagt“
+  aufgabe: Record<AufgabeFeld, string>;
   schalter: Record<string, "an" | "aus">; ordnung: "fragen" | "lesen"; reiter: "aufsetzen" | "uebersicht" | "text";
   dateien: Map<string, string | "laedt" | { fehler: string }>; offen: Set<string>;
   // die Übersicht: aufgeklappte Fragen, aufgeklappte „hier nicht verfügbar“, der Teil mit offenen Einzelheiten
@@ -30,6 +34,7 @@ export interface SitzStand {
   vorher: Map<string, string | null>; letzte: Answer | null; springen: boolean; busy: boolean; fehler: string | null;
 }
 export const sitzStand0 = (): SitzStand => ({ rolle: "einfach", agent: "", modell: "", effort: "", ziel: "", name: "", schalter: {},
+  aufgabe: { grenze: "", fertig: "", beleg: "", rueckweg: "" },
   ordnung: "fragen", reiter: "aufsetzen", dateien: new Map(), offen: new Set(), kapOffen: new Set(), nvOffen: new Set(), detail: null,
   rechte: { stufe: RECHTE_STANDARD, an: [], aus: [] }, rechteWahl: "zu",
   vorher: new Map(), letzte: null, springen: false, busy: false, fehler: null });
@@ -48,22 +53,41 @@ function planVon(s: St): { a: Answer | null; fehler: string | null; laedt: boole
   if (a) s.sitz.letzte = a;
   return { a: a ?? s.sitz.letzte, fehler: typeof st === "object" && "fehler" in st ? st.fehler : null, laedt: st === "laedt" };
 }
+// die Aufgabe dieses Starts; ohne Ziel keine
+export const aufgabeVon = (z: SitzStand): Aufgabe | null => z.ziel.trim() ? { ziel: z.ziel, ...z.aufgabe } : null;
 export function modellVon(s: St, a: Answer): SitzungModell {
-  return sitzungModell(a, { rolle: s.sitz.rolle, auftrag: s.sitz.ziel, slot: freierPlatz(s), dateien: s.sitz.dateien }, bausteinName, OMIT_SAY);
+  const au = aufgabeVon(s.sitz);
+  const m = sitzungModell(a, { rolle: s.sitz.rolle, auftrag: au ? aufgabeAlsText(au) : "", slot: freierPlatz(s), dateien: s.sitz.dateien }, bausteinName, OMIT_SAY);
+  return attrappeFuer(s) ? attrappeModell(m) : m;
 }
 function freierPlatz(s: St): number | null {
   const e = s.eingang && "slot" in s.eingang ? s.eingang.slot : undefined;
   if (e !== undefined && !flotte().find((x) => x.id === e)?.cwd) return e;
   return flotte().find((x) => !x.cwd)?.id ?? null;
 }
+// DIE FLOTTE ÄNDERT SICH (Poll des Boards, k15-lader.ts#flotteNeu): wird ein Platz frei oder belegt, gilt der Fuß neu. Ganz neu gezeichnet
+// wird nur, wenn niemand in der Ansicht tippt; das Neuzeichnen verlöre das Feld mit dem Fokus
+const platzGezeichnet = new WeakMap<St, number | null>();
+export function sitzungFlotteNeu(s: St): void {
+  if (platzGezeichnet.get(s) === freierPlatz(s)) return;
+  const f = document.activeElement;
+  const tippt = (f instanceof HTMLInputElement || f instanceof HTMLTextAreaElement) && s.shell.detail.contains(f);
+  if (tippt) fuss(s, s.sitz.letzte ? modellVon(s, s.sitz.letzte) : null);
+  else render();
+}
 
 // ---------- zeichnen ----------
 export function zeichneSitzung(s: St): void {
   const z = s.sitz, d = s.shell.detail;
+  if (attrappeFuer(s)) attrappeVorbelegen(z);
   const { a, fehler, laedt } = planVon(s);
   const m = a ? modellVon(s, a) : null;
   if (m) for (const b of m.bloecke) if (b.laden && !z.dateien.has(b.laden)) lies(s, b.laden);
   const alt = [...d.querySelectorAll<HTMLElement>(".kscol")].map((c) => c.scrollTop);
+  // DAS NEUZEICHNEN HÄLT, WO MAN TIPPT: das Feld mit Fokus (data-feld) samt Auswahl, wie in der Aufbau-Ansicht
+  const f = document.activeElement;
+  const fokus = (f instanceof HTMLInputElement || f instanceof HTMLTextAreaElement) && d.contains(f) && f.dataset.feld
+    ? { feld: f.dataset.feld, von: f.selectionStart, bis: f.selectionEnd } : null;
   const grid = el("div", "ks");
   grid.dataset.reiter = z.reiter;
   const reiter = el("div", "ksreiter");
@@ -84,6 +108,11 @@ export function zeichneSitzung(s: St): void {
   d.replaceChildren(grid);
   const cols = [...grid.querySelectorAll<HTMLElement>(".kscol")];
   cols.forEach((c, i) => { if (alt[i]) c.scrollTop = alt[i]; });
+  const wieder = fokus ? grid.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-feld="${fokus.feld}"]`) : null;
+  if (fokus && wieder) {
+    wieder.focus({ preventScroll: true });
+    if (fokus.von !== null && fokus.bis !== null) wieder.setSelectionRange(fokus.von, fokus.bis);
+  }
   rechts.addEventListener("scroll", () => requestAnimationFrame(() => spy(grid)), { passive: true });
   fuss(s, m);
   if (m) animiere(s, grid, m);
@@ -370,6 +399,7 @@ function blocker(s: St, a: Answer | null): string | null {
 }
 function fuss(s: St, m: SitzungModell | null): void {
   const f = s.shell.foot, z = s.sitz;
+  platzGezeichnet.set(s, freierPlatz(s));
   const a = z.letzte;
   f.replaceChildren();
   f.classList.remove("k15foot");
@@ -379,8 +409,10 @@ function fuss(s: St, m: SitzungModell | null): void {
   const say = el("span", "kssay");
   say.append(el("b", "", agentWort(ag)), ` · ${z.modell ? modelLabel(z.modell) : "Standard-Modell"} · ${ROLLEN.find((r) => r.id === z.rolle)?.wort ?? ""}`);
   const nein = z.fehler ?? blocker(s, a);
-  links.append(say, el("span", `kssatz${z.fehler ? " warn" : ""}`, nein ?? (z.rolle === "branch"
-    ? "Der Branch entsteht in diesem Repo; das Ziel geht als erste Nachricht an die Session." : `Startet auf Slot ${freierPlatz(s) ?? "—"}.`)));
+  const fort = attrappeFuer(s) ? attrappeFortsetzen(s) : null;
+  links.append(say, el("span", `kssatz${z.fehler ? " warn" : ""}`, nein ?? (fort
+    ? `Setzt ${fort} mit seinem letzten Gespräch fort${z.ziel.trim() ? "; das Ziel geht als nächste Nachricht an die Session" : ""}.`
+    : z.rolle === "branch" ? "Der Branch entsteht in diesem Repo; das Ziel geht als erste Nachricht an die Session." : `Startet auf Slot ${freierPlatz(s) ?? "—"}.`)));
   const rechts = el("div", "ksfussr");
   const summe = el("div", "kssumme");
   summe.append(el("span", "", m ? `Start ${tk(m.summe.alle)} Tokens` : "Start …"), el("small", "", m ? `davon Fleet ${m.summe.fleet ? tk(m.summe.fleet) : "nichts"}` : ""));
@@ -389,6 +421,7 @@ function fuss(s: St, m: SitzungModell | null): void {
   go.disabled = z.busy || (nein !== null && !z.fehler);
   go.onclick = () => { void los(s); };
   rechts.append(summe, go);
+  if (attrappeFuer(s)) rechts.prepend(attrappeFuss(s));
   f.append(links, rechts);
 }
 async function los(s: St): Promise<void> {
@@ -403,14 +436,19 @@ async function los(s: St): Promise<void> {
   // was er darf, geht mit, wenn er Claude Code ist: es sind dessen Regeln (server/rechte.ts)
   const ag = z.agent || (s.katalog ? standardAgent(s.katalog) ?? "claude" : "claude");
   const rechte = ag === "claude" ? { rechte: z.rechte } : {};
+  const profil = attrappeFuer(s) ? attrappeProfil(s) : {};
+  const fort = attrappeFuer(s) ? attrappeFortsetzen(s) : null;
+  const aufgabe = aufgabeVon(z);
   const r: Antwort = z.rolle === "branch"
-    ? await starte({ tuer: "branch", repo: s.repo, name: z.name.trim(), ziel: z.ziel.trim(), punkte: [], dreier: d, ...rechte })
+    ? await starte({ tuer: "branch", repo: s.repo, name: z.name.trim(), ziel: z.ziel.trim(), punkte: [], dreier: d, ...rechte, ...profil, ...(fort ? { bestehend: fort } : {}),
+      ...(aufgabe ? { aufgabe } : {}) })
     : slot === null ? { ok: false, fehler: "Kein freier Platz in der Leiste." }
-    : await starte({ tuer: "open", cwd: s.repo, slot, dreier: d, ...rechte,
+    : await starte({ tuer: "open", cwd: s.repo, slot, dreier: d, ...rechte, ...profil,
       plan: a.start.startbar ? { hash: a.plan.planHash, role: "nur-ordner", ...(sw ? { bausteine: sw } : {}) } : null });
   if (S !== s) return;
   z.busy = false;
   if (r.ok) {
+    if (attrappeFuer(s)) { attrappeGestartet(s, r.slot); return; }
     s.shell.close();
     zeigeSlot(r.slot);
     if (r.hinweis) meldung(`Die Session steht auf Slot ${r.slot}. ${r.hinweis}`);

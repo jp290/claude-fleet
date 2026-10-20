@@ -132,6 +132,10 @@
 .k15 .k15sh .fdglyph svg { width: 24px; height: 24px; }
 .k15 .k15sh .fdglyph { color: var(--chat-ink); }
 .k15 .k15shn { font-size: 17px; font-weight: 600; color: var(--chat-ink); }
+.k15 .k15shname { font: inherit; font-size: 17px; font-weight: 600; background: transparent; border: 0; border-bottom: 1px dashed var(--chat-edge); padding: 0 0 2px; width: 100%; min-width: 0; }
+.k15 .k15shname:focus { outline: none; border-bottom-color: var(--chat-ink); }
+.k15 .k15einf { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.k15 .k15einf textarea { width: 100%; box-sizing: border-box; font: 12px var(--chat-mono); resize: vertical; }
 .k15 .k15sec { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 14px 4px 6px; font-size: 12px; font-weight: 600; color: var(--chat-mute); }
 .k15 .k15grp { border: 1px solid var(--chat-edge-soft); border-radius: 12px; overflow: hidden; background: var(--chat-void); }
 .k15 .k15z { display: grid; grid-template-columns: 88px minmax(0, 1fr) 14px; align-items: center; gap: 10px; min-height: 44px; padding: 7px 10px 7px 12px; }
@@ -153,6 +157,7 @@
 .k15 .k15sw svg { width: 13px; height: 13px; color: var(--chat-faint); }
 .k15 .k15sfuss { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; padding: 12px 4px 0; border-top: 1px solid var(--chat-edge-soft); }
 .k15 .k15sfuss > .k15labs { flex: 1 1 100%; }
+.k15 .k15sfuss > .k15packin { flex: 1 1 180px; min-width: 0; }
 .k15 .k15qh { display: flex; align-items: center; gap: 10px; padding: 0 0 4px; }
 .k15 .k15qn { font-size: 19px; font-weight: 600; color: var(--chat-ink); }
 .k15 .k15qp { font: 11.5px/1.45 var(--chat-mono); color: var(--chat-faint); overflow-wrap: anywhere; }
@@ -749,3 +754,78 @@
 .k15 .k15ccg > .k15lkz .k15lkn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k15 .k15ccg > .k15lkz { flex-wrap: nowrap; align-items: center; }
 .k15 .k15ccg > .k15lkz .k15lkn { flex: 0 1 auto; min-width: 0; }
+
+/* ATTRAPPE (src/attrappe.ts, docs/konstellation/modell.md §4): grob, zum Wegwerfen */
+@media not all and (max-width: 700px) {
+  #shell-attrappe.shell.solo .shellwin { width: min(1120px, calc(100vw - 32px)); height: min(88vh, 900px); max-height: min(88vh, 900px); }
+}
+.attrappe .shellwin, .attrappe button { font-family: var(--chat-sans); }
+.attrappe .attbox { padding: 4px 20px 28px; color: var(--chat-ink); font-size: 14px; }
+.attrappe .atttabs { display: flex; gap: 6px; margin: 4px 0 18px; flex-wrap: wrap; }
+.attrappe button { font: inherit; color: inherit; cursor: pointer; }
+.attrappe .atttabs button, .attrappe .attseg button { padding: 7px 14px; border: 1px solid var(--chat-edge); border-radius: 8px; background: transparent; }
+.attrappe .atttabs button.on, .attrappe .attseg button.on { background: var(--chat-ink); color: var(--chat-void); border-color: var(--chat-ink); }
+.attrappe .attseg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.attrappe .attlose { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; }
+.attrappe .attchip { padding: 6px 12px; border: 1px solid var(--chat-edge); border-radius: 999px; background: transparent; display: inline-flex; gap: 6px; align-items: center; }
+.attrappe .attchip.on { border-color: var(--chat-ink); background: var(--chat-raised); }
+.attrappe .atttag { font-size: 11px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--chat-edge); color: var(--chat-mute); }
+.attrappe .atttag.an { color: #4ade80; border-color: #4ade8066; }
+.attrappe .attwort { font-size: 12px; color: var(--chat-mute); }
+.attrappe .attsatz { font-size: 12.5px; color: var(--chat-faint); }
+.attrappe .attfeld { display: flex; flex-direction: column; gap: 4px; }
+.attrappe .attpack { display: inline-flex; gap: 6px; align-items: center; }
+.attrappe .attprim { padding: 9px 20px; border-radius: 8px; border: 0; background: var(--chat-ink); color: var(--chat-void); font-weight: 600; }
+.attrappe .attghost { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--chat-edge); background: transparent; }
+.attrappe .attzeile { padding: 12px 0; border-bottom: 1px solid var(--chat-edge-soft); display: flex; flex-direction: column; gap: 4px; }
+.attrappe .attzk { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.attrappe .attzn { font-weight: 600; }
+.attrappe .attziel { font-size: 13px; }
+.attrappe .attknoepfe { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.attrappe .attsyskopf { display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: flex-end; margin-bottom: 14px; }
+.attrappe .attsyskopf > .attzn, .attrappe .attsyskopf > .attsatz { flex: 1 1 100%; }
+.attrappe .attflaeche { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.attrappe .attast { display: flex; flex-direction: column; gap: 8px; }
+.attrappe .attkids { margin-left: 22px; padding-left: 14px; border-left: 1px solid var(--chat-edge); display: flex; flex-direction: column; gap: 8px; }
+.attrappe .attkarte { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--chat-edge); border-radius: 10px; background: var(--chat-raised); max-width: 520px; }
+.attrappe .attkarte.on { border-color: var(--chat-ink); }
+.attrappe .attkarte.geplant { border-style: dashed; background: transparent; }
+.attrappe .attauswertung { border-color: #a78bfa88; }
+.attrappe .attkt { display: flex; gap: 8px; align-items: center; }
+.attrappe .attkt .attsatz { margin-left: auto; }
+.attrappe .attpunkt { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--chat-mute); flex: none; }
+.attrappe .attpunkt.an { background: #4ade80; border-color: #4ade80; }
+.attrappe .attkante { font-size: 11.5px; color: var(--chat-mute); }
+.attrappe .attplusbox { max-width: 520px; }
+.attrappe .attplusbox.offen { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px; border: 1px dashed var(--chat-mute); border-radius: 10px; }
+.attrappe .attplus { width: 100%; text-align: left; padding: 9px 12px; border: 1px dashed var(--chat-edge); border-radius: 10px; background: transparent; color: var(--chat-mute); }
+.attrappe .attdetail { max-width: 520px; padding: 8px 12px; border-left: 2px solid var(--chat-edge); display: flex; flex-direction: column; gap: 6px; }
+.attrappe .atttoast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); max-width: min(560px, calc(100% - 32px)); padding: 10px 14px; border-radius: 10px; background: var(--chat-ink); color: var(--chat-void); font-size: 13px; z-index: 5; }
+@media (max-width: 760px) {
+  .attrappe .attbox { padding: 4px 12px 24px; }
+  .attrappe .attkids { margin-left: 8px; padding-left: 10px; }
+}
+
+/* FESTE FASSUNGEN der gewählten Konstellation (src/k15-konst-fassungen.ts) */
+.k15 .k15fass { margin: 0 4px 14px; border: 1px solid var(--chat-edge-soft); border-radius: 10px; font-size: 12.5px; }
+.k15 .k15fkopf { display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 7px 10px; text-align: left; color: var(--chat-mute); }
+.k15 .k15fkopf b { color: var(--chat-ink); font-weight: 600; }
+.k15 .k15fkopf:hover { background: var(--chat-surface); }
+.k15 .k15frow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 10px; border-top: 1px solid var(--chat-edge-soft); }
+.k15 .k15frow code { font: 11.5px var(--chat-mono); color: var(--chat-mute); }
+.k15 .k15erlz > span { color: var(--chat-faint); }
+.k15 .k15erlz > .k15erlw { color: #f59e0b; flex-basis: 100%; }
+.k15 .k15frow.aktiv b { color: #4ade80; }
+.k15 .k15fwann { color: var(--chat-faint); }
+.k15 .k15frow .k15faktiv { color: #4ade80; border-color: #4ade8066; }
+.k15 .k15frow .k15link[aria-pressed="true"] { color: var(--chat-ink); }
+.k15 .k15fvon { padding: 6px 10px 2px; color: var(--chat-faint); font-size: 11.5px; }
+.k15 .k15fdiff { padding: 2px 10px 10px; display: flex; flex-direction: column; gap: 3px; }
+.k15 .k15fz { font: 12px/1.45 var(--chat-mono); color: var(--chat-prose); word-break: break-word; }
+.k15 .k15fz.neu { color: #4ade80; } .k15 .k15fz.weg { color: #ff8f8f; } .k15 .k15fz.kante { color: #8fb8ff; } .k15 .k15fz.warn { color: #ffb38a; }
+/* das Protokoll der Konstellation (src/k15-protokoll.ts), in der Form der Fassungen */
+.k15 .k15protz { align-items: center; flex-wrap: nowrap; }
+.k15 .k15protz > span { flex: none; color: var(--chat-mute); }
+.k15 .k15protz .k15packin { flex: 1; min-width: 0; min-height: 30px; }
+.k15 .k15protz .k15packin:disabled { color: var(--chat-faint); }
+.k15 .k15protz .k15protzahl { flex: 0 0 4em; }

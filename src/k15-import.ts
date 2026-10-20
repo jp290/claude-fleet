@@ -2,7 +2,7 @@
 // eingefügte Datei, ein Export und der eigene Speicher (auf dem Server, vorher im Browser). Jede Form wird ganz geprüft, bevor sie den Zustand berührt; was nicht
 // passt, wird mit einem Satz abgelehnt, und das Fenster bleibt, wie es war. Dieses Modul hat kein DOM.
 import {
-  PROFILE0, pos, type Abschnitt, type AutoArt, type Glyph, type Konst, type PlanRolle, type Position, type Profil, type Punkt, type Quelle,
+  PROFILE0, pos, type Abschnitt, type AutoArt, type Glyph, type Konst, type PlanRolle, type Position, type Profil, type Protokoll, type Punkt, type Quelle,
   type Schalter, type Schiene, type Wert, type Werte,
 } from "./k15-entwurf-modell";
 import { MAX_PROFILE } from "./k15-speicher";
@@ -119,14 +119,27 @@ export function profilAus(v: unknown): Profil | null {
     ...(kv ? { kopieVon: { name: kv.split("@")[0], v: Number(kv.split("@")[1]) || 1 } } : kopie && typeof kopie.name === "string" ? { kopieVon: { name: kopie.name, v: zahl(kopie.v) ?? 1 } } : {}) };
 }
 
+// DAS PROTOKOLL (k15-entwurf-modell.ts#Protokoll): je Teil Text, eine ganze Zahl ab 1 oder null; sonst null für „passt nicht“
+function protokollAus(v: unknown): Protokoll | null {
+  const o = obj(v);
+  if (!o) return null;
+  const text = (x: unknown): string | null | false => x === null || x === undefined ? null : typeof x === "string" && x.trim() ? x.trim().slice(0, 300) : false;
+  const ende = text(o.ende), regel = text(o.regel);
+  const runden = o.runden === null || o.runden === undefined ? null : Number.isInteger(o.runden) && Number(o.runden) >= 1 && Number(o.runden) <= 99 ? Number(o.runden) : false;
+  return ende === false || regel === false || runden === false ? null : { ende, runden, regel };
+}
+
 // was ein Profil ausmacht, ohne Herkunft und Version: so erkennt der Import, ob ein eingebettetes Profil das hiesige ist
 const kern = (p: Profil): string => JSON.stringify([p.rolle, p.schiene, p.agent, p.modell, p.effort, p.schwelle, p.schalter, p.werte, p.autonomie?.map((x) => [x.art, x.text]) ?? null,
   p.datei ? p.datei.abschnitte.map((a) => [a.titel, a.text]) : null]);
 
 // IMPORT EINER KONSTELLATION: jede Position geprüft (Typen, Eltern, kein Kreis), ihre Profile aufgelöst. Ein eingebettetes Profil, das
 // es hier nicht gibt oder das hier anders ist, kommt als eigenes dazu; ersetzt wird nie still (Punkt 6). `hinweise` sagt, was dazukam.
+// `behalte` ist die Kennung einer auf dem Server gespeicherten Konstellation (k15-zustand.ts#lade): Sie behält dann ihre Kennung, so bleibt
+// jedes Laden derselbe Aufbau; ohne sie bekommt die Konstellation eine neue. Ihre Sessions behalten immer ihre Kennungen (sie gelten nur in
+// ihrer Konstellation): so hat ein Import dieselbe Fassung wie sein Export (konst-fassungen.ts#fassungsHash, server/fassung-reise.test.ts).
 export interface KonstImport { k: Konst; neueProfile: Profil[]; hinweise: string[] }
-export function importKonst(text: string, profile: readonly Profil[], jetzt: number): KonstImport | string {
+export function importKonst(text: string, profile: readonly Profil[], jetzt: number, behalte?: string): KonstImport | string {
   let roh: unknown;
   try { roh = JSON.parse(text); } catch { return "kein gültiges JSON"; }
   const o = obj(roh);
@@ -183,7 +196,7 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
       if (!d) return `Session ${name}: ihre eigene Datei ist unvollständig`;
       datei = d;
     }
-    neu.push(pos(`i-${ids[n]}`, name, pr.id, { ...(abw ? { abw } : {}), ...(werteAbw ? { werteAbw } : {}), ...(schalter ? { schalter } : {}),
+    neu.push(pos(ids[n], name, pr.id, { ...(abw ? { abw } : {}), ...(werteAbw ? { werteAbw } : {}), ...(schalter ? { schalter } : {}),
       ...(ohne ? { ohne: (ohne as string[]).slice(0, 200) } : {}), ...(typeof x.wann === "string" ? { wann: x.wann.slice(0, 200) } : {}), ...(datei ? { datei } : {}) }));
   }
   // die Eltern: jede `meldetAn` muss es geben, keine Session meldet an sich selbst, und kein Kreis
@@ -210,6 +223,9 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
     else wurzeln.push(p);
   });
   const autor = str(o.autor, 40)?.trim();
-  return { k: { id: `i${jetzt}`, name: str(o.name, 80) ?? "Importiert", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "importiert", eigen: true,
-    ...(autor ? { autor } : {}), ...(typeof o.quer === "string" ? { quer: o.quer.slice(0, 300) } : {}), wurzeln }, neueProfile, hinweise };
+  const protokoll = o.protokoll === undefined ? undefined : protokollAus(o.protokoll);
+  if (protokoll === null) return "das Protokoll passt nicht";
+  return { k: { id: behalte ?? `i${jetzt}`, name: str(o.name, 80) ?? "Importiert", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "importiert", eigen: true,
+    ...(autor ? { autor } : {}), ...(typeof o.quer === "string" ? { quer: o.quer.slice(0, 300) } : {}),
+    ...(protokoll ? { protokoll } : {}), wurzeln }, neueProfile, hinweise };
 }

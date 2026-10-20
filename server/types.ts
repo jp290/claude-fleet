@@ -2111,6 +2111,14 @@ interface Slot {
   // adapter; every other harness spawns without it. Set at open (body `remote`) or on a live slot by
   // the owner (POST /api/slots/:id/remote), effective from the pane's next spawn — the flag is on
   // the command line, like the label-keyed exports. Persisted; cleared on open/kill.
+  // WHO OPENED THIS SESSION (Neuaufbau, Konstellation Stück 2): the session whose self token rode beside the owner
+  // bearer on POST /api/slots/:id/open or /api/branches/open (server/auth.ts#resolvePrincipal). The constellation
+  // view hangs this session under it (src/konstellation-model.ts), matched by slot + cwd like the branch book's
+  // opener, so the opener's own succession stays the opener. null = opened from the board or without a self token.
+  // Carried by a generic succession; persisted; cleared on open/kill.
+  openedBy: import("./opener").Opener | null;
+  lauf: import("./laeufe").LaufBindung | null; // der Lauf einer Konstellation und die Position darin (server/laeufe.ts), gesetzt nach dem Start
+  agentMd: import("./agentmd").AgentMd | null; // the Agent-MD of the profile it started from (server/agentmd.ts), set at open; claude only
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
   // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.

@@ -10,8 +10,9 @@
 //     (GET /api/programs; the 2 s poll carries no binding).
 //   · Session → Lane: otherwise the lane's `worktree.anchor`, the occupation it was opened from, in the same repo —
 //     the rule the left bar stacks lanes by (src/client.ts#stacksOf), so bar and tree tell the same story.
-//   · Branch-Session: the slot a branch record names as its `session` (GET /api/branches). Who OPENED the
-//     branch is not on that wire (BranchView has no `opener`), so a branch session has no parent here.
+//   · Branch-Session: the slot a branch record names as its `session` (GET /api/branches).
+//   · Opener → Session or Branch-Session: the slot's `openedBy`, the session that opened it with its self token
+//     (server/opener.ts). Without it a session or branch session stands in its own group.
 // Every active session (a slot with a cwd) stands exactly once.
 import type { SlotInfo } from "./client";
 import { normalizeLaneAnchor, type BranchesView } from "./protocol";
@@ -62,12 +63,21 @@ export function constellation(slots: readonly SlotInfo[], branches: BranchesView
     if (main) lane.program = main.program;
     if (opener) opener.children.push(lane); else loose.push(lane);
   }
+  // A SESSION OR BRANCH SESSION UNDER ITS OPENER (`openedBy`, server/opener.ts): the slot + cwd that opened it, so the
+  // opener's own succession stays the opener. Never under itself or under one of its own descendants.
+  const below = (n: KNode, x: KNode): boolean => n.children.some((c) => c === x || below(c, x));
+  const placed = new Set<KNode>();
+  for (const n of nodes.filter((x) => x.kind === "bau" || x.kind === "session").sort(byId)) {
+    const by = n.slot.openedBy;
+    const opener = by ? nodes.find((o) => o.slot.id === by.slot && o.slot.cwd === by.cwd) : undefined;
+    if (opener && opener !== n && !below(n, opener)) { opener.children.push(n); placed.add(n); }
+  }
   const orchester = orchs.length === 1 ? [{ ...orchs[0]!, children: [...mains, ...orchs[0]!.children] }] : [...orchs, ...mains];
   const groups: KGroup[] = [
     { key: "orchester" as const, nodes: orchester },
     { key: "lanes" as const, nodes: loose },
-    { key: "branches" as const, nodes: of("bau") },
-    { key: "sessions" as const, nodes: of("session") },
+    { key: "branches" as const, nodes: of("bau").filter((n) => !placed.has(n)) },
+    { key: "sessions" as const, nodes: of("session").filter((n) => !placed.has(n)) },
   ].filter((g) => g.nodes.length > 0);
   return { groups, count: active.length };
 }

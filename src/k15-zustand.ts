@@ -9,13 +9,13 @@ import type { Shell } from "./shell";
 import { modelLabel } from "./modelname";
 import {
   EFFORT_WORT, GRUPPEN, alle, hatRegler, reglerVon, schalterVon, schwelleVon, stufenSchalter, traegerVon, umfangVon, wirksam,
-  type Ebene, type Env, type GruppeId, type Konst, type PlanRolle, type Position, type Profil, type Regler, type Schalter, type Stufe,
+  exportObjekt, type Ebene, type Env, type GruppeId, type Konst, type PlanRolle, type Position, type Profil, type Regler, type Schalter, type Stufe,
 } from "./k15-entwurf-modell";
 import { fassungenImport, type TextFassung } from "./k15-wortlaut";
 import { agentVon, agentWort, passtEffort, passtModell, standardAgent, type Katalog } from "./k15-agent";
 import { packsImport, type PackEntwurf } from "./k15-kontextpack";
-import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, profilAus } from "./k15-import";
-import { SPEICHER_ROUTE } from "./k15-speicher";
+import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, importKonst, profilAus } from "./k15-import";
+import { MAX_KONSTELLATIONEN, SPEICHER_ROUTE } from "./k15-speicher";
 import type { Ablauf } from "./k15-agentmd";
 import type { Eingang } from "./k15-lader";
 import type { StartStand } from "./k15-start";
@@ -48,6 +48,9 @@ export interface St {
   fassungen: Map<string, TextFassung>; bearbeite: string | null; bearbeiteText: string | null; packs: PackEntwurf[]; packEdit: PackEntwurf | null;
   // der Ablauf „Deine Agent-MD“ (src/k15-agentmd.ts), null = zu; wann zuletzt vor ungesichertem Text gewarnt wurde (k15-repo.ts#menueZu)
   ablauf: Ablauf | null; warnAm: number; speicher: "laedt" | "da" | { fehler: string };
+  // die eigenen Konstellationen, wie der Server sie zuletzt bestätigt hat, je Kennung (konstForm); was nur im Fenster geändert ist, steht
+  // nicht darin, so trägt jedes Sichern von Fassungen und Packs nur gespeicherte Aufbauten mit
+  konstGespeichert: Map<string, Record<string, unknown>>;
   // woher das Fenster kam (ein freier Platz, das + eines Repos, ⎇+ an einer Session; null = #k15) und was der Start braucht
   eingang: Eingang | null; start: StartStand;
   // welche Ansicht das Fenster zeigt: „sitzung“ (eine Session aufsetzen, src/sitzung.ts) oder „aufbau“ (die vier Spalten unten); ihr Stand
@@ -124,7 +127,7 @@ export function verwirft(s: St, wo: string): boolean {
 // `alteFassungen` und wird nicht übernommen.
 const EIGENES_KEY = "fleet.k15.eigenes";
 const ALT_KEY = "fleet.k15.merkstellen";
-interface Eigenes { fassungen: TextFassung[]; packs: PackEntwurf[]; eigeneProfile: Profil[]; alteFassungen: number }
+interface Eigenes { fassungen: TextFassung[]; packs: PackEntwurf[]; eigeneProfile: Profil[]; alteFassungen: number; konstellationen: Record<string, unknown>[] }
 // liest die gespeicherte Form, vom Server oder aus dem Browser; was nicht passt, fällt einzeln heraus
 function eigenesAus(o: unknown): Eigenes {
   const r: Record<string, unknown> = o && typeof o === "object" ? { ...o } : {};
@@ -132,7 +135,9 @@ function eigenesAus(o: unknown): Eigenes {
   const fassungen = alle.filter((x) => x.abschnitt.includes("|")).slice(0, MAX_FASSUNGEN);
   const packs = packsImport(r.packs, Date.now()).packs.slice(0, MAX_PACKS);
   const eigeneProfile = (Array.isArray(r.profile) ? r.profile : []).map(profilAus).filter((p): p is Profil => p !== null && !!p.datei).slice(0, MAX_PROFILE);
-  return { fassungen, packs, eigeneProfile, alteFassungen: alle.length - fassungen.length };
+  const konstellationen = (Array.isArray(r.konstellationen) ? r.konstellationen : []).filter((x): x is Record<string, unknown> =>
+    !!x && typeof x === "object" && !Array.isArray(x) && typeof x.id === "string" && typeof x.name === "string").slice(0, MAX_KONSTELLATIONEN);
+  return { fassungen, packs, eigeneProfile, alteFassungen: alle.length - fassungen.length, konstellationen };
 }
 function ausDemBrowser(): Eigenes | null {
   try {
@@ -144,15 +149,22 @@ function ausDemBrowserWeg(): void {
   try { localStorage.removeItem(EIGENES_KEY); localStorage.removeItem(ALT_KEY); } catch { /* ohne Speicher liegt dort nichts */ }
 }
 // die Form, die eigenesAus liest: die Version heißt dort `version`
-const speicherForm = (f: readonly TextFassung[], packs: readonly PackEntwurf[], profile: readonly Profil[]): string =>
+const speicherForm = (f: readonly TextFassung[], packs: readonly PackEntwurf[], profile: readonly Profil[], konstellationen: readonly object[]): string =>
   JSON.stringify({ fassungen: f.map((x) => ({ ...x, version: x.v })), packs: packs.map((p) => ({ ...p, version: p.v })),
-    profile: profile.map((p) => ({ ...p, version: p.v })) });
+    profile: profile.map((p) => ({ ...p, version: p.v })), konstellationen });
 // der Stand von jetzt, nicht der beim Aufruf: so trägt jedes Senden alles, was bis dahin geändert ist
+// was der Server beim letzten Sichern je Konstellation als Fassung meldete (server/konst-fassungen.ts): Hash und ob sie neu ist
+export let letzteFassungen: Readonly<Record<string, { hash: string; neu: boolean }>> = {};
 async function sende(s: St): Promise<void> {
   const res = await api(SPEICHER_ROUTE, { method: "PUT", headers: { "content-type": "application/json" },
-    body: speicherForm([...s.fassungen.values()], s.packs, s.profile.filter((p) => !!p.datei)) });
-  if (res.ok) return;
+    body: speicherForm([...s.fassungen.values()], s.packs, s.profile.filter((p) => !!p.datei), [...s.konstGespeichert.values()]) });
   const j: unknown = await res.json().catch(() => null);
+  if (res.ok) {
+    const f = j && typeof j === "object" && "fassungen" in j && j.fassungen && typeof j.fassungen === "object" ? j.fassungen : {};
+    letzteFassungen = Object.fromEntries(Object.entries(f).filter((e): e is [string, { hash: string; neu: boolean }] =>
+      !!e[1] && typeof e[1] === "object" && "hash" in e[1] && typeof e[1].hash === "string" && "neu" in e[1] && typeof e[1].neu === "boolean"));
+    return;
+  }
   throw new Error(j && typeof j === "object" && "error" in j && typeof j.error === "string" ? j.error : `Antwort ${res.status}`);
 }
 const grundVon = (e: unknown): string => e instanceof Error ? e.message : "Server nicht erreichbar";
@@ -175,7 +187,7 @@ async function lade(s: St): Promise<void> {
   } catch (e) {
     s.speicher = { fehler: grundVon(e) };
     if (S !== s) return;
-    toast(`Deine eigenen Profile, Fassungen und Packs ließen sich nicht vom Server lesen (${grundVon(e)}). Bis zum nächsten Öffnen sichert dieses Fenster nichts.`);
+    toast(`Deine eigenen Profile, Fassungen, Packs und Konstellationen ließen sich nicht vom Server lesen (${grundVon(e)}). Bis zum nächsten Öffnen sichert dieses Fenster nichts.`);
     render();
     return;
   }
@@ -189,8 +201,10 @@ async function lade(s: St): Promise<void> {
   s.fassungen = new Map([...[...server.fassungen, ...neuF].map((x): [string, TextFassung] => [x.abschnitt, x]), ...s.fassungen]);
   s.packs = [...[...server.packs, ...neuPk].filter((x) => !jetztPk.has(x.id)), ...s.packs];
   s.profile = [...s.profile.filter((p) => !p.datei), ...[...server.eigeneProfile, ...neuP].filter((p) => !jetztIds.has(p.id)), ...jetztP];
+  const unlesbar = nimmKonstellationen(s, server.konstellationen);
   s.speicher = "da";
   if (S === s) render();
+  if (unlesbar && S === s) toast(`${unlesbar === 1 ? "Eine gespeicherte Konstellation ließ" : `${unlesbar} gespeicherte Konstellationen ließen`} sich nicht lesen; sie ${unlesbar === 1 ? "bleibt" : "bleiben"} auf dem Server, wie ${unlesbar === 1 ? "sie ist" : "sie sind"}.`);
   const teile = [neuP.length ? plural(neuP.length, "Profil", "Profile") : "", neuF.length ? plural(neuF.length, "eigene Fassung", "eigene Fassungen") : "",
     neuPk.length ? plural(neuPk.length, "Pack", "Packs") : ""].filter(Boolean);
   const alte = lokal?.alteFassungen ? ` ${lokal.alteFassungen === 1 ? "Eine eigene Fassung" : `${lokal.alteFassungen} eigene Fassungen`} von vor dem 16.10. galt für jedes Profil gleich und ist nicht übernommen; Fassungen gehören jetzt einem Profil.` : "";
@@ -205,6 +219,39 @@ async function lade(s: St): Promise<void> {
   }
   if (lokal) ausDemBrowserWeg();
   if (alte && S === s) toast(alte.trim());
+}
+
+// DIE GESPEICHERTEN KONSTELLATIONEN (Konstellation Stück 1) kommen durch dieselbe Prüfung wie ein Import (k15-import.ts#importKonst) und
+// behalten ihre Kennungen; ihre mitgereisten Profile finden das hiesige gleiche oder kommen dazu. Eine gleichnamige Fleet-Vorlage (eine
+// eigene wie „MAIN ↔ MAIN“) ersetzt sie, außer du hast sie in diesem Fenster schon geändert. Was sich nicht lesen lässt, bleibt in
+// `konstGespeichert` und geht beim nächsten Sichern unverändert zurück. Gibt zurück, wie viele das waren.
+function nimmKonstellationen(s: St, liste: readonly Record<string, unknown>[]): number {
+  let unlesbar = 0;
+  for (const roh of liste) {
+    const id = String(roh.id);
+    s.konstGespeichert.set(id, roh);
+    const r = importKonst(JSON.stringify(roh), s.profile, Date.now(), id);
+    if (typeof r === "string") { unlesbar++; continue; }
+    s.profile = [...s.profile, ...r.neueProfile];
+    if (s.konstNeu.has(id)) continue;
+    const war = s.konst.find((x) => x.id === id);
+    s.konst = war ? s.konst.map((x) => x === war ? r.k : x) : [...s.konst, r.k];
+    if (s.k === war) s.k = r.k;
+  }
+  return unlesbar;
+}
+// eine bearbeitbare Konstellation, die der Server (gelesen) nicht hat und die hier niemand geändert hat
+export const nurImFenster = (s: St, k: Konst): boolean => !!k.eigen && s.speicher === "da" && !s.konstGespeichert.has(k.id) && !s.konstNeu.has(k.id);
+// die Form, in der eine Konstellation auf dem Server liegt: der vollständige Export (k15-entwurf-modell.ts#exportObjekt), die Kennung davor
+export const konstForm = (s: St, k: Konst): Record<string, unknown> =>
+  ({ id: k.id, ...exportObjekt({ ebene: "konst", voll: true, konst: [k], k, profile: s.profile, q: null, p: profilVon(s, k.wurzeln[0]?.profil ?? "") }) });
+// EINE KONSTELLATION SICHERN oder vom Server nehmen (null): true erst, wenn er bestätigt hat; sonst gilt wieder der Stand davor
+export async function speichereKonst(s: St, id: string, k: Konst | null): Promise<boolean> {
+  const vorher = s.konstGespeichert.get(id);
+  if (k) s.konstGespeichert.set(id, konstForm(s, k)); else s.konstGespeichert.delete(id);
+  const ok = await speichereEigenes(s);
+  if (!ok) { if (vorher) s.konstGespeichert.set(id, vorher); else s.konstGespeichert.delete(id); }
+  return ok;
 }
 
 // SICHERN: true erst, wenn der Server bestätigt hat; erst dann sagt der Aufrufer „gesichert“. Schlägt es fehl, sagt das ein Satz, und

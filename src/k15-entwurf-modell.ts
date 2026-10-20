@@ -40,8 +40,13 @@ export interface Position { id: string; name: string; profil: string; kids?: Pos
   // Teile der Session-Datei, die nicht mitgehen sollen (Schritt 4, heute nicht schaltbar)
   ohne?: string[];
   werteAbw?: Record<string, Wert>; schalter?: Schalter; wann?: string }
+// DAS PROTOKOLL EINER KONSTELLATION (Harness 2.0 Schritt 3, harness-2-0-antwort.md Lücke 2): wann ein Lauf endet, wie viele Runden höchstens,
+// nach welcher Regel geprüft wird. Jedes Teil ist frei; die Endbedingung ist meist die CI und lässt sich abschalten (Owner 19.10.). null = nicht gesagt
+export interface Protokoll { ende: string | null; runden: number | null; regel: string | null }
+export const ENDE_CI = "Die CI des Repos ist grün.";
+export const protokollLeer = (p: Protokoll | undefined): boolean => !p || (p.ende === null && p.runden === null && p.regel === null);
 // eigen = bearbeitbar; ohne eigen ist sie eine Fleet-Vorlage. autor: wer sie geschrieben hat (aus einem Import), sonst du
-export interface Konst { id: string; name: string; v: number; satz: string; eigen?: true; autor?: string; quer?: string;
+export interface Konst { id: string; name: string; v: number; satz: string; eigen?: true; autor?: string; quer?: string; protokoll?: Protokoll;
   // was an dieser Konstellation heute nicht geht, in einem Satz
   heuteNicht?: string; wurzeln: Position[] }
 
@@ -534,7 +539,10 @@ export function abweichungen(p: Profil, q: Position, name: (id: string) => strin
 // EXPORT: dieselbe Form auf jeder Ebene; mit Verweisen (lane@3) oder vollständig (Werte eingebettet)
 export type Ebene = "system" | "konst" | "session" | "baustein";
 // `zusatz` hängt an, was im vollständigen Export mitreist (eigene Fassungen und Kontextpacks als Entwurf)
-export function exportJson(o: { ebene: Ebene; voll: boolean; konst: Konst[]; k: Konst; profile: Profil[]; q: Position | null; p: Profil; zusatz?: object }): string {
+type ExportEingang = { ebene: Ebene; voll: boolean; konst: Konst[]; k: Konst; profile: Profil[]; q: Position | null; p: Profil; zusatz?: object };
+export const exportJson = (o: ExportEingang): string => JSON.stringify(exportObjekt(o), null, 2);
+// dasselbe als Objekt: so legt der Server-Speicher eine Konstellation ab (k15-zustand.ts#konstForm)
+export function exportObjekt(o: ExportEingang): Record<string, unknown> {
   const von = (id: string) => o.profile.find((x) => x.id === id) ?? o.p;
   const ref = (x: Profil) => `${x.id}@${x.v}`;
   const voll = (x: Profil) => ({ id: x.id, version: x.v, name: x.name, glyph: x.glyph, kurz: x.kurz, satz: x.satz, autor: x.autor, rolle: x.rolle, schiene: x.schiene,
@@ -550,13 +558,14 @@ export function exportJson(o: { ebene: Ebene; voll: boolean; konst: Konst[]; k: 
       ...(x.schalter ? { schalter: x.schalter } : {}), ...(x.wann ? { wann: x.wann } : {}) };
   };
   const konst = (k: Konst) => ({ name: k.name, version: k.v, satz: k.satz, autor: k.eigen ? k.autor ?? DU : FLEET, ...(k.quer ? { quer: k.quer } : {}),
+    ...(k.protokoll && !protokollLeer(k.protokoll) ? { protokoll: k.protokoll } : {}),
     positionen: alle(k.wurzeln).map((x) => position(k, x)) });
   const p = o.p;
   const obj = o.ebene === "system" ? { fleet: "system", konstellationen: o.konst.map(konst), profile: o.profile.map((x) => o.voll ? voll(x) : ref(x)) }
     : o.ebene === "konst" ? { fleet: "konstellation", ...konst(o.k) }
     : o.ebene === "session" ? { fleet: "session", ...(o.q ? position(o.k, o.q) : { profil: o.voll ? voll(p) : ref(p) }) }
     : { fleet: "baustein", art: "einstellungen", version: p.einV, agent: p.agent, modell: p.modell, effort: p.effort, uebergabeAb: p.schwelle };
-  return JSON.stringify({ format: 1, ...obj, ...o.zusatz }, null, 2);
+  return { format: 1, ...obj, ...o.zusatz };
 }
 
 // PROFIL ALS AGENT-MD (Vergleich befunde/k15-agentenkonfiguration-vergleich.md): Frontmatter mit den Feldnamen von Claude

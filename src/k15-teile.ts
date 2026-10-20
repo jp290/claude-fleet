@@ -32,6 +32,12 @@ export function verTag(v: number | string, title?: string): HTMLElement {
 }
 // die Version eines Profils oder Bausteins: dasselbe Tag wie neben der Herkunft
 export const chip = (v: number | string, title?: string): HTMLElement => verTag(v, title);
+// EINE EIGENE, DIE NUR IM FENSTER STEHT (Partner 20.10.: „[Zitat entfernt]“ sah nach gespeichert aus): bearbeitbar, am Server erst nach dem Speichern
+export function nichtGespeichertTag(): HTMLElement {
+  const t = el("span", "k15tag neu", "nicht gespeichert");
+  t.title = "Bearbeitbar, aber noch nicht am Server; „Speichern“ legt sie dort ab, mit ihrer ersten Fassung.";
+  return t;
+}
 export function geaendertTag(title: string): HTMLElement {
   const t = el("span", "k15tag neu", "geändert");
   t.title = title;

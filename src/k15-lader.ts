@@ -30,12 +30,17 @@ function stil(datei: string): Promise<void> {
   });
 }
 
-export function openK15Entwurf(eingang?: Eingang): void {
+function lade(oeffne: (m: K15) => void): void {
   (globalThis as unknown as { k15Haupt: K15Haupt }).k15Haupt = haupt;
   // die Adresse wird erst zur Laufzeit gebildet; ein fester Text würde der Bundler als eigenes Modul auflösen wollen
   geladen ??= Promise.all([import(new URL("/k15.js", location.href).href) as Promise<K15>, stil("k15.css"), stil("sitzung.css")]).then(([m]) => m);
-  geladen.then((m) => m.openK15Entwurf(eingang), () => {
+  geladen.then(oeffne, () => {
     geladen = null;
     toast("Das Fenster „Neue Session“ ließ sich nicht laden.");
   });
 }
+export const openK15Entwurf = (eingang?: Eingang): void => lade((m) => m.openK15Entwurf(eingang));
+// nach jedem Lesen der Flotte (client.ts); ein Fenster, das nie geladen wurde, lädt dafür nicht nach
+export const flotteNeu = (): void => { void geladen?.then((m) => m.flotteNeu(), () => {}); };
+// die Attrappe von „Neue Session“ und Systemansicht (src/attrappe.ts, docs/konstellation/modell.md §4), im selben Bundle
+export const openAttrappe = (): void => lade((m) => m.openAttrappe());

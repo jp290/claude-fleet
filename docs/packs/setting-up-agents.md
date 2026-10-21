@@ -8,7 +8,12 @@ Every agent gets five things when it starts. Decide the ones that matter for thi
 their defaults.
 
 - **Who:** harness, model and effort. Choose for the work. Does it need judgment, breadth, speed or low cost? What
-  this machine can run right now: `GET /api/harnesses`.
+  this machine can run right now: `GET /api/harnesses`. Pass model and effort explicitly on every open and every
+  succession; a seat without them inherits a default you didn't choose. Before you say a model or a capability is
+  missing, ask the harness itself: its own inventory (for Claude, `claude --model <id> -p` with a
+  control probe) and one mechanical probe. Env keys and app folders prove nothing, and Fleet accepts any model id
+  that fits its pattern, so a wrong id dies in the pane, not at the route. Switching a living Claude pane is a
+  pair: the slot's model route and `/model` typed into the pane itself.
 - **Start:** what the agent is told first. An agent that works for someone else gets the connecting piece below. An
   agent the owner will talk to needs a sentence, or nothing at all. There is no goal field. If the work should
   pull hard toward a goal, point the agent to the pack `working-toward-a-goal`.
@@ -56,13 +61,27 @@ It never says how to do the work.
 - **A free session in its own folder:** `POST /api/slots/<n>/open` with cwd, label, model and effort. The
   `CLAUDE.md` in that folder is its agent file.
 - **A branch session with a task:** `POST /api/branches/open`, or `POST /api/self/branches/open` from a session.
-  The opener and the branch session form a pair that may message each other.
+  The opener and the branch session form a pair that may message each other. Open it with your own self token,
+  never with the owner credential: a branch session opened the other way has no mailbox back to you, and you none
+  to it.
 - **A model from another provider:** pi on the workhorse, inside the bwrap fence, in rounds. One round is one run
   with the task and the last verdict, and report and verdict are stored as files. Example:
-  `~/local-notes/agent-objekt-bau/runde.sh`.
-- **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 2000 characters. A lane gets a 409 there; its
-  result arrives as a fleet-report.
-- A mailbox message doesn't wake a session yet. If the message matters, nudge the session with a `/send`.
+  `~/local-notes/agent-objekt-bau/runde.sh`. The cost of a round is the sum of `cost.total` over the
+  `message_end` lines of its `pi.jsonl`; report it per run. A pi call with tools started from a Claude session's
+  shell is blocked by the classifier. The owner starts it or sets a rule; you don't work around it.
+- **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 2000 characters (characters, not bytes; cut a
+  longer message into numbered parts). A lane gets a 409 there; its result arrives as a fleet-report.
+  Session-to-session traffic goes through this mailbox, never through Claude Code's own cross-session messages,
+  which type into the pane and show the whole coordination in the owner's chat.
+- A mailbox message reaches the session's pane after about a minute, with sender and full text; a session with its
+  own worktree gets it with its next bundle. The slot's delivery setting decides (`server/zustellung.ts`).
+
+## Seeing what a start costs
+
+Measure a start in tokens, not bytes. The usage of the first assistant turn in the session's transcript
+(`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`: input plus cache creation plus cache read) is the whole
+start; the cache-read part is the shared prefix of Claude Code itself, the cache-creation part is ours. The byte
+size of a brief or a start window is not its context.
 
 ## Two examples
 

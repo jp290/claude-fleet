@@ -140,7 +140,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude"],
     "modes": ["read-only", "mutating", "monitoring"],
-    "estimatedBytes": 4804,
+    "estimatedBytes": 8025,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -168,7 +168,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1740,
+    "estimatedBytes": 5574,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -205,7 +205,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 3799,
+    "estimatedBytes": 5696,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -260,6 +260,44 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1800,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "running-fleet",
+    "useWhen": "Bevor du landest, deployst, ein rotes Audit beurteilst, den Helfer anfasst oder in eine lebende Session eingreifst.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["landing", "orchestration"],
+    "hardness": "guidance",
+    "group": "pruefen-landen",
+    "sources": [
+      { "id": "running-fleet.text", "path": "docs/packs/running-fleet.md", "anchor": "# Running Fleet", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 8049,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "making-a-pack",
+    "useWhen": "Bevor du einen Context Pack schreibst oder änderst: was hinein gehört, wie er registriert wird und wen er erreicht.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestration"],
+    "hardness": "guidance",
+    "group": "vor-arbeiten",
+    "sources": [
+      { "id": "making-a-pack.text", "path": "docs/packs/making-a-pack.md", "anchor": "# Making a pack", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 9314,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

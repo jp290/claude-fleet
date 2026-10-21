@@ -39,6 +39,47 @@ Bild, oder siehst du die Wirkung nicht, geht der Report mit Grund zurück. Vom B
 „Öffnen" an der Zeile des Worktrees in Info → Arbeitsorte die Instanz, danach schaltet der
 Instanz-Chip um (beides unten).
 
+### Visible work, widened
+
+The rule above is the narrow case: a lane's card paints something. The same bar holds for every change the owner
+will see, and for how you get there.
+
+- **The whole window, not only your surface.** Click through everything the window shows at 390 px and at
+  desktop width, including the neighbours of your change. A DOM claim is not a look: the report names what you
+  saw in the window yourself, also outside your card's surface.
+- **The bar is the owner's: AAA indie software, made with love.** Calm: it shows what counts now, the engine room
+  only on request. Honest: it claims nothing and raises no false alarm, and says once and calmly what it doesn't
+  know. One voice: one language, human words, no internal jargon. Care in the small: nothing cut off, everything
+  aligned, empty states thought through, nothing waits without feedback. With character: small own details,
+  never at the cost of clarity. Equally good everywhere, desktop and phone. One agent with taste walks the board
+  about once a week and brings the owner the three things that disturb the feel most; not more rounds than that.
+- **Pin the surface before you build.** The owner names surfaces by what he does, not by component names, and
+  two panes of one window are one view to him. Find the detail in his words that fits only one surface (a noun
+  that exists on one of them, a spatial word like "rechts"), say it back, then build. When his words fit two
+  surfaces, build the one his symptom explains; "[Zitat entfernt]" speaks against the surface where it
+  would be unmissable. A vague report gets a question with concrete symptom options, not a guess. When he says
+  "[Zitat entfernt]", list every door that starts X and fix the one he used. For spoken feedback on placement, answer
+  with a two-line mock of the exact rows and wait for his yes; a wrong round costs his trust.
+- **A view of a system starts with its principles.** For a view that explains a whole system (what an agent
+  gets, keeps, may), lay the system's principles on one page first, each as one sentence with one real example,
+  and go through it with the owner. Then a clickable mock he tries with a real task. Build after that. Collect his
+  remarks into one brief instead of handing each to the builder; under time pressure at most two strands, and
+  report only decisions to him. Empty places are invitations ("task: empty, write here"), not blanks.
+- **His look comes before the land.** A land that changes `src/client.ts`, `public/index.html` or any visible
+  bar, tab or chip waits for his look at the test instance (link and picture), unless he built or named exactly
+  that state himself. An open owner question about the same surface is a stop. Night autonomy covers backend,
+  audits and repairs, not a UI he sees for the first time when he wakes up: the lane holds, the instance stays
+  up, the morning list names it.
+- **A probe that misses because the column moves found a product bug.** When a DOM probe's press lands beside
+  its target because content shifts after load or on repaint, a user's mouse hits the same shift. Fix the jump in
+  `src/` (reserve space, keep layout stable across repaint). Never teach the probe to wait for a still column;
+  it stays as strict as before.
+- **No token in any text.** The instance link with `?token=` goes into no report, message, plan file, commit or
+  note. Name port and slot ("test instance :8903, slot 9"); the owner's link is built by whoever talks to him.
+- The design concept behind the board is a Design canvas (`https://example.com/design-artifact`,
+  concepts 1 to 3), with its reasoning in `~/local-notes/shots-0d51-2026-10-07/`. Its look: Instrument
+  Sans and IBM Plex Mono, ground `#0B0B0C`, moss `#8DBE86`, amber `#E3A857`, red `#E5705F`, radii 8·14·26.
+
 ## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt
 
 Für eine Lane, deren Karte die Live-Bau-Variante wählt (eine Zeile `VARIANTE: live-bau` im

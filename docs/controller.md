@@ -416,6 +416,32 @@ auch er nicht; solange einer läuft, ruht die Pane nicht, und keiner der beiden 
 Ohne Schalter warmt derselbe Tick eine gebundene claude-Program-MAIN und die Orchestratorin nach
 50 min Ruhe mit einem kurzen Turn, abschaltbar je Belegung (`docs/self-api.md` §Default-Warm-Turn).
 
+### When, and what comes first
+
+- **Fleet names the moment.** Hand over when Fleet's hint comes. The number behind it lives only in Fleet's
+  setting for your slot (`succession.thresholdPct` and `capPct`, which the brief shows and
+  `GET /api/slots/<n>/handover` answers). Keep no threshold of your own: a number in a note or a pack goes stale
+  silently and overrides the setting the owner sees and changes.
+- **Not earlier.** A handover before the hint throws away context the successor has to buy again. A plannable
+  chain that is already running (land, audit, deploy) runs to its end even if it carries past the hint. Start no
+  chain whose plausible cost carries past `capPct`.
+- **The handover is yours to trigger.** It is part of finishing the work, not a task someone orders. Don't
+  announce it and wait for a yes. It describes the finished state, so close what is in flight first, and it
+  carries only what git doesn't: intent, what is in flight, corrections, the order and its why.
+- **A phase change asks for a fresh session.** When a phase is done, or the owner corrects a base assumption, a
+  long session keeps writing addenda to addenda and derives its proposals from old plan sentences instead of his
+  words. Then write the state as one page at the top of the plan, move the history out, and succeed in the same
+  slot, because mailbox and the openers of your strands hang on the slot. Don't wait for the hint for this.
+- **Read your mailbox before you build and before you hand over.** A message from your counterpart can arrive
+  seconds after your start, and the delivery hint comes later than the message. Read
+  `GET /api/self/messages?unread=1` after you have read your start and before each large step (test instance,
+  commit, message to the owner). Before `succeed`, write what is unread into your strand's state file and commit
+  it. A successor reads the messages of her line, but the board's mailbox tab shows only the current occupancy.
+- **Subagents die with you.** A background subagent lives in your session's process and ends with it, and its
+  scratchpad is session-owned. Work that should outlive a succession runs as a lane. If a subagent is running,
+  prepare the handover, wait for its result, check it, forward it, then succeed. Have subagents write results
+  into a durable folder, never only into the scratchpad.
+
 ## Kontext-Hinweis des Servers
 
 Der Tick `server.ts#tickMigrate` (nur registriert bei `FLEET_MIGRATE_PCT > 0`) stupst ausschließlich

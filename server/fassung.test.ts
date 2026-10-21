@@ -69,11 +69,15 @@ describe("fassungsHash", () => {
 });
 
 describe("die fünf Teile", () => {
-  test("Liest steht in Ladereihenfolge; Übergabe nur bei nachfolge", () => {
+  test("Liest steht in Ladereihenfolge; Übergabe nur bei nachfolge, Richtung nur wenn getragen", () => {
     expect(baueFassung(eingang()).teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
-      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe"));
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe" && id !== "richtung"));
     expect(baueFassung(eingang({ anlass: "nachfolge" })).teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
-      .toEqual([...LIEST_REIHENFOLGE]);
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "richtung"));
+    // Die Orchestratorin trägt die Richtung als ersten Abschnitt; keine andere Rolle erbt davon.
+    expect(baueFassung(eingang({ liest: [textAbschnitt("richtung", "docs/start/direction.md", "Richtung"), ...eingang().liest] }))
+      .teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe"));
   });
 
   test("eine fehlende Quelle steht als unknown mit Grund da, nie leer, und bleibt im Hash", () => {
@@ -106,8 +110,8 @@ describe("die fünf Teile", () => {
 // DIE STARTBYTES BLEIBEN (Fertig-kriterium 5): die Fixture wurde VOR dem Herausziehen der
 // Rollenkarten aus dem damaligen server.ts aufgenommen. Der Test lädt server.ts in einem eigenen
 // Prozess (wie server/load.test.ts) und vergleicht Startbrief und Startzeile der drei Slots.
-describe("der Spawn bleibt unverändert", () => {
-  test("Startbrief und slotCmd für Orchestratorin-Nachfolge, Lane und freie Session sind byte-gleich", async () => {
+describe("die Startbytes der übrigen Rollen bleiben", () => {
+  test("MAIN, Lane, freie Session und Steward: Startbrief und Startzeile sind byte-gleich", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fassung-spawn-"));
     const out = join(dir, "after.json");
     const script = `
@@ -115,13 +119,6 @@ describe("der Spawn bleibt unverändert", () => {
       const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
       const rechte = { stufe: "standard", an: ["lesen", "bearbeiten"], aus: ["loeschen"] };
       const agentMd = { profil: "p1", titel: "agent.md", text: "Eigene Regel A\\nEigene Regel B", sha256: "0".repeat(64) };
-      const lineage = { obligations: [{ kind: "watch", id: "w1", target: { kind: "audit", repo: "/fixture/repo", mainAfter: "a".repeat(40) } }],
-        intent: "Naechster Schritt: Karte schaerfen", pointer: null, carry: true, now: 1_760_000_000_000, laneNow: () => null };
-      const orchestratorBrief = S.buildOrchestratorSuccessionBrief("claude",
-        ["1. Führe ./state.sh --brief aus.", "2. Lies README.md, falls vorhanden."],
-        "Das Erste, was ich täte: den nächsten Akt wählen.", "f1c70000000000000000cafe", lineage, "\\n\\nANKER (fixture)\\n");
-      const orchestratorCmd = S.slotCmd("11111111-1111-4111-8111-111111111111", false, "claude-opus-5[1m]", "high",
-        true, "orchestrator", [], "orchestrator", true, null, rechte, agentMd);
       const laneRows = [
         { id: "t1", text: "ZIEL: die Fassung zeigen\\nDONE: Route und Test", brief: { text: "ZIEL: die Fassung zeigen (geschaerft)\\nDONE: Route und Test" }, card: null, comments: [] },
       ];
@@ -133,10 +130,15 @@ describe("der Spawn bleibt unverändert", () => {
         false, null, [], "lane", true, null, rechte, agentMd);
       const freeBrief = await S.buildSuccessionBrief("/nonexistent/fixture-free", null, { obligations: [], intent: null, pointer: null, carry: false, now: 1_760_000_000_000, laneNow: () => null });
       const freeCmd = S.slotCmd("33333333-3333-4333-8333-333333333333", false, null, null, true, null, [], "generic", false, null, null, null);
-      const roleCards = { main: S.MAIN_ROLE_CARD, lane: S.LANE_ROLE_CARD, orchestrator: S.ORCHESTRATOR_ROLE_CARD,
-        orchestratorRoleCardClaude: S.orchestratorRoleCard("claude"), orchestratorRoleCardCodex: S.orchestratorRoleCard("codex") };
-      const spawnBrief = S.buildOrchestratorSpawnBrief("claude", "\\n\\nANKER (fixture)\\n");
-      await Bun.write(out, JSON.stringify({ orchestratorBrief, orchestratorCmd, laneBrief, laneCmd, freeBrief, freeCmd, roleCards, spawnBrief }, null, 2) + "\\n");
+      const program = { id: "p1", title: "Fassung", intent: "die Fassung zeigen", successCriterion: "Route und Test", nonGoals: ["nichts anderes"],
+        decisions: [], evidence: [], openQuestions: [], status: "active", createdAt: 1, proposedBy: { kind: "owner" } };
+      const mainBrief = S.buildProgramMainBrief(program, "fleet-control", "\\n\\nANKER (fixture)\\n", "OWNER-KORREKTUREN (fixture)");
+      const mainCmd = S.slotCmd("44444444-4444-4444-8444-444444444444", false, "claude-opus-5[1m]", "high",
+        true, "main", [], "main", true, null, rechte, agentMd);
+      const stewardCmd = S.slotCmd("55555555-5555-4555-8555-555555555555", false, "claude-opus-5[1m]", "high",
+        true, "main", [], "main", true, null, null, null);
+      const roleCards = { main: S.MAIN_ROLE_CARD, lane: S.LANE_ROLE_CARD };
+      await Bun.write(out, JSON.stringify({ laneBrief, laneCmd, freeBrief, freeCmd, mainBrief, mainCmd, stewardCmd, roleCards }, null, 2) + "\\n");
     `;
     const home = join(dir, "home");
     const state = join(dir, "state");
@@ -147,13 +149,110 @@ describe("der Spawn bleibt unverändert", () => {
     const stderr = await new Response(proc.stderr).text();
     try {
       expect({ exitCode, stderr: exitCode === 0 ? "" : stderr.slice(-1200) }).toEqual({ exitCode: 0, stderr: "" });
-      const before = JSON.parse(readFileSync(join(import.meta.dir, "fassung-spawn-bytes.json"), "utf8"));
+      const before = JSON.parse(readFileSync(join(import.meta.dir, "fassung-spawn-bytes-uebrige.json"), "utf8"));
       const after = JSON.parse(readFileSync(out, "utf8"));
       expect(after).toEqual(before);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 75_000);
+
+  test("die Orchestratorin bekommt Richtung, Rolle, Systemkonzept und vier Packs — nicht mehr die Rollenkarte", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "orchestrator-start-"));
+    const out = join(dir, "out.json");
+    const pfade = ["docs/start/direction.md", "docs/start/orchestrator.md", "docs/start/system-concept.md",
+      "docs/packs/setting-up-agents.md", "docs/packs/working-with-the-owner.md", "docs/packs/how-fleet-remembers.md",
+      "docs/packs/working-toward-a-goal.md"];
+    // DER PLAN BRAUCHT EINEN EIGENEN BAUM MIT EINEM ZWEIG: der Merge-Check prüft einen Checkout,
+    // dem der Integrationszweig fehlen darf. Die sieben Texte (und das Manifest, das die vier Packs
+    // registriert) werden aus dem Checkout in ein kleines Repo kopiert und dort committet; so fragt
+    // der Test den Gründungsplan, ohne sich auf den Zweig des umgebenden Baums zu verlassen.
+    const repo = join(dir, "repo");
+    gitRepo(repo);
+    mkdirSync(join(dir, "state"), { recursive: true }); // appendEvent schreibt die Belege hierhin
+    for (const pfad of [...pfade, ".fleet/context-packs.json"]) {
+      mkdirSync(dirname(join(repo, pfad)), { recursive: true });
+      cpSync(join(ROOT, pfad), join(repo, pfad));
+    }
+    Bun.spawnSync(["git", "add", "."], { cwd: repo });
+    Bun.spawnSync(["git", "-c", "user.email=f@f.f", "-c", "user.name=f", "commit", "-qm", "start"], { cwd: repo });
+    const script = `
+      const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+      const lineage = { obligations: [{ kind: "watch", id: "w1", target: { kind: "audit", repo: "/fixture/repo", mainAfter: "a".repeat(40) } }],
+        intent: "Naechster Schritt: Karte schaerfen", pointer: null, carry: true, now: 1_760_000_000_000, laneNow: () => null };
+      const parts = S.readOrchestratorStartParts(process.env.FIX_ROOT);
+      const brief = S.buildOrchestratorSpawnBrief(parts);
+      const succession = S.buildOrchestratorSuccessionBrief(parts, "f1c70000000000000000cafe", lineage, "Das Erste, was ich täte: den nächsten Akt wählen.");
+      const orchCmd = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5[1m]", "high",
+        true, "orchestrator", [], "orchestrator", true, null, null, null);
+      const slot = { id: 1, cwd: process.env.FIX_ROOT, openedAt: 1, label: "Orchestrator (Opus)", worktree: null,
+        harness: "claude", model: null, effort: null, rechte: null, agentMd: null, history: [],
+        sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", programId: null, taskId: null, lineageId: null,
+        selfToken: "x", packMcp: [], context: null, permissions: null, sleeping: null, standingHandover: null,
+        compaction: null, startCompact: null, spawn: null, laneStandNudged: null, plan: null, handover: null,
+        container: null, containerContext: null, originId: null, releasedBy: null, laneSuccessions: 0, laneSeats: [],
+        browser: false, remote: false, webSearch: false, openedBy: null, lauf: null, clients: [], awaiting: null,
+        mission: null, successionRetirement: null, codexRecoveryState: null, codexPaneSpawnedAt: null,
+        codexDisconnectSeenAt: null, codexFirstTurn: null, sessionIdLearned: null };
+      const fassung = await S.fassungFuerSlot(slot, "nachfolge");
+      const laufend = await S.fassungFuerSlot(slot, "laufend");
+      const plan = await S.foundingPlanAnswer({ repo: process.env.FIX_ROOT, role: "orchestratorin", ort: null, mode: null,
+        harness: "claude", model: null, effort: null, bausteine: null, packs: null, parts: null, anlass: null });
+      if (!plan.ok) throw new Error("plan refused: " + JSON.stringify(plan));
+      // DER START-BELEG TRÄGT DEN HASH DER GEZEIGTEN FASSUNG: einmal für das Öffnen (laufend),
+      // einmal für die Nachfolge. appendEvent schreibt in derselben Zustellkette; danach ist die
+      // Ledger-Datei lesbar und wird hier wörtlich geprüft.
+      await S.appendOrchestratorStartReceipt(slot, parts, "laufend", brief, 1_760_000_000_001);
+      await S.appendOrchestratorStartReceipt(slot, parts, "nachfolge", succession, 1_760_000_000_002);
+      const ledger = await Bun.file(\`\${process.env.FLEET_STATE_DIR}/context-receipts.jsonl\`).text();
+      const receipts = ledger.trim().split("\\n").map((line) => JSON.parse(line));
+      await Bun.write(${JSON.stringify(out)}, JSON.stringify({ brief, succession, orchCmd, fassung, laufend, plan: plan.body, receipts }, null, 2));
+    `;
+    try {
+      const r = await runServer(script, { FIX_ROOT: repo }, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
+      const got = JSON.parse(readFileSync(out, "utf8")) as {
+        brief: string; succession: string; orchCmd: string;
+        fassung: { hash: string; teile: { id: string; abschnitte: { id: string; quelle: string | null; bytes: number | "unknown"; text: string | null }[] }[] };
+        laufend: { hash: string };
+        plan: { fassungsHash: string; sessionAgents: { text: string; bytes: number; parts: { path: string | null }[] } };
+        receipts: { hash: string }[];
+      };
+      const texte = pfade.map((pfad) => readFileSync(join(ROOT, pfad), "utf8"));
+      // Die sieben Startteile zuerst, dann der an die Position gebundene Leser-Zeiger der Owner-Korrekturen.
+      expect(got.brief.startsWith(`${texte.join("\n\n")}\n\nOWNER-KORREKTUREN:`)).toBe(true);
+      expect(got.brief).toContain("vor deinem ersten Akt");
+      expect(got.brief).toContain("/api/self/konzepte/k-owner-korrekturen/leseansicht");
+      expect(got.brief).not.toContain("--- ROLLE ---");
+      expect(got.succession).toContain("f1c70000000000000000cafe");
+      expect(got.succession).toContain(got.brief);
+      // Kein Rollen-Render: die Startzeile schließt den Projekt-Monolithen aus, lädt aber kein --add-dir.
+      expect(got.orchCmd).not.toContain("--add-dir");
+      expect(got.orchCmd).toContain("claudeMdExcludes");
+      // DER GRÜNDUNGSPLAN ZEIGT DENSELBEN START: keine alte Rollenkarte, dieselben sieben Dateien,
+      // derselbe Fassungs-Hash wie die laufende Slot-Fassung.
+      expect(got.plan.sessionAgents.text).toBe(texte.join("\n\n"));
+      expect(got.plan.sessionAgents.parts.map((part) => part.path)).toEqual(pfade);
+      expect(got.plan.fassungsHash).toBe(got.laufend.hash);
+      expect(got.plan.sessionAgents.text).not.toContain("--- ROLLE ---");
+      const liest = got.fassung.teile.find((teil) => teil.id === "liest")!.abschnitte;
+      // GENAU DIESE SIEBEN TEILE, IN DIESER REIHENFOLGE, mit Quelle und Bytes: die Richtung steht
+      // als eigener Abschnitt vor der Rolle, danach Systemkonzept und die vier Packs unter „Wissen“.
+      expect(liest[0]!.id).toBe("richtung");
+      expect(liest[1]!.id).toBe("rolle");
+      const startQuellen = liest.map((abschnitt) => abschnitt.quelle).filter((quelle): quelle is string => !!quelle && pfade.includes(quelle));
+      expect(startQuellen).toEqual(pfade);
+      for (const [index, pfad] of pfade.entries()) {
+        const abschnitt = liest.find((entry) => entry.quelle === pfad)!;
+        expect(abschnitt.bytes).toBe(Buffer.byteLength(texte[index]!));
+      }
+      // DER HASH IM START-BELEG IST DER HASH DER GEZEIGTEN FASSUNG — für Öffnen und Nachfolge.
+      expect(got.receipts.map((receipt) => receipt.hash)).toEqual([got.laufend.hash, got.fassung.hash]);
+      expect(got.receipts[0]!.hash).toBe(got.plan.fassungsHash);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 100_000);
 });
 
 // EINE FORM, EIN HASH (Fertig-kriterium 4b): der Gründungsplan zeigt für eine neue Session
@@ -372,8 +471,14 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       };
       const datei = (path: string) => ({ path, content: readFileSync(path, "utf8") });
       const mitInhalt = (list: { pfad: string }[]) => list.map((eintrag) => datei(eintrag.pfad));
-      expect(got.orch!.dateien).toEqual(transkript([...mitInhalt(geladen.orch),
-        { path: renderPfad, content: orchRender }, datei(memRoot)]));
+      // DIE ORCHESTRATORIN LÄDT IHREN NEUEN START: Richtung, Rolle, Systemkonzept und vier Packs,
+      // dazu die globalen Regeln und ihr Gedächtnis. Kein Rollen-Render und kein Projekt-Monolith.
+      const startRolle = ["docs/start/direction.md", "docs/start/orchestrator.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
+      const startWissen = ["docs/start/system-concept.md", "docs/packs/setting-up-agents.md",
+        "docs/packs/working-with-the-owner.md", "docs/packs/how-fleet-remembers.md",
+        "docs/packs/working-toward-a-goal.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
+      expect(got.orch!.dateien).toEqual(transkript([...mitInhalt(startRolle), ...mitInhalt(geladen.orch),
+        ...mitInhalt(startWissen), datei(memRoot)]));
       expect(got.lane!.dateien).toEqual(transkript(mitInhalt(geladen.lane)));
       expect(got.free!.dateien).toEqual(transkript([...mitInhalt(geladen.free), datei(memFree)]));
       // Auto-Memory ist bei der Lane kein Abschnitt mit Datei: sie startet ohne (autoMemoryEnabled:false)

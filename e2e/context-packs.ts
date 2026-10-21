@@ -399,8 +399,12 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
       `${without.status} ${file?.bytes}→${withoutFile?.bytes} unknown=${unknownPack.status}`);
     const orchard = await planRoute(`?repo=${encodeURIComponent(fixture)}&mode=main&harness=claude&role=orchestratorin`);
     const orchardFile = orchard.body.sessionAgents as FoundingSessionAgents | undefined;
-    check("founding plan: the orchestratorin role has its own card without a program footer",
-      orchard.status === 200 && orchardFile?.text.includes("--- ROLLE --- Orchestratorin") === true
+    // The orchestrator's start is direction, role, system concept and four packs. This fixture repo is
+    // not the Fleet checkout, so the honest plan names the absent files instead of falling back to the
+    // old role card.
+    check("founding plan: the orchestratorin role names her seven start files, or their absence — never the old card",
+      orchard.status === 200 && !!orchardFile && /--- FEHLT --- [^\n]*docs\/start\/orchestrator\.md/.test(orchardFile.text)
+      && !orchardFile.text.includes("--- ROLLE --- Orchestratorin")
       && !orchardFile.text.includes("HOW THIS PROGRAM IS EXECUTED"));
     const manifestIds = ["promise-anchor", "broken-pointer"];
     const namedOnce = manifestIds.every((id) =>

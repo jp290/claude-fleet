@@ -13,9 +13,13 @@ export type FassungAnlass = "neu" | "laufend" | "nachfolge";
 export type FassungByte = number | "unknown";
 
 /** Die Reihenfolge unter „Liest“ ist die Ladereihenfolge. Übergabe gibt es nur bei einer Nachfolge;
- *  Gedächtnis (Claudes Auto-Memory) lädt zwischen Wissen und Übergabe. */
-export const LIEST_REIHENFOLGE = ["rolle", "projektregeln", "wissen", "gedaechtnis", "uebergabe", "eigenes"] as const;
+ *  Gedächtnis (Claudes Auto-Memory) lädt zwischen Wissen und Übergabe. „richtung“ trägt nur die
+ *  Orchestratorin (ihr erster Startteil); für jede andere Rolle fehlt der Abschnitt, ohne als
+ *  `unknown` aufzutauchen. */
+export const LIEST_REIHENFOLGE = ["richtung", "rolle", "projektregeln", "wissen", "gedaechtnis", "uebergabe", "eigenes"] as const;
 export type LiestAbschnittId = (typeof LIEST_REIHENFOLGE)[number];
+/** Abschnitte, die nur eine Rolle trägt: fehlen sie, wird kein `unknown` erfunden. */
+export const OPTIONALE_LIEST: ReadonlySet<LiestAbschnittId> = new Set(["richtung"]);
 
 export interface FassungAbschnittEingang {
   readonly id: string;
@@ -125,10 +129,11 @@ export function baueFassung(e: FassungEingang): Fassung {
   const vorhanden = new Map<string, FassungAbschnittEingang[]>();
   for (const a of e.liest) vorhanden.set(a.id, [...(vorhanden.get(a.id) ?? []), a]);
   const reihenfolge = e.anlass === "nachfolge" ? LIEST_REIHENFOLGE : LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe");
-  const liest: FassungAbschnittEingang[] = reihenfolge.flatMap((id) => vorhanden.get(id) ?? [unknownAbschnitt(id,
-    id === "uebergabe" ? "keine Übergabe gefunden (kein stehender Record, kein handoff-Report)"
-      : id === "gedaechtnis" ? "kein Auto-Memory für diese Session"
-      : `keine Quelle für „${id}“ genannt`)]);
+  const liest: FassungAbschnittEingang[] = reihenfolge.flatMap((id) => vorhanden.get(id)
+    ?? (OPTIONALE_LIEST.has(id) ? [] : [unknownAbschnitt(id,
+      id === "uebergabe" ? "keine Übergabe gefunden (kein stehender Record, kein handoff-Report)"
+        : id === "gedaechtnis" ? "kein Auto-Memory für diese Session"
+        : `keine Quelle für „${id}“ genannt`)]));
   const teile = [
     teil("wer", e.wer),
     teil("aufgabe", e.aufgabe),

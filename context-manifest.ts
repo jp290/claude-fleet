@@ -41,7 +41,11 @@ export function taskContextTriggers(texts: readonly string[], possible: readonly
     ["rulebook-edit", rulebookEdit],
     ["visible-surface", visibleSurface],
   ];
-  const selected = new Set(possible.filter((trigger) => !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
+  // `orchestrator-start` is passed by the orchestrator's own founding only. It is never a baseline
+  // trigger of a task and no card text can turn it on.
+  const callerOnly = new Set<ContextPackTrigger>(["orchestrator-start"]);
+  const selected = new Set(possible.filter((trigger) => !callerOnly.has(trigger)
+    && !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
   for (const [trigger, pattern] of taskTriggers) {
     if (texts.some((value) => pattern.test(value))) selected.add(trigger);
   }

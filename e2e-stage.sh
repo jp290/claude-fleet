@@ -28,6 +28,9 @@
 #       builds a git context ONLY for the proportional short chain). So §F's probe read
 #       `sourceTree=null` and failed in EVERY full audit while passing in every lane — main was
 #       red from b224ef8 on. An instance now carries the script it is asked to exercise.
+#       docs/start and docs/packs ride along for the same reason: the orchestrator's start is read
+#       BY PATH (server/orchestrator-start.ts), so an import scan cannot see it. Without them the
+#       staged start would fall back to a silent `--- FEHLT ---` instead of the texts it ships.
 #   (3) $STAGE_EXTRA — assets read BY PATH rather than imported, which no import scan can see
 #       (fleet-e2e-security.ts readFileSync's src/client.ts and src/md.ts).
 #   (4) a node_modules symlink back to SRC. Also the only pointer home from inside the copy, which
@@ -634,6 +637,12 @@ stage_instance() {
     cp "$_st_s/$_st_rel" "$_st_d/$_st_rel" || return 1
   done
   cp -R "$_st_s/public" "$_st_s/package.json" "$_st_s/fleet-sync.sh" "$_st_d/" || return 1
+  mkdir -p "$_st_d/docs" || return 1
+  # An older checkout has no docs/start yet; that must not make the instance fail to stage. The
+  # start then names the absent files itself instead of dying here.
+  for _st_doc in docs/start docs/packs; do
+    if [ -d "$_st_s/$_st_doc" ]; then cp -R "$_st_s/$_st_doc" "$_st_d/docs/" || return 1; fi
+  done
   for _st_x in ${STAGE_EXTRA:-}; do
     cp -R "$_st_s/$_st_x" "$_st_d/" || return 1
   done

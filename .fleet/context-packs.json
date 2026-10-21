@@ -191,5 +191,77 @@
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
+  },
+  {
+    "id": "setting-up-agents",
+    "useWhen": "Bevor die Orchestratorin einen Agenten oder ein Team aufsetzt: die fünf Teile und das Verbindungsstück.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "setting-up-agents.text", "path": "docs/packs/setting-up-agents.md", "anchor": "# Setting up an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 3799,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "working-with-the-owner",
+    "useWhen": "Wenn die Orchestratorin mit dem Owner spricht oder etwas schreibt, das er liest.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "working-with-the-owner.text", "path": "docs/packs/working-with-the-owner.md", "anchor": "# Working with the owner", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1804,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "how-fleet-remembers",
+    "useWhen": "Wenn die Orchestratorin etwas gelernt hat und entscheiden muss, wohin die Notiz gehört.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "how-fleet-remembers.text", "path": "docs/packs/how-fleet-remembers.md", "anchor": "# How Fleet remembers", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1754,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "working-toward-a-goal",
+    "useWhen": "Wenn die Orchestratorin einem Agenten sagt, wie er auf ein Ziel hinarbeitet — ein Verweis zum Lesen bei Bedarf.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "working-toward-a-goal.text", "path": "docs/packs/working-toward-a-goal.md", "anchor": "# Working toward a goal", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 1800,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
   }
 ]

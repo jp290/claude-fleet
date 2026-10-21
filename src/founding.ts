@@ -57,7 +57,7 @@ const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordner
   "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort",
   "lane-footer": "Rückweg und Ende", "memory-pointer": "Gedächtnis-Hinweis",
   // three rows share the register word "Auftrag", which is their function, not what each one is
-  "task-brief": "Karte", "main-rail": "Program-Auftrag", "orchestrator-card": "Rollenkarte der Orchestratorin" };
+  "task-brief": "Karte", "main-rail": "Program-Auftrag", "orchestrator-card": "Rolle, Systemkonzept und Packs" };
 const packWord = (id: string): string => PACK_WORDS[id]?.name ?? id;
 export const bausteinName = (b: Baustein): string => b.id.startsWith("pack:") ? `Pack · ${packWord(b.id.slice(5))}` : START_WORT[b.id] ?? b.wort;
 
@@ -204,4 +204,8 @@ export const PACK_WORDS: Record<string, { name: string; say: string }> = {
   "projekt-aufnahme": { name: "Projekt aufnehmen", say: "Wie ein fremdes Repo ein Fleet-Projekt wird." },
   "nachfolge-klug": { name: "Nachfolge", say: "Warm sichern und den Zeitpunkt der Nachfolge entscheiden." },
   "testinstanz-abnahme": { name: "Testinstanz-Abnahme", say: "Sichtbares ist erst mit durchgeklickter Testinstanz, Link und Bild fertig." },
+  "setting-up-agents": { name: "Agenten aufsetzen", say: "Die fünf Teile, ein oder zwei Sitze und das Verbindungsstück." },
+  "working-with-the-owner": { name: "Mit dem Owner arbeiten", say: "Verstehen, antworten und ohne ihn entscheiden." },
+  "how-fleet-remembers": { name: "Wie Fleet erinnert", say: "Vom Notizbuch in Wissen, das bleibt." },
+  "working-toward-a-goal": { name: "Auf ein Ziel hin", say: "Wie ein Agent auf sein Ziel hinarbeitet." },
 };

@@ -19,10 +19,14 @@ How we write roles, briefs, concepts and context packs in Claude Fleet, and why.
 8. **The two-minute bar.** A stranger should understand the text in two minutes. That is the bar for anything we
    share.
 9. **English for anything that may be shared.** Agents talk with the owner in the owner's language.
-10. **Judge a text by what the agent does.** A quick start with the new text catches gross errors: a wrong frame,
-    needless bulk, a goal the agent never reaches. It shows what the agent does first, what it reads and what its
-    start costs. Whether a text makes an agent reason better can't be seen in one session. That only shows across
-    real runs that end in a check.
+10. **Judge a text by what an agent does with it.** Before a start text goes live, give it to one fresh agent to
+    read cold, and ask: your goal in one sentence, your first three acts, the sentences you stumble over, and what
+    is missing. What it stumbles over is the result; agreement tells you nothing. Whether a text makes an agent
+    reason better shows only across real runs that end in a check.
+11. **The goal sentence names the outcome.** Write it in words the owner would use. Mechanics, versions and checks
+    belong in the steps below it. Say what to do, not what to leave out.
+12. **Claim only what the system does.** Check every statement about the system in the code or on a route before
+    it goes into a text.
 
 ## The connecting piece
 

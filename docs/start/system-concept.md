@@ -92,9 +92,10 @@ That is the base. It stays small on purpose, so anyone can understand it in a fe
    constellation or with the owner, is something it reads and understands, not a field someone fills in with one sentence.
    The idea is written down as a concept, and a pack is the how-to that puts it to use.
 4. **What you see is what starts.** The setup Fleet shows is the setup that runs. There are no hidden layers.
-5. **Gates in code, reasons in prose.** Nothing lands without a green check and nothing deploys without a green
-   audit; the server enforces both. Texts don't repeat what the server guarantees.
-6. **Small and simple.** A stranger understands a setup in two minutes. If it takes longer, it is too big.
+5. **Gates in code, reasons in prose.** Nothing lands without a green check, and nothing deploys over a red
+   audit that nobody has judged; the server enforces both. Texts don't repeat what the server guarantees.
+6. **Small and simple.** A stranger understands a setup in two minutes. If it takes longer, it is too big. A hard
+   task and its check may take longer to understand, as long as everything they need is in the shared file.
 7. **The owner has the last word** on money beyond the budget, on anything public and on anything that can't be
    undone.
 

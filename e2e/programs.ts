@@ -5406,9 +5406,42 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${unboundFreeSlot}/kill`, {});
   rmSync(unboundRepo, { recursive: true, force: true });
 
-  const CARD_BLOCKS = ["--- ROLLE ---", "--- DU ENTSCHEIDEST ---", "--- DER OWNER ENTSCHEIDET ---",
-    "--- DEINE TUEREN ---", "--- DER LOOP ---", "--- UEBERGABE ---"] as const;
-  const orchCard = (prompt: string): string[] => CARD_BLOCKS.filter((b) => !prompt.includes(b));
+  // DER START DER ORCHESTRATORIN: sieben Texte, in dieser Ordnung. Der Test listet die Pfade
+  // selbst statt die Server-Konstanten zu importieren — eine Datei, die der Server aus seiner
+  // Liste verliert, soll hier rot werden und nicht still mitverschwinden. Die Texte gehören ihrem
+  // Autor und werden nicht umgeschrieben: der Test kopiert sie aus der gestagten Instanz (ROOT)
+  // in REPO, das Repo, in dem die Session startet. Das ist derselbe Weg im isolierten Lauf wie im
+  // vollen Audit nach dem Land, unabhängig davon, wie der Wrapper sein Fixture-Repo baut. Der
+  // Commit hält REPO clean — ein ungetracktes docs/ würde dem Land-Pfad später als dirty-main
+  // erscheinen.
+  const ORCH_START_FILES = [
+    "docs/start/direction.md",
+    "docs/start/orchestrator.md",
+    "docs/start/system-concept.md",
+    "docs/packs/setting-up-agents.md",
+    "docs/packs/working-with-the-owner.md",
+    "docs/packs/how-fleet-remembers.md",
+    "docs/packs/working-toward-a-goal.md",
+  ] as const;
+  const orchStartQuelle = ORCH_START_FILES.map((pfad) => {
+    try { return readFileSync(resolve(ROOT, pfad), "utf8"); } catch { return ""; }
+  });
+  for (const [i, pfad] of ORCH_START_FILES.entries()) {
+    if (!orchStartQuelle[i]) continue;
+    mkdirSync(dirname(resolve(REPO, pfad)), { recursive: true });
+    writeFileSync(resolve(REPO, pfad), orchStartQuelle[i]!);
+  }
+  spawnSync("git", ["-C", REPO, "add", "docs"]);
+  spawnSync("git", ["-C", REPO, "commit", "-qm", "orchestrator start texts", "--", "docs"]);
+  const orchStartTexte = ORCH_START_FILES.map((pfad) => {
+    try { return readFileSync(resolve(REPO, pfad), "utf8"); } catch { return ""; }
+  });
+  const orchStartFehlt = ORCH_START_FILES.filter((pfad, i) => !orchStartTexte[i]);
+  const orchStartBlock = orchStartFehlt.length === 0 ? orchStartTexte.join("\n\n") : "";
+  const orchStartAt = (prompt: string): number => orchStartBlock === "" ? -1 : prompt.indexOf(orchStartBlock);
+  const orchStartDetail = (prompt: string): string =>
+    `repo=${REPO} missingFiles=[${orchStartFehlt.join(", ")}] startAt=${orchStartAt(prompt)} `
+      + `fehltMarker=${prompt.includes("--- FEHLT ---")} head=${prompt.slice(0, 120)}`;
   const dlgTokOf = async (slot: number, not = ""): Promise<string> => {
     for (let i = 0; i < 50; i++) {
       const tok = readState().slots?.[String(slot)]?.selfToken ?? "";
@@ -5616,12 +5649,13 @@ export async function run(ctx: Ctx): Promise<void> {
       .history.at(-1)?.text ?? ""
     : "";
   const orchReceipt = (await contextReceipts()).receipts.filter((row) => row.slot === orchSlot).at(-1);
-  check("Orchestrator role card: the spawn door delivers all six owner blocks and reports the delivery",
+  check("Orchestrator start: the spawn door delivers the seven texts from the session's repo, in their order",
     orchRes.ok && orchBody.ok === true && orchBody.label === orchLabel
       && orchBody.roleCard?.delivered === true && orchBody.roleCard.receipt === true
-      && orchPrompt.startsWith("[fleet Orchestrator] ") && orchCard(orchPrompt).length === 0,
+      && orchStartFehlt.length === 0 && orchPrompt.startsWith(orchStartBlock)
+      && !orchPrompt.includes("--- FEHLT ---"),
     `screen=${orchScreen} ${orchRes.status} roleCard=${JSON.stringify(orchBody.roleCard ?? null)} `
-      + `missing=[${orchCard(orchPrompt).join(", ")}] head=${orchPrompt.slice(0, 120)}`);
+      + `${orchStartDetail(orchPrompt)}`);
   check("…and the spawn is RECEIPTED like every other founding: founding source, the bytes sent, and no program named",
     !!orchReceipt && orchReceipt.briefSource === "founding" && orchReceipt.programId === null
       && orchReceipt.taskId === null && orchReceipt.repo === resolve(REPO)
@@ -5685,19 +5719,21 @@ export async function run(ctx: Ctx): Promise<void> {
       .history.at(-1)?.text ?? "";
   const orchSuccReceipt = (await contextReceipts()).receipts
     .filter((row) => row.slot === orchSuccSlot).at(-1);
-  check("Orchestrator role card: the succession door delivers the SAME six blocks, over the line record it names",
+  check("Orchestrator start: the succession door delivers the SAME seven texts, in their order, over the line record it names",
     orchSuccRes.ok && orchSuccBody.ok === true && orchSuccBody.slot === orchSuccSlot && orchSuccSlot === orchSlot
       && orchSuccBody.roleCard?.delivered === true && orchSuccBody.roleCard.receipt === true
       && orchSuccPrompt.startsWith("[fleet Orchestrator succession] ")
-      && orchCard(orchSuccPrompt).length === 0
+      && orchStartFehlt.length === 0 && orchStartAt(orchSuccPrompt) > 0
+      && !orchSuccPrompt.includes("--- FEHLT ---")
       && !!orchSuccBody.lineage?.lineageId
       && orchSuccPrompt.includes(orchSuccBody.lineage.lineageId)
       // the brief shows the intent itself, indented (Bauleitung 2026-10-17: „[Zitat entfernt]“;
-      // this check pinned the opposite — the intent kept out of the prompt — until then)
-      && orchSuccPrompt.includes(`hat sie dir aufgeschrieben:\n  ${orchIntent}\n`),
+      // this check pinned the opposite — the intent kept out of the prompt — until then); since the start from seven
+      // texts (92df3420) the brief's parts stand as paragraphs, so a blank line sits between the head and the intent
+      && orchSuccPrompt.includes(`hat sie dir aufgeschrieben:\n\n  ${orchIntent}\n`),
     `screen=${orchSuccScreen} ${orchSuccRes.status} slot=${orchSuccSlot} `
       + `roleCard=${JSON.stringify(orchSuccBody.roleCard ?? null)} lineage=${JSON.stringify(orchSuccBody.lineage ?? null)} `
-      + `missing=[${orchCard(orchSuccPrompt).join(", ")}] head=${orchSuccPrompt.slice(0, 120)}`);
+      + `${orchStartDetail(orchSuccPrompt)}`);
   check("…and that succession is receipted too — the role's founding is auditable from the ledger, not from pane scrollback",
     !!orchSuccReceipt && orchSuccReceipt.briefSource === "founding" && orchSuccReceipt.programId === null
       && orchSuccReceipt.briefHash === briefHashOf(orchSuccPrompt)

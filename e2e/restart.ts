@@ -1757,7 +1757,7 @@ export async function run(ctx: Ctx): Promise<void> {
           soleUnread(stagedInbox) && !soleUnread({ ...stagedInbox, unread: 2 }),
           JSON.stringify({ messageId, unread: stagedInbox.unread, ids: unreadIds(stagedInbox) }));
         const nudgeText = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — "
-          + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+          + "GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
         // The pane is the zsh stand-in, and zsh draws the em dash by the PANE's locale: "—" under UTF-8,
         // "�<0080><0094>" under C — a Claude lane's suite on the Mac runs with LANG unset, so the exact
         // string never matched there (red since 0969d46b, green only from UTF-8 shells). Every ASCII

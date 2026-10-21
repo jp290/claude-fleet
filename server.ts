@@ -17348,16 +17348,36 @@ function messageRetentionUnknown(): string[] {
   return unknown;
 }
 
-// GET /api/self/messages — the pull half. Pure projection, stamps nothing, newest first.
+// THE ONE RECEIPT, shared by POST /api/self/messages/:id/read and the read-on-GET form, so the two
+// doors cannot drift: the occupant triplet, the time, and the audit line are written in one place.
+// Returns whether THIS call wrote the receipt — the first reader is the fact, a second writes nothing.
+function stampMessageRead(entry: Message, s: Slot): boolean {
+  if (entry.readBy !== null) return false;
+  entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+  entry.readAt = Date.now();
+  audit("message_read", s.id, `${entry.id} ${addressLabel(entry.to)}`);
+  return true;
+}
+
+// GET /api/self/messages — the pull half, newest first. Without `read=1` it is a pure projection and
+// stamps NOTHING (state.sh reads `?unread=1` on every situation report and must not make mail vanish).
 // `?unread=1` keeps only the caller's UNREAD INBOUND rows — what `waitingOnMe` names by id. Measured
 // 2026-10-09 (docs/messungen/2026-10-09-rollen-kontext-inventar.md, Anhang A §0 Befund 5): the
 // Orchestrator's whole view was 102 rows and 136 427 B for 4 unread payloads of 3 156 B. Without
-// the parameter this function answers byte for byte what it answered before the filter existed.
-function messageViewFor(s: Slot, unreadParam: string | null = null): Response {
+// either parameter this function answers byte for byte what it answered before the filter existed.
+// `?unread=1&read=1` is the pull that may receipt: it stamps EXACTLY the unread inbound rows it
+// returns, through stampMessageRead — never an outbound row of the caller's own thread — and saves
+// state once. A read parameter without `unread=1` is refused, because a receipt must name the rows
+// in the same answer that carries them.
+async function messageViewFor(s: Slot, unreadParam: string | null = null, readParam: string | null = null): Promise<Response> {
   const mine = messageAddressesFor(s);
   if (!mine.length) return json({ error: NO_MESSAGE_ADDRESS, ...roleConflictFor(s) }, 409);
   if (unreadParam !== null && unreadParam !== "1")
     return json({ error: "unread takes exactly 1 — GET /api/self/messages?unread=1 reads only your unread inbound messages; without it the view is both ends of your threads" }, 400);
+  if (readParam !== null && readParam !== "1")
+    return json({ error: "read takes exactly 1 — GET /api/self/messages?unread=1&read=1 returns your unread inbound messages and receipts exactly those; without it the view stamps nothing" }, 400);
+  if (readParam === "1" && unreadParam !== "1")
+    return json({ error: "read=1 needs unread=1 — the receipt covers exactly the unread inbound rows the same answer returns; use GET /api/self/messages?unread=1&read=1" }, 400);
   const unknown = messageRetentionUnknown();
   // BOTH ENDS OF THE CALLER'S OWN THREADS, and the outbound half is not a convenience. A reply
   // carries `replyTo`, so a view of inbound rows only would hand a successor an id it cannot
@@ -17366,14 +17386,20 @@ function messageViewFor(s: Slot, unreadParam: string | null = null): Response {
   const entries = messages.entries
     .filter((m) => messageInboundFor(s, m, mine) || mine.some((a) => sameAddress(a, m.from)))
     .sort((a, b) => b.at - a.at);
-  const shown = unreadParam === null ? entries
-    : entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine));
+  const unread = entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine));
+  const shown = unreadParam === null ? entries : unread;
+  // The count is what the request FOUND (and, with read=1, delivered and receipted), taken before
+  // the stamps below — a second GET ?unread=1 then answers 0.
   // NAMED `droppedFleetWide` rather than `dropped`: the cap is on the whole rail, so this number is
   // not "how many of YOUR messages fell off" and must not read like it.
   // `unread` counts only what was addressed TO the caller: a message it sent itself is not news,
   // and counting it would make an idle MAIN look like it owes an answer to its own question.
-  return json({ addresses: mine,
-    unread: entries.filter((m) => m.readBy === null && messageInboundFor(s, m, mine)).length,
+  const unreadCount = unread.length;
+  if (readParam === "1" && unread.length) {
+    for (const m of unread) stampMessageRead(m, s);
+    await saveStateNow();
+  }
+  return json({ addresses: mine, unread: unreadCount,
     droppedFleetWide: messages.dropped, entries: shown, unknown });
 }
 
@@ -17586,9 +17612,7 @@ async function readMessageFor(s: Slot, id: string): Promise<Response> {
     return json({ error: "unknown message" }, 404);
   }
   if (entry.readBy !== null) return json({ ok: true, existing: true, message: entry });
-  entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
-  entry.readAt = Date.now();
-  audit("message_read", s.id, `${entry.id} ${addressLabel(entry.to)}`);
+  stampMessageRead(entry, s);
   await saveStateNow();
   return json({ ok: true, existing: false, message: entry });
 }
@@ -26607,7 +26631,7 @@ async function tickMessageNudge(): Promise<void> {
         .map((m) => m.id).sort();
       if (currentIds.join(",") !== unreadIds.join(",")) continue;
       const text = `[fleet message] ${unreadIds.length} ungelesene adressierte Nachricht${unreadIds.length === 1 ? "" : "en"} fuer diese Session — `
-        + "GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+        + "GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
       pendingMessageNudges.add(s.id);
       void (async () => {
         let recipient = s;
@@ -49224,7 +49248,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      if (req.method === "GET") return messageViewFor(s, url.searchParams.get("unread"));
+      if (req.method === "GET")
+        return await messageViewFor(s, url.searchParams.get("unread"), url.searchParams.get("read"));
       return await sendMessageFor(s, await readJson(req));
     }
 

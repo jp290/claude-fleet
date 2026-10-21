@@ -3503,6 +3503,13 @@ die ganze Sicht, 102 Zeilen und 136 427 B (`docs/messungen/2026-10-09-rollen-kon
 Anhang A §0 Befund 5). `./state.sh --brief` nennt diesen Weg in der Gruppe `waiting` und in
 `own-messages`; aus einer Pane: `./ctl.sh get '/api/self/messages?unread=1'`.
 
+**Quittieren beim Lesen (`?unread=1&read=1`, `server.ts#messageViewFor`):** `GET
+/api/self/messages?unread=1&read=1` liefert denselben ungelesenen Eingang und stempelt **genau diese
+gelieferten Zeilen** mit derselben Quittung wie `POST /api/self/messages/:id/read` (`readBy`,
+`readAt`, Audit-Zeile `message_read`, Zustand gespeichert), während ohne `read=1` der Abruf
+unverändert nichts stempelt, `read=1` ohne `unread=1` und jeder andere `read`-Wert als `1` eine 400
+mit Satz sind und ausgehende eigene Zeilen nie quittiert werden.
+
 **Die Orchestratorin und die zwei Program-Verben von `ctl.sh`.** Sie hält keine Program-Bindung,
 darum antworten ihr `/api/self/inbox` und `/api/self/tasks` 409 (`mainUnboundError`). `./ctl.sh inbox`
 und `./ctl.sh file` fragen nach genau dieser Verweigerung `GET /api/self` → `position.role`; ist es

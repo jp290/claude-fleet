@@ -10,7 +10,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { branchTestkit, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
+import { branchTestkit, type Answer, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
 
 const { fixture, life, cleanup, SOCKETS } = branchTestkit();
 afterAll(cleanup);
@@ -301,4 +301,101 @@ describe("Schnitt 6 · POST /api/self/branches und /api/self/branches/open", () 
     expect(answers.map((a) => a.status)).toEqual([409, 409, 409, 409, 409]);
     expect(String(answers[2]?.body.error)).toContain("its own repo only");
   }, LIFE_DEADLINE_MS * 3);
+});
+
+// Postfach lesen quittiert, wenn die Session es so abruft: `?unread=1&read=1` stempelt genau den
+// gelieferten ungelesenen Eingang, mit derselben Quittung wie POST /api/self/messages/:id/read und
+// derselben Adressregel (messageInboundFor). Ohne `read=1` bleibt der Abruf eine reine Sicht —
+// state.sh liest `?unread=1` bei jedem Lagebild und darf keine Nachricht ungesehen quittieren.
+type MsgEntry = { id: string; from: unknown; to: unknown;
+  readBy: { slot: number; openedAt: number; sessionId: string | null } | null; readAt: number | null };
+describe("Postfach: GET ?unread=1&read=1 quittiert beim Lesen", () => {
+  const note = (c: Cast, from: number, to: unknown, key: string) => as(c.token(from), post("/api/self/messages",
+    { to, payload: { kind: "text", text: `Probe ${key}` }, idempotencyKey: key }));
+  const view = (c: Cast, slot: number, query = "") => as(c.token(slot), get(`/api/self/messages${query}`));
+  const entriesOf = (a: Answer | undefined): MsgEntry[] => (a?.body.entries as MsgEntry[] | undefined) ?? [];
+  const sent = (a: Answer | undefined): MsgEntry => {
+    if (a?.status !== 200) throw new Error(`Senden schlug fehl: ${JSON.stringify(a)}`);
+    return (a.body as { message: MsgEntry }).message;
+  };
+  const stored = (c: Cast): MsgEntry[] => ((persisted(c.f).messages as { entries?: MsgEntry[] } | undefined)?.entries ?? []);
+  const unreadAtSelf = (a: Answer | undefined): number | undefined =>
+    (a?.body.position as { messages?: { unread?: number } } | undefined)?.messages?.unread;
+
+  test("genau der gelieferte Eingang an Session und Rolle wird quittiert, nicht der Ausgang; danach ist er weg", async () => {
+    const c = await cast();
+    const toMain = { kind: "program", id: c.programs[0] };
+    const toOrch = { kind: "role", role: "orchestrator" };
+    const [a, b, role, own] = await life(c.f, [
+      note(c, ORCH, toMain, "lesen-main-1"), note(c, ORCH, toMain, "lesen-main-2"),
+      note(c, FREE, toOrch, "lesen-rolle-1"), note(c, MAIN, toOrch, "lesen-eigener-ausgang")]);
+    const mainIds = [sent(a).id, sent(b).id].sort();
+    const roleId = sent(role).id, ownId = sent(own).id;
+    const main = seat(c.f, MAIN), orch = seat(c.f, ORCH);
+
+    const [mainRead, mainAfter, mainSelf, orchRead, orchAfter, orchSelf] = await life(c.f, [
+      view(c, MAIN, "?unread=1&read=1"), view(c, MAIN, "?unread=1"), as(c.token(MAIN), get("/api/self")),
+      view(c, ORCH, "?unread=1&read=1"), view(c, ORCH, "?unread=1"), as(c.token(ORCH), get("/api/self")),
+      // audit() schreibt fire-and-forget; dieser Schritt hält das Leben, bis die Kette geschrieben hat
+      { until: join(c.f.state, "audit-noch-nicht-da"), ms: 100 }]);
+    // die Antwort bringt genau die ungelesenen Eingangszeilen, jede mit der Quittung der POST-Tür
+    expect(entriesOf(mainRead).map((e) => e.id).sort()).toEqual(mainIds);
+    expect(mainRead?.body.unread).toBe(2);
+    for (const e of entriesOf(mainRead))
+      expect(e).toMatchObject({ readBy: { slot: MAIN, openedAt: main.openedAt }, readAt: expect.any(Number) });
+    expect(entriesOf(orchRead).map((e) => e.id).sort()).toEqual([roleId, ownId].sort());
+    for (const e of entriesOf(orchRead))
+      expect(e).toMatchObject({ readBy: { slot: ORCH, openedAt: orch.openedAt }, readAt: expect.any(Number) });
+    // danach ist der Eingang gelesen: kein Inbox-Hinweis mehr (tickMessageNudge liest genau diese Zahl)
+    expect([entriesOf(mainAfter), mainAfter?.body.unread, unreadAtSelf(mainSelf)]).toEqual([[], 0, 0]);
+    expect([entriesOf(orchAfter), orchAfter?.body.unread, unreadAtSelf(orchSelf)]).toEqual([[], 0, 0]);
+    // Zustand gespeichert; die AUSGANG-Zeilen der Orchestratorin bleiben unquittiert, die an sie
+    // adressierte Zeile der MAIN quittiert sie als EMPFÄNGERIN (eine Quittung ist des Empfängers).
+    const saved = stored(c);
+    for (const id of mainIds) expect(saved.find((m) => m.id === id)).toMatchObject({ readBy: { slot: MAIN, openedAt: main.openedAt } });
+    for (const [id, slot, openedAt] of [[roleId, ORCH, orch.openedAt], [ownId, ORCH, orch.openedAt]] as const)
+      expect(saved.find((m) => m.id === id)).toMatchObject({ readBy: { slot, openedAt } });
+    expect(saved.find((m) => m.id === ownId)?.readBy?.slot).toBe(ORCH);
+    // dieselbe Audit-Zeile wie die POST-Tür, eine je gelieferter Zeile
+    expect(auditLines(c.f, "message_read").map((l) => [l.slot, l.detail]).sort()).toEqual([
+      [MAIN, `${mainIds[0]} program:${c.programs[0]}`], [MAIN, `${mainIds[1]} program:${c.programs[0]}`],
+      [ORCH, `${roleId} role:orchestrator`], [ORCH, `${ownId} role:orchestrator`]].sort());
+  }, LIFE_DEADLINE_MS * 6);
+
+  test("GET ohne read=1 ändert nichts; POST /api/self/messages/:id/read bleibt der Weg mit existing false/true", async () => {
+    const c = await cast();
+    const [out] = await life(c.f, [note(c, ORCH, { kind: "program", id: c.programs[0] }, "ohne-read")]);
+    const id = sent(out).id, main = seat(c.f, MAIN);
+    const [unreadView, allView] = await life(c.f, [view(c, MAIN, "?unread=1"), view(c, MAIN)]);
+    expect(entriesOf(unreadView).map((e) => [e.id, e.readBy, e.readAt])).toEqual([[id, null, null]]);
+    expect(unreadView?.body.unread).toBe(1);
+    expect(entriesOf(allView).map((e) => [e.id, e.readBy, e.readAt])).toEqual([[id, null, null]]);
+    expect(stored(c).find((m) => m.id === id)).toMatchObject({ readBy: null, readAt: null });
+    expect(auditLines(c.f, "message_read")).toEqual([]);
+
+    const [first, second] = await life(c.f, [
+      as(c.token(MAIN), post(`/api/self/messages/${id}/read`, {})),
+      as(c.token(MAIN), post(`/api/self/messages/${id}/read`, {}))]);
+    expect(first).toMatchObject({ status: 200, body: { ok: true, existing: false,
+      message: { readBy: { slot: MAIN, openedAt: main.openedAt } } } });
+    expect(second).toMatchObject({ status: 200, body: { ok: true, existing: true } });
+    expect(stored(c).find((m) => m.id === id)).toMatchObject({ readBy: { slot: MAIN, openedAt: main.openedAt } });
+  }, LIFE_DEADLINE_MS * 6);
+
+  test("read ist so streng wie unread: nur 1, nur zusammen mit unread=1, und ein 400 stempelt nichts", async () => {
+    const c = await cast();
+    const [out] = await life(c.f, [note(c, ORCH, { kind: "program", id: c.programs[0] }, "streng")]);
+    const id = sent(out).id;
+    const [alone, zero, badUnread, stillUnread] = await life(c.f, [view(c, MAIN, "?read=1"),
+      view(c, MAIN, "?unread=1&read=0"), view(c, MAIN, "?unread=0&read=1"), view(c, MAIN, "?unread=1")]);
+    expect(alone?.status).toBe(400);
+    expect(String(alone?.body.error)).toContain("read=1 needs unread=1");
+    expect(zero?.status).toBe(400);
+    expect(String(zero?.body.error)).toContain("read takes exactly 1");
+    expect(badUnread?.status).toBe(400);
+    expect(String(badUnread?.body.error)).toContain("unread takes exactly 1");
+    expect(entriesOf(stillUnread).map((e) => [e.id, e.readBy, e.readAt])).toEqual([[id, null, null]]);
+    expect(stored(c).find((m) => m.id === id)).toMatchObject({ readBy: null, readAt: null });
+    expect(auditLines(c.f, "message_read")).toEqual([]);
+  }, LIFE_DEADLINE_MS * 6);
 });

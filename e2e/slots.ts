@@ -10139,7 +10139,7 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
   const prefix = /const DELIVERY_HEADER_PREFIX = "([^"]+)";/.exec(serverSrc)?.[1] ?? null;
   const head = `${prefix}${word(SOURCE, "bundle")} · path=bundle · Slot 1 · ${word(MEANING, "bundle")}] `;
   const part = (path: string, text: string): BundleEntry => ({ path, meaning: word(MEANING, path), text });
-  const nudge = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
+  const nudge = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
   const events = fleetEventBundleText([{ id: "ev-0001", text: "[fleet] Lane 3 ist gelandet." },
     { id: "ev-0002", text: "[fleet] fleet-report von Slot 5: complete\n\nzweiter Absatz des Reports" }]);
   return {

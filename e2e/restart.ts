@@ -530,9 +530,10 @@ export async function run(ctx: Ctx): Promise<void> {
   check("an explicit exact bind resolves ambiguous to bound without recycling the live slot",
     resolveAmbiguous.ok && resolvedAmbiguous?.sessionId === AMB_A,
     JSON.stringify(resolvedAmbiguous));
-  const healAuditBefore = (await (await get("/api/audit?limit=1000")).json()) as
-    { events?: { event?: string; slot?: number }[] };
-  const healsBefore = healAuditBefore.events?.filter((e) => e.event === "self_heal_recreate" && e.slot === 15).length ?? 0;
+  // Counted by time, not by difference: /api/audit returns only the newest 1000 rows, and once this
+  // instance's ledger is longer an older slot-15 heal can drop out of the window while the new one comes in
+  // (audit bad2a461, 2026-10-21: 6 + 1 = 7 = before, although the server resumed exactly once).
+  const healKilledAt = Date.now();
   await tmuxOut("kill-session", "-t", "s15");
   let attendedHealCmd = "";
   const attendedHealUntil = Date.now() + 7000;
@@ -544,11 +545,12 @@ export async function run(ctx: Ctx): Promise<void> {
   } while (Date.now() < attendedHealUntil);
   await Bun.sleep(2500);
   const healAuditAfter = (await (await get("/api/audit?limit=1000")).json()) as
-    { events?: { event?: string; slot?: number }[] };
-  const healsAfter = healAuditAfter.events?.filter((e) => e.event === "self_heal_recreate" && e.slot === 15).length ?? 0;
+    { events?: { ts?: number; event?: string; slot?: number }[] };
+  const healsAfter = healAuditAfter.events?.filter((e) => e.event === "self_heal_recreate" && e.slot === 15
+    && (e.ts ?? 0) >= healKilledAt).length ?? 0;
   check("a dead explicitly-bound slot heals through exactly one exact-id Codex resume",
-    attendedHealCmd.includes(`codex resume '${AMB_A}'`) && healsAfter === healsBefore + 1,
-    `${attendedHealCmd.slice(-220)} / heals ${healsBefore}->${healsAfter}`);
+    attendedHealCmd.includes(`codex resume '${AMB_A}'`) && healsAfter === 1,
+    `${attendedHealCmd.slice(-220)} / heals after kill ${healsAfter}`);
 
   rmSync(ambAPath, { force: true });
   rmSync(ambBPath, { force: true });

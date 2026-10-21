@@ -51054,6 +51054,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // how its Postfach arrives (Slot.zustellung); omitted at null = the role default, which
             // the board derives from `worktree` — one short value on the 2 s poll, only when chosen
             ...(s.zustellung ? { zustellung: s.zustellung } : {}),
+            // the addresses its Postfach is read under (messageAddressesFor, as GET /api/self/messages) —
+            // the board's Postfach tab filters and counts with them; omitted when it is only the
+            // occupant's own session or lane address, which the board has from id and openedAt
+            ...(() => {
+              const addresses = messageAddressesFor(s);
+              return addresses.some((a) => !((a.kind === "session" || a.kind === "lane") && a.slot === s.id && a.openedAt === s.openedAt))
+                ? { addresses: addresses } : {};
+            })(),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
             ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
             // when this occupant last wrote its standing handover (handleSelfHandover); omitted when none

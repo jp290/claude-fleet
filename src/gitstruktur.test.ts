@@ -143,7 +143,7 @@ describe("round 2: slots, names, lines", () => {
   });
   test("a lane shows its session's name, not its id; an automatic name falls back to the branch, the whole branch in the title", () => {
     expect(rectOf(L2.shapes, "lane:fleet/261017-364d")!.text).toBe("Kopfzeile");
-    expect(rectOf(L2.shapes, "lane:fleet/261017-364d")!.title).toBe("Kopfzeile — fleet/261017-364d");
+    expect(rectOf(L2.shapes, "lane:fleet/261017-364d")!.title).toBe("Kopfzeile — fleet/261017-364d · 1\u00a0commit not landed yet");
     expect([rectOf(L2.shapes, "lane:fleet/261017-7d9f")!.text, rectOf(L2.shapes, "lane:fleet/261017-7d9f")!.title]).toEqual(["7d9f", "fleet/261017-7d9f"]);
   });
   test("the line after a diamond is dashed until the land and drawn through after it", () => {
@@ -226,14 +226,16 @@ describe("round 3: lane names, the landed diamond, the card", () => {
 describe("round 4: what Projekte could do is reachable, simply, the test instance first", () => {
   const h = (o: Partial<GsHead> & Pick<GsHead, "at">): GsHead => ({ board: false, slot: null, hung: false, worktree: true,
     landed: false, mirror: false, live: false, ...o });
-  test("step 1 of every head with a checkout begins with its test instance", () => {
-    for (const at of ["main", "branch", "lane"] as const) for (const o of [{}, { board: true }, { slot: 3 }, { slot: 3, live: true, board: true }])
+  test("step 1 of every branch and lane with a checkout begins with its test instance — main has none (owner Z137)", () => {
+    for (const at of ["branch", "lane"] as const) for (const o of [{}, { board: true }, { slot: 3 }, { slot: 3, live: true, board: true }])
       expect(headWords(h({ at, ...o }))[0]).toBe("testinstanz");
+    for (const o of [{}, { board: true }, { slot: 3 }]) expect(headWords(h({ at: "main", ...o }))).not.toContain("testinstanz");
     expect(headWords(h({ at: "branch", worktree: false, board: true }))[0]).toBe("landform");
   });
-  // round 7 (owner Ja 18.10. 22:4x): the project's Beim Land moved from main's menu to the gear in the head
-  test("main: Live-Session (3) after the test instance (6) — the project's land form is the gear's", () => {
-    expect(headWords(h({ at: "main" }))).toEqual(["testinstanz", "live"]);
+  // round 7 (owner Ja 18.10. 22:4x): the project's Beim Land moved from main's menu to the gear in the head; rechts-7 round 2
+  // (owner Z137, 19.10.: „[Zitat entfernt]“): main's test instance went too
+  test("main: Live session alone — no test instance, the project's land form is the gear's", () => {
+    expect(headWords(h({ at: "main" }))).toEqual(["live"]);
   });
   // owner Z87: „[Zitat entfernt]“ — the routes stay
   test("a board branch: no Diff, Passt or Landen; its land form; Start session without a session, Restart when it hangs", () => {
@@ -271,9 +273,9 @@ describe("round 3: test instance and the opened menu", () => {
   const Lt = gitLayout(mt);
   type Ti = Extract<GsShape, { t: "ti" }>;
   const tiOfKey = (key: string) => Lt.shapes.find((p): p is Ti => p.t === "ti" && p.of === key);
-  test("a running test instance stands at its head with its port, after the row's circles; none where it does not run", () => {
-    expect([tiOfKey("main:main")?.port, tiOfKey("branch:bau/a")?.port, tiOfKey("lane:fleet/lane-a1")?.port, tiOfKey("lane:fleet/lane-m1")])
-      .toEqual([8970, 8971, null, undefined]);
+  test("a running test instance stands at its branch or lane with its port, after the row's circles; none at main (owner Z137), none where it does not run", () => {
+    expect([tiOfKey("main:main"), tiOfKey("branch:bau/a")?.port, tiOfKey("lane:fleet/lane-a1")?.port, tiOfKey("lane:fleet/lane-m1")])
+      .toEqual([undefined, 8971, null, undefined]);
     const c2 = circleOf(Lt.shapes, 2)!, t2 = tiOfKey("branch:bau/a")!;
     expect(t2.x).toBeGreaterThan(c2.x + c2.r);
     expect(t2.y).toBe(c2.y);
@@ -328,7 +330,8 @@ describe("round 4: one diamond size, every sign in the legend", () => {
     const rows = [row(R1, "main", { primary: true, testinstanz: { state: "up", instance: { port: 8970 } } }),
       row("/w/wt/l1", "fleet/l1", { ...on("bau/a", 51), checks: { local: null, preview: null, gate: { state: "running", head: null, at: null, fails: [], stale: null }, audit: null } }),
       row("/w/wt/l2", "fleet/l2", { ...on("main", 52), checks: { local: null, preview: null, gate: { state: "red", head: null, at: null, fails: [], stale: null }, audit: null } }),
-      row("/w/wt/l3", "fleet/l3", { ...on("main", 54), checks: { local: null, preview: null, gate: { state: "skipped", head: null, at: null, fails: [], stale: null }, audit: null } }),
+      row("/w/wt/l3", "fleet/l3", { ...on("main", 54), checks: { local: null, preview: null, gate: { state: "skipped", head: null, at: null, fails: [], stale: null }, audit: null },
+        testinstanz: { state: "up", instance: { port: 8972 } } }),
       row("/w/wt/live", "live-2610171200-x", on("main", 53))];
     const m = gitModel(repo(R1, rows), board(R1, [bv("bau/a", { check: green }), bv("bau/s", { check: { state: "stale", at: 1, why: null } }),
       bv("bau/u", { chargeCommits: 0, lands: [land] })]), [...slots, slot(51, "/w/wt/l1", { worktree: { repo: R1, branch: "fleet/l1" } }),
@@ -386,10 +389,51 @@ describe("round 5: small circles, dashed until the land, English", () => {
   test("ahead/behind in the menu: behind counts the target's tip, not the point the lane branched from", () => {
     const w = row("/w/wt/lane-o", "fleet/lane-o", { distance: { ahead: 1, behind: 0 },
       target: { branch: "bau/oberflaeche", head: "c".repeat(40), behind: 1, landed: "no", landedAs: null, basis: "land-note" } });
-    // a number never ends a line apart from its word (no-break spaces, rechts-7 P4)
-    expect(distanceLine(w)).toBe("1\u00a0ahead, 1\u00a0behind bau/oberflaeche");
-    expect(distanceLine({ ...w, target: { ...w.target, behind: null } })).toBe("1\u00a0ahead, 0\u00a0behind bau/oberflaeche");
+    // a number never ends a line apart from its word (no-break spaces, rechts-7 P4); a sentence since rechts-7 round 2 (owner Z135)
+    expect(distanceLine(w)).toBe("1\u00a0commit not landed yet, 1\u00a0behind bau/oberflaeche");
+    expect(distanceLine({ ...w, target: { ...w.target, behind: null } })).toBe("1\u00a0commit not landed yet, 0\u00a0behind bau/oberflaeche");
     expect(distanceLine({ ...w, distance: null })).toBeNull();
+  });
+});
+
+// rechts-7 round 2 (owner Z135, 19.10.: „[Zitat entfernt]“
+//  — „[Zitat entfernt]“ made no sense to him): each head knows its commits not landed yet; its box
+// carries its name alone, its hover and its menu say the count
+describe("rechts-7 round 2: commits not landed yet, in the hover and the menu, never in the box", () => {
+  const land = { sha: "d".repeat(40), at: 1, subject: "x", points: [], passt: true, checked: true, form: "squash" as const };
+  const rows = [row(R1, "main", { primary: true }),
+    row("/w/wt/bau-a", "bau/a", { distance: { ahead: 9, behind: 0 } }),
+    row("/w/wt/lane-a1", "fleet/lane-a1", { ...on("bau/a", 3), distance: { ahead: 3, behind: 0 } }),
+    row("/w/wt/lane-a2", "fleet/lane-a2", { ...on("bau/a", 6, "yes"), distance: { ahead: 4, behind: 0 } }),
+    row("/w/wt/side", "side/x", { distance: { ahead: 7, behind: 0 } })];
+  const m = gitModel(repo(R1, rows), board(R1, [bv("bau/a", { path: "/w/wt/bau-a", chargeCommits: 5 }), bv("bau/u", { chargeCommits: 0, lands: [land] }),
+    bv("bau/n", { chargeCommits: null })]), [...slots, slot(6, "/w/wt/lane-a2", { worktree: { repo: R1, branch: "fleet/lane-a2" } })], active, card);
+  const L = gitLayout(m);
+  const itemOf = (b: string) => m.items.find((i) => i.branch === b)!;
+  test("a board branch counts its commits since its last batch, never its distance from main", () => {
+    expect(itemOf("bau/a").ahead).toBe(5);
+    expect(itemOf("bau/n").ahead).toBeNull();
+  });
+  test("a landed head has nothing left to land: a landed batch and a landed lane count none", () => {
+    expect(itemOf("bau/u").ahead).toBeNull();
+    expect(itemOf("bau/a").lanes.find((l) => l.branch === "fleet/lane-a2")!.ahead).toBeNull();
+  });
+  test("a lane and a branch off the board count their commits since where they branched", () => {
+    expect(itemOf("bau/a").lanes.find((l) => l.branch === "fleet/lane-a1")!.ahead).toBe(3);
+    expect(itemOf("side/x").ahead).toBe(7);
+  });
+  test("the box says its name alone; the hover adds the count, a landed head's none", () => {
+    expect([rectOf(L.shapes, "branch:bau/a")!.text, rectOf(L.shapes, "branch:bau/a")!.title]).toEqual(["bau/a", "bau/a — bau/a · 5\u00a0commits not landed yet"]);
+    expect(rectOf(L.shapes, "lane:fleet/lane-a1")!.text).toBe("Orchestrator");
+    expect(rectOf(L.shapes, "lane:fleet/lane-a1")!.title).toMatch(/ · 3\u00a0commits not landed yet$/);
+    expect(rectOf(L.shapes, "branch:bau/u")!.title).not.toMatch(/not landed/);
+    expect(rectOf(L.shapes, "lane:fleet/lane-a2")!.title).not.toMatch(/not landed/);
+  });
+  test("the menu says the board's count where it has one, and nothing where nothing is measured", () => {
+    const w = rows[1]!;
+    expect(distanceLine(w, 5)).toBe("5\u00a0commits not landed yet, 0\u00a0behind main");
+    expect(distanceLine(w)).toBe("9\u00a0commits not landed yet, 0\u00a0behind main");
+    expect(distanceLine(w, null)).toBeNull();
   });
 });
 

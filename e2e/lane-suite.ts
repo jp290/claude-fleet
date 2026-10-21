@@ -1143,6 +1143,10 @@ export async function run(): Promise<void> {
   // client of the fleet — the widest blast radius a sight-only surface can have.
   {
     const bad = "ffffffffffff";
+    // the file is edited with the server STOPPED, as the pile fixture below does: a state write of the running server
+    // between this write and the restart put its own rows back over it — the row was gone after the restart, or the
+    // cleaned one back (merge-check runs 1019103236 and 1018194605)
+    await stopSrv();
     const state = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { laneSuiteJobs?: Record<string, unknown>[] };
     const rows = state.laneSuiteJobs ?? [];
@@ -1162,6 +1166,7 @@ export async function run(): Promise<void> {
     // …and it LEAVES no fixture behind: a reported job with no verdict reads as an owed run to
     // every later consumer of this state (the program execution view's land door among them), so
     // the row is removed and the server restarted before the next module sees the file.
+    await stopSrv();
     const cleaned = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
       { laneSuiteJobs?: Record<string, unknown>[] };
     cleaned.laneSuiteJobs = (cleaned.laneSuiteJobs ?? []).filter((j) => j.id !== bad);

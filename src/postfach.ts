@@ -41,8 +41,11 @@ export function loadPostfach(repaint: () => void): void {
   })();
 }
 
+// the occupant's own address, and every address it reads its Postfach under (SlotInfo.addresses): a message
+// to its role or Program is its message as well, so is what it sent under that role
 const own = (a: Address, slot: number, openedAt: number): boolean =>
-  (a.kind === "session" || a.kind === "lane") && a.slot === slot && a.openedAt === openedAt;
+  ((a.kind === "session" || a.kind === "lane") && a.slot === slot && a.openedAt === openedAt)
+  || (fleet.find((x) => x.id === slot && x.openedAt === openedAt)?.addresses ?? []).some((b) => keyOf(b) === keyOf(a));
 
 // die Nachrichten dieser Besetzung, neueste zuerst (so liefert die Route); null = noch nie gelesen
 export function postfachOf(slot: number, openedAt: number): Message[] | null {

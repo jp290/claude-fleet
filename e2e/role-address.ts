@@ -20,9 +20,9 @@ import { BASE, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 const NO_MESSAGE_ADDRESS = "not a principal with an address";
 
 type RoleConflict = { address: string; slots: number[]; note?: string };
-type Row = { id: number; cwd: string | null; label: string | null; worktree?: unknown; role?: string };
+type Row = { id: number; cwd: string | null; label: string | null; worktree?: unknown; role?: string; addresses?: unknown[] };
 interface Poll { slots: Row[]; roleConflict?: RoleConflict }
-interface SlotAnswer { ok?: boolean; label?: string | null; roleConflict?: RoleConflict; error?: string }
+interface SlotAnswer { ok?: boolean; label?: string | null; roleConflict?: RoleConflict; error?: string; addresses?: unknown[] }
 
 const sessions = async (): Promise<Poll> => (await (await get("/api/sessions")).json()) as Poll;
 const answer = async (r: Response): Promise<SlotAnswer> => {
@@ -447,6 +447,12 @@ export async function run(): Promise<void> {
     const inboxA1 = await inbox(a);
     check("one holder: the role address resolves — A's message rail answers 200",
       inboxA1.status === 200, `${inboxA1.status} ${JSON.stringify(inboxA1.body).slice(0, 200)}`);
+    // the board's Postfach tab (src/postfach.ts) reads and counts under the addresses the rail answers; a plain
+    // session's only address is its own, which the board has from id and openedAt
+    check("one holder: the poll carries A's Postfach addresses as its message rail answers them — the role — and none for a plain session",
+      JSON.stringify(rowA1?.addresses) === JSON.stringify([{ kind: "role", role: "orchestrator" }])
+        && JSON.stringify(rowA1?.addresses) === JSON.stringify(inboxA1.body.addresses) && !!rowB1 && rowB1.addresses === undefined,
+      JSON.stringify({ poll: rowA1?.addresses ?? null, rail: inboxA1.body.addresses ?? null, plain: rowB1?.addresses ?? null }));
 
     // --- (2a) a SECOND holder by rename ---
     const nameB = await post(`/api/slots/${b}/rename`, { label: "Orchestrator zwei · role-address" });
@@ -522,6 +528,7 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
   const lead = { kind: "session", slot: 1, openedAt: 1000 }, strand = { kind: "session", slot: 2, openedAt: 2000 };
   // a second counterpart, older than the strand's last word: the list in the head (S12) chooses between them
   const pruefer = { kind: "session", slot: 3, openedAt: 3000 };
+  const orchestrator = { kind: "role", role: "orchestrator" };
   const long = ["S6 fertig: das Postfach liest sich als Gespräch, Merge-Check grün.",
     "Nur Client: src/postfach.ts und das Postfach-CSS.", "Nicht geprüft: Kopfzeile in einer echten claude-Pane."];
   // newest first, as the route answers; the lead's thanks answers the strand's report and is not read yet (S12c)
@@ -530,6 +537,10 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
     { id: "m-long", from: strand, to: lead, at: now - 60_000, payload: { kind: "text", text: long.join("\n") }, replyTo: "m-ask", readAt: null },
     { id: "m-ask", from: lead, to: strand, at: now - 600_000, payload: { kind: "text", text: "Bitte S6 bauen." }, replyTo: null, readAt: now - 300_000 },
     { id: "m-pruef", from: pruefer, to: lead, at: now - 3_600_000, payload: { kind: "text", text: "dom grün auf dem Kandidaten." }, replyTo: null, readAt: null },
+    // the strand reports to the ROLE orchestrator, and the orchestrator answers under that role: both belong to
+    // the occupant of slot 4, whose addresses (GET /api/self/messages `addresses`) name the role
+    { id: "m-rolle", from: strand, to: orchestrator, at: now - 120_000, payload: { kind: "text", text: "Bericht an die Orchestratorin." }, replyTo: null, readAt: null },
+    { id: "m-rolle-ok", from: orchestrator, to: strand, at: now - 90_000, payload: { kind: "text", text: "Gelesen." }, replyTo: null, readAt: null },
   ];
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("postfach DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
@@ -582,7 +593,9 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
         slots: [{ id: 1, cwd: "/fixture/leitung", label: "Bauleitung", openedAt: 1000, harness: "claude" },
           { id: 2, cwd: "/fixture/strang", label: "Strang", openedAt: 2000, harness: "claude" },
           { id: 3, cwd: "/fixture/pruefer", label: "Prüfer", openedAt: 3000, harness: "claude" },
-          ...Array.from({ length: 13 }, (_, i) => ({ id: i + 4, cwd: null }))] });
+          { id: 4, cwd: "/fixture/orchestrator", label: "Orchestratorin", openedAt: 4000, harness: "claude", role: "orchestrator",
+            addresses: [orchestrator] },
+          ...Array.from({ length: 12 }, (_, i) => ({ id: i + 5, cwd: null }))] });
       if (p === "/api/messages") return void json(requestId, { entries });
       return void json(requestId, { error: "fixture: not served" }, 404);
     };
@@ -835,6 +848,28 @@ export async function runPostfachDom(sourceRoot: string, artifacts?: string): Pr
       claims["the list is the column's own switch and menu in black and white — open, hovered and focused only grays, the same under a light and a dark system scheme; Escape gives the focus back, a press beside it closes it"] =
         !!dark && !!hover && !!light && dark.big.length === 0 && hover.big.length === 0 && light.big.length === 0 && light.tones === dark.tones
         && !p2.open && p2.focus === "switch" && !p3.open;
+      // Orchestrator 21.10.: „[Zitat entfernt]“
+      // 0 unread" while messages wait.“ The
+      // orchestrator's tab holds what came to its role and what it sent under it, and counts the unread one.
+      await evaluate(`localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [4], focused: 0 }))`);
+      await navigate("http://fleet.fixture/");
+      if (phone) {
+        await wait("document.querySelector('#mpill')", 8000); await settle(400);
+        await evaluate("document.querySelector('#mpill')?.click()"); await wait("document.body.classList.contains('mopen')", 2000); await settle(200);
+        await evaluate("document.querySelector('#minfo')?.click()");
+      }
+      await wait(`${TAB}?.querySelector('.bgespr .bmsg')`, 8000);
+      const role = await evaluate<{ sum: string | null; ids: string[]; mine: string[]; who: string | null; unreadDots: number } | null>(`(() => {
+        const tab = ${TAB}; if (!tab) return null;
+        const rows = [...tab.querySelectorAll('.bgespr .bmsg')];
+        return { sum: tab.querySelector('.btabhd .sum')?.textContent ?? null, ids: rows.map((r) => r.dataset.mid),
+          mine: rows.filter((r) => r.classList.contains('mine')).map((r) => r.dataset.mid),
+          who: tab.querySelector('.bgesprwho')?.textContent ?? null, unreadDots: tab.querySelectorAll('.bgespr .bmsgdot').length }; })()`);
+      facts.role = role;
+      await shot(`postfach-${width}-rolle`);
+      claims["a session's Postfach holds what came to its role and what it sent under it, and counts the unread one"] =
+        !!role && role.sum === "2 · 1 unread" && JSON.stringify(role.ids) === JSON.stringify(["m-rolle-ok", "m-rolle"])
+        && JSON.stringify(role.mine) === JSON.stringify(["m-rolle-ok"]) && role.who === "Strang" && role.unreadDots === 1;
       results.push({ width, height, claims, facts });
     }
     return results;

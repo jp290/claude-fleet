@@ -4005,9 +4005,10 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
 }
 
 // A PROJECT'S HEAD (owner 2026-10-08, round 2: „[Zitat entfernt]“): its state as dot and
-// word — waiting for you first, then working, then a land check that runs, else quiet — and where it comes from: the
-// remotes as the local refs know them (no fetch), as a tag only where the copies differ
-function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { state: MachineState; remote: HTMLElement | null; facts: string[] } {
+// word — waiting for you first, then working, then a land check that runs, else quiet — and, in the hover of its name,
+// where it comes from: the remotes as the local refs know them (no fetch). No tag for them in the head (owner Z135, 19.10.:
+// „[Zitat entfernt]“) — main's menu says it in words
+function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { state: MachineState; facts: string[] } {
   const rows = R.worktrees ?? [];
   const lanes = rows.filter((w) => !w.primary);
   const active = lanes.filter((w) => { const s = workSlot(w); return s && slotWorks(s.id); }).length;
@@ -4020,20 +4021,24 @@ function projectHead(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): { 
   const facts = [`${lanes.length} ${lanes.length === 1 ? "branch" : "branches"}`];
   const primary = rows.find((w) => w.primary);
   const pst = primary ? standOf.get(`worktree:${primary.path}`) : undefined;
-  let remote: HTMLElement | null = null;
   if (pst?.remote === "none") facts.push("no remote — a state of its own, not an error");
   else if (Array.isArray(pst?.remote) && pst.remote.length) {
-    const r0 = pst.remote[0];
-    const d = r0.distance;
     facts.push(...pst.remote.map((r) => `${r.ref === null ? "unknown" : refShort(r.ref)}: ${r.head ? sha7(r.head) : "no local image"}`
       + (r.distance ? ` · ${r.distance.ahead} ahead, ${r.distance.behind} behind` : "")
       + (r.refAgeMs !== null ? ` · last synced ${agoEn(r.refAgeMs)} ago` : "")), "— from the local images, without the network");
-    if (d && (d.ahead || d.behind)) {
-      remote = el("span", "cnt gsremote", `${r0.name ?? ""}${d.ahead ? ` ↑${d.ahead}` : ""}${d.behind ? ` ↓${d.behind}` : ""}`.trim());
-      remote.dataset.remote = r0.name ?? "";
-    }
   }
-  return { state, remote, facts };
+  return { state, facts };
+}
+// where main stands against its first remote, for main's menu: only where the copies differ, in words, as the local refs
+// last saw it
+function remoteLine(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): string | null {
+  const primary = (R.worktrees ?? []).find((w) => w.primary);
+  const pst = primary ? standOf.get(`worktree:${primary.path}`) : undefined;
+  const r0 = Array.isArray(pst?.remote) ? pst.remote[0] : undefined, d = r0?.distance;
+  if (!r0 || !d || !(d.ahead || d.behind)) return null;
+  const name = r0.name ?? "the remote", n = (k: number) => `${k}\u00a0${k === 1 ? "commit" : "commits"}`;
+  return [d.ahead ? `${n(d.ahead)} not on ${name} yet` : "", d.behind ? `${n(d.behind)} on ${name} not here` : ""].filter(Boolean).join(", ")
+    + (r0.refAgeMs !== null ? ` (as of ${agoEn(r0.refAgeMs)} ago)` : "");
 }
 
 // ONE PROJECT AS ITS GIT STRUCTURE with what the Projekte block could do (owner Z83; src/gitstruktur.ts#headWords decides
@@ -4101,7 +4106,7 @@ function gitBlock(R: WorkplaceRepo, wts: WtInfo | null, standOf: Map<string, Wor
   toned.appendChild(stateChip(head.state));
   const box = gitStructure(m, {
     open, toggle: () => { rankeRepos.set(R.repo, !open); prefSet("fleet.ranke.repos", JSON.stringify(Object.fromEntries(rankeRepos))); repaint(); }, info: gsInfo, toggleInfo: () => { gsInfo = !gsInfo; repaint(); },
-    side: [...(head.remote ? [head.remote] : []), toned, gear, add], settings: gsSetOpen ? gsSettings(R.repo) : null,
+    side: [toned, gear, add], settings: gsSetOpen ? gsSettings(R.repo) : null,
     sel: sel?.key ?? null, select: (key) => { gsSel = key ? { repo: R.repo, key, word: null } : null; if (!key) gsDrawn = ""; repaint(); },
     jump: jumpTo, panel, fresh, below,
   });
@@ -4131,8 +4136,8 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   const facts: GsHead = { at, board: !!bb, slot, hung: !!s && (s.stalled || s.agent === "no-agent" || s.agent === "no-pane"),
     worktree: !!w, landed: lane ? w?.target?.landed === "yes" : !!item?.merged, mirror: !!w && mirroredWorktree(w), live: isLiveLane(branch) };
   const words = headWords(facts);
-  // a head with one word that only opens (a lane's checks) opens it at once
-  const open = word ?? (words.length === 1 && !GS_WORD[words[0]].acts ? words[0] : null);
+  // a head with one word that only opens (a lane's checks) opens it at once — main's one word, Live session, waits for its click
+  const open = word ?? (!isMain && words.length === 1 && !GS_WORD[words[0]].acts ? words[0] : null);
   const box = el("div", "");
   const s1 = el("div", "gsm1");
   // 0 — WHOSE MENU THIS IS (owner Z87: „[Zitat entfernt]“
@@ -4142,17 +4147,27 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
     : dia ? `${lane ? CHECK_KIND.landCheck : "Merge check"} of ${name}` : `${lane ? "Lane" : "Branch"} ${name}`);
   if (!isMain && !dia && name !== branch) hd.append(" · ", el("span", "gsbn", branch));
   s1.appendChild(hd);
-  // 1 — THE TEST INSTANCE of this head's own checkout (owner Z86: „[Zitat entfernt]“); a repo
-  // without the script has nothing to start, so no line stands for it
+  // 1 — THE TEST INSTANCE of a branch's or a lane's own checkout (owner Z86: „[Zitat entfernt]“
+  // ; Z137: main has none); a repo without the script has nothing to start, so no line stands for it
   if (words.includes("testinstanz") && w && tiLook(w).cls !== "tpl") s1.appendChild(tiLine(R.repo, w, slot, standOf));
-  // 2 — AT MOST THREE FACTS: the session (a click jumps to it), the distance to main, the last check; main the check after
-  // its last land in words (owner Z86: the double diamond went) and how many sessions work on it
+  // 2 — AT MOST THREE FACTS: the session (a click jumps to it) and the last check; main its last land and the check after
+  // it in words (owner Z86: the double diamond went; Z137: „[Zitat entfernt]“), how many sessions
+  // work on it, and where it stands against its remote (owner Z135: the head's tag went)
   const said: (string | HTMLElement)[] = [];
   if (isMain && !dia) {
     const pla = postLandAudit && (postLandAudit.repo === R.repo || postLandAudit.repo === baseName(R.repo)) ? postLandAudit : null;
-    said.push(audit ? (audit.look === "run" ? "check after land running" : "check after land waits for the next run")
-      : pla ? `check after land ${pla.result === "green" ? "green" : pla.result === "red" ? "red" : "without a result"} · ${fmtTs(pla.at)}` : "no check after land yet");
+    const result = (p: NonNullable<typeof pla>) => p.result === "green" ? "green" : p.result === "red" ? "red" : "without a result";
+    // the last land of a board branch's batch; the check after it only where it ran after that land
+    const last = (boardRepo(R.repo)?.branches ?? []).flatMap((b) => b.lands.map((l) => ({ name: b.name || b.branch, at: l.at })))
+      .sort((a, b) => b.at - a.at)[0];
+    const after = audit ? (audit.look === "run" ? "the check after it is running" : "the check after it waits for the next run")
+      : pla && last && pla.at >= last.at ? `the check after it is ${result(pla)}` : "no check after it yet";
+    said.push(last ? `Last land: ${last.name}, ${agoEn(Date.now() - last.at)} ago — ${after}`
+      : audit ? (audit.look === "run" ? "check after land running" : "check after land waits for the next run")
+      : pla ? `check after land ${result(pla)} · ${fmtTs(pla.at)}` : "no check after land yet");
     if (m.sessions.length) said.push(`${m.sessions.length} ${m.sessions.length === 1 ? "session" : "sessions"} on ${m.integration}`);
+    const remote = remoteLine(R, standOf);
+    if (remote) said.push(remote);
   } else if (at === "branch-check") {
     said.push(!bb ? "Not a board branch — it has no merge check"
       : item?.merged ? `Landed ${bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
@@ -4165,9 +4180,6 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
       b.onclick = (e) => { e.stopPropagation(); jumpTo(s.id); };
       said.push(b);
     } else said.push("no session");
-    // a landed head's commits are on main as copies: "1 ahead" would read as something still to land
-    const dist = w && !facts.landed ? distanceLine(w) : null;
-    if (dist) said.push(dist);
     const gate = w?.checks.gate;
     said.push(bb ? (item?.merged ? `landed${bb.lands.at(-1)?.checked ? ", check green" : ", no check"}` : mergeCheckLine(bb.check))
       : lane && w?.target?.landed === "yes" ? `landed in ${w.target.branch}`
@@ -4180,6 +4192,11 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   if (said.length) s1.appendChild(line);
   // 2b — „PASST“ (owner Z132): a board branch with commits since its last batch says which tip the owner looked at
   if (!dia && bb && bb.chargeCommits !== 0 && !facts.mirror) s1.appendChild(lookedLine(R.repo, bb, repaint));
+  // 2c — WHAT IS NOT LANDED YET, as a sentence right over how it lands (owner Z135: „[Zitat entfernt]“
+  // ; never a number in the box): a board branch's
+  // commits since its last batch, a lane's since where it branched. A landed head's commits are on main as copies — none
+  const dist = !isMain && !dia && w && !facts.landed ? distanceLine(w, bb ? bb.chargeCommits : undefined) : null;
+  if (dist) s1.appendChild(el("div", "gscap gsahead", dist));
   // 3 — THE LAND FORM in step 1 (owner Z86: „[Zitat entfernt]“): a lane's in this browser, a board
   // branch's on the server
   if (!dia && words.includes("landform") && lane && w) s1.appendChild(landFormField("lane", w.path, R.repo, "On land", false));

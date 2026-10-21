@@ -577,6 +577,10 @@ export interface SlotInfo {
   // how this session's Postfach arrives (Slot.zustellung, server/zustellung.ts). ABSENT = not set,
   // and the role default applies: a slot with a worktree (a lane) bundles, every other comes direct.
   zustellung?: "direkt" | "gebuendelt";
+  // the addresses this occupant reads its Postfach under (server.ts#messageAddressesFor, the same list
+  // GET /api/self/messages answers as `addresses`): a role or a Program beside or instead of its own.
+  // ABSENT = only its own session or lane address, which the board knows from id and openedAt.
+  addresses?: { kind: string; slot?: number; openedAt?: number; id?: string; role?: string }[];
   // a task lane's full title, derived by the server from its founding card on every poll
   // (src/suitemeter.ts#laneTitleOf) — absent when there was nothing to derive it from
   taskTitle?: string;

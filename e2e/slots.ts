@@ -11682,6 +11682,28 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // the phone's Info after a reload with Info open (rechts-7): the tap toggles the remembered fleet.board again
   { name: "the phone's Info tap toggles the remembered state", state: "branch", width: 390, claim: "after a reload with Info open, the first tap on Info opens it",
     file: "src/client.ts", needle: "setBoard(isMobile() ? !boardShell?.isOpen() : !boardOpen);", with: "setBoard(!boardOpen);" },
+  // rechts-7 round 2 (owner Z135/Z137): the remote back in the head, or out of main's menu; a count in the box, none in the
+  // hover, the count back among the facts; main's test instance back; main without its last land
+  { name: "the head names its remote again", state: "modell", width: 1200, claim: "the project's head names no remote",
+    needle: "side: [toned, gear, add]", with: "side: [el(\"span\", \"cnt gsremote\", \"origin ↑3\"), toned, gear, add]" },
+  { name: "main's menu leaves out the remote", state: "modell", width: 1200, claim: "the project's head names no remote",
+    needle: "    if (remote) said.push(remote);\n", with: "" },
+  { name: "the count drawn in the box", state: "modell", width: 1200, claim: "no box carries a number",
+    file: "src/gitstruktur.ts", needle: "g.append(svg(\"rect\", { x: p.x, y: p.y - RH / 2, width: p.w, height: RH, rx: 5 }), t);",
+    with: "g.append(svg(\"rect\", { x: p.x, y: p.y - RH / 2, width: p.w, height: RH, rx: 5 }), t, Object.assign(svg(\"text\", { x: p.x + p.w - 6, y: p.y + 4, \"text-anchor\": \"end\" }), { textContent: p.title.split(\" · \").at(-1) ?? \"\" }));" },
+  { name: "the hover without the count", state: "modell", width: 1200, claim: "no box carries a number",
+    file: "src/gitstruktur.ts", needle: "const notLanded = (n: number | null): string => (n ?", with: "const notLanded = (n: number | null): string => (false ?" },
+  { name: "the count among the facts again", state: "lane", width: 1200, claim: ["3A's menu says \"3 commits not landed yet", "a board branch's menu says its commits since its last batch"],
+    needle: "  if (dist) s1.appendChild(el(\"div\", \"gscap gsahead\", dist));", with: "  if (dist) line.append(\" · \", dist);" },
+  { name: "main offers its test instance again", state: "modell", width: 1200, claim: "main's menu has no test instance",
+    file: "src/gitstruktur.ts", needle: "case \"main\": return [\"live\"];", with: "case \"main\": return [...ti, \"live\"];" },
+  { name: "main says only the check after land", state: "lane", width: 1200, claim: "main's menu says its last land and the check after it",
+    needle: "const last = (boardRepo(R.repo)?.branches ?? [])", with: "const last = ([] as BranchView[])" },
+  // the landed diamond grey again, or drawn exactly like a passed check (owner 19.10. 15:1x)
+  { name: "a landed diamond grey again", state: "lane", width: 1200, claim: "a landed branch's diamond is green inside like a passed check",
+    file: "src/gitstruktur.ts", needle: "  #board .gss .gsd.landed { fill: var(--q-live); stroke: var(--chat-faint); }", with: "  #board .gss .gsd.landed { fill: var(--chat-faint); stroke: var(--chat-faint); }" },
+  { name: "a landed diamond drawn like a passed check", state: "lane", width: 1200, claim: "a landed branch's diamond is green inside like a passed check",
+    file: "src/gitstruktur.ts", needle: "  #board .gss .gsd.landed { fill: var(--q-live); stroke: var(--chat-faint); }", with: "  #board .gss .gsd.landed { fill: var(--q-live); stroke: var(--q-live); }" },
   { name: "main drawn bold again", state: "lane", width: 1200, claim: "main and next are drawn at every head's line width",
     file: "src/gitstruktur.ts", needle: "  #board .gss .gsr.main rect { stroke: var(--chat-mute); }", with: "  #board .gss .gsr.main rect { stroke: var(--chat-mute); stroke-width: 1.8; }" },
   { name: "main white like a selection again", state: "lane", width: 1200, claim: "main and next are drawn at every head's line width",
@@ -12549,7 +12571,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               const m = g.querySelector('.gsm');
               return { repo: g.dataset.repo, open: g.classList.contains('open'), name: g.querySelector('.gsn')?.textContent ?? null, fold: g.querySelector('.gsf')?.getAttribute('aria-expanded') ?? null,
                 side: t(g.querySelector('.gsside')), ib: g.querySelectorAll('.gsh .rk-btn.ib:not(.gsadd):not(.gsgear)').length,
-                heads: s ? [...s.querySelectorAll(':scope > g.gsr')].map((h) => ({ key: h.dataset.head, cls: h.getAttribute('class'), text: h.querySelector('text')?.textContent ?? null, title: tip(h),
+                heads: s ? [...s.querySelectorAll(':scope > g.gsr')].map((h) => ({ key: h.dataset.head, cls: h.getAttribute('class'), text: h.querySelector('text')?.textContent ?? null, texts: h.querySelectorAll('text').length, title: tip(h),
                   aria: h.getAttribute('aria-label'), exp: h.getAttribute('aria-expanded'), px: Math.round(parseFloat(getComputedStyle(h.querySelector('text')).fontSize) * k * 100) / 100,
                   x: Number(h.querySelector('rect').getAttribute('x')), y: Number(h.querySelector('text').getAttribute('y')) - 4, w: Number(h.querySelector('rect').getAttribute('width')) })) : [],
                 circles: s ? [...s.querySelectorAll(':scope > g.gsk')].map((c) => ({ slot: c.dataset.slot, at: c.dataset.at, on: c.classList.contains('on'), aria: c.getAttribute('aria-label'),
@@ -12561,15 +12583,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
                 below: [...g.querySelectorAll('.gsbelow')].map(t),
                 menu: m ? { head: m.querySelector('.gshd')?.textContent ?? null, cap: t(m.querySelector('.gscap')), words: [...m.querySelectorAll('.gsword')].map((b) => b.textContent),
                   on: [...m.querySelectorAll('.gsword.on')].map((b) => b.textContent), step2: t(m.querySelector('.gsm2')), text: t(m),
+                  ahead: (() => { const a = m.querySelector('.gsahead'); return a ? { text: t(a), nextLf: !!a.nextElementSibling?.classList.contains('lf-set') } : null; })(), ti: !!m.querySelector('.zd.ti'),
                   buttons: [...m.querySelectorAll('button')].map((b) => b.textContent.trim()).filter(Boolean) } : null,
                 card: (() => { const c = g.querySelector('.gscard'); return c && !c.hidden ? [...c.children].map((x) => x.textContent) : null; })(),
                 text: t(g) }; }) }; })()`;
-        type GsHeadRead = { key: string; cls: string; text: string | null; title: string | null; aria: string | null; exp: string | null; px: number; x: number; y: number; w: number };
+        type GsHeadRead = { key: string; cls: string; text: string | null; texts: number; title: string | null; aria: string | null; exp: string | null; px: number; x: number; y: number; w: number };
         type GsRepoRead = { repo: string; open: boolean; name: string | null; fold: string | null; side: string | null; ib: number; heads: GsHeadRead[];
           circles: { slot: string; at: string; on: boolean; aria: string | null; r: number; x: number; y: number }[];
           diamonds: { of: string; cls: string; title: string | null; aria: string | null }[]; lines: { d: string; open: boolean }[];
           tis: { of: string; title: string | null; port: string | null }[]; legend: string | null; legendOpen: number; below: string[];
-          menu: { head: string | null; cap: string | null; words: string[]; on: string[]; step2: string | null; text: string | null; buttons: string[] } | null;
+          menu: { head: string | null; cap: string | null; words: string[]; on: string[]; step2: string | null; text: string | null; buttons: string[];
+            ahead: { text: string | null; nextLf: boolean } | null; ti: boolean } | null;
           card: string[] | null; text: string };
         type GsRead = { info: number; quiet: { text: string; exp: string | null }[]; repos: GsRepoRead[] };
         const gsRead = async (): Promise<GsRead> => {
@@ -12784,6 +12808,20 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           await gsHead(laneKey(own));
           const m9 = fleetGs()?.menu ?? null;
           facts.gsMenu = { main: mMain, lane: m9 };
+          // RECHTS-7 ROUND 2 (owner Z135/Z137, 19.10.): „[Zitat entfernt]“ — the head names no
+          // remote, main's menu says it in words; „[Zitat entfernt]“ — a box holds its name
+          // alone, the hover and the menu say the commits not landed yet, right over how they land; „[Zitat entfernt]“ — main's menu has none
+          const gsNow = fleetGs();
+          facts.gsRound2 = { side: gsNow?.side ?? null, texts: gsNow?.heads.map((h) => `${h.key}:${h.texts}`) ?? [], title9: gsNow?.heads.find((h) => h.key === laneKey(own))?.title ?? null,
+            mainCap: mMain?.cap ?? null, mainTi: mMain?.ti ?? null, ahead9: m9?.ahead ?? null };
+          claims[`${tag}the project's head names no remote; main's menu says "3 commits not on origin yet (as of 2 h ago)"`] =
+            !!gsNow && !/origin|↑|↓/.test(gsNow.side ?? "") && (mMain?.cap ?? "").includes("3 commits not on origin yet (as of 2 h ago)");
+          claims[`${tag}no box carries a number: each head's box holds its name alone, and 3A's hover adds "3 commits not landed yet"`] =
+            !!gsNow && gsNow.heads.length > 3 && gsNow.heads.every((h) => h.texts === 1)
+            && (gsNow.heads.find((h) => h.key === laneKey(own))?.title ?? "").endsWith(" · 3\u00a0commits not landed yet");
+          claims[`${tag}3A's menu says "3 commits not landed yet, 0 behind overhaul" right over how it lands`] =
+            m9?.ahead?.text === "3 commits not landed yet, 0 behind overhaul" && m9.ahead.nextLf;
+          claims[`${tag}main's menu has no test instance`] = !!mMain && !mMain.ti && !/Test instance/.test(mMain.text ?? "");
           claims[`${tag}a click on a head opens its menu, whose first line names it: "main · ${sha7(MAIN)}", "Lane Rechter Tab dichter · ${own.branch}"`] =
             mMain?.head === `main · ${sha7(MAIN)}` && m9?.head === `Lane Rechter Tab dichter · ${own.branch}` && fleetGs()?.heads.find((h) => h.key === laneKey(own))?.exp === "true";
           // DIFF, PASST, LANDEN LEFT THE MENU (owner Z87 f); what stays reads English
@@ -13110,10 +13148,11 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // still wider one on every machine: the head may wrap, but nothing in the top of Info runs out under
           // an ellipsis and nothing passes the section's edge (owner 2026-10-08: „[Zitat entfernt]“ — names
           // and repo heads wrap instead). One line at the machine's own font is the claim above. Until K16 this
-          // asked for one line here too, and a nowrap head met it by running 3 px past the edge on Linux.
+          // asked for one line here too, and a nowrap head met it by running 3 px past the edge on Linux. 3 px of spacing since
+          // rechts-7 round 2: without the remote tag the head fit at 1 px even unwrapped, and its mutant showed nothing past the edge
           if (!phone && (st === "land" || st === "viele")) {
             const wide = await evaluate<{ h: number; past: number; cut: string[] } | null>(`(() => { const h3 = document.querySelector('#boardbody .ranke > .rk-git .gs > .gsh'); if (!h3) return null;
-              const css = document.createElement('style'); css.textContent = '#board .plasec *, #board .ranke *, #board .bhead * { letter-spacing: 1px !important; }'; document.head.append(css);
+              const css = document.createElement('style'); css.textContent = '#board .plasec *, #board .ranke *, #board .bhead * { letter-spacing: 3px !important; }'; document.head.append(css);
               const cut = [...document.querySelectorAll('#boardbody .plasec *, #boardbody .ranke *, #boardbody .bhead *')].filter((e) => getComputedStyle(e).textOverflow === 'ellipsis'
                 && e.scrollWidth > e.clientWidth + 1 && e.textContent.trim()).map((e) => String(e.className) + ': ' + e.textContent.trim().slice(0, 40));
               const edge = h3.closest('.ranke').getBoundingClientRect().right;
@@ -13516,6 +13555,30 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           facts.ownRepo = { drawn, first, moved, there, back, last: await reposNow() };
           claims[`${tag}Info shows exactly one repo, the selected session's, and follows the pick — a session on a branch in a linked worktree shows claude-fleet alone, a pick of rezepte-app's session that alone, and back`] =
             drawn && first.repos === REPO && first.at === `branch:${onBranch.branch}` && moved && there === REPO2 && back;
+          // MAIN'S LAST LAND AND THE CHECK AFTER IT (owner Z137, 19.10.: „[Zitat entfernt]“):
+          // the board's newest batch, Alt's, landed an hour ago and no check after a land ran since. The board branch's menu
+          // says its one commit since its last batch right over how it lands (owner Z135)
+          await gsHead("main:main");
+          const mLand = fleetGs()?.menu ?? null;
+          await gsHead(`branch:${onBranch.branch}`);
+          const mBranch = fleetGs()?.menu ?? null;
+          await gsClose();
+          facts.mainLand = { main: mLand?.cap ?? null, branch: mBranch?.ahead ?? null };
+          claims[`${tag}main's menu says its last land and the check after it: "Last land: Alt, 1 h ago — no check after it yet"`] =
+            (mLand?.cap ?? "").startsWith("Last land: Alt, 1 h ago — no check after it yet");
+          claims[`${tag}a board branch's menu says its commits since its last batch right over how it lands: "1 commit not landed yet, 0 behind main"`] =
+            mBranch?.ahead?.text === "1 commit not landed yet, 0 behind main" && mBranch.ahead.nextLf;
+          // A LANDED BRANCH'S DIAMOND IS GREEN INSIDE (owner 19.10. 15:1x: „[Zitat entfernt]“
+          // ): Alt landed with nothing since, beside Rechter Tab's passed check — the same green
+          // inside, its edge quiet, so the two signs stay apart
+          const diaLook = (of: string) => evaluate<{ cls: string; fill: string; stroke: string } | null>(`(() => {
+            const p = document.querySelector('#boardbody svg.gss g.gsdg[data-of=${JSON.stringify(of)}] path.gsd'); if (!p) return null;
+            const c = getComputedStyle(p); return { cls: p.getAttribute('class') ?? '', fill: c.fill, stroke: c.stroke }; })()`);
+          const landedDia = await diaLook("branch:branch/alt"), passedDia = await diaLook(`branch:${onBranch.branch}`);
+          facts.landedDia = { landed: landedDia, passed: passedDia };
+          claims[`${tag}a landed branch's diamond is green inside like a passed check, its edge quiet so the two stay apart`] =
+            !!landedDia && !!passedDia && landedDia.cls.split(" ").includes("landed") && passedDia.cls.split(" ").includes("green")
+            && landedDia.fill === passedDia.fill && landedDia.stroke !== passedDia.stroke;
           // „PASST“ AS A BUTTON (owner Z132, 18.10.; Mangel 121): the board branch's menu says the tip, „[Zitat entfernt]“ sends
           // /api/branches/seen with exactly that tip and the line then says it; a commit after it asks again
           const BRANCH_HEAD = `svg.gss > g.gsr[data-head=${JSON.stringify(`branch:${onBranch.branch}`)}]`;

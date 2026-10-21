@@ -218,6 +218,9 @@ import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
 import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
   type PostfachEntry, type PostfachPlan } from "./server/postfach-zustellen";
+import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
+  postfachNichtsGetippt, postfachVersuchSignatur,
+  type PostfachFehlerwort, type PostfachWeg } from "./server/postfach-fehler";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
@@ -26727,6 +26730,11 @@ const postfachAttempted = new Map<number, { session: string; ids: Set<string> }>
 const postfachQueued = new Map<number, { session: string; ids: Set<string> }>();
 const pendingPostfach = new Set<number>();
 let postfachBusy = false;
+// Die Log-Bremse beider Wege: derselbe Fehlversuch wird nicht jeden Takt erneut geschrieben.
+const postfachFehlerbremse = new PostfachFehlerbremse();
+// Die Wartezeit nach einem Versuch, der nichts getippt hat: derselbe Text wird nicht jeden Takt
+// erneut in die Pane geschickt, sondern erst nach holdBackoffMs-artiger Staffelung.
+const postfachVersuche = new PostfachVersuche(POSTFACH_TICK_MS);
 
 function postfachSenderLabel(a: MessageAddress): string {
   if (a.kind === "program") return `Program ${a.id}`;
@@ -26774,6 +26782,32 @@ function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], a
   return stamped;
 }
 
+// ONE RULE FOR BOTH PATHS: a throw that names no paste (SendRefused, DeliveryGateDropped) leaves the
+// message on offer — a later tick offers it again, after the retry wait. A throw that may have typed
+// something stays remembered, exactly as before, so the same words never land twice. The log brake
+// keeps a slot that stays unready from writing the same line into server.log and the prompt ledger
+// every tick.
+function meldePostfachFehlschlag(s: Slot, plan: PostfachPlan, weg: PostfachWeg, ids: readonly string[],
+  e: unknown): void {
+  if (e instanceof DeliveryCancelled) return;
+  const wort: PostfachFehlerwort = sendFailureDelivery(e);
+  const session = backlogSessionKey(s);
+  if (!postfachNichtsGetippt(wort)) {
+    rememberPostfachAttempt(s, ids);
+    postfachVersuche.vergessen(s.id);
+  } else {
+    // Nichts getippt: die Nachricht bleibt offen, aber derselbe Versuch bekommt eine Wartezeit.
+    postfachVersuche.warten(s.id, postfachVersuchSignatur(session, ids));
+  }
+  // The error channel keeps counting every repeat by its own signature and prints only the first
+  // sighting (server/errors.ts#logError); the prompt ledger has no such brake, so the brake gates
+  // exactly that line and nothing else.
+  logError("postfachZustellung", e);
+  const zeile = { weg, wort, grund: postfachFehlerVergleich(e) };
+  if (!postfachFehlerbremse.faellig(s.id, postfachFehlerSignatur(session, ids, zeile))) return;
+  logPrompt(s, plan.text, "auto", Date.now(), undefined, wort);
+}
+
 interface PostfachHandlers {
   text: string;
   checkRecipient: (current: Slot) => void;
@@ -26795,6 +26829,8 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
   };
   const delivered = (current: Slot, acceptance: Acceptance): void => {
     const sentAt = Date.now();
+    postfachFehlerbremse.vergessen(current.id);
+    postfachVersuche.vergessen(current.id);
     forgetPostfachQueued(current, ids);
     rememberPostfachAttempt(current, ids);
     if (acknowledgePostfach(current, plan.entries, acceptance))
@@ -26834,11 +26870,7 @@ async function zustellePostfachDirekt(s: Slot, plan: PostfachPlan, session: stri
       throw e;
     }
   })().catch((e: unknown) => {
-    if (!(e instanceof DeliveryCancelled)) {
-      rememberPostfachAttempt(s, ids);
-      logError("postfachZustellung", e);
-      logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-    }
+    meldePostfachFehlschlag(s, plan, "direkt", ids, e);
   }).finally(() => { pendingPostfach.delete(s.id); });
 }
 
@@ -26867,11 +26899,7 @@ function zustellePostfachGebuendelt(s: Slot, plan: PostfachPlan, session: string
         key: `postfach:${s.id}:${session}|${ids.join(",")}`,
         send: (current) => sendText(current, h.text, true, parkedOptions()),
         onDelivered: h.delivered }) === null) return;
-      if (!(e instanceof DeliveryCancelled)) {
-        rememberPostfachAttempt(s, ids);
-        logError("postfachZustellung", e);
-        logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-      }
+      meldePostfachFehlschlag(s, plan, "gebuendelt", ids, e);
     });
 }
 
@@ -26894,6 +26922,10 @@ async function tickPostfachZustellung(): Promise<void> {
       const session = backlogSessionKey(s);
       const openedAt = s.openedAt;
       const ids = plan.entries.map((entry) => entry.id);
+      // Derselbe Versuch, der zuletzt nichts getippt hat, wartet: kein sendText, kein Audit, kein
+      // Ledger bei jedem Takt. Eine andere Nachricht oder ein neuer Besatzer hat eine andere
+      // Signatur und darf sofort.
+      if (!postfachVersuche.faellig(s.id, postfachVersuchSignatur(session, ids))) continue;
       const stillThere = (current: Slot): boolean => ids.every((id) => messages.entries.some((m) =>
         m.id === id && m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(current, m)));
       if (!stillThere(s)) continue;

@@ -65,6 +65,8 @@ export async function messageDeliveryChecks(): Promise<void> {
   const code = [readFileSync(`${ROOT}/server/postfach-zustellen.ts`, "utf8").replace(/^export /gm, ""),
     // the setting's pure decision is compiled in, like the postfach leaf: the tick calls it
     readFileSync(`${ROOT}/server/zustellung.ts`, "utf8").replace(/^export /gm, "").replace(/^import .*$/gm, ""),
+    // the failure leaf decides what stays on offer and how often a repeat is said
+    readFileSync(`${ROOT}/server/postfach-fehler.ts`, "utf8").replace(/^export /gm, ""),
     section("const sameAddress =", "const samePayload ="),
     section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
     section("function messageInboundFor(", "function programMessageStatus("),
@@ -96,7 +98,7 @@ export async function messageDeliveryChecks(): Promise<void> {
       backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
       BACKLOG_IDLE_MS: 300_000, REPORT_DECISION_IDLE_MS: 3000, INBOX_NUDGE_COOLDOWN_MS: 600_000,
       // the fixture types at once: no window, one paste bounded like production
-      POSTFACH_WINDOW_MS: 0, POSTFACH_MAX_CHARS: 8_000,
+      POSTFACH_WINDOW_MS: 0, POSTFACH_MAX_CHARS: 8_000, POSTFACH_TICK_MS: 10_000,
       stampMessageRead: (entry: MessageRow, current: Occupant) => {
         if (entry.readBy !== null) return false;
         entry.readBy = { slot: current.id, openedAt: current.openedAt, sessionId: current.sessionId };

@@ -1654,20 +1654,27 @@ im Baum; die Fassung selbst ist `<wurzel>/<konzept>/v<N>.md`, abgelegt von ihrem
 `server.ts#konzeptKontextFor`, Entwurf `docs/messungen/2026-09-26-s4-entwurf-konzept-versionen-anmerkungen.md`.
 
 **Provenienz ist Server-Sache.** `actor` ist woertlich der `server/auth.ts#Principal` der Anfrage —
-`{kind:"session", slot, openedAt, role:"lane"|"main"}` an der Self-Tuer, `{kind:"owner", via}` an der
+`{kind:"session", slot, openedAt, role:"lane"|"main"|"generic"}` an der Self-Tuer, `{kind:"owner", via}` an der
 Owner-Tuer. `kontext` ist ein `trace-index.ts#TraceRefs`: `slot` + `openedAt` aus dem Token, `session`
 sobald der Server die Konversations-id kennt, dazu die BINDUNG — eine Lane traegt `branch`, `task` und
-`program`, eine gebundene MAIN ihr `program`, der Owner `{}` (sein Token beweist keine Bindung). Ein Body,
+`program`, eine gebundene MAIN ihr `program`, jede andere Session nichts davon, der Owner `{}` (sein Token beweist keine Bindung). Ein Body,
 der `actor` oder `kontext` nennt, ist **400** — nicht still ignoriert. `detailRef` (optional, Form
 `TraceDetailRef{source, locator, fp?}`) zeigt auf die Zeile, in der der Anlass stand (Send-Receipt,
 Report, Attention-Antwort); ihn nennt der Schreiber.
 
-**Wer:** die Self-Tuer ist offen fuer eine **Lane** und fuer die **gebundene MAIN eines aktiven
-Programs** (`boundProgramForMain`); jede andere Session bekommt **409** `a konzept is read and written by a
-lane or by the bound MAIN of an active Program — this session is neither (role <role>)` — auch
-Orchestratorin (Rolle `generic` im Principal). Einzige Ausnahme ist die reine Lesetuer
-`GET …/k-owner-korrekturen/leseansicht` (unten), die auch die Orchestratorin liest; an allen anderen
-Pfaden und an jedem Schreibakt bleibt es bei 409. Ohne erkannte Credential 401 nach 400 ms.
+**Wer:** **jede Session** liest `…/versionen` und `…/anmerkungen` und schreibt eine Anmerkung (seit
+2026-10-22, Richtung Schritt 3: „A concept takes annotations from any session“). Bis dahin bekamen
+Orchestratorin, freie Sessions und Branch-Sessions (alle Rolle `generic` im Principal) dort **409**. Eine
+**Fassung** (`POST …/versionen`) und ein **Verwerfen** bleiben bei der **Lane** und der **gebundenen MAIN
+eines aktiven Programs** (`boundProgramForMain`); jede andere Session bekommt dort **409** `a fassung is
+published and an anmerkung verworfen by a lane or by the bound MAIN of an active Program — this session is
+neither (role <role>); …`. Eine Fassung von `k-owner-korrekturen` nimmt weiter nur der Owner (unten).
+Eine Session ohne Bindung schreibt als `role:"generic"` mit `kontext` `{slot, openedAt, session?}` und
+gehoert keinem Program: sie erreicht nur Konzepte mit Zugriff `fleet` (`k-claude-fleet`,
+`k-owner-korrekturen`, vom Owner als `fleet` erklaerte); ein Konzept eines Programs ist fuer sie **403**
+`konzept-program-forbidden: …` (`konzept-ledger.ts#konzeptAccess`). Die Lesetuer
+`GET …/k-owner-korrekturen/leseansicht` (unten) liest weiter nur, wer dort eine Rolle hat. Ohne erkannte
+Credential 401 nach 400 ms.
 Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
 geschrieben.
 
@@ -1753,7 +1760,7 @@ Entwurf `docs/messungen/2026-10-02-owner-korrekturen-regal-entwurf.md` §Empfehl
 Eine Fassung dieses einen Konzepts nimmt NUR der Owner an (`POST /api/konzepte/k-owner-korrekturen/versionen`);
 Lane und gebundene MAIN bekommen auf der Self-Tuer **403** `k-owner-korrekturen takes a fassung only from the
 owner (…) — a lane|main proposes through an anmerkung or the clarification chain`, bevor der Body gelesen
-wird. Anmerkungen an einer veroeffentlichten Fassung bleiben ihnen offen. `ebene` ist hier `owner` (fehlt
+wird. Anmerkungen an einer veroeffentlichten Fassung bleiben ihnen und jeder anderen Session offen. `ebene` ist hier `owner` (fehlt
 sie, gilt `owner`; jede andere **400**). Alle anderen Konzepte behalten ihre Schreiber unveraendert.
 
 Das Eintragsformat lebt IN der Fassung, nicht im Body: `v<N>.md` traegt genau einen Block

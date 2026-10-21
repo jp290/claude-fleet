@@ -212,7 +212,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, authFails, failStrike,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
-import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
+import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KonzeptOp, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
@@ -16904,10 +16904,12 @@ setPrincipalState({
 // THE KONTEXT OF A KONZEPT ENTRY (konzept-ledger.ts): a trace-index.ts#TraceRefs, built from the
 // credential (slot + openedAt, and `session` once the server has learned the conversation id) and from
 // the binding — a lane's branch, task and Program, a bound MAIN's Program. Nothing of it is read from a
-// body. Every other session is refused here: the door is Lane AND MAIN, by the owner's word
-// („[Zitat entfernt]“, Entwurf 2026-09-26) and the orchestrator's decision.
+// body. Every other session (the Orchestratorin, a free or a branch session) reads and annotates with the
+// credential's kontext alone and no Program, so konzept-ledger.ts#konzeptAccess lets it at fleet-wide
+// konzepte only (direction step 3: "A concept takes annotations from any session"). A fassung and a
+// verwerfen stay Lane AND MAIN, by the owner's word („[Zitat entfernt]“, Entwurf 2026-09-26).
 type KonzeptKontext = { ok: true; refs: TraceRefs; programs: string[] } | { ok: false; error: string };
-function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>): KonzeptKontext {
+function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>, op: KonzeptOp): KonzeptKontext {
   const base: TraceRefs = { slot: s.id, openedAt: p.openedAt, ...(s.sessionId ? { session: s.sessionId } : {}) };
   if (p.role === "lane" && s.worktree)
     return { ok: true, programs: s.programId ? [s.programId] : [], refs: { ...base, branch: s.worktree.branch, ...(s.taskId ? { task: s.taskId } : {}),
@@ -16919,14 +16921,16 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>):
     return binding.ok ? { ok: true, programs: binding.programs.map((program) => program.id), refs: { ...base,
       ...(binding.programs.length === 1 ? { program: binding.programs[0]!.id } : {}) } } : { ok: false, error: binding.error };
   }
-  return { ok: false, error: `a konzept is read and written by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role})` };
+  if (op.op === "read-versionen" || op.op === "read-anmerkungen" || op.op === "write-anmerkung")
+    return { ok: true, programs: [], refs: base };
+  return { ok: false, error: `a fassung is published and an anmerkung verworfen by a lane or by the bound MAIN of an active Program — this session is neither (role ${p.role}); it reads and annotates through …/versionen and …/anmerkungen` };
 }
 
 // THE READER OF THE OWNER'S CORRECTIONS (konzept-ledger.ts#konzeptLeseansicht, Karte 2 von 3): who reads,
 // derived from the CURRENT binding alone — role from positionRole (no second role derivation), project
 // as the opaque projectKey of the bound repository (a lane's worktree repo, otherwise the cwd's git
 // toplevel), harness from the slot's adapter. A READ door only: it widens no write. The Orchestratorin
-// reads here although konzeptKontextFor refuses her every write; a free session (role generic) reads
+// reads here although konzeptKontextFor refuses her a fassung; a free session (role generic) reads
 // nothing, and a session outside any git repository has no project and is refused by name.
 type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
 const KORREKTUR_DOOR = "/api/self/konzepte/k-owner-korrekturen/leseansicht";
@@ -49236,9 +49240,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     }
 
     // THE KONZEPT DOOR (docs/self-api.md §konzepte, konzept-ledger.ts): versions and anmerkungen of a
-    // konzept, read and appended by a lane OR a bound MAIN — except a fassung of k-owner-korrekturen, which
-    // the ledger takes from the owner alone (403, konzept-ledger.ts#OWNER_KORREKTUREN). Its GET /leseansicht
-    // is the one read the Orchestratorin shares, scoped by korrekturLeserFor and checked before any kontext. `actor` is the Principal resolved here and
+    // konzept, read and annotated by any session, a version published by a lane OR a bound MAIN — except a
+    // fassung of k-owner-korrekturen, which the ledger takes from the owner alone (403, konzept-ledger.ts#OWNER_KORREKTUREN).
+    // Its GET /leseansicht is scoped by korrekturLeserFor and checked before any kontext. `actor` is the Principal resolved here and
     // `kontext` the TraceRefs konzeptKontextFor builds — a body naming either is a 400 in the ledger
     // module. The occupant is re-checked after the body read, before anything is appended, so a slot
     // recycled mid-request writes nothing under the old credential.
@@ -49272,7 +49276,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const still = resolveSelfPrincipal(req);
       if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
         return json({ error: "the slot changed occupant while this request ran — nothing is written on the old credential" }, 409);
-      const kontext = konzeptKontextFor(s, still);
+      const kontext = konzeptKontextFor(s, still, op);
       if (!kontext.ok) return json({ error: kontext.error }, 409);
       const answer = await konzeptRequest({ root: KONZEPT_ROOT, konzept: selfKonzept[1]!, op, body,
         writer: { actor: still, kontext: kontext.refs, programs: kontext.programs } });
@@ -49280,7 +49284,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const after = resolveSelfPrincipal(req);
         if (s.openedAt !== p.openedAt || after?.kind !== "session" || after.slot !== s.id || after.openedAt !== p.openedAt)
           return json({ error: "the slot changed occupant while this request ran — nothing is served on the old credential" }, 409);
-        const currentKontext = konzeptKontextFor(s, after);
+        const currentKontext = konzeptKontextFor(s, after, op);
         if (!currentKontext.ok || currentKontext.programs.slice().sort().join(",") !== kontext.programs.slice().sort().join(","))
           return json({ error: "konzept-program-binding-changed: this session's Program binding changed while the request ran — nothing is served under the old binding" }, 409);
       }

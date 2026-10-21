@@ -21,7 +21,11 @@
 //   concurrency       — drop the per-konzept serial chain: two POSTs read the same last N (duplicate N)
 //                       or interleave a line.
 //   file check        — assign N without checking v<N>.md exists and hashes to the body's sha256.
-//   scope             — let a plain session (neither lane nor bound MAIN) read or write, or 401 it.
+//   scope             — let a plain session read or write a konzept of a Program it is not bound to, or 401 it.
+//   any session       — keep the door to lane and MAIN for an anmerkung (the Orchestratorin or a plain session
+//                       409), or record its writer as anything but its resolved Principal and credential kontext.
+//   any session versions stay — let a session that is neither lane nor MAIN past the door for a fassung or a
+//                       verwerfen (konzeptKontextFor admitting every op), or drop the owner-only rule of the heft.
 //   index             — list a directory that is no konzept id, read a fassung into the list, miscount the
 //                       fold, or answer a request carrying a self token anything but 401 (alone) / 409
 //                       (beside the owner's) — GET /api/konzepte, the board's list.
@@ -42,7 +46,6 @@
 //                       rolle: ok-main/ok-orch reach a lane; harness: ok-container reaches everyone), or serve
 //                       a veraltet/verworfen entry or its private quelle.
 //     main / orch     — refuse the Orchestratorin (konzeptKontextFor in front of the read) or a bound MAIN.
-//     no new write    — let the Orchestratorin through konzeptKontextFor, or the MAIN past the owner's 403.
 //     free / recycled — serve role generic, or honor a rotated token (401 must stay 401).
 //     request scope   — read projekt/rolle/harness from the query instead of refusing it.
 //     refusals        — each named, never a 200 with []: hash drift, missing v<N>.md, a newest row not
@@ -380,13 +383,15 @@ async function ledgerDoors(): Promise<void> {
         && JSON.stringify(idxBoth.body) === JSON.stringify(idx.body),
       `${idx.status} self=${idxSelf.status} both=${idxBoth.status} ${JSON.stringify(idx.body).slice(0, 500)}`);
 
-    // ---- scope: a plain session is 409 on read and write, no token 401
+    // ---- scope: a plain session passes the door but not the Program scope of K, no token 401
+    const kAnmerkungen = anmerkungLines().length;
     const plainW = await self(plainTok!, "anmerkungen", "POST", { version: 1, text: "x" });
     const plainR = await self(plainTok!, "versionen", "GET");
     const anon = await call(`/api/self/konzepte/${K}/versionen`, "GET", {});
     const anonOwner = await call(`/api/konzepte/${K}/versionen`, "GET", {});
-    check("konzepte scope: a plain session is 409 on both verbs, a missing credential 401 on both doors",
-      plainW.status === 409 && plainR.status === 409 && /neither/.test(plainW.body.error ?? "") && anon.status === 401 && anonOwner.status === 401,
+    check("konzepte scope: a plain session is 403 on another Program's konzept on both verbs, appends nothing, a missing credential 401 on both doors",
+      plainW.status === 403 && plainR.status === 403 && /^konzept-program-forbidden:/.test(plainW.body.error ?? "")
+        && anmerkungLines().length === kAnmerkungen && anon.status === 401 && anonOwner.status === 401,
       `plain=${plainW.status}/${plainR.status} ${plainW.body.error} anon=${anon.status}/${anonOwner.status}`);
 
     // ---- the owner's heft (k-owner-korrekturen): only the owner publishes, one fassung replaces entries of
@@ -544,17 +549,37 @@ async function ledgerDoors(): Promise<void> {
         mainL.status === 200 && ids(mainL) === "ok-alle ok-projekt ok-drei ok-main ok-neu" && mainL.body.bindung?.rolle === "program-main"
           && orchL.status === 200 && ids(orchL) === "ok-alle ok-projekt ok-drei ok-orch ok-neu" && orchL.body.bindung?.rolle === "orchestrator",
         `main=${mainL.status} [${ids(mainL)}] ${mainL.body.error ?? ""} orch=${orchL.status} [${ids(orchL)}] ${orchL.body.error ?? ""}`);
-      // ---- and no new write: the Orchestratorin stays refused on every write and every other read of the
-      // konzept door, the MAIN stays refused a fassung of the owner's heft
-      const okBefore = okLines().length;
-      const orchW = await self(orchTok!, "anmerkungen", "POST", { version: 4, text: "x" }, OK);
-      const orchV = await self(orchTok!, "versionen", "POST", version(v4Sha), OK);
+      // ---- any session annotates (direction step 3): the Orchestratorin and a plain session post an anmerkung
+      // on the owner's heft, recorded as their own Principal with the credential's kontext and no binding keys
+      const okAnmerkungen = () => jsonl(`${i.root}/${OK}/anmerkungen.jsonl`);
+      const orchW = await self(orchTok!, "anmerkungen", "POST", { version: 4, text: "Orchestratorin-Anmerkung" }, OK);
+      const plainA = await self(plainTok!, "anmerkungen", "POST", { version: 4, text: "freie Anmerkung" }, OK);
       const orchR = await self(orchTok!, "versionen", "GET", undefined, OK);
+      const plainRA = await self(plainTok!, "anmerkungen", "GET", undefined, OK);
+      const recorded = (a: Answer, slot: number, openedAt: number | undefined): boolean => {
+        const row = okAnmerkungen().find((r) => r.id === a.body.anmerkung?.id) as KonzeptAnmerkung | undefined;
+        return a.status === 200 && a.body.anmerkung?.status === "offen" && row !== undefined
+          && JSON.stringify(row.actor) === JSON.stringify({ kind: "session", slot, openedAt, role: "generic" })
+          && row.kontext.slot === slot && row.kontext.openedAt === openedAt
+          && Object.keys(row.kontext).every((k) => ["slot", "openedAt", "session"].includes(k));
+      };
+      check("konzepte any session: the Orchestratorin and a plain session annotate the owner's heft as session/generic with the credential's kontext, and read it",
+        recorded(orchW, ORCH, readerRows[3]!.openedAt) && recorded(plainA, 3, rows[2]!.openedAt)
+          && orchR.status === 200 && orchR.body.letzte === 4 && plainRA.status === 200
+          && [orchW, plainA].every((a) => plainRA.body.anmerkungen?.some((x) => x.id === a.body.anmerkung?.id)),
+        `orch=${orchW.status} ${orchW.body.error ?? JSON.stringify(orchW.body.anmerkung)} plain=${plainA.status} ${plainA.body.error ?? ""} read=${orchR.status}/${plainRA.status}`);
+      // ---- versions stay where they were: the owner's heft takes a fassung from the owner alone, and a
+      // session that is neither lane nor MAIN publishes none and discards none
+      const okBefore = okLines().length;
+      const okAnmBefore = okAnmerkungen().length;
+      const orchV = await self(orchTok!, "versionen", "POST", version(v4Sha), OK);
+      const plainV = await self(plainTok!, "versionen", "POST", version(v4Sha), OK);
+      const orchD = await self(orchTok!, `anmerkungen/${orchW.body.anmerkung?.id}/verwerfen`, "POST", { grund: "selbst" }, OK);
       const mainV = await self(mainTok!, "versionen", "POST", version(v4Sha), OK);
-      check("konzepte leseansicht no new write: the Orchestratorin is still 409 on anmerkung, fassung and /versionen, the MAIN still 403 on a fassung",
-        orchW.status === 409 && orchV.status === 409 && orchR.status === 409 && /neither/.test(orchW.body.error ?? "")
-          && mainV.status === 403 && okLines().length === okBefore,
-        `orch=${orchW.status}/${orchV.status}/${orchR.status} main=${mainV.status} lines=${okLines().length - okBefore}`);
+      check("konzepte any session versions stay: the Orchestratorin and a plain session are 409 on a fassung and on verwerfen, the MAIN still 403, nothing appended",
+        orchV.status === 409 && plainV.status === 409 && orchD.status === 409 && /lane or by the bound MAIN/.test(orchV.body.error ?? "")
+          && mainV.status === 403 && okLines().length === okBefore && okAnmerkungen().length === okAnmBefore,
+        `orch=${orchV.status}/${orchD.status} ${orchV.body.error} plain=${plainV.status} main=${mainV.status} lines=${okLines().length - okBefore}/${okAnmerkungen().length - okAnmBefore}`);
 
       // ---- wrong project: the foreign lane reads its own project's entry and none of the Fleet project's bytes
       const fremdL = await lese(fremdTok!);
@@ -693,6 +718,16 @@ async function ledgerDoors(): Promise<void> {
       cfLane.status === 200 && cfLane.body.version?.version === 1 && cfMain.status === 200 && cfMain.body.version?.version === 2
         && kStale.status === 409 && kLane.status === 200 && kLane.body.version?.version === 12 && kLane.body.version.ebene === "owner",
       `cfLane=${cfLane.status} ${cfLane.body.error ?? ""} cfMain=${cfMain.status} ${cfMain.body.error ?? ""} stale=${kStale.status} lane=${kLane.status} ${kLane.body.error ?? ""}`);
+    // ---- and on a fleet-wide konzept that is not the owner's: the Orchestratorin annotates, but publishes no fassung
+    const orchTok = readerRows[3]!.selfToken ?? "";
+    writeFileSync(`${i.root}/${CF}/v3.md`, `${cf1}dritte Fassung\n`);
+    const cfOrchA = await self(orchTok, "anmerkungen", "POST", { version: 2, text: "Orchestratorin zu k-claude-fleet" }, CF);
+    const cfOrchV = await self(orchTok, "versionen", "POST", version(sha(`${cf1}dritte Fassung\n`)), CF);
+    const cfVersionen = jsonl(`${i.root}/${CF}/versionen.jsonl`);
+    check("konzepte any session versions stay: on k-claude-fleet the Orchestratorin annotates v2 and is 409 on a fassung, which appends nothing",
+      cfOrchA.status === 200 && cfOrchA.body.anmerkung?.actor.kind === "session" && cfOrchV.status === 409
+        && cfVersionen.length === 2 && cfVersionen.every((v) => (v.actor as { slot?: number }).slot !== ORCH),
+      `anmerkung=${cfOrchA.status} ${cfOrchA.body.error ?? ""} fassung=${cfOrchV.status} ${cfOrchV.body.error ?? ""} versionen=${cfVersionen.length}`);
 
     await programScope();
 

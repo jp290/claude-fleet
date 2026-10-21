@@ -255,7 +255,7 @@ export async function k15Laeufe(req: Request, url: URL, server: LaufServer, dir:
   }
   await appendEventStrict(datei, { art: "position", id, pos: o.pos, slot: o.slot, openedAt: sitz.openedAt, at, ...ortZeile(ort) });
   // die Historie zeigt den Start mit seinem Lauf
-  void merkeNachtrag(Number(o.slot), sitz.openedAt, { lauf: { id, pos: o.pos, posName: posName(f.form, o.pos), konst: o.konst, name: f.name, version: f.version, hash: f.hash } }, dir);
+  await merkeNachtrag(Number(o.slot), sitz.openedAt, { lauf: { id, pos: o.pos, posName: posName(f.form, o.pos), konst: o.konst, name: f.name, version: f.version, hash: f.hash } }, dir);
   const lauf = (await liesLaeufe(dir)).find((x) => x.id === id);
   return json({ lauf }, da ? 200 : 201);
 }

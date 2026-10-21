@@ -8654,14 +8654,18 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
         null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte, am.agentMd);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
-      // eine Branch-Session hat keinen Lane-Worktree: ihr Branch steht in der Historie, damit „Erneut starten“ ihn fortsetzt
-      void merkeNachtrag(free.id, free.openedAt, { branch: body.branch, repo: ro.repo, ...(goal ? { goal } : {}), ...(aufgabe ? { aufgabe } : {}) }, STATE_DIR);
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
-      // door — is recorded, and the two may write each other in the postfach
-      if (by?.cwd && by !== free) {
-        branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: by.id, cwd: by.cwd, at: Date.now() }).book;
-        free.openedBy = { slot: by.id, openedAt: by.openedAt, cwd: by.cwd };
-        void merkeNachtrag(free.id, free.openedAt, { openedBy: free.openedBy }, STATE_DIR);
+      // door — is recorded, and the two may write each other in the postfach. Set before the first await below, so a
+      // kill and reopen of this slot during a history write cannot stamp the opener on the next occupant.
+      const oeffner = by?.cwd && by !== free ? { slot: by.id, openedAt: by.openedAt, cwd: by.cwd } : null;
+      if (oeffner) {
+        branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: oeffner.slot, cwd: oeffner.cwd, at: Date.now() }).book;
+        free.openedBy = oeffner;
+      }
+      // eine Branch-Session hat keinen Lane-Worktree: ihr Branch steht in der Historie, damit „Erneut starten“ ihn fortsetzt
+      await merkeNachtrag(free.id, free.openedAt, { branch: body.branch, repo: ro.repo, ...(goal ? { goal } : {}), ...(aufgabe ? { aufgabe } : {}) }, STATE_DIR);
+      if (oeffner) {
+        await merkeNachtrag(free.id, opened.occupant.openedAt, { openedBy: oeffner }, STATE_DIR);
         await saveStateNow();
       }
       void tickGit().catch(() => {});
@@ -10263,8 +10267,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
   if (!openOccupantCurrent()) return { superseded: true, occupant: expected, modelSupport: modelSupport
     ? { ...modelSupport, availability: "unknown", provider: null, reason: "observation-target-mismatch" } : null };
-  // jeder Start eine Zeile in der Historie (server/start-historie.ts); best effort, wie jedes Ereignisprotokoll
-  void merkeStart(s, STATE_DIR);
+  // jeder Start eine Zeile in der Historie (server/start-historie.ts); best effort, wie jedes Ereignisprotokoll, aber abgewartet: wer
+  // nach der Antwort der Tür die Historie liest, findet den Start schon darin
+  await merkeStart(s, STATE_DIR);
   return { superseded: false, occupant: expected, modelSupport };
   } finally {
     openSlotIntents.delete(openIntent);
@@ -54310,7 +54315,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           modelSupport = opened.modelSupport;
           if (acc) s.plan = acc.request;
           s.openedBy = openerOf(req, s);
-          if (s.openedBy) { saveState(); void merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
+          if (s.openedBy) { saveState(); await merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
         } catch (e) {
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),

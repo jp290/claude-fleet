@@ -18,7 +18,7 @@ Each step is done when its sentence is true. Check which ones are true before yo
    packs, and the hash Fleet shows before the start is the hash that runs.
 2. **Memory has become knowledge.** You have prepared the new version of the owner's corrections and he has
    confirmed it, the packs are in the repo, and the repo's memory keeps nothing that should hold for others.
-3. **A setup travels whole.** An export carries a notebook per setup, the task with its check, the run, the
+3. **A setup travels whole.** Every setup has its own notebook. An export carries the task with its check, the run, the
    shareable knowledge with a place for personal knowledge, and "derived from <hash>". An import never starts in
    bypass. A concept takes annotations from any session. For Claude Code seats, every classifier denial is
    written into the run.

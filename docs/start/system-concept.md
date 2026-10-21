@@ -1,8 +1,16 @@
 # Claude Fleet
 
-**Fleet is the harness where hard agentic tasks get solved, shared and improved together.** That works because
-every agent setup can be set up well, seen whole and shared. What we build is the base for that. Solved hard tasks
-are its result.
+**Fleet is the harness where hard agentic tasks get solved, shared and improved together.** That works because Fleet
+turns the setup behind an agent from something scattered and invisible into something you shape on purpose, see
+whole and share. What we build is the base for that. Solved hard tasks are its result.
+
+Done well, the setup carries the work. One agent set up well already does a great deal. Where the process needs
+more, it gets more: every further agent is built for its place in the process, one to check the work independently,
+one to support the agent doing it, one to take the simpler part on a cheaper model. Each is free in every part of
+its setup, from the harness and model it runs on to what it is told, what it reads and whom it works with, and what
+it does follows from that. So the work comes out better, cheaper or both, and Fleet fits the task exactly. And
+because all of it is written down in concepts and packs, the setup outlasts the task: it can carry the next process
+too, and someone else can take the constellation, adapt it to their own work and build on it.
 
 *Set up an agent well. See exactly what it gets. Share it.*
 
@@ -32,7 +40,7 @@ to understand: only what others understand can they build on.
 **Agent setup.** Everything an agent gets when it starts, in five parts:
 
 - **Who:** harness, model, effort.
-- **Start:** what the agent is told first. That can be a goal with "done when", a question, a role, or nothing at
+- **Start:** what the agent is told first. That can be a goal with "done when", a question, or nothing at
   all; plenty of good work starts as a conversation.
 - **Reads:** its instructions and knowledge, in load order, each with its source and size.
 - **May:** its permissions and its permission mode.
@@ -96,8 +104,8 @@ That is the base. It stays small on purpose, so anyone can understand it in a fe
    audit that nobody has judged; the server enforces both. Texts don't repeat what the server guarantees.
 6. **Small and simple.** A stranger understands a setup in two minutes. If it takes longer, it is too big. A hard
    task and its check may take longer to understand, as long as everything they need is in the shared file.
-7. **The owner has the last word** on money beyond the budget, on anything public and on anything that can't be
-   undone.
+7. **The owner has the last word** on money beyond the budget, on anything public, on anything that can't be
+   undone and on taste.
 
 ## How it runs today
 

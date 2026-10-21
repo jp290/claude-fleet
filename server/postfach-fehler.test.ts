@@ -25,12 +25,19 @@ const section = (from: string, to: string): string => {
   if (start < 0 || end < 0) throw new Error(`Postfach-Takt fehlt in server.ts: ${from} -> ${to}`);
   return source.slice(start, end);
 };
-const compiled = new Bun.Transpiler({ loader: "ts" }).transformSync([
+const takt = [
   leaf("server/postfach-zustellen.ts"),
   leaf("server/zustellung.ts"),
   leaf("server/postfach-fehler.ts"),
   section("const postfachAttempted =", "// --- THE HINT AT THE THRESHOLD"),
-].join("\n"));
+];
+const transpile = (parts: string[]): string =>
+  new Bun.Transpiler({ loader: "ts" }).transformSync(parts.join("\n"));
+const compiled = transpile(takt);
+// Mit dem echten Parkplatz: parkFleetSend, settleParked und tickParkedSends aus server.ts statt
+// der Attrappe „no room“.
+const compiledGeparkt = transpile([...takt,
+  section("const PARKED_SEND_MAX_PER_SLOT", "// --- THE OWNER HINT FOR A HELD COMPOSER")]);
 
 class SendRefused extends Error {}
 class DeliveryGateDropped extends SendRefused {}
@@ -52,7 +59,7 @@ type Occupant = { id: number; cwd: string; openedAt: number; sessionId: string;
 type Send = { path?: string; deliveryClass?: string };
 type Row = { session: string; ids: Set<string> };
 
-function welt(weg: "direkt" | "gebuendelt") {
+function welt(weg: "direkt" | "gebuendelt", geparkt = false) {
   const now = Date.now();
   const slot: Occupant = { id: 29, cwd: "/fixture/session", openedAt: 100, sessionId: "session-a",
     worktree: null, lastOutput: now - 10_000, label: "fixture", history: [], zustellung: weg };
@@ -104,11 +111,21 @@ function welt(weg: "direkt" | "gebuendelt") {
       return true;
     },
     saveStateNow: async () => {}, saveHistory: () => {}, MAX_HISTORY: 100,
+    // nur für den echten Parkplatz (compiledGeparkt)
+    slotStreamOccupant: (s: Occupant) => s.cwd
+      ? { slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken } : null,
+    sameSlotStreamOccupant: (s: Occupant, o: { slot: number; openedAt: number; selfToken?: string }) =>
+      !!s.cwd && s.id === o.slot && s.openedAt === o.openedAt && s.selfToken === o.selfToken,
+    holdBackoffMs: () => 1_000,
+    randomBytes: (n: number) => Buffer.alloc(n, 7),
+    audit: () => {},
   };
-  const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickPostfachZustellung, postfachAttempted, postfachQueued }; }`)(deps) as {
+  const api = new Function("deps", `with (deps) { ${geparkt ? compiledGeparkt : compiled}\nreturn { tickPostfachZustellung, postfachAttempted, postfachQueued, ${geparkt ? "tickParkedSends, parkedSends" : "parkedSends"} }; }`)(deps) as {
     tickPostfachZustellung: () => Promise<void>;
     postfachAttempted: Map<number, Row>;
     postfachQueued: Map<number, Row>;
+    tickParkedSends?: () => Promise<void>;
+    parkedSends: unknown[];
   };
   return {
     slot, rows, sends, errors, prompts, api,
@@ -116,6 +133,7 @@ function welt(weg: "direkt" | "gebuendelt") {
     failNext: (e: Error) => { failure = e; repeat = false; },
     failAlways: (e: Error) => { failure = e; repeat = true; },
     tick: async () => { await api.tickPostfachZustellung(); await Bun.sleep(1); },
+    tickParked: async () => { await api.tickParkedSends?.(); await Bun.sleep(1); },
   };
 }
 
@@ -223,4 +241,84 @@ describe("Postfach-Takt: was nach einem Fehlversuch offen bleibt", () => {
     expect(w.errors).toHaveLength(2);
     expect(w.prompts).toHaveLength(1);
   });
+});
+
+// Der geparkte Weg (Befund neben a375e6b3): ein Entwurf des Owners belegt die Eingabezeile, der
+// Postfach-Versand wartet in parkedSends. Endet der geparkte Versuch später mit SendNotAccepted,
+// kann der Text schon in der Pane stehen — er muss gemerkt sein wie ein direkter, sonst tippt der
+// nächste Postfach-Takt dieselben Worte ein zweites Mal. Ein geparkter Versand, der sicher nichts
+// getippt hat, wird dagegen wieder angeboten.
+describe("Postfach-Takt: ein geparkter Versand hinter dem Entwurf des Owners", () => {
+  for (const weg of ["direkt", "gebuendelt"] as const) {
+    test(`${weg}: endet der geparkte Versuch mit SendNotAccepted, landen dieselben Worte nicht ein zweites Mal`, async () => {
+      const w = welt(weg, true);
+      w.failNext(new SendComposerOccupied(12));
+      await w.tick();
+      expect(w.sends).toHaveLength(1);
+      expect(w.api.parkedSends).toHaveLength(1);
+      // solange er geparkt ist, bietet der Postfach-Takt die Nachricht nicht an
+      await w.tick();
+      expect(w.sends).toHaveLength(1);
+
+      // der Entwurf ist weg, der geparkte Versuch tippt — und die Annahme bleibt aus
+      w.failNext(new SendNotAccepted("prompt not submitted — the composer still held part of the payload"));
+      advance();
+      await w.tickParked();
+      expect(w.sends).toHaveLength(2);
+      expect(w.api.parkedSends).toHaveLength(0);
+      expect(w.rows[0]!.readBy).toBeNull();
+
+      advance();
+      await w.tick();
+      await w.tickParked();
+      expect(w.sends).toHaveLength(2);
+      expect(remembered(w, "m1")).toBe(true);
+    });
+
+    // Der Besatzer wechselte die Unterhaltung (neue sessionId, derselbe Parkplatz-Pin): checkRecipient
+    // bricht vor dem Tippen ab. Gemerkt würde unter dem NEUEN Session-Key, und die neue Unterhaltung
+    // bekäme die Nachricht nie.
+    test(`${weg}: geparkter Versuch mit DeliveryCancelled wird nicht gemerkt`, async () => {
+      const w = welt(weg, true);
+      w.failNext(new SendComposerOccupied(12));
+      await w.tick();
+      expect(w.api.parkedSends).toHaveLength(1);
+      w.failNext(new DeliveryCancelled("Postfach for slot 29 changed before paste"));
+      advance();
+      await w.tickParked();
+      expect(w.sends).toHaveLength(2);
+      expect(w.api.parkedSends).toHaveLength(0);
+      expect(remembered(w, "m1")).toBe(false);
+      await w.tick();
+      expect(w.sends).toHaveLength(3);
+      expect(w.rows[0]!.readBy).not.toBeNull();
+    });
+
+    test(`${weg}: ein geparkter Versand, der nichts getippt hat, wird wieder angeboten`, async () => {
+      const w = welt(weg, true);
+      w.failNext(new SendComposerOccupied(12));
+      await w.tick();
+      expect(w.api.parkedSends).toHaveLength(1);
+
+      // der Entwurf steht noch: der geparkte Versuch wird abgelehnt, bevor etwas getippt ist
+      w.failNext(new SendComposerOccupied(30));
+      advance();
+      await w.tickParked();
+      expect(w.sends).toHaveLength(2);
+      expect(w.api.parkedSends).toHaveLength(1);
+      expect(remembered(w, "m1")).toBe(false);
+
+      // der Entwurf blieb länger als der Parkplatz hält: der Eintrag verfällt, nichts getippt
+      advance(3 * 60 * 60_000);
+      await w.tickParked();
+      expect(w.api.parkedSends).toHaveLength(0);
+      expect(w.sends).toHaveLength(2);
+      expect(remembered(w, "m1")).toBe(false);
+
+      // der nächste Takt bietet dieselbe Nachricht wieder an, und sie landet
+      await w.tick();
+      expect(w.sends).toHaveLength(3);
+      expect(w.rows[0]!.readBy).not.toBeNull();
+    });
+  }
 });

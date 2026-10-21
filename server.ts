@@ -26817,6 +26817,8 @@ interface PostfachHandlers {
   text: string;
   checkRecipient: (current: Slot) => void;
   delivered: (current: Slot, acceptance: Acceptance) => void;
+  parked: (send: (current: Slot) => Promise<{ acceptance: Acceptance }>) =>
+    (current: Slot) => Promise<{ acceptance: Acceptance }>;
   recipient: () => Slot;
 }
 // The three pieces a direct send, a bundled entry and a parked resend share: the text of this plan,
@@ -26844,7 +26846,20 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
     saveHistory(current);
     logPrompt(current, text, "auto", sentAt, undefined, acceptance);
   };
-  return { text, checkRecipient, delivered, recipient: () => recipient };
+  // A PARKED RESEND THAT MAY HAVE TYPED is remembered like a direct one: tickParkedSends settles it
+  // "uncertain" and never retries it, but without this row the next postfach tick would offer the
+  // same words again. A throw that typed nothing (SendRefused, DeliveryCancelled) keeps it on offer.
+  const parked = (send: (current: Slot) => Promise<{ acceptance: Acceptance }>) =>
+    async (current: Slot): Promise<{ acceptance: Acceptance }> => {
+      try { return await send(current); } catch (e) {
+        if (!(e instanceof DeliveryCancelled) && !postfachNichtsGetippt(sendFailureDelivery(e))) {
+          rememberPostfachAttempt(current, ids);
+          postfachVersuche.vergessen(current.id);
+        }
+        throw e;
+      }
+    };
+  return { text, checkRecipient, delivered, parked, recipient: () => recipient };
 }
 
 // DIRECT (the behaviour before this setting): the one-minute postfach window, then the same short
@@ -26870,7 +26885,7 @@ async function zustellePostfachDirekt(s: Slot, plan: PostfachPlan, session: stri
       // cancels it through checkRecipient, nothing typed
       if (e instanceof SendComposerOccupied && parkFleetSend(s, e, h.text, {
         key: `postfach:${s.id}:${session}|${ids.join(",")}`,
-        send: (current) => sendText(current, h.text, true, options(true)),
+        send: h.parked((current) => sendText(current, h.text, true, options(true))),
         onDelivered: h.delivered }) === null) return;
       throw e;
     }
@@ -26902,7 +26917,7 @@ function zustellePostfachGebuendelt(s: Slot, plan: PostfachPlan, session: string
       forgetPostfachQueued(s, ids);
       if (e instanceof SendComposerOccupied && parkFleetSend(s, e, h.text, {
         key: `postfach:${s.id}:${session}|${ids.join(",")}`,
-        send: (current) => sendText(current, h.text, true, parkedOptions()),
+        send: h.parked((current) => sendText(current, h.text, true, parkedOptions())),
         onDelivered: h.delivered }) === null) return;
       meldePostfachFehlschlag(s, plan, "gebuendelt", ids, e);
     });

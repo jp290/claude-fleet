@@ -1717,17 +1717,19 @@ export async function run(ctx: Ctx): Promise<void> {
         const auditSince = async (): Promise<Row[]> =>
           (await Bun.file(`${ROOT}/audit.jsonl`).text()).slice(auditFrom).trim().split("\n").filter(Boolean)
             .map((l) => JSON.parse(l) as Row);
-        // a nudge is TYPED into `slot` in one of two shapes, both a real paste with its send row:
-        // alone (the send row keeps path inbox-nudge), or merged with a "sofort" send that met a
+        // a message is TYPED into `slot` in one of two shapes, both a real paste with its send row:
+        // alone (the send row keeps path postfach), or merged with a "sofort" send that met a
         // waiting bundle (flushDeliveryBundle(key, immediate): one paste, send row path "bundle",
-        // the nudge named in delivery_bundle_sent.paths). Since Mangel 141 a message to the role
-        // "orchestrator" is direct (tickMessageNudge), so the Orchestratorin gets only the first
-        // shape; the lane's negative below still counts both. A sent row with no send row before
-        // it on the same slot counts as nothing.
+        // the message named in delivery_bundle_sent.paths). A role-addressed message is direct since
+        // Mangel 141 and now carries its whole text (tickPostfachZustellung), so the Orchestratorin
+        // gets only the first shape; the lane's negative below still counts both. A sent row with no
+        // send row before it on the same slot counts as nothing.
         const nudgeTyped = (rows: Row[], slot: number): boolean => rows.some((r, i) => {
-          if (r.event === "send" && r.slot === slot && r.path === "inbox-nudge") return true;
+          if (r.event === "send" && r.slot === slot
+            && (r.path === "inbox-nudge" || r.path === "postfach")) return true;
           if (r.event !== "delivery_bundle_sent" || r.slot !== slot
-            || !(r.paths ?? "").split(",").includes("inbox-nudge") || (r.count ?? 0) < 2) return false;
+            || !(r.paths ?? "").split(",").some((p) => p === "inbox-nudge" || p === "postfach")
+            || (r.count ?? 0) < 2) return false;
           const typed = rows.slice(0, i).reverse().find((x) => x.event === "send" && x.slot === slot);
           return typed?.path === "bundle";
         });
@@ -1756,36 +1758,39 @@ export async function run(ctx: Ctx): Promise<void> {
         check("role bundle predicate: unread=2 rejects the sole-ID precondition even with one unread ID",
           soleUnread(stagedInbox) && !soleUnread({ ...stagedInbox, unread: 2 }),
           JSON.stringify({ messageId, unread: stagedInbox.unread, ids: unreadIds(stagedInbox) }));
-        const nudgeText = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — "
-          + "GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
-        // The pane is the zsh stand-in, and zsh draws the em dash by the PANE's locale: "—" under UTF-8,
-        // "�<0080><0094>" under C — a Claude lane's suite on the Mac runs with LANG unset, so the exact
-        // string never matched there (red since 0969d46b, green only from UTF-8 shells). Every ASCII
-        // byte stays exact; only the dash's rendering is free, and it never holds a space.
-        const reEsc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const dash = nudgeText.indexOf(" — ");
-        const nudgeSeen = new RegExp(`${reEsc(nudgeText.slice(0, dash))} \\S{1,24} ${reEsc(nudgeText.slice(dash + 3))}`, "g");
-        const paneNudges = async (slot: number): Promise<{ code: number; count: number }> => {
+        // The delivered body names sender, id and the whole text; the id is unique to this fixture,
+        // so its count in the pane is the direct measure (no locale-dependent dash any more).
+        const paneReads = async (slot: number): Promise<{ code: number; count: number }> => {
           const pane = await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `=s${slot}:`);
-          return { code: pane.code, count: pane.out.match(nudgeSeen)?.length ?? 0 };
+          const id = messageId ?? "";
+          return { code: pane.code, count: id ? pane.out.split(id).length - 1 : 0 };
         };
-        const roleBefore = await paneNudges(roleA);
-        const laneBefore = await paneNudges(ln.slot);
+        const roleBefore = await paneReads(roleA);
+        const laneBefore = await paneReads(ln.slot);
         await restartSrv({ ...roleBundleEnv, FLEET_INBOX_NUDGE_MS: "1000" });
         // before the role fix: delivery_bundle_dropped "orchestrator no current role occupant" after 30 s;
-        // since Mangel 141 the nudge goes direct — typed alone, no "orchestrator" bundle on the way
+        // since Mangel 141 the message goes direct, and since branch/postfach-zustellen with its text
         const typedAlone = (rows: Row[]): boolean =>
-          rows.some((r) => r.event === "send" && r.slot === roleA && r.path === "inbox-nudge");
+          rows.some((r) => r.event === "send" && r.slot === roleA && r.path === "postfach");
         const nudged = await until(async () => {
-          const pane = await paneNudges(roleA);
+          const pane = await paneReads(roleA);
           return typedAlone(await auditSince()) && pane.code === 0 && pane.count > roleBefore.count || null;
         },
-        { timeoutMs: 20_000, what: "the role-addressed inbox-nudge reaches the Orchestratorin" }).catch(() => null);
+        { timeoutMs: 20_000, what: "the role-addressed Postfach message reaches the Orchestratorin" }).catch(() => null);
         const rows = await auditSince();
         const deliveredInbox = await messageView();
-        const laneAfter = await paneNudges(ln.slot);
-        check("the role-addressed nudge is typed directly into the Orchestratorin, never into the lane, nothing bundled or dropped",
-          empty && soleUnread(stagedInbox) && soleUnread(deliveredInbox) && roleBefore.code === 0
+        const laneAfter = await paneReads(ln.slot);
+        // The receipt follows the acceptance the send row records: only an OBSERVED acceptance reads the
+        // message. This fixture pane is a shell stand-in, so it records `not-applicable`, and the message
+        // must then stay unread rather than be receipted on a paste nobody saw land.
+        const postfachAcceptance = rows.find((r) => r.event === "send" && r.slot === roleA && r.path === "postfach")
+          ?.detail?.split(" ").at(-1) ?? null;
+        const deliveredRead = messageId !== null && (postfachAcceptance === "observed"
+          ? deliveredInbox.unread === 0 && deliveredInbox.entries?.find((m) => m.id === messageId)?.readBy !== null
+          : postfachAcceptance !== null && deliveredInbox.unread === 1
+            && deliveredInbox.entries?.find((m) => m.id === messageId)?.readBy === null);
+        check("the role-addressed message is typed with sender, id and full text directly into the Orchestratorin, receipted only on observed acceptance, never into the lane, nothing bundled or dropped",
+          empty && soleUnread(stagedInbox) && deliveredRead && roleBefore.code === 0
             && laneBefore.code === 0 && laneAfter.code === 0 && laneAfter.count === laneBefore.count
             && !!nudged && typedAlone(rows)
             && !rows.some((r) => r.event === "delivery_bundle_queued" && r.detail?.startsWith("orchestrator ") === true)
@@ -1793,9 +1798,9 @@ export async function run(ctx: Ctx): Promise<void> {
             && !nudgeTyped(rows, ln.slot)
             && !rows.some((r) => r.event.startsWith("delivery_bundle") && r.slot === ln.slot
               && r.detail?.startsWith("orchestrator ") === true),
-          JSON.stringify({ messageId, soleUnread: soleUnread(deliveredInbox), roleBefore, laneBefore, laneAfter,
+          JSON.stringify({ messageId, deliveredRead, postfachAcceptance, roleBefore, laneBefore, laneAfter,
             rows: rows.filter((r) => r.event.startsWith("delivery_bundle") || r.path === "inbox-nudge"
-            || (r.event === "send" && r.path === "bundle"))
+            || r.path === "postfach" || (r.event === "send" && r.path === "bundle"))
             .map((r) => [r.event, r.slot, r.detail, r.paths ?? r.path]) }));
         await post(`/api/slots/${ln.slot}/kill`, {});
         if (existsSync(ln.cwd)) rmSync(ln.cwd, { recursive: true, force: true });

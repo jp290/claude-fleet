@@ -51,9 +51,10 @@ export async function messageDeliveryChecks(): Promise<void> {
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
   type RoleAddress = { kind: "role"; role: "orchestrator" };
   type ProgramAddress = { kind: "program"; id: string };
-  type MessageRow = { id: string; to: Address | RoleAddress | ProgramAddress; from: ProgramAddress | Address | RoleAddress; readBy: object | null };
+  type MessageRow = { id: string; to: Address | RoleAddress | ProgramAddress; from: ProgramAddress | Address | RoleAddress; readBy: object | null;
+    at: number; payload: { kind: "text"; text: string } };
   type Options = { path?: string; deliveryClass?: string; address?: { kind: string; id: number };
-    bypassQueue?: boolean; beforePaste?: (current: Occupant) => void;
+    bypassQueue?: boolean; beforePaste?: (current: Occupant) => void; requireAgent?: boolean;
     beforeSend?: (current: Occupant) => Promise<void> };
   const source = readFileSync(`${ROOT}/server.ts`, "utf8").replace(/^\s*\/\/.*$/gm, "");
   const section = (from: string, to: string): string => {
@@ -61,7 +62,8 @@ export async function messageDeliveryChecks(): Promise<void> {
     if (start < 0 || end < 0) throw new Error(`message probe source missing: ${from} -> ${to}`);
     return source.slice(start, end);
   };
-  const code = [section("const sameAddress =", "const samePayload ="),
+  const code = [readFileSync(`${ROOT}/server/postfach-zustellen.ts`, "utf8").replace(/^export /gm, ""),
+    section("const sameAddress =", "const samePayload ="),
     section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
     section("function messageInboundFor(", "function programMessageStatus("),
     section("async function canDeliver(", "let autoTickBusy ="),
@@ -75,11 +77,12 @@ export async function messageDeliveryChecks(): Promise<void> {
       worktree: lane ? {} : null, lastOutput: now - 400_000, label: orchestrator ? "🎛 Orchestratorin" : "fixture",
       history: [], laneSeats: [] };
     const lineage: { lineageId: string; from: { slot: number; openedAt: number } }[] = [];
-    const rows: MessageRow[] = [{ id: "old-message",
+    const rows: MessageRow[] = [{ id: "old-message", at: now - 400_000,
+      payload: { kind: "text", text: "fixture message" },
       to: orchestrator ? { kind: "role", role: "orchestrator" } : bound ? { kind: "program", id: bound }
         : { kind: lane ? "lane" : "session", slot: 29, openedAt: 100 },
       from: { kind: "program", id: "main" }, readBy: null }];
-    const sent: { openedAt: number; options: Options }[] = [];
+    const sent: { openedAt: number; options: Options; text: string }[] = [];
     let quiet = false, automatable = true, alive = true, rotateAtProbe = false, rotateAtSend = false;
     let autosOn = true;
     const cancelled: unknown[] = [];
@@ -90,30 +93,38 @@ export async function messageDeliveryChecks(): Promise<void> {
       pendingMessageNudges: new Set<number>(), messageNudgeTried: new Map<number, { key: string; lastAt: number }>(),
       backlogSessionKey: (s: Occupant) => `${s.id}:${s.openedAt}:${s.sessionId}`,
       BACKLOG_IDLE_MS: 300_000, REPORT_DECISION_IDLE_MS: 3000, INBOX_NUDGE_COOLDOWN_MS: 600_000,
+      // the fixture types at once: no window, one paste bounded like production
+      POSTFACH_WINDOW_MS: 0, POSTFACH_MAX_CHARS: 8_000,
+      stampMessageRead: (entry: MessageRow, current: Occupant) => {
+        if (entry.readBy !== null) return false;
+        entry.readBy = { slot: current.id, openedAt: current.openedAt, sessionId: current.sessionId };
+        return true;
+      }, saveStateNow: async () => {},
       // this fixture's sendText types at once, as sendText does with bundling off
       DELIVERY_BUNDLE_SEC: 0,
       get autosOn() { return autosOn; }, harnessAutomatable: () => automatable,
       inQuietHours: () => quiet, slotWakeInflight: new Map<number, unknown>(),
       claudeAlive: async () => { if (rotateAtProbe) slot.openedAt++; return alive; },
       paneReadiness: async () => null, DeliveryCancelled: Cancelled,
-      sendText: async (_s: Occupant, _text: string, _submit: boolean, options: Options) => {
+      sendText: async (_s: Occupant, text: string, _submit: boolean, options: Options) => {
         if (rotateAtSend) slot.openedAt++;
         try {
           if (!options.bypassQueue) await options.beforeSend?.(slot);
           options.beforePaste?.(slot);
         } catch (error) { cancelled.push(error); throw error; }
-        sent.push({ openedAt: slot.openedAt, options });
+        sent.push({ openedAt: slot.openedAt, options, text });
         return { acceptance: "observed" };
       }, MAX_HISTORY: 100, saveHistory: () => {}, logPrompt: () => {},
       logError: (_name: string, error: unknown) => { throw error; }, sendFailureDelivery: () => "failed",
       // a0387eec: a held field parks the notice; no fixture here holds one, so nothing is parked
       parkedSends: [], SendComposerOccupied: class extends Error {}, parkFleetSend: () => null };
-    const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickMessageNudge, messageInboundFor, messageAddressesFor }; }`)(deps) as {
+    const api = new Function("deps", `with (deps) { ${compiled}\nreturn { tickPostfachZustellung, tickMessageNudge, messageInboundFor, messageAddressesFor }; }`)(deps) as {
+      tickPostfachZustellung: () => Promise<void>;
       tickMessageNudge: () => Promise<void>;
       messageInboundFor: (s: Occupant, m: MessageRow) => boolean;
       messageAddressesFor: (s: Occupant) => (Address | RoleAddress)[];
     };
-    const tick = async () => { await api.tickMessageNudge(); await Bun.sleep(0); };
+    const tick = async () => { await api.tickPostfachZustellung(); await api.tickMessageNudge(); await Bun.sleep(0); };
     return { slot, rows, sent, api, tick, cancelled, lineage,
       policy: (p: { quiet?: boolean; automatable?: boolean; alive?: boolean; autosOn?: boolean;
         rotateAtProbe?: boolean; rotateAtSend?: boolean }) => {
@@ -127,15 +138,20 @@ export async function messageDeliveryChecks(): Promise<void> {
   await idle.tick();
   check("lane message: ten-second idle delivers without the backlog's five-minute wait",
     idle.sent.length === 1, `sent=${idle.sent.length}`);
-  check("lane message: explicit MAIN traffic bypasses the fifteen-minute bundle at the exact slot address",
+  check("lane message: explicit MAIN traffic bypasses the fifteen-minute bundle at the exact slot address, with the sender, the id and the whole text",
     idle.sent[0]?.options.deliveryClass === "sofort"
       && idle.sent[0]?.options.address?.kind === "slot" && idle.sent[0]?.options.address?.id === 29
-      && idle.sent[0]?.options.bypassQueue === true && typeof idle.sent[0]?.options.beforePaste === "function",
-    JSON.stringify(idle.sent[0]?.options ?? null));
+      && idle.sent[0]?.options.bypassQueue === true && typeof idle.sent[0]?.options.beforePaste === "function"
+      && idle.sent[0]?.options.path === "postfach"
+      && idle.sent[0]?.text.includes("old-message") && idle.sent[0]?.text.includes("Program main")
+      && idle.sent[0]?.text.includes("fixture message"),
+    JSON.stringify({ options: idle.sent[0]?.options ?? null, text: idle.sent[0]?.text ?? null }));
   await idle.tick();
-  check("lane message: the same unread set is nudged once", idle.sent.length === 1);
+  check("lane message: the same unread set is delivered once and receipted as read", idle.sent.length === 1
+    && idle.rows[0]?.readBy !== null);
   idle.slot.openedAt = 101; idle.slot.sessionId = "replacement";
-  idle.rows.push({ ...idle.rows[0]!, id: "replacement-message", to: { kind: "lane", slot: 29, openedAt: 101 } });
+  idle.rows.push({ ...idle.rows[0]!, id: "replacement-message", readBy: null,
+    to: { kind: "lane", slot: 29, openedAt: 101 } });
   await idle.tick();
   check("lane message: a replacement's own message is not delayed by the predecessor's cooldown",
     idle.sent.length === 2 && idle.sent[1]?.openedAt === 101, `sent=${idle.sent.length}`);
@@ -148,9 +164,11 @@ export async function messageDeliveryChecks(): Promise<void> {
   const dead = make(); dead.policy({ alive: false }); await dead.tick();
   check("lane message: a dead pane receives nothing", dead.sent.length === 0);
   const generic = make(false); generic.policy({ quiet: true }); await generic.tick();
-  check("session message: quiet hours still hold ambient nudges", generic.sent.length === 0);
+  check("session message: a session address is direct traffic now, so quiet hours no longer hold it",
+    generic.sent.length === 1 && generic.sent[0]?.options.path === "postfach");
   const genericHarness = make(false); genericHarness.policy({ automatable: false }); await genericHarness.tick();
-  check("session message: harness automation policy still holds ambient nudges", genericHarness.sent.length === 0);
+  check("session message: harness automation policy no longer holds a direct session message either",
+    genericHarness.sent.length === 1 && genericHarness.sent[0]?.options.path === "postfach");
   for (const seam of ["rotateAtProbe", "rotateAtSend"] as const) {
     const changed = make(); changed.policy({ [seam]: true }); await changed.tick();
     check(`lane message: occupant rotation at ${seam} delivers nothing to the replacement`, changed.sent.length === 0);
@@ -213,7 +231,8 @@ export async function messageDeliveryChecks(): Promise<void> {
   const pairBusy = pair(); pairBusy.slot.lastOutput = Date.now(); await pairBusy.tick();
   check("branch pair message: an active pane is still held", pairBusy.sent.length === 0);
   const ambient = make(false); ambient.slot.lastOutput = now - 10_000; await ambient.tick();
-  check("session message from a Program or the Orchestrator still waits for the backlog's quiet", ambient.sent.length === 0);
+  check("session message from a Program is direct and carries its full text now", ambient.sent.length === 1
+    && ambient.sent[0]?.options.path === "postfach", `sent=${ambient.sent.length}`);
 
   // MANGEL 141 (Vorführung 19.10.): messages to the role "orchestrator" lay unread for 16 minutes and longer.
   // In the bundle every further message cancelled the waiting notice at its deadline and the next tick
@@ -231,14 +250,16 @@ export async function messageDeliveryChecks(): Promise<void> {
       && orch.api.messageInboundFor(orch.slot, orch.rows[0]!),
     JSON.stringify(orch.api.messageAddressesFor(orch.slot)));
   await orch.tick();
-  check("role message: ten-second idle delivers the Orchestratorin's notice to her exact slot, without the bundle",
+  check("role message: ten-second idle delivers the Orchestratorin's message with its full text to her exact slot, without the bundle",
     orch.sent.length === 1 && orch.sent[0]?.options.deliveryClass === "sofort"
       && orch.sent[0]?.options.address?.kind === "slot" && orch.sent[0]?.options.address?.id === 29
-      && orch.sent[0]?.options.bypassQueue === true,
+      && orch.sent[0]?.options.bypassQueue === true && orch.sent[0]?.options.path === "postfach"
+      && orch.sent[0]?.text.includes("old-message") && orch.sent[0]?.text.includes("fixture message"),
     `sent=${orch.sent.length} options=${JSON.stringify(orch.sent[0]?.options ?? null)}`);
   await orch.tick();
-  check("role message: the same unread set is nudged once", orch.sent.length === 1, `sent=${orch.sent.length}`);
-  orch.rows.push({ ...orch.rows[0]!, id: "further-message" });
+  check("role message: the same unread set is delivered once and receipted as read", orch.sent.length === 1
+    && orch.rows[0]?.readBy !== null, `sent=${orch.sent.length}`);
+  orch.rows.push({ ...orch.rows[0]!, id: "further-message", readBy: null });
   await orch.tick();
   check("role message: a further message is announced at once instead of restarting a wait",
     orch.sent.length === 2, `sent=${orch.sent.length}`);

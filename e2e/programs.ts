@@ -4410,14 +4410,14 @@ export async function run(ctx: Ctx): Promise<void> {
     catch { return []; }
   };
   const nudgeCount = (): number => sendAuditRows().filter((row) => row.event === "send"
-    && row.slot === orchFree && row.detail?.startsWith("inbox-nudge ")).length;
+    && row.slot === orchFree && row.detail?.startsWith("postfach ")).length;
   const beforeNudge = nudgeCount();
   const directOrch = await selfSend(slotToken(successorSlot), { to: orchAddress,
     payload: { kind: "text", text: "direct orchestrator address" }, idempotencyKey: "escalate-direct" });
   const directBody = await directOrch.json() as { holder?: { slot?: number }; escalatedTo?: string | null;
     message?: { id?: string } };
   const beforeFirstTick = nudgeCount();
-  check("message send: sending records the message without an immediate inbox-nudge send",
+  check("message send: sending records the message without an immediate postfach send",
     directOrch.ok && beforeFirstTick === beforeNudge,
     `send=${directOrch.status} nudges=${beforeFirstTick - beforeNudge}`);
   const directView = await selfMessages(msgOrchToken);
@@ -4430,13 +4430,13 @@ export async function run(ctx: Ctx): Promise<void> {
     JSON.stringify(directPosition.position?.waitingOnMe));
   await restartSrv({ FLEET_INBOX_NUDGE_MS: "1000", FLEET_BACKLOG_NUDGE_IDLE_MS: "0" });
   try { await until(() => nudgeCount() >= beforeNudge + 1, { timeoutMs: 20_000, stepMs: 100,
-    what: "one inbox-nudge send audit for direct orchestrator message" }); } catch { /* asserted below */ }
+    what: "one postfach send audit for direct orchestrator message" }); } catch { /* asserted below */ }
   const directPromptCount = async (): Promise<number> => (await plogRead()).filter((e) =>
     e.slot === orchFree && e.openedAt === readState().slots?.[String(orchFree)]?.openedAt
       && e.text.startsWith("[fleet message]")).length;
   const firstMessagePrompts = await directPromptCount();
   await Bun.sleep(1200);
-  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one inbox-nudge send on the tick",
+  check("message escalation: MAIN addresses the unique Orchestrator, whose own view holds the message and whose slot gets one postfach send with its full text on the tick",
     directOrch.ok && directBody.holder?.slot === orchFree && directBody.escalatedTo === null
       && directView.view?.entries.some((m) => m.id === directBody.message?.id) === true
       && nudgeCount() === beforeNudge + 1 && firstMessagePrompts === 1

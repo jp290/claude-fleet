@@ -214,6 +214,8 @@ import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KO
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
+import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
+  type PostfachEntry } from "./server/postfach-zustellen";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
@@ -10223,6 +10225,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   gitInfo.delete(s.id);
   repoInfo.delete(s.id); // canonical repo belongs to this occupant/cwd just as much as gitInfo does
   inboxNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
+  postfachAttempted.delete(s.id); // nor an attempt of the previous occupant
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
@@ -10391,6 +10394,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reviewInflight.delete(s.id);
   reviewAutoTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
+  postfachAttempted.delete(s.id);
   hintLedger.forget(s.id);
   thresholdActs.delete(s.id);
   successionStarted.delete(s.id);
@@ -10889,6 +10893,7 @@ type SendPath =
   | "merge-verdict"     // the terminal merge verdict typed back into that lane
   | "audit-ping"        // a post-land audit red offered to an eligible main session
   | "inbox-nudge"       // "your program's inbox has unread entries"
+  | "postfach"          // a message addressed to this session or its role, with its full text
   | "report-orphan"     // an undecided Program report lost its MAIN
   | "program-event-orphan" // a terminal Program event or merge verdict lost its MAIN
   | "attention-orchestrator" // a bound MAIN's question waits first on the unique Orchestratorin
@@ -10945,6 +10950,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "merge-verdict": "Merge-Urteil",
   "audit-ping": "Post-Land-Audit-Hinweis",
   "inbox-nudge": "Inbox-Hinweis",
+  "postfach": "Postfach-Nachricht",
   "report-orphan": "Hinweis auf verwaisten Program-Report",
   "program-event-orphan": "Hinweis auf unzustellbares Program-Ereignis",
   "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
@@ -10973,6 +10979,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
   "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
   "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
   "inbox-nudge": "naechster Schritt: lies die ungelesenen Eintraege, die der Hinweis nennt · Grenze: keine neue Befugnis",
+  "postfach": "naechster Schritt: lies die Nachricht und antworte, wenn noetig · Grenze: keine neue Befugnis",
   "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
   "program-event-orphan": "naechster Schritt: pruefe das benannte Ereignis · Grenze: nur bestehende Tueren",
   "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
@@ -25539,6 +25546,21 @@ const AUDIT_PING_MS = Math.max(0, Number(process.env.FLEET_AUDIT_PING_MS ?? 0) |
 const INBOX_NUDGE_MS = Math.max(0, Number(process.env.FLEET_INBOX_NUDGE_MS ?? 60_000) | 0);
 const INBOX_NUDGE_COOLDOWN_MS = 10 * 60_000;
 const BACKLOG_IDLE_MS = Math.max(0, Number(process.env.FLEET_BACKLOG_NUDGE_IDLE_MS ?? 300_000) | 0);
+// THE POSTFACH'S OWN WINDOW, and it is deliberately NOT DELIVERY_BUNDLE_SEC: that bundle carries
+// events, reports and Program-inbox hints and stays at its fifteen minutes. Here a message addressed
+// to a session or its role waits at most about a minute, so several that arrive together travel in
+// one paste (owner: „[Zitat entfernt]“). The tick is shorter than the window
+// so the delivery lands close to the minute; both shorten with FLEET_INBOX_NUDGE_MS, because a suite
+// that turns the message timers down must not keep a production-minute window (0 disables both, as it
+// disables tickMessageNudge).
+const POSTFACH_WINDOW_MS = INBOX_NUDGE_MS === 0 ? 0 : Math.max(0, Number(process.env.FLEET_POSTFACH_FENSTER_SEC ??
+  Math.min(60, INBOX_NUDGE_MS / 1000)) | 0) * 1000;
+const POSTFACH_TICK_MS = INBOX_NUDGE_MS === 0 ? 0 : Math.max(250, Number(process.env.FLEET_POSTFACH_MS ??
+  Math.min(10_000, INBOX_NUDGE_MS)) | 0);
+// One paste is bounded by characters, not by a count of messages: a full message is 2000 chars and
+// three of them plus their sender heads still fit comfortably under the 32 KiB paste ceiling. The
+// oldest entries win; whatever does not fit waits for the next tick and is not lost.
+const POSTFACH_MAX_CHARS = 8_000;
 // Main-session migration is OFF unless the owner arms its threshold. Unlike auto-③ this types
 // into a main pane and can create a successor, so every deployment parameter is explicit and 0 on
 // the threshold means no timer at all — not a 60s no-op that still reads every transcript.
@@ -26602,33 +26624,27 @@ async function tickMessageNudge(): Promise<void> {
     for (const s of slots) {
       if (!s.cwd || s.lastOutput === 0 || pendingMessageNudges.has(s.id)
         || parkedSends.some((p) => p.fleet?.key.startsWith(`inbox-nudge:${s.id}:`))) continue;
-      const unreadIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
-        .map((m) => m.id).sort();
+      const unreadIds = messages.entries.filter((m) => m.readBy === null && !isDirectPostfachTarget(m.to)
+        && messageInboundFor(s, m)).map((m) => m.id).sort();
       if (!unreadIds.length) continue;
       const session = backlogSessionKey(s);
       const openedAt = s.openedAt;
       const key = `${session}|${unreadIds.join(",")}`;
       const prior = messageNudgeTried.get(s.id);
-      // A MAIN's addressed lane message is direct traffic, like a report decision: short idle,
-      // no night/automation policy refusal, and no ambient fifteen-minute delivery bundle. So is a
-      // branch pair's message (K13: only the opener and the session on its branch write session to
-      // session). So is a message to the role "orchestrator" (Mangel 141): in the bundle, every further
-      // message cancelled the waiting notice at its deadline (checkRecipient) and the next tick queued a
-      // fresh fifteen minutes — a steadily asked Orchestratorin was never reached, and the clarification
-      // chain MAIN → Orchestratorin hangs on this link. So is the way back, the Orchestratorin's message
-      // to a Program (bau/ohne-owner-token Schnitt 4): it replaces her /send under the owner token, which
-      // reached the MAIN at once. Every other session's notice waits in the bundle, as the inbox hint
-      // does (tickInboxNudge).
+      // WHAT IS LEFT HERE IS THE BUNDLED ANNOUNCEMENT, not the message text. Messages addressed to a
+      // session, a lane or a role are delivered with their full text by tickPostfachZustellung; this
+      // tick sees only Program-addressed rows (including those an unbound Program escalated to the
+      // Orchestratorin). Among them a MAIN's lane message and the Orchestratorin's way back to a
+      // Program stay direct traffic, as before: short idle, no night/automation refusal, no bundle.
       const direct = !!s.worktree || messages.entries.some((m) => unreadIds.includes(m.id)
-        && (m.from.kind === "session" && m.to.kind === "session" || m.to.kind === "role" && m.to.role === "orchestrator"
-          || m.from.kind === "role" && m.from.role === "orchestrator" && m.to.kind === "program"));
+        && m.from.kind === "role" && m.from.role === "orchestrator" && m.to.kind === "program");
       if (prior?.key === key || (!direct && prior && now - prior.lastAt < INBOX_NUDGE_COOLDOWN_MS)) continue;
       const bundled = !direct && DELIVERY_BUNDLE_SEC > 0;
       const verdict = await canDeliver(s, { now, idleMs: direct ? REPORT_DECISION_IDLE_MS : bundled ? 0 : BACKLOG_IDLE_MS,
         ...(direct ? { harness: false, quietHours: false } : { quietHours: !bundled }) });
       if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
-      const currentIds = messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m))
-        .map((m) => m.id).sort();
+      const currentIds = messages.entries.filter((m) => m.readBy === null && !isDirectPostfachTarget(m.to)
+        && messageInboundFor(s, m)).map((m) => m.id).sort();
       if (currentIds.join(",") !== unreadIds.join(",")) continue;
       const text = `[fleet message] ${unreadIds.length} ungelesene adressierte Nachricht${unreadIds.length === 1 ? "" : "en"} fuer diese Session — `
         + "GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
@@ -26637,8 +26653,8 @@ async function tickMessageNudge(): Promise<void> {
         let recipient = s;
         try {
           const checkRecipient = (current: Slot) => {
-            const ids = messages.entries.filter((m) => m.readBy === null && messageInboundFor(current, m))
-              .map((m) => m.id).sort();
+            const ids = messages.entries.filter((m) => m.readBy === null && !isDirectPostfachTarget(m.to)
+              && messageInboundFor(current, m)).map((m) => m.id).sort();
             if (current.id !== s.id || current.openedAt !== openedAt || backlogSessionKey(current) !== session
               || ids.join(",") !== unreadIds.join(","))
               throw new DeliveryCancelled(`messages for slot ${s.id} changed before paste`);
@@ -26677,6 +26693,118 @@ async function tickMessageNudge(): Promise<void> {
       })();
     }
   } finally { messageNudgeBusy = false; }
+}
+
+// THE POSTFACH ITSELF: a message addressed to this session or to its role arrives with sender, id and
+// full text (Auftrag „Postfach-Nachrichten kommen mit ihrem Wortlaut in der Session an“). The pure part
+// lives in server/postfach-zustellen.ts; this tick only supplies the live slots, the gate and the
+// receipt. It is NOT the bundle: DELIVERY_BUNDLE_SEC keeps its fifteen minutes for events, reports and
+// Program-inbox hints. The window here is about a minute, so several messages that arrive together are
+// typed together. An occupied composer parks the paste (parkFleetSend) instead of dropping it.
+const postfachAttempted = new Map<number, { session: string; ids: Set<string> }>();
+const pendingPostfach = new Set<number>();
+let postfachBusy = false;
+
+function postfachSenderLabel(a: MessageAddress): string {
+  if (a.kind === "program") return `Program ${a.id}`;
+  if (a.kind === "role") return a.role === "owner" ? "Owner"
+    : a.role === "orchestrator" ? "Orchestratorin" : `Rolle ${a.role}`;
+  return `${a.kind === "lane" ? "Lane" : "Session"} Slot ${a.slot}`;
+}
+function postfachEntryOf(m: Message): PostfachEntry {
+  return { id: m.id, at: m.at, from: postfachSenderLabel(m.from), target: m.to, text: m.payload.text };
+}
+function postfachSkipped(s: Slot): ReadonlySet<string> {
+  const row = postfachAttempted.get(s.id);
+  return row && row.session === backlogSessionKey(s) ? row.ids : new Set<string>();
+}
+// WHAT WAS TYPED IS NOT OFFERED AGAIN, even when acceptance was unobservable: the message stays unread
+// in the record (no receipt without observation), but a second paste of the same text would be noise.
+// A cancelled or parked send never reaches this, so a message that did not land is still retried.
+function rememberPostfachAttempt(s: Slot, ids: readonly string[]): void {
+  const session = backlogSessionKey(s);
+  const row = postfachAttempted.get(s.id);
+  const set = row && row.session === session ? row.ids : new Set<string>();
+  for (const id of ids) set.add(id);
+  postfachAttempted.set(s.id, { session, ids: set });
+}
+function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
+  let stamped = false;
+  for (const id of postfachReceiptIds(entries, acceptance)) {
+    const entry = messages.entries.find((m) => m.id === id && m.readBy === null);
+    if (entry && stampMessageRead(entry, current)) stamped = true;
+  }
+  return stamped;
+}
+
+async function tickPostfachZustellung(): Promise<void> {
+  if (postfachBusy) return;
+  postfachBusy = true;
+  try {
+    const now = Date.now();
+    for (const s of slots) {
+      if (!s.cwd || s.lastOutput === 0 || pendingPostfach.has(s.id)
+        || parkedSends.some((p) => p.fleet?.key.startsWith(`postfach:${s.id}:`))) continue;
+      const entries = messages.entries
+        .filter((m) => m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(s, m))
+        .map(postfachEntryOf);
+      const plan = planPostfachDelivery(entries, now, { windowMs: POSTFACH_WINDOW_MS,
+        maxChars: POSTFACH_MAX_CHARS, skip: postfachSkipped(s) });
+      if (!plan) continue;
+      const session = backlogSessionKey(s);
+      const openedAt = s.openedAt;
+      const ids = plan.entries.map((entry) => entry.id);
+      // The same gate as the direct announcement before it: a short idle, no night/automation refusal,
+      // because a message from a teammate is not an unattended work prompt.
+      const verdict = await canDeliver(s, { now, idleMs: REPORT_DECISION_IDLE_MS,
+        harness: false, quietHours: false });
+      if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
+      const stillThere = (current: Slot): boolean => ids.every((id) => messages.entries.some((m) =>
+        m.id === id && m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(current, m)));
+      if (!stillThere(s)) continue;
+      pendingPostfach.add(s.id);
+      void (async () => {
+        let recipient = s;
+        const text = plan.text;
+        const checkRecipient = (current: Slot): void => {
+          if (current.id !== s.id || current.openedAt !== openedAt || backlogSessionKey(current) !== session
+            || !stillThere(current))
+            throw new DeliveryCancelled(`Postfach for slot ${s.id} changed before paste`);
+          recipient = current;
+        };
+        const delivered = (current: Slot, acceptance: Acceptance): void => {
+          const sentAt = Date.now();
+          rememberPostfachAttempt(current, ids);
+          if (acknowledgePostfach(current, plan.entries, acceptance))
+            void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
+          current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+          saveHistory(current);
+          logPrompt(current, text, "auto", sentAt, undefined, acceptance);
+        };
+        const options = (): SendTextOptions => ({ path: "postfach", rollbackOwnPayload: true,
+          deliveryClass: "sofort", address: { kind: "slot", id: s.id }, bypassQueue: true,
+          beforePaste: checkRecipient, beforeSend: async (current) => checkRecipient(current) });
+        try {
+          const { acceptance } = await sendText(s, text, true, options());
+          delivered(recipient, acceptance);
+        } catch (e) {
+          // a held field parks the paste instead of dropping it; a message read or added meanwhile
+          // cancels it through checkRecipient, nothing typed
+          if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, {
+            key: `postfach:${s.id}:${session}|${ids.join(",")}`,
+            send: (current) => sendText(current, text, true, { ...options(), requireAgent: true }),
+            onDelivered: delivered }) === null) return;
+          throw e;
+        }
+      })().catch((e: unknown) => {
+        if (!(e instanceof DeliveryCancelled)) {
+          rememberPostfachAttempt(s, ids);
+          logError("postfachZustellung", e);
+          logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+        }
+      }).finally(() => { pendingPostfach.delete(s.id); });
+    }
+  } finally { postfachBusy = false; }
 }
 
 // --- THE HINT AT THE THRESHOLD (K9 S3). Its budget per conversation is server/succession.ts#HintLedger:
@@ -45986,6 +46114,7 @@ if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
+if (POSTFACH_TICK_MS > 0) setInterval(() => void tickPostfachZustellung().catch((e: unknown) => logError("tickPostfachZustellung", e)), POSTFACH_TICK_MS);
 if (MIGRATE_PCT > 0) setInterval(() => void tickMigrate().catch((e: unknown) => logError("tickMigrate", e)), MIGRATE_TICK_MS);
 if (LANE_STAND_COMMITS > 0 || LANE_STAND_IDLE_MS > 0) setInterval(() => void tickLaneStand().catch((e: unknown) => logError("tickLaneStand", e)), AUTOS_TICK_MS);
 setInterval(() => void tickKeepCache().catch((e: unknown) => logError("tickKeepCache", e)), MIGRATE_TICK_MS);

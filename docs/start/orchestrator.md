@@ -102,5 +102,5 @@ Read when you need it:
 ## Handing over
 
 Fleet tells you when your context is due. Your handover says where you are on the way: which step, what is open
-(with IDs) and what you would do next. If you learned that the direction should change, say so there as a proposal
-to the owner. A lesson about how to work goes into a pack, not into a handover.
+(with IDs) and what you would do next. If you learned that the direction should change, tell the owner
+before you hand over. A lesson about how to work goes into a pack, not into a handover.

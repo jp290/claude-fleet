@@ -574,6 +574,9 @@ export interface SlotInfo {
   // the role the server gives this session (server.ts#positionRole), separate from the label the
   // owner typed. ABSENT = no role a label could claim: a lane (see `worktree`) or a plain session.
   role?: "program-main" | "orchestrator";
+  // how this session's Postfach arrives (Slot.zustellung, server/zustellung.ts). ABSENT = not set,
+  // and the role default applies: a slot with a worktree (a lane) bundles, every other comes direct.
+  zustellung?: "direkt" | "gebuendelt";
   // a task lane's full title, derived by the server from its founding card on every poll
   // (src/suitemeter.ts#laneTitleOf) — absent when there was nothing to derive it from
   taskTitle?: string;

@@ -47,7 +47,7 @@ const sameSet = (got: number[] | undefined, want: number[]): boolean =>
 export async function messageDeliveryChecks(): Promise<void> {
   type Occupant = { id: number; cwd: string; openedAt: number; sessionId: string;
     worktree: object | null; lastOutput: number; label: string; history: unknown[];
-    laneSeats: { openedAt: number }[]; lineageId?: string };
+    laneSeats: { openedAt: number }[]; lineageId?: string; zustellung?: "direkt" | "gebuendelt" };
   type Address = { kind: "lane" | "session"; slot: number; openedAt: number };
   type RoleAddress = { kind: "role"; role: "orchestrator" };
   type ProgramAddress = { kind: "program"; id: string };
@@ -63,6 +63,8 @@ export async function messageDeliveryChecks(): Promise<void> {
     return source.slice(start, end);
   };
   const code = [readFileSync(`${ROOT}/server/postfach-zustellen.ts`, "utf8").replace(/^export /gm, ""),
+    // the setting's pure decision is compiled in, like the postfach leaf: the tick calls it
+    readFileSync(`${ROOT}/server/zustellung.ts`, "utf8").replace(/^export /gm, "").replace(/^import .*$/gm, ""),
     section("const sameAddress =", "const samePayload ="),
     section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
     section("function messageInboundFor(", "function programMessageStatus("),
@@ -75,7 +77,7 @@ export async function messageDeliveryChecks(): Promise<void> {
   const make = (lane = true, orchestrator = false, bound?: string) => {
     const slot: Occupant = { id: 29, cwd: "/fixture/lane", openedAt: 100, sessionId: "old",
       worktree: lane ? {} : null, lastOutput: now - 400_000, label: orchestrator ? "🎛 Orchestratorin" : "fixture",
-      history: [], laneSeats: [] };
+      history: [], laneSeats: [], zustellung: "direkt" };
     const lineage: { lineageId: string; from: { slot: number; openedAt: number } }[] = [];
     const rows: MessageRow[] = [{ id: "old-message", at: now - 400_000,
       payload: { kind: "text", text: "fixture message" },
@@ -149,6 +151,15 @@ export async function messageDeliveryChecks(): Promise<void> {
   await idle.tick();
   check("lane message: the same unread set is delivered once and receipted as read", idle.sent.length === 1
     && idle.rows[0]?.readBy !== null);
+  // the new default: no setting on a lane means the message waits in the existing bundle, full text
+  const bundled = make(); bundled.slot.zustellung = undefined; bundled.slot.lastOutput = now - 10_000;
+  await bundled.tick();
+  check("lane default: without a setting a lane hands the message to the bundle, with the whole text",
+    bundled.sent.length === 1 && bundled.sent[0]?.options.deliveryClass === "buendelbar"
+      && bundled.sent[0]?.options.bypassQueue !== true && bundled.sent[0]?.options.path === "postfach"
+      && bundled.sent[0]?.text.includes("fixture message")
+      && bundled.rows[0]?.readBy !== null,
+    JSON.stringify({ options: bundled.sent[0]?.options ?? null, text: bundled.sent[0]?.text ?? null }));
   idle.slot.openedAt = 101; idle.slot.sessionId = "replacement";
   idle.rows.push({ ...idle.rows[0]!, id: "replacement-message", readBy: null,
     to: { kind: "lane", slot: 29, openedAt: 101 } });

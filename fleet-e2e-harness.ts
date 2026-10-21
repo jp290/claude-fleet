@@ -497,7 +497,7 @@ export async function checkCodexSpawnFixtures(source: string,
       if (fixture.throwAt === name) throw new Error("fixture open failed");
     };
     const maps = ["mergeVerdict", "laneReviewParked", "mergeInflight", "mergeStart", "aliveInfo", "paneModelInfo",
-      "gitOpInfo", "laneHunkInfo", "gitInfo", "repoInfo", "inboxNudgeTried", "postfachAttempted",
+      "gitOpInfo", "laneHunkInfo", "gitInfo", "repoInfo", "inboxNudgeTried", "postfachAttempted", "postfachQueued",
       "harvest", "startCache", "mergeParked", "mergeLast"];
     const scope: Record<string, unknown> = Object.fromEntries(maps.map((name) => [name, new Map()]));
     const lease = fixture.founding ? { founding: { target: { openedAt: 20, selfTokenHash: "hash" } } } : null;
@@ -609,6 +609,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
           // ...and its rights (server/rechte.ts), claude only — a codex fixture carries none
           carriedRechte: null, carriedAgentMd: null,
+          // ...and its delivery choice (server/zustellung.ts); these slots carry none
+          carriedZustellung: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });
@@ -1437,7 +1439,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const randomBytes=()=>({toString:()=>"successor"}),historyPath=()=>"/history",rm=async()=>{};
       const harvest=new Map(),startCache=new Map(),mergeParked=new Map(),mergeLast=new Map(),mergeInflight=new Map(),mergeStart=new Map();
       const aliveInfo=new Map(),paneModelInfo=new Map(),gitOpInfo=new Map(),laneHunkInfo=new Map(),gitInfo=new Map(),repoInfo=new Map();
-      const inboxNudgeTried=new Set(),postfachAttempted=new Map();
+      const inboxNudgeTried=new Set(),postfachAttempted=new Map(),postfachQueued=new Map();
       const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
       const merkeStart=async()=>{},STATE_DIR="/fixture-state";
       ${open}

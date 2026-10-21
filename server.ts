@@ -10,6 +10,8 @@ import { createClaudeQuotaReader } from "./server/usage";
 import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn } from "./server/session-start";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
+  type Zustellung } from "./server/zustellung";
 import { openerGeladen, openerVon } from "./server/opener";
 import type { Rechte } from "./session-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
@@ -215,7 +217,7 @@ import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/tr
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
 import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
-  type PostfachEntry } from "./server/postfach-zustellen";
+  type PostfachEntry, type PostfachPlan } from "./server/postfach-zustellen";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
@@ -2700,6 +2702,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   lauf: null,
   rechte: null,
   agentMd: null,
+  zustellung: null,
   packMcp: [],
   context: null,
   permissions: null,
@@ -5895,12 +5898,12 @@ function stateSnapshot(): string {
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
     releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
-    handover?: HandoverSetting;
+    handover?: HandoverSetting; zustellung?: Zustellung;
     browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; compaction?: SlotCompaction; spawn?: SlotSpawn; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}) } } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}) } } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -10043,7 +10046,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // what the session may do (server/rechte.ts), already judged by its door; claude only
   rechte: Rechte | null = null,
   // the Agent-MD of its profile (server/agentmd.ts), already read by its door; claude only
-  agentMd: AgentMd | null = null): Promise<SlotOpenResult> {
+  agentMd: AgentMd | null = null,
+  // how its Postfach arrives (server/zustellung.ts): the choice a successor carries, else null
+  zustellung: Zustellung | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10164,6 +10169,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.rechte = h.id === "claude" ? rechte : null; // ...nor its rules
   s.agentMd = h.id === "claude" ? agentMd : null; // ...nor its Agent-MD
+  s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
   s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
   s.lauf = null; // ...nor its run: the window binds THIS one after the start (server/laeufe.ts)
   // ...nor a pane the previous occupant's MCP servers: only THIS founding's plan names them, claude only
@@ -10395,6 +10401,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reviewAutoTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
   postfachAttempted.delete(s.id);
+  postfachQueued.delete(s.id);
   hintLedger.forget(s.id);
   thresholdActs.delete(s.id);
   successionStarted.delete(s.id);
@@ -10413,6 +10420,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.lauf = null;
   s.rechte = null;
   s.agentMd = null;
+  s.zustellung = null;
   s.packMcp = [];
   s.context = null;
   s.permissions = null;
@@ -13818,6 +13826,9 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   // the owner's setting is the line's (server/succession.ts) — a lane's baton and its harness switch
   // keep it like every other succession; openSlot clears it, the restamp below puts it back
   const lineSetting = ownSetting(s.handover, { slot: s.id, openedAt: priorOpenedAt });
+  // ...and the Zustellung is the setup's: openSlot clears it, this restamp keeps the lane's choice
+  // (no choice = null, and the successor then follows the role default again)
+  const lineZustellung = s.zustellung;
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
   const seats: LaneSeat[] = [...s.laneSeats,
     { openedAt: priorOpenedAt, handedAt: Date.now(), sessionId: seatSessionId(s.sessionId), cwd }].slice(-LANE_SEATS_MAX);
@@ -13842,6 +13853,7 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
     s.originId = provenance.originId;
     s.programId = provenance.programId;
     s.releasedBy = provenance.releasedBy;
+    s.zustellung = lineZustellung;
     s.laneSuccessions = successions;
     s.laneSeats = seats;
     if (lineSetting) {
@@ -14229,6 +14241,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // ...and what it may do, as long as the successor is Claude Code too (server/rechte.ts)
   const carriedRechte = harnessOf(harness).id === "claude" ? s.rechte : null;
   const carriedAgentMd = harnessOf(harness).id === "claude" ? s.agentMd : null;
+  // ...and how its Postfach arrives, on every harness: the setting is no agent rule
+  const carriedZustellung = s.zustellung;
   const planned = await carrySlotPlan(s.plan, { harness, model: opts.spawn.model, effort: opts.spawn.effort }, "Nachfolge");
   if (opts.beforeKill) {
     const refused = await opts.beforeKill();
@@ -14241,7 +14255,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd),
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -20708,14 +20722,17 @@ function fassungAufgabeFuerPlan(rolle: FassungRolle, repoRoot: string): FassungA
 
 function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot: string): FassungAbschnittEingang[] {
   const empf = "Empfänger: unbekannt";
-  if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter", laneExitFooter(harness, null), false)];
-  if (rolle === "orchestrator") return fassungOrchestratorArbeitet(repoRoot);
+  // HOW THE POSTFACH WILL ARRIVE: before the start there is no setting, so the role decides — a
+  // lane bundles, everything else comes direct (server/zustellung.ts)
+  const zustellung = zustellungAbschnitt(null, rolle === "lane");
+  if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter", laneExitFooter(harness, null), false), zustellung];
+  if (rolle === "orchestrator") return [...fassungOrchestratorArbeitet(repoRoot), zustellung];
   if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
     [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false)];
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false), zustellung];
   return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
-    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true)];
+    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
 
 async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; modell: string | null; effort: string | null;
@@ -20792,15 +20809,17 @@ async function fassungUebergabe(s: Slot, rolle: FassungRolle): Promise<FassungAb
 function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): FassungAbschnittEingang[] {
   const receiver = selfPosition(s).receiver;
   const empf = receiver ? `Empfänger: ${receiver.role} Slot ${receiver.slot}` : "Empfänger: unbekannt";
+  // …and how this session's Postfach arrives, with its source: the owner's value, or the role default
+  const zustellung = zustellungAbschnitt(s.zustellung, !!s.worktree);
   if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter",
-    laneExitFooter(s.harness, receiver), false)];
-  if (rolle === "orchestrator") return fassungOrchestratorArbeitet(repoRoot);
+    laneExitFooter(s.harness, receiver), false), zustellung];
+  if (rolle === "orchestrator") return [...fassungOrchestratorArbeitet(repoRoot), zustellung];
   if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
     [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false)];
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false), zustellung];
   return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
-    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true)];
+    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
 
 async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung> {
@@ -26702,6 +26721,10 @@ async function tickMessageNudge(): Promise<void> {
 // Program-inbox hints. The window here is about a minute, so several messages that arrive together are
 // typed together. An occupied composer parks the paste (parkFleetSend) instead of dropping it.
 const postfachAttempted = new Map<number, { session: string; ids: Set<string> }>();
+// MESSAGES THAT WAIT IN THE BUNDLE ARE OFFERED NO MORE. They are not typed yet, so they are not an
+// "attempt" either: this row is released when the send lands, is refused for good, or is parked;
+// until then the next tick must not queue the same text a second time.
+const postfachQueued = new Map<number, { session: string; ids: Set<string> }>();
 const pendingPostfach = new Set<number>();
 let postfachBusy = false;
 
@@ -26715,19 +26738,33 @@ function postfachEntryOf(m: Message): PostfachEntry {
   return { id: m.id, at: m.at, from: postfachSenderLabel(m.from), target: m.to, text: m.payload.text };
 }
 function postfachSkipped(s: Slot): ReadonlySet<string> {
-  const row = postfachAttempted.get(s.id);
-  return row && row.session === backlogSessionKey(s) ? row.ids : new Set<string>();
+  const session = backlogSessionKey(s);
+  const skip = new Set<string>();
+  for (const map of [postfachAttempted, postfachQueued]) {
+    const row = map.get(s.id);
+    if (row && row.session === session) for (const id of row.ids) skip.add(id);
+  }
+  return skip;
+}
+function rememberInPostfachMap(map: Map<number, { session: string; ids: Set<string> }>, s: Slot,
+  ids: readonly string[]): void {
+  const session = backlogSessionKey(s);
+  const row = map.get(s.id);
+  const set = row && row.session === session ? row.ids : new Set<string>();
+  for (const id of ids) set.add(id);
+  map.set(s.id, { session, ids: set });
+}
+function forgetPostfachQueued(s: Slot, ids: readonly string[]): void {
+  const row = postfachQueued.get(s.id);
+  if (!row || row.session !== backlogSessionKey(s)) return;
+  for (const id of ids) row.ids.delete(id);
+  if (!row.ids.size) postfachQueued.delete(s.id);
 }
 // WHAT WAS TYPED IS NOT OFFERED AGAIN, even when acceptance was unobservable: the message stays unread
 // in the record (no receipt without observation), but a second paste of the same text would be noise.
-// A cancelled or parked send never reaches this, so a message that did not land is still retried.
-function rememberPostfachAttempt(s: Slot, ids: readonly string[]): void {
-  const session = backlogSessionKey(s);
-  const row = postfachAttempted.get(s.id);
-  const set = row && row.session === session ? row.ids : new Set<string>();
-  for (const id of ids) set.add(id);
-  postfachAttempted.set(s.id, { session, ids: set });
-}
+// A cancelled send never reaches this, so a message that did not land is still retried.
+const rememberPostfachAttempt = (s: Slot, ids: readonly string[]): void =>
+  rememberInPostfachMap(postfachAttempted, s, ids);
 function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
   let stamped = false;
   for (const id of postfachReceiptIds(entries, acceptance)) {
@@ -26735,6 +26772,107 @@ function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], a
     if (entry && stampMessageRead(entry, current)) stamped = true;
   }
   return stamped;
+}
+
+interface PostfachHandlers {
+  text: string;
+  checkRecipient: (current: Slot) => void;
+  delivered: (current: Slot, acceptance: Acceptance) => void;
+  recipient: () => Slot;
+}
+// The three pieces a direct send, a bundled entry and a parked resend share: the text of this plan,
+// the identity check that cancels a paste whose messages or occupant moved, and the delivery
+// bookkeeping (attempt remembered, receipt only on observation, history and prompt log).
+function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt: number,
+  ids: readonly string[], stillThere: (current: Slot) => boolean): PostfachHandlers {
+  let recipient = s;
+  const text = plan.text;
+  const checkRecipient = (current: Slot): void => {
+    if (current.id !== s.id || current.openedAt !== openedAt || backlogSessionKey(current) !== session
+      || !stillThere(current))
+      throw new DeliveryCancelled(`Postfach for slot ${s.id} changed before paste`);
+    recipient = current;
+  };
+  const delivered = (current: Slot, acceptance: Acceptance): void => {
+    const sentAt = Date.now();
+    forgetPostfachQueued(current, ids);
+    rememberPostfachAttempt(current, ids);
+    if (acknowledgePostfach(current, plan.entries, acceptance))
+      void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
+    current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
+    saveHistory(current);
+    logPrompt(current, text, "auto", sentAt, undefined, acceptance);
+  };
+  return { text, checkRecipient, delivered, recipient: () => recipient };
+}
+
+// DIRECT (the behaviour before this setting): the one-minute postfach window, then the same short
+// idle gate as the announcement before it. A held field parks the paste instead of dropping it.
+async function zustellePostfachDirekt(s: Slot, plan: PostfachPlan, session: string, openedAt: number,
+  ids: readonly string[], stillThere: (current: Slot) => boolean): Promise<void> {
+  const verdict = await canDeliver(s, { now: Date.now(), idleMs: REPORT_DECISION_IDLE_MS,
+    harness: false, quietHours: false });
+  if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) return;
+  if (!stillThere(s)) return;
+  pendingPostfach.add(s.id);
+  const h = postfachHandlers(s, plan, session, openedAt, ids, stillThere);
+  const options = (requireAgent = false): SendTextOptions => ({ path: "postfach", rollbackOwnPayload: true,
+    deliveryClass: "sofort", address: { kind: "slot", id: s.id }, bypassQueue: true,
+    ...(requireAgent ? { requireAgent: true as const } : {}),
+    beforePaste: h.checkRecipient, beforeSend: async (current) => h.checkRecipient(current) });
+  void (async () => {
+    try {
+      const { acceptance } = await sendText(s, h.text, true, options());
+      h.delivered(h.recipient(), acceptance);
+    } catch (e) {
+      // a held field parks the paste instead of dropping it; a message read or added meanwhile
+      // cancels it through checkRecipient, nothing typed
+      if (e instanceof SendComposerOccupied && parkFleetSend(s, e, h.text, {
+        key: `postfach:${s.id}:${session}|${ids.join(",")}`,
+        send: (current) => sendText(current, h.text, true, options(true)),
+        onDelivered: h.delivered }) === null) return;
+      throw e;
+    }
+  })().catch((e: unknown) => {
+    if (!(e instanceof DeliveryCancelled)) {
+      rememberPostfachAttempt(s, ids);
+      logError("postfachZustellung", e);
+      logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+    }
+  }).finally(() => { pendingPostfach.delete(s.id); });
+}
+
+// GEBUENDELT: the message goes into the bundle that already exists for this slot, whose deadline
+// is DELIVERY_BUNDLE_SEC. It is typed there with its full text — one message as itself, several
+// under the bundle header, each mark carrying this path's sentence. The entry is remembered as
+// queued so the next tick does not queue the same text again; the receipt waits for the bundle's
+// observed acceptance, exactly as the direct path does.
+function zustellePostfachGebuendelt(s: Slot, plan: PostfachPlan, session: string, openedAt: number,
+  ids: readonly string[], stillThere: (current: Slot) => boolean): void {
+  rememberInPostfachMap(postfachQueued, s, ids);
+  const h = postfachHandlers(s, plan, session, openedAt, ids, stillThere);
+  // a parked resend has waited long enough: it goes alone and now, not through another bundle
+  const parkedOptions = (): SendTextOptions => ({ path: "postfach", rollbackOwnPayload: true,
+    deliveryClass: "sofort", address: { kind: "slot", id: s.id }, bypassQueue: true, requireAgent: true,
+    beforePaste: h.checkRecipient, beforeSend: async (current) => h.checkRecipient(current) });
+  void sendText(s, h.text, true, { path: "postfach", rollbackOwnPayload: true,
+    deliveryClass: "buendelbar", address: { kind: "slot", id: s.id },
+    bundleGate: { harness: false, quietHours: false, idleMs: REPORT_DECISION_IDLE_MS },
+    beforeSend: async (current) => h.checkRecipient(current) })
+    .then(({ acceptance }) => h.delivered(h.recipient(), acceptance))
+    .catch((e: unknown) => {
+      // the entry did not reach the bundle (or the bundle dropped it): offer the same messages again
+      forgetPostfachQueued(s, ids);
+      if (e instanceof SendComposerOccupied && parkFleetSend(s, e, h.text, {
+        key: `postfach:${s.id}:${session}|${ids.join(",")}`,
+        send: (current) => sendText(current, h.text, true, parkedOptions()),
+        onDelivered: h.delivered }) === null) return;
+      if (!(e instanceof DeliveryCancelled)) {
+        rememberPostfachAttempt(s, ids);
+        logError("postfachZustellung", e);
+        logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
+      }
+    });
 }
 
 async function tickPostfachZustellung(): Promise<void> {
@@ -26745,64 +26883,22 @@ async function tickPostfachZustellung(): Promise<void> {
     for (const s of slots) {
       if (!s.cwd || s.lastOutput === 0 || pendingPostfach.has(s.id)
         || parkedSends.some((p) => p.fleet?.key.startsWith(`postfach:${s.id}:`))) continue;
+      const zustellung = zustellungFuerSlot(s.zustellung, !!s.worktree).wert;
+      const art = postfachZustellart(zustellung, POSTFACH_WINDOW_MS);
       const entries = messages.entries
         .filter((m) => m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(s, m))
         .map(postfachEntryOf);
-      const plan = planPostfachDelivery(entries, now, { windowMs: POSTFACH_WINDOW_MS,
+      const plan = planPostfachDelivery(entries, now, { windowMs: art.fensterMs,
         maxChars: POSTFACH_MAX_CHARS, skip: postfachSkipped(s) });
       if (!plan) continue;
       const session = backlogSessionKey(s);
       const openedAt = s.openedAt;
       const ids = plan.entries.map((entry) => entry.id);
-      // The same gate as the direct announcement before it: a short idle, no night/automation refusal,
-      // because a message from a teammate is not an unattended work prompt.
-      const verdict = await canDeliver(s, { now, idleMs: REPORT_DECISION_IDLE_MS,
-        harness: false, quietHours: false });
-      if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) continue;
       const stillThere = (current: Slot): boolean => ids.every((id) => messages.entries.some((m) =>
         m.id === id && m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(current, m)));
       if (!stillThere(s)) continue;
-      pendingPostfach.add(s.id);
-      void (async () => {
-        let recipient = s;
-        const text = plan.text;
-        const checkRecipient = (current: Slot): void => {
-          if (current.id !== s.id || current.openedAt !== openedAt || backlogSessionKey(current) !== session
-            || !stillThere(current))
-            throw new DeliveryCancelled(`Postfach for slot ${s.id} changed before paste`);
-          recipient = current;
-        };
-        const delivered = (current: Slot, acceptance: Acceptance): void => {
-          const sentAt = Date.now();
-          rememberPostfachAttempt(current, ids);
-          if (acknowledgePostfach(current, plan.entries, acceptance))
-            void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
-          current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
-          saveHistory(current);
-          logPrompt(current, text, "auto", sentAt, undefined, acceptance);
-        };
-        const options = (): SendTextOptions => ({ path: "postfach", rollbackOwnPayload: true,
-          deliveryClass: "sofort", address: { kind: "slot", id: s.id }, bypassQueue: true,
-          beforePaste: checkRecipient, beforeSend: async (current) => checkRecipient(current) });
-        try {
-          const { acceptance } = await sendText(s, text, true, options());
-          delivered(recipient, acceptance);
-        } catch (e) {
-          // a held field parks the paste instead of dropping it; a message read or added meanwhile
-          // cancels it through checkRecipient, nothing typed
-          if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, {
-            key: `postfach:${s.id}:${session}|${ids.join(",")}`,
-            send: (current) => sendText(current, text, true, { ...options(), requireAgent: true }),
-            onDelivered: delivered }) === null) return;
-          throw e;
-        }
-      })().catch((e: unknown) => {
-        if (!(e instanceof DeliveryCancelled)) {
-          rememberPostfachAttempt(s, ids);
-          logError("postfachZustellung", e);
-          logPrompt(s, plan.text, "auto", Date.now(), undefined, sendFailureDelivery(e));
-        }
-      }).finally(() => { pendingPostfach.delete(s.id); });
+      if (art.gebuendelt) { zustellePostfachGebuendelt(s, plan, session, openedAt, ids, stillThere); continue; }
+      await zustellePostfachDirekt(s, plan, session, openedAt, ids, stillThere);
     }
   } finally { postfachBusy = false; }
 }
@@ -43311,6 +43407,8 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     const omitted = plan.omitted.map((entry) => ({ ...entry }));
     // WHICH CONVERSATION LEAVES, read before the kill clears it — never guessed afterwards
     const predecessorSessionId = s.sessionId;
+    // ...and how its Postfach arrived, which the successor keeps like a generic succession does
+    const carriedZustellung = s.zustellung;
     const box: BoxPin = { container: s.container, containerContext: s.containerContext };
     const openRoot = isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd;
     if (!predecessorCurrent())
@@ -43334,7 +43432,8 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
         (preObservedSupport, onCandidate) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
-          false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, planMcpServers(plan)),
+          false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined,
+          planMcpServers(plan), undefined, null, null, carriedZustellung),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -45149,6 +45248,9 @@ if (existsSync(file)) {
         s.rechte = rechteGeladen((v as { rechte?: unknown }).rechte, hOf.id);
         // ...and the Agent-MD of its profile, only on Claude Code (server/agentmd.ts)
         s.agentMd = agentMdGeladen((v as { agentMd?: unknown }).agentMd, hOf.id);
+        // ...and how its Postfach arrives (server/zustellung.ts): only the two values, everything
+        // else loads as “not set” and the role default applies
+        s.zustellung = zustellungGeladen((v as { zustellung?: unknown }).zustellung);
         // ...and who opened it, only a whole record
         s.openedBy = openerGeladen((v as { openedBy?: unknown }).openedBy);
         // ...and the run of a constellation it sits in (server/laeufe.ts)
@@ -50912,6 +51014,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // the pane's context budget (Slot.context); omitted when none was chosen
             ...(s.context ? { context: s.context } : {}),
             ...(s.permissions ? { permissions: s.permissions } : {}),
+            // how its Postfach arrives (Slot.zustellung); omitted at null = the role default, which
+            // the board derives from `worktree` — one short value on the 2 s poll, only when chosen
+            ...(s.zustellung ? { zustellung: s.zustellung } : {}),
             // asleep on purpose (sleepSlot): omitted while awake, the common case on this 2 s poll
             ...(s.sleeping ? { sleeping: { at: s.sleeping.at, sessionId: s.sleeping.sessionId } } : {}),
             // when this occupant last wrote its standing handover (handleSelfHandover); omitted when none
@@ -53957,7 +54062,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       saveState();
       return json({ ok: true });
     }
-    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake|succeed)$/.exec(url.pathname);
+    const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|zustellung|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake|succeed)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {
       const s = slotFrom(slotMatch[1]);
       if (!s) return json({ error: "bad slot" }, 400);
@@ -54072,6 +54177,19 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         s.mission = typeof m === "string" ? m.trim() || null : null;
         saveState();
         return json({ ok: true, mission: s.mission });
+      }
+      // HOW THIS SESSION'S POSTFACH ARRIVES (Slot.zustellung, server/zustellung.ts), owner-only like
+      // mission and remote. It changes the next postfach tick, never a message already held in the
+      // bundle: `null` clears the choice back to the role default (a lane bundles, all else direct).
+      if (slotMatch[2] === "zustellung") {
+        if (!s.cwd) return json({ error: "slot not active" }, 400);
+        const body = await readJson(req);
+        const z = zustellungDerTuer(body);
+        if (!z.ok) return json({ error: z.error }, 400);
+        s.zustellung = z.zustellung;
+        saveState();
+        const gilt = zustellungFuerSlot(s.zustellung, !!s.worktree);
+        return json({ ok: true, zustellung: gilt.wert, quelle: gilt.quelle });
       }
       // Remote Control on a LIVE slot (Slot.remote), owner-only like mission. The flag lives on the
       // pane's command line, so this changes the NEXT spawn (restart, heal, lane succession) and

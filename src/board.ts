@@ -1798,6 +1798,7 @@ function sessionSection(c: BoardCtx): HTMLElement {
   // nur die Übergabe"): branch, target and checks are the lane's row under Arbeitsorte now — the
   // copies stay behind ⋯, the land's progress in the Changes block
   kv.appendChild(contextRow(c));
+  kv.appendChild(deliveryRow(s, slot));
   const links = belongsLinks(c);
   if (links.length) kv.appendChild(kvRow("Belongs to", links, "lks"));
   idsec.appendChild(kv);
@@ -1894,6 +1895,33 @@ function contextRow(c: BoardCtx): HTMLElement {
     ? `${sc.fill.usedTokens} of ${sc.fill.windowTokens} tokens in the window (${tok(sc.fill.usedTokens)} / ${tok(sc.fill.windowTokens)}) — the succession is measured against this.`
     : "Fleet can't measure this context: no pinned conversation, no usage record yet, or no known window — it is not an empty context.";
   return r;
+}
+// HOW THE POSTFACH ARRIVES (Auftrag „Die Zustellung von Postfach-Nachrichten wird Teil des Setups“):
+// one line in the session's values, the value itself is the switch. The server holds the choice
+// (POST /api/slots/:id/zustellung); absent, the row shows the role's default — a lane bundles, every
+// other session comes direct — and says so on hover.
+function deliveryRow(s: SlotInfo, slot: number): HTMLElement {
+  const chosen = s.zustellung;
+  const value = chosen ?? (s.worktree ? "gebuendelt" : "direkt");
+  const bundling = value === "gebuendelt";
+  const source = chosen ? "set on this session" : s.worktree ? "the default for a lane" : "the default for this session";
+  const next = bundling ? "direkt" : "gebuendelt";
+  const b = el("button", "optsw") as HTMLButtonElement;
+  b.type = "button";
+  b.dataset.uk = "zustellung";
+  b.append(document.createTextNode(bundling ? "Bundled" : "Direct"), icon("chevron"));
+  b.title = `${bundling ? "Postfach messages wait in the bundle and arrive there with their full text"
+    : "Postfach messages arrive after about a minute with their full text"} — ${source}. Click for ${next === "gebuendelt" ? "bundled" : "direct"}.`;
+  b.setAttribute("aria-label", `Delivery: ${bundling ? "bundled" : "direct"} (${source}). Switch to ${next === "gebuendelt" ? "bundled" : "direct"}.`);
+  b.onclick = async () => {
+    b.disabled = true;
+    const r = await post(`/api/slots/${slot}/zustellung`, { zustellung: next });
+    const j = (await r.json().catch(() => null)) as { error?: string } | null;
+    if (!r.ok) { alert(j?.error ?? "The delivery could not be changed."); b.disabled = false; return; }
+    await refresh();
+    void renderBoard();
+  };
+  return kvRow("Delivery", [b], "zustellung");
 }
 // THE „ÜBERGABE“ BLOCK (K16 Runde 3, owner 16.10. 09:1x: „[Zitat entfernt]“
 // ): the flow from now on (src/handover-now.ts#flowSteps), and while the Kontext switch

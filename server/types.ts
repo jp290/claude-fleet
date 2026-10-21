@@ -2122,6 +2122,10 @@ interface Slot {
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
   // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.
+  zustellung: import("./zustellung").Zustellung | null; // ob Postfach-Nachrichten direkt oder gebündelt
+  // ankommen (server/zustellung.ts). null = der Standard nach Rolle: ein Slot mit Worktree (Lane)
+  // bündelt, jede andere Session kommt direkt. Vom Owner über POST /api/slots/:id/zustellung gesetzt,
+  // persistiert, von einer Nachfolge mitgetragen und beim Öffnen/Schließen des Slots gelöscht.
   packMcp: readonly ContextPackMcpServer[]; // the MCP servers this occupant's FOUNDING PLAN chose (a pack
   // Zusatz with `mcp`, context-plan.ts#planMcpServers), stamped by the founding door through openSlot
   // and handed by ensureSlot to EVERY spawn — open, heal, restart, wake — as claudeMcpConfigFlag's one

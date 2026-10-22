@@ -62,7 +62,8 @@ export async function messageDeliveryChecks(): Promise<void> {
     if (start < 0 || end < 0) throw new Error(`message probe source missing: ${from} -> ${to}`);
     return source.slice(start, end);
   };
-  const code = [readFileSync(`${ROOT}/server/postfach-zustellen.ts`, "utf8").replace(/^export /gm, ""),
+  const code = [readFileSync(`${ROOT}/server/postfach-versuche.ts`, "utf8").replace(/^export /gm, "").replace(/^import .*$/gm, ""),
+    readFileSync(`${ROOT}/server/postfach-zustellen.ts`, "utf8").replace(/^export /gm, ""),
     // the setting's pure decision is compiled in, like the postfach leaf: the tick calls it
     readFileSync(`${ROOT}/server/zustellung.ts`, "utf8").replace(/^export /gm, "").replace(/^import .*$/gm, ""),
     // the failure leaf decides what stays on offer and how often a repeat is said
@@ -104,6 +105,7 @@ export async function messageDeliveryChecks(): Promise<void> {
         entry.readBy = { slot: current.id, openedAt: current.openedAt, sessionId: current.sessionId };
         return true;
       }, saveStateNow: async () => {},
+      POSTFACH_VERSUCH_FILE: "/fixture/postfach-versuche.jsonl", appendEvent: async () => {},
       // this fixture's sendText types at once, as sendText does with bundling off
       DELIVERY_BUNDLE_SEC: 0,
       get autosOn() { return autosOn; }, harnessAutomatable: () => automatable,

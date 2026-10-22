@@ -26,6 +26,7 @@ const section = (from: string, to: string): string => {
   return source.slice(start, end);
 };
 const takt = [
+  leaf("server/postfach-versuche.ts"),
   leaf("server/postfach-zustellen.ts"),
   leaf("server/zustellung.ts"),
   leaf("server/postfach-fehler.ts"),
@@ -111,6 +112,8 @@ function welt(weg: "direkt" | "gebuendelt", geparkt = false) {
       return true;
     },
     saveStateNow: async () => {}, saveHistory: () => {}, MAX_HISTORY: 100,
+    POSTFACH_VERSUCH_FILE: "/fixture/postfach-versuche.jsonl",
+    appendEvent: async () => {},
     // nur für den echten Parkplatz (compiledGeparkt)
     slotStreamOccupant: (s: Occupant) => s.cwd
       ? { slot: s.id, openedAt: s.openedAt, selfToken: s.selfToken } : null,

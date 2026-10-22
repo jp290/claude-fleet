@@ -221,6 +221,8 @@ import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
 import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
   postfachNichtsGetippt, postfachVersuchSignatur,
   type PostfachFehlerwort, type PostfachWeg } from "./server/postfach-fehler";
+import { postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
+  restorePostfachVersuche } from "./server/postfach-versuche";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
@@ -285,6 +287,10 @@ function rWithoutAt(r: PerfRecord & { at: number }): unknown {
 }
 const FLEET_REPORT_LEDGER_FILE = `${STATE_DIR}/fleet-reports.jsonl`;
 const RULEBOOK_AB_LEDGER_FILE = `${STATE_DIR}/rulebook/ab.jsonl`;
+// WHAT WAS TYPED INTO A POSTFACH SURVIVES A DEPLOY. One row per remembered attempt
+// (slot, session, message ids, at); the boot folds it back into postfachAttempted, bounded and only
+// for the session still sitting on the slot (server/postfach-versuche.ts).
+const POSTFACH_VERSUCH_FILE = `${STATE_DIR}/postfach-versuche.jsonl`;
 // every queue row that went terminal or was evicted, WHOLE — the bound in capTasks retires terminal
 // rows from fleet.json, and this is what makes that retirement not a delete (see archiveTaskLine).
 // Deliberately NOT through appendEvent: its one-generation rotation overwrites `.1`, which is a
@@ -26779,9 +26785,15 @@ function forgetPostfachQueued(s: Slot, ids: readonly string[]): void {
 }
 // WHAT WAS TYPED IS NOT OFFERED AGAIN, even when acceptance was unobservable: the message stays unread
 // in the record (no receipt without observation), but a second paste of the same text would be noise.
-// A cancelled send never reaches this, so a message that did not land is still retried.
-const rememberPostfachAttempt = (s: Slot, ids: readonly string[]): void =>
-  rememberInPostfachMap(postfachAttempted, s, ids);
+// A cancelled send never reaches this, so a message that did not land is still retried. The same
+// fact goes to the attempt ledger BEFORE the next tick can see it; the boot reads it back.
+const rememberPostfachAttempt = (s: Slot, ids: readonly string[]): void => {
+  const session = backlogSessionKey(s);
+  const row = postfachVersuchRow(s.id, s.openedAt, session, ids, Date.now());
+  if (!row) return;
+  rememberPostfachVersuch(postfachAttempted, row);
+  void appendEvent(POSTFACH_VERSUCH_FILE, row as unknown as Record<string, unknown>);
+};
 function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
   let stamped = false;
   for (const id of postfachReceiptIds(entries, acceptance)) {
@@ -26937,13 +26949,17 @@ async function tickPostfachZustellung(): Promise<void> {
         || parkedSends.some((p) => p.fleet?.key.startsWith(`postfach:${s.id}:`))) continue;
       const zustellung = zustellungFuerSlot(s.zustellung, !!s.worktree).wert;
       const art = postfachZustellart(zustellung, POSTFACH_WINDOW_MS);
+      const session = backlogSessionKey(s);
       const entries = messages.entries
         .filter((m) => m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(s, m))
         .map(postfachEntryOf);
+      // Gelesene oder nicht mehr adressierte Nachrichten hinterlassen keine Erinnerung; eine neue
+      // Besetzung räumt die Zeile des Vorgängers weg (die Grenze je Zeile hält remember schon).
+      const offen = new Set(entries.map((entry) => entry.id));
+      prunePostfachVersuch(postfachAttempted, s.id, session, (id) => offen.has(id));
       const plan = planPostfachDelivery(entries, now, { windowMs: art.fensterMs,
         maxChars: POSTFACH_MAX_CHARS, skip: postfachSkipped(s) });
       if (!plan) continue;
-      const session = backlogSessionKey(s);
       const openedAt = s.openedAt;
       const ids = plan.entries.map((entry) => entry.id);
       // Derselbe Versuch, der zuletzt nichts getippt hat, wartet: kein sendText, kein Audit, kein
@@ -26957,6 +26973,30 @@ async function tickPostfachZustellung(): Promise<void> {
       await zustellePostfachDirekt(s, plan, session, openedAt, ids, stillThere);
     }
   } finally { postfachBusy = false; }
+}
+
+// DER NEUSTART: das Versuch-Ledger wird nach dem Laden von fleet.json (messages und slots stehen
+// dann schon) wieder zur Merkliste. Nur Zeilen der HEUTIGEN Besetzung überleben, und nur Ids, die
+// noch ungelesen an diesen Slot adressiert sind; alles andere wäre Erinnerung an erledigte Aufträge.
+async function ladePostfachVersuche(): Promise<void> {
+  let rows: unknown[];
+  try {
+    rows = (await readLedger<unknown>(POSTFACH_VERSUCH_FILE)).rows;
+  } catch (e) {
+    logError("postfachVersuchLoad", e);
+    return;
+  }
+  const besetzungen = slots.map((s) => ({
+    slot: s.id,
+    openedAt: s.openedAt,
+    session: backlogSessionKey(s),
+    relevant: (id: string) => messages.entries.some((m) => m.id === id && m.readBy === null
+      && isDirectPostfachTarget(m.to) && messageInboundFor(s, m)),
+  }));
+  postfachAttempted.clear();
+  for (const [slot, row] of restorePostfachVersuche(rows, besetzungen)) postfachAttempted.set(slot, row);
+  if (postfachAttempted.size)
+    console.log(`postfach: ${postfachAttempted.size} gemerkte Versuche aus ${POSTFACH_VERSUCH_FILE} übernommen`);
 }
 
 // --- THE HINT AT THE THRESHOLD (K9 S3). Its budget per conversation is server/succession.ts#HintLedger:
@@ -45566,6 +45606,7 @@ mkdirSync(STREAM_DIR, { recursive: true });
 chmodSync(STREAM_DIR, 0o700);
 await tmux("start-server");
 await loadPersistedState(STATE_FILE);
+await ladePostfachVersuche();
 if (startupStateRefusal !== null) {
   console.log(`REFUSING TO START: ${startupStateRefusal}. The safety marker was left on disk for owner inspection.`);
   throw new Error(startupStateRefusal);

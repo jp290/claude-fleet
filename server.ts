@@ -231,7 +231,9 @@ import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type Br
   dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
-import { endLandedBranches, type BranchEnd, type EndDeps } from "./server/branch-ende";
+import { endLandedBranches, endParkedInstances, heldBy, type BranchEnd, type EndDeps, type EndHolds, type Instance } from "./server/branch-ende";
+import { landedIn, tickRounds, type RoundDeps } from "./server/runde";
+import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-blick";
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
@@ -8816,7 +8818,8 @@ const branchLandDeps: LandDeps = {
 
 // THE END OF A LANDED BRANCH (server/branch-ende.ts): what holds a worktree here is a slot whose cwd lies in it, an attach
 // in flight, a succession between kill and open (successionPaths), or a test instance whose state file names it as `src`
-// with a live pid or with pid=0, which testinstanz.sh#up writes until its server answers. The ledger keeps each ended
+// with pid=0, which testinstanz.sh#up writes until its server answers. One with a live pid ends with the branch, through
+// `testinstanz.sh down` in the worktree, which refuses while a connection is open; so does one from a shelved worktree. The ledger keeps each ended
 // record whole, notepad included, beside fleet.json and never in the audit log (the notepad rule at /api/worktrees/note).
 // FLEET_BRANCH_END_MS is the sweep's cadence; 0 registers no timer.
 const BRANCH_END_MS = Math.max(0, Number(process.env.FLEET_BRANCH_END_MS ?? 300_000) | 0);
@@ -8839,8 +8842,8 @@ function holdSuccessionPaths(paths: readonly (string | null)[]): () => void {
   };
 }
 const realOf = (p: string): string => { try { return realpathSync(p); } catch { return resolve(p); } };
-function runningTestinstanzWorktrees(): string[] {
-  const out: string[] = [];
+function runningTestinstanzWorktrees(): Map<string, Instance> {
+  const out = new Map<string, Instance>();
   let entries: import("node:fs").Dirent[];
   try { entries = readdirSync(TI_ROOT, { withFileTypes: true }); } catch { return out; } // no root: no instance
   for (const entry of entries) {
@@ -8850,12 +8853,44 @@ function runningTestinstanzWorktrees(): string[] {
     catch { continue; } // no state file: no instance
     const src = /^src=(.*)$/m.exec(state)?.[1], pid = Number(/^pid=(\d+)$/m.exec(state)?.[1]);
     if (!src || !Number.isInteger(pid) || pid === 1) continue;
-    if (pid === 0) { out.push(realOf(src)); continue; } // starting: the server has not answered yet
-    try { process.kill(pid, 0); out.push(realOf(src)); }
-    catch (e) { if (e instanceof Error && "code" in e && e.code === "EPERM") out.push(realOf(src)); } // EPERM: alive, someone else's
+    if (pid === 0) { out.set(realOf(src), "starting"); continue; } // the server has not answered yet
+    try { process.kill(pid, 0); out.set(realOf(src), "up"); }
+    catch (e) { if (e instanceof Error && "code" in e && e.code === "EPERM") out.set(realOf(src), "up"); } // EPERM: alive, someone else's
   }
   return out;
 }
+// IN A TEST INSTANCE: when a browser last looked (server/instanz-blick.ts). Every board poll carries the owner cookie;
+// bearer calls (testinstanz.sh status, the fixtures) are machines and do not count. One write per 30 s at most.
+const LOOK_NOTE_MS = 30_000;
+let lookNotedAt = 0;
+function noteInstanceLook(): void {
+  const now = Date.now();
+  if (now - lookNotedAt < LOOK_NOTE_MS) return;
+  lookNotedAt = now;
+  // STATE_DIR is the instance directory: testinstanz.sh starts the server there without FLEET_STATE_DIR
+  try { writeFileSync(`${STATE_DIR}/${SEEN_FILE}`, String(now)); } catch (e) { logError("noteInstanceLook", e); }
+}
+// The end of an instance from outside (a branch's end, a shelve, a round): not while a browser looked at it within the
+// grace (server/instanz-blick.ts), not beside a board up/down on the same worktree (testinstanzBusy), and only through
+// its own door; exit 3 is testinstanz.sh's "an open connection — somebody is looking".
+async function stopTestinstanz(path: string): Promise<string | null> {
+  if (!existsSync(`${path}/testinstanz.sh`)) return "testinstanz.sh fehlt im Worktree";
+  const dir = instanceDirOf(TI_ROOT, path);
+  const held = dir ? lookHolds(lastLook(dir), Date.now()) : null;
+  if (held) return held;
+  const key = realOf(path);
+  if (testinstanzBusy.has(key)) return "am Board läuft gerade ein Befehl für diese Testinstanz";
+  testinstanzBusy.add(key);
+  try {
+    const r = await testinstanzCommand(path, ["down"], 30_000);
+    if (r.code === 0) { audit("testinstanz_ended", undefined, path, { path }); return null; }
+    return r.code === 3 ? "jemand schaut in die Testinstanz (offene Verbindung)" : `testinstanz.sh down exit ${r.code}`;
+  } finally { testinstanzBusy.delete(key); }
+}
+// what holds a worktree besides a test instance (server/branch-ende.ts#heldBy), for a branch's end and a round's alike
+// (a function: attachBusy is declared further down)
+const endHolds = (): EndHolds => ({ busy: attachBusy, transit: () => [...successionPaths.keys()], real: realOf,
+  cwds: () => slots.flatMap((s) => (s.cwd ? [s.cwd] : [])) });
 let branchEndBusy = false;
 async function endLandedBranchesNow(): Promise<{ ended: BranchEnd[]; kept: { branch: string; why: string }[] }> {
   if (branchEndBusy) return { ended: [], kept: [] };
@@ -8864,9 +8899,8 @@ async function endLandedBranchesNow(): Promise<{ ended: BranchEnd[]; kept: { bra
     const instances = runningTestinstanzWorktrees();
     const deps: EndDeps = {
       gitRead, git, worktrees: (repo) => listWorktrees(repo, true),
-      holds: { busy: attachBusy, transit: () => [...successionPaths.keys()], real: realOf,
-        cwds: () => slots.flatMap((s) => (s.cwd ? [s.cwd] : [])) },
-      instance: (path) => instances.includes(realOf(path)),
+      holds: endHolds(),
+      instance: (path) => instances.get(realOf(path)) ?? null, stopInstance: stopTestinstanz,
       scaffold: BRANCH_END_SCAFFOLD,
       book: () => branchBook, setBook: (book) => { branchBook = book; }, saveStateNow,
       log: async (e, record) => {
@@ -8877,9 +8911,52 @@ async function endLandedBranchesNow(): Promise<{ ended: BranchEnd[]; kept: { bra
       landing: branchLanding,
     };
     const r = await endLandedBranches(deps);
-    if (r.ended.length) { workplacesCache = null; void tickGit().catch(() => {}); }
+    const parked = await endParkedInstances(deps, Object.keys(shelved));
+    if (r.ended.length || parked.stopped.length) { workplacesCache = null; void tickGit().catch(() => {}); }
     return r;
   } finally { branchEndBusy = false; }
+}
+
+// ONE INSTANCE PER ROUND (server/runde.ts): every FLEET_RUNDE_MS the rounds of each repo on the board are read; one
+// whose main or branch moved is built anew, one whose branches are all landed or shelved ends unless someone looks.
+// A test instance never builds instances. 0 registers no timer.
+const RUNDE_MS = Math.max(0, Number(process.env.FLEET_RUNDE_MS ?? 60_000) | 0);
+const ROUND_TI_MS = 240_000; // up and refresh build; the board's own up waits as long
+const rundeDeps: RoundDeps = {
+  git,
+  ti: (wt, args) => testinstanzCommand(wt, args, args[0] === "up" || args[0] === "refresh" ? ROUND_TI_MS : 30_000, "main"),
+  stop: stopTestinstanz,
+  landed: (repo, branch, head) => landedIn(branchBook, repo, branch, head),
+  held: (wt) => heldBy(endHolds(), wt),
+  scaffold: BRANCH_END_SCAFFOLD,
+  install: async (wt) => {
+    const child = Bun.spawn(["bun", "install", "--frozen-lockfile"], { cwd: wt, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => child.kill(), ROUND_TI_MS);
+    try { return { code: await child.exited, out: "" }; } finally { clearTimeout(timer); }
+  },
+  parked: async (repo, branch) => {
+    const at = (await listWorktrees(repo)).find((w) => w.branch === branch);
+    return !!at && shelved[at.path] !== undefined;
+  },
+  now: () => Date.now(),
+};
+let rundeBusy = false;
+// one audit line per change: a round that keeps answering the same (waits, stays, is being built) is written once
+const roundLines = new Map<string, string>();
+async function tickRundenNow(): Promise<string[]> {
+  if (rundeBusy || INSTANCE_SOURCE) return [];
+  rundeBusy = true;
+  try {
+    const lines: string[] = [];
+    for (const repo of new Set(branchBook.map((r) => r.repo))) lines.push(...await tickRounds(rundeDeps, repo));
+    for (const line of lines) {
+      const who = line.slice(0, line.indexOf(":"));
+      if (line.endsWith(": unverändert") || roundLines.get(who) === line) continue;
+      roundLines.set(who, line);
+      audit("testinstanz_round", undefined, line);
+    }
+    return lines;
+  } finally { rundeBusy = false; }
 }
 
 // the /api/slots/:id/worktrees board, cached serve-stale-while-revalidate (see the route):
@@ -46458,6 +46535,7 @@ else if (REVIEW_OPTIN_TICK_MS > 0) setInterval(() => {
 if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose().catch((e: unknown) => logError("tickLaneAutoClose", e)), AUTOS_TICK_MS);
 if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch((e: unknown) => logError("tickAcceptByLand", e)), ACCEPT_BY_LAND_MS);
 if (BRANCH_END_MS > 0) setInterval(() => void endLandedBranchesNow().catch((e: unknown) => logError("endLandedBranches", e)), BRANCH_END_MS);
+if (RUNDE_MS > 0) setInterval(() => void tickRundenNow().catch((e: unknown) => logError("tickRunden", e)), RUNDE_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
@@ -51049,6 +51127,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
 
     // everything below carries authority — token required
     if (!(await tokenGate(tokenFrom(req)))) return json({ error: "unauthorized" }, 401);
+    if (INSTANCE_SOURCE && tokenChannel(req) === "cookie") noteInstanceLook();
 
     // K15: eigene Profile, Fassungen und Packs des Fensters „Neue Session“, eine Datei im Zustandsverzeichnis (server/k15-speicher.ts)
     if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req, STATE_DIR);

@@ -447,7 +447,11 @@ type AuditEvent =
   | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted"
   // a landed branch ended by itself (server/branch-ende.ts): `repo`, `branch`, `head`, `path`, `land` ride as
   // fields; the whole record, notepad included, stands in branch-ends.jsonl and the head under refs/fleet/ended/<branch>
-  | "branch_ended";
+  | "branch_ended"
+  // a test instance ended with its branch, or because its worktree was shelved (server.ts#stopTestinstanz): `path`
+  | "testinstanz_ended"
+  // a round's instance was built anew, set up again or ended (server/runde.ts#tickRounds): the detail is its line
+  | "testinstanz_round";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. Identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

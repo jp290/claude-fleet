@@ -7,9 +7,13 @@
 // jetzt: Hat main seither dieselben Stellen geändert, zeigt `git merge-tree` neue Zeilen für einen ganz
 // gelandeten Branch (gemessen 22.10. an drei Branches). Ein Branch endet nur, wenn seine Spitze genau der Tip
 // des letzten Lands ist, sein Worktree nichts trägt, was nicht auf dem Branch steht (auch keine ignorierte
-// Datei wie ein Upload in drops/), sein Notizblock keinen offenen Punkt hat, keine Session darin sitzt oder
-// gerade hineinkommt und keine Testinstanz daraus läuft. Eine Session, die weiterbaut, hält ihn also; Chargen
-// landen in Folgen. Vor dem Löschen steht der ganze Datensatz mit der Spitze im Ledger (server.ts#BRANCH_ENDS_FILE)
+// Datei wie ein Upload in drops/), sein Notizblock keinen offenen Punkt hat und keine Session darin sitzt oder
+// gerade hineinkommt. Eine Session, die weiterbaut, hält ihn also; Chargen landen in Folgen.
+//
+// SEINE TESTINSTANZ ENDET MIT IHM (Owner 22.10.: eine Instanz endet mit ihrem Branch, nicht mit ihrer TTL). Sie
+// hält ihn nicht mehr fest: Das Ende stoppt sie durch ihre Tür, `testinstanz.sh down`, und die verweigert bei
+// offener Verbindung — wer hineinschaut, hält Instanz und Branch, bis er geht. Nur eine Instanz, die gerade
+// startet, hält ihn noch. Eine Instanz aus einem beiseitegelegten Worktree endet genauso (endParkedInstances). Vor dem Löschen steht der ganze Datensatz mit der Spitze im Ledger (server.ts#BRANCH_ENDS_FILE)
 // und die Spitze unter refs/fleet/ended/<branch>: Von dort holt `git branch <branch> refs/fleet/ended/<branch>`
 // ihn zurück, auch nach einem gc.
 //
@@ -26,9 +30,10 @@ export interface EndFacts {
   dirty: boolean | null; // nur mit `place`: ungesicherte Arbeit; null = nicht lesbar
   stray: string[]; // nur mit `place`: ignorierte Dateien, die nicht zum Gerüst einer Session gehören
   held: boolean; // eine Session sitzt im Worktree oder kommt gerade hinein
-  instance: boolean; // eine Testinstanz läuft aus dem Worktree oder startet daraus
+  instance: Instance; // eine Testinstanz läuft aus dem Worktree oder startet daraus
   baseOf: string | null; // ein anderer Branch im Buch zählt von diesem ab
 }
+export type Instance = "up" | "starting" | null;
 export type EndVerdict = { end: true; land: BranchLand } | { end: false; why: string };
 
 export function endVerdict(r: BranchRecord, f: EndFacts): EndVerdict {
@@ -42,7 +47,7 @@ export function endVerdict(r: BranchRecord, f: EndFacts): EndVerdict {
   const open = openPoints(r.text);
   if (open.length) return { end: false, why: `${open.length} offene Punkte im Notizblock` };
   if (f.held) return { end: false, why: "eine Session sitzt im Worktree" };
-  if (f.instance) return { end: false, why: "eine Testinstanz läuft aus dem Worktree" };
+  if (f.instance === "starting") return { end: false, why: "eine Testinstanz startet aus dem Worktree" };
   if (f.baseOf) return { end: false, why: `${f.baseOf} zweigt von ihm ab` };
   return { end: true, land };
 }
@@ -68,7 +73,9 @@ export interface EndDeps {
   git(dir: string, ...args: string[]): Promise<GitResult>;
   worktrees(repo: string): Promise<{ path: string; branch: string; primary: boolean }[]>; // wirft, wenn nicht lesbar
   holds: EndHolds;
-  instance(path: string): boolean;
+  instance(path: string): Instance;
+  // die Instanz durch ihre Tür beenden; null = beendet, sonst warum sie steht (jemand schaut)
+  stopInstance(path: string): Promise<string | null>;
   // ignorierte Pfade, die Fleet selbst in einen Worktree legt (`git status --ignored` nennt sie so)
   scaffold: readonly string[];
   book(): BranchBook;
@@ -92,7 +99,7 @@ async function factsOf(d: EndDeps, r: BranchRecord, places: { path: string; bran
   return { head: ref.code === 0 && ref.out ? ref.out : null, place: at ? { path: at.path, primary: at.primary } : null,
     dirty: st ? (st.code === 0 ? lines.some((l) => !l.startsWith("!! ")) : null) : null,
     stray: lines.filter((l) => l.startsWith("!! ")).map((l) => l.slice(3)).filter((x) => !d.scaffold.includes(x)),
-    held: !!at && heldBy(d.holds, at.path), instance: !!at && d.instance(at.path), baseOf };
+    held: !!at && heldBy(d.holds, at.path), instance: at ? d.instance(at.path) : null, baseOf };
 }
 
 // Ein Durchgang über alle gelandeten Branches im Buch. Was nicht sicher endet, bleibt; ein Fehlschlag mitten
@@ -109,7 +116,7 @@ export async function endLandedBranches(d: EndDeps): Promise<{ ended: BranchEnd[
     const f = await factsOf(d, r, list);
     const v = endVerdict(r, f);
     if (!v.end) { kept.push({ branch: r.branch, why: v.why }); continue; }
-    const done = await endOne(d, r, v.land, f.place?.path ?? null);
+    const done = await endOne(d, r, v.land, f.place?.path ?? null, f.instance === "up");
     if (typeof done === "string") { kept.push({ branch: r.branch, why: done }); continue; }
     ended.push(done);
   }
@@ -117,7 +124,7 @@ export async function endLandedBranches(d: EndDeps): Promise<{ ended: BranchEnd[
   return { ended, kept };
 }
 
-async function endOne(d: EndDeps, r: BranchRecord, land: BranchLand, path: string | null): Promise<BranchEnd | string> {
+async function endOne(d: EndDeps, r: BranchRecord, land: BranchLand, path: string | null, instance: boolean): Promise<BranchEnd | string> {
   const head = land.tip; // = die Spitze, das hat endVerdict geprüft
   const end: BranchEnd = { repo: r.repo, branch: r.branch, head, path, land: land.sha };
   // prüfen und nehmen ohne await dazwischen: kein Öffnen kann sich zwischen die beiden schieben
@@ -126,6 +133,10 @@ async function endOne(d: EndDeps, r: BranchRecord, land: BranchLand, path: strin
     d.holds.busy.add(path);
   }
   try {
+    if (path && instance) {
+      const stays = await d.stopInstance(path);
+      if (stays) return stays;
+    }
     const keep = await d.git(r.repo, "update-ref", `${ENDED_REF}${r.branch}`, head);
     if (keep.code !== 0) return `Spitze nicht gesichert: ${keep.err.slice(0, 200)}`;
     try { await d.log(end, r); }
@@ -146,4 +157,17 @@ async function endOne(d: EndDeps, r: BranchRecord, land: BranchLand, path: strin
   } finally {
     if (path) d.holds.busy.delete(path);
   }
+}
+
+// DIE INSTANZ EINES BEISEITEGELEGTEN WORKTREES: Der Branch bleibt (er ist nicht gelandet), seine Instanz zeigt
+// niemandem mehr etwas, was gerade gebaut wird. Sie endet durch ihre Tür, außer jemand schaut.
+export async function endParkedInstances(d: Pick<EndDeps, "instance" | "stopInstance">, parked: readonly string[]):
+  Promise<{ stopped: string[]; kept: { path: string; why: string }[] }> {
+  const stopped: string[] = [], kept: { path: string; why: string }[] = [];
+  for (const path of parked) {
+    if (d.instance(path) !== "up") continue;
+    const why = await d.stopInstance(path);
+    if (why) kept.push({ path, why }); else stopped.push(path);
+  }
+  return { stopped, kept };
 }

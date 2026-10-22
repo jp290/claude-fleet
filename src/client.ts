@@ -251,7 +251,7 @@ function renderInstanceBand(source: InstanceSource | null) {
   tiBand.hidden = !source;
   // the browser tab names the copy (owner 14.10.: „[Zitat entfernt]“
   // ): „[Zitat entfernt]“; the live fleet keeps its name
-  document.title = source ? `${source.branch ?? "Testinstanz"}${location.port ? ` · :${location.port}` : ""}` : "Claude Fleet";
+  document.title = source ? `${source.round ? `Runde ${source.round.name}` : source.branch ?? "Testinstanz"}${location.port ? ` · :${location.port}` : ""}` : "Claude Fleet";
   if (!source) { tiBand.replaceChildren(); tiBand.removeAttribute("title"); return; }
   const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
   const parts: Node[] = [];

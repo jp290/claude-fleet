@@ -3,7 +3,8 @@
 // . Ein gelandeter Branch, auf dem seither nichts dazukam, in dessen Worktree keine
 // Session sitzt oder gerade hineinkommt (eine Nachfolge zwischen Kill und Öffnen), in dessen Worktree keine
 // ignorierte Datei liegt (ein Upload in drops/), dessen Notizblock keinen offenen Punkt hat und aus dem keine
-// Testinstanz läuft oder startet, endet ganz: Worktree, git-Branch, Board-Eintrag. Das Ledger branch-ends.jsonl
+// Testinstanz gerade startet, endet ganz (eine laufende endet mit ihm, außer jemand schaut hinein): Worktree,
+// git-Branch, Board-Eintrag. Das Ledger branch-ends.jsonl
 // (der ganze Datensatz mit Notizblock), die Zeile im Audit-Log und refs/fleet/ended/<branch> tragen seine
 // Spitze, damit er zurückkommt. Alles in Fixture-Repos; der Durchgang läuft hier als Schritt "end", nicht per Timer.
 import { afterAll, describe, expect, test } from "bun:test";
@@ -168,24 +169,57 @@ describe("ein gelandeter Branch endet von selbst", () => {
     expect(sweep(after).ended).toEqual([]);
   }, LIFE_DEADLINE_MS * 4);
 
-  test("eine Testinstanz läuft aus dem Worktree: er bleibt; ist ihr Prozess weg, endet er", async () => {
-    const { f, path, branch } = await landed("Instanz", "instanz");
+  test("eine Testinstanz läuft aus dem Worktree: sie endet durch ihre Tür mit ihm; wer schaut, hält beide; eine startende hält ihn", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Instanz" })]);
+    const path = String(made?.body.path), branch = "branch/instanz";
+    // die Tür der Instanz, im Branch eingecheckt wie testinstanz.sh im echten Repo: sie notiert jeden Aufruf und
+    // verweigert mit exit 3, solange die Marke „schaut“ liegt — so antwortet testinstanz.sh bei offener Verbindung
+    const calls = join(TMP, `ti-calls-${Date.now()}`), looking = join(TMP, `ti-schaut-${Date.now()}`);
+    writeFileSync(join(path, "testinstanz.sh"), `#!/bin/sh\necho "$*" >> ${calls}\n[ "$1" = down ] && [ -f ${looking} ] && exit 3\nexit 0\n`, { mode: 0o755 });
+    sh(path, "add", "testinstanz.sh");
+    sh(path, "commit", "-q", "-m", "Tür");
+    const [l] = await life(f, [post("/api/branches/land", { repo: f.repo, branch, subject: "Instanz", unchecked: true })]);
+    expect(l?.status).toBe(200);
     const root = join(TMP, `ti-${Date.now()}`);
     mkdirSync(join(root, "fleet-testinstanz-1"), { recursive: true });
-    const plant = (pid: number) => writeFileSync(join(root, "fleet-testinstanz-1", "testinstanz.state"), `src=${path}\nport=8999\npid=${pid}\n`);
-    plant(process.pid);
-    const [held] = await life(f, ["end"], { FLEET_TI_ROOT: root });
-    expect(sweep(held).ended).toEqual([]);
-    expect(existsSync(path)).toBe(true);
+    const started = Math.floor(Date.now() / 1000) - 3600; // seit einer Stunde oben
+    const plant = (pid: number) => writeFileSync(join(root, "fleet-testinstanz-1", "testinstanz.state"), `src=${path}\nport=8999\npid=${pid}\nstarted=${started}\n`);
+    const seen = (minAgo: number) => writeFileSync(join(root, "fleet-testinstanz-1", ".testinstanz.seen"), String(Date.now() - minAgo * 60_000));
     // im Start: testinstanz.sh#up schreibt pid=0, bis ihr Server antwortet
     plant(0);
     const [starting] = await life(f, ["end"], { FLEET_TI_ROOT: root });
-    expect(sweep(starting).kept.map((k) => k.why)).toEqual(["eine Testinstanz läuft aus dem Worktree"]);
-    const gone = Bun.spawn(["true"]);
-    await gone.exited;
-    plant(gone.pid);
+    expect(sweep(starting).kept.map((k) => k.why)).toEqual(["eine Testinstanz startet aus dem Worktree"]);
+    plant(process.pid);
+    // ein Handy-Tab im Hintergrund: keine Verbindung jetzt, aber vor 2 min schaute er — die Tür wird nicht gerufen
+    seen(2);
+    const [grace] = await life(f, ["end"], { FLEET_TI_ROOT: root });
+    expect(sweep(grace).kept.map((k) => k.why)).toEqual(["vor 2 min schaute jemand in die Testinstanz (Schonfrist 10 min)"]);
+    expect(existsSync(calls)).toBe(false);
+    seen(11);
+    writeFileSync(looking, "");
+    const [held] = await life(f, ["end"], { FLEET_TI_ROOT: root });
+    expect(sweep(held).kept.map((k) => k.why)).toEqual(["jemand schaut in die Testinstanz (offene Verbindung)"]);
+    expect([existsSync(path), hasRef(f.repo, `refs/heads/${branch}`)]).toEqual([true, true]);
+    Bun.spawnSync(["rm", looking]);
     const [end] = await life(f, ["end"], { FLEET_TI_ROOT: root });
     expect(sweep(end).ended.map((e) => e.branch)).toEqual([branch]);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["down", "down"]);
+    const audit = readFileSync(join(f.state, "audit.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x) as Record<string, unknown>);
+    expect(audit.filter((r) => r.event === "testinstanz_ended").map((r) => r.path)).toEqual([path]);
+  }, LIFE_DEADLINE_MS * 5);
+
+  test("eine Testinstanz notiert, wann ein Browser sie zuletzt ansah: eine Anfrage mit dem Owner-Cookie, nie ein Bearer-Aufruf", async () => {
+    const f = fixture();
+    const note = join(f.state, ".testinstanz.seen");
+    await life(f, [get("/api/sessions")], { FLEET_INSTANCE_SOURCE: "{}" });
+    expect(existsSync(note)).toBe(false); // testinstanz.sh status und die Fixtures fragen per Bearer
+    await life(f, [{ ...get("/api/sessions"), cookie: true }]);
+    expect(existsSync(note)).toBe(false); // der Live-Server ist keine Testinstanz
+    const before = Date.now();
+    const [polled] = await life(f, [{ ...get("/api/sessions"), cookie: true }], { FLEET_INSTANCE_SOURCE: "{}" });
+    expect(polled?.status).toBe(200);
+    expect(Number(readFileSync(note, "utf8"))).toBeGreaterThanOrEqual(before);
   }, LIFE_DEADLINE_MS * 4);
 
   test("ein nie gelandeter Branch bleibt, auch ohne Commits und ohne Session", async () => {

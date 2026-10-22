@@ -8,7 +8,8 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 
 // `self`: der Self-Token einer Session, als x-fleet-self-token neben (oder mit token: null statt) dem Owner-Bearer
-interface Step { method: "GET" | "POST"; path: string; body?: unknown; token?: string | null; self?: string }
+// `cookie`: das Owner-Token als Cookie des Boards (auth.ts#cookieName) statt als Bearer — so fragt ein Browser
+interface Step { method: "GET" | "POST"; path: string; body?: unknown; token?: string | null; self?: string; cookie?: true }
 // `until`: warten, bis die Datei da ist, höchstens `ms` — was der Server nach einer Antwort im Hintergrund
 // anstößt (der Code-Graph nach einem Land), endet sonst mit diesem Leben; Antwort 200, oder 408 nach `ms`
 interface Until { until: string; ms: number }
@@ -63,7 +64,8 @@ const earlier = (v: unknown): unknown => {
 };
 async function call(step: Step): Promise<{ status: number; body: unknown }> {
   const auth = step.token === undefined ? token : step.token;
-  const headers: Record<string, string> = { host: `127.0.0.1:${port}`, ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+  const headers: Record<string, string> = { host: `127.0.0.1:${port}`,
+    ...(auth ? (step.cookie ? { cookie: `fleet_${port}=${auth}` } : { authorization: `Bearer ${auth}` }) : {}),
     ...(step.self ? { "x-fleet-self-token": step.self } : {}),
     ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
   const res = await handle.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,

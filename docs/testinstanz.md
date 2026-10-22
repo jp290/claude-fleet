@@ -15,6 +15,11 @@ eine bereinigte Kopie echter Daten: „[Zitat entfernt]“.
     ./testinstanz.sh down [--force]                  Server aus, ihr tmux per Socket, Verzeichnis weg — verweigert bei offener Verbindung
     ./testinstanz.sh reap [--dry-run] [--force]      jede abgelaufene Instanz der Maschine abräumen (der TTL-Takt ruft das)
 
+Für mehrere Branches gibt es eine Instanz je Runde (unten, „Eine Instanz je Runde“):
+
+    bun tools/runde.ts up <name> <branch> [<branch> …]   die Branches auf dem main von jetzt, eine Instanz dazu
+    bun tools/runde.ts status | tick | down <name>
+
 ## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt
 
 Owner-Regel vom 2026-10-08: Sichtbare Arbeit (eine Karte, deren FLAECHE `src/` oder `public/`
@@ -31,8 +36,9 @@ geht zurück. Anlass, Owner wörtlich: Tasks in Apps seien „[Zitat entfernt]�
    volle Beweis (Beweismenge aus `GET /api/self/gate`) läuft einmal am Ende, vor dem Report.
 5. In den Report: der token-freie Link aus `./testinstanz.sh list` oder der `refreshed`-Zeile (nie
    aus `status`, das druckt den Token) und ein Bild des fertigen Ablaufs (Pfad der Datei).
-6. Die Instanz bleibt stehen, bis die MAIN abgenommen hat: kein `down` nach dem Report. Die
-   Restzeit zeigt `list`; reicht sie nicht, beim `up` eine längere `--ttl` setzen (Default 240 min).
+6. Deine eigene Instanz endet mit deinem Report: `./testinstanz.sh down`, nachdem Link und Bild
+   darin stehen. Der Owner sieht deinen Branch in der Instanz seiner Runde (unten). Lief deine eigene
+   für ihn, weil ihr live baut, bleibt sie, bis er „passt“ sagt.
 
 **MAIN.** Vor dem Land öffnest du den Link und klickst den Ablauf selbst durch. Fehlen Link oder
 Bild, oder siehst du die Wirkung nicht, geht der Report mit Grund zurück. Vom Board aus öffnet
@@ -88,6 +94,67 @@ will see, and for how you get there.
 - The design concept behind the board is a Design canvas (`https://example.com/design-artifact`,
   concepts 1 to 3), with its reasoning in `~/local-notes/shots-0d51-2026-10-07/`. Its look: Instrument
   Sans and IBM Plex Mono, ground `#0B0B0C`, moss `#8DBE86`, amber `#E3A857`, red `#E5705F`, radii 8·14·26.
+
+## Eine Instanz je Runde
+
+Owner 22.10.: um 12:5x trieben sieben Instanzen, je Branch eine, den Mac auf Last 80, und er sah eine
+Runde über mehrere Links. Sein Wort: eine Instanz je Runde, „[Zitat entfernt]“. Und: eine Instanz endet mit
+ihrem Branch, nicht mit ihrer TTL.
+
+**Was eine Runde ist.** Ein Wegwerf-Worktree ohne Branch, `<repo>.worktrees/runde-<name>`: das main
+von jetzt, darauf die Branches der Runde in der genannten Reihenfolge zusammengeführt (`git merge-tree`,
+je ein Merge-Commit, den kein Branch trägt). Ihre Instanz ist die gewöhnliche Testinstanz dieses
+Worktrees. Das Band oben nennt Runde, main, die Branches darin und jeden, der draußen blieb, mit Grund:
+
+    Runde abend · main 1a2b3c4 · mit branch/a, branch/b · ohne branch/c: kollidiert mit branch/a in src/client.ts
+
+**Aufstellen** tut, wer die Runde schneidet (die Orchestratorin), aus einem beliebigen Checkout des
+Repos: `bun tools/runde.ts up abend branch/a branch/b`. Dasselbe `up` mit einer anderen Liste setzt die
+Branches neu. Gedruckt wird der Link ohne Token.
+
+**Wie der Owner hinkommt.** Der Instanz-Chip des Boards führt sie unter „[Zitat entfernt]“ als `runde-<name>`
+(`server.ts#instanceChipLinks`). Der erste Besuch je Gerät braucht den Link mit Token, den baut, wer mit
+ihm spricht, aus `.testinstanz.token` im Verzeichnis der Instanz. Eine Zeile mit „Öffnen“ in Info →
+Arbeitsorte hat eine Runde noch nicht: die Git-Ansicht zeigt nur Worktrees mit Branch
+(`src/gitstruktur.ts#gitModel`).
+
+**Neu gebaut** wird sie vom Server (`server.ts#tickRundenNow`, jede Minute, `FLEET_RUNDE_MS`), sobald
+sich main oder einer ihrer Branches bewegt: `testinstanz.sh refresh`, Port und Token bleiben, ein offener
+Tab bekommt das Neuladen angeboten. Ein roter Bau lässt das alte Bild stehen und wird erst mit einem
+neuen Stand wieder versucht. Ging die Instanz (TTL, Neustart), stellt der Takt sie wieder auf.
+
+**Kollidiert** ein Branch mit main oder einem Branch davor, bleibt er draußen; der Grund nennt den
+anderen und die Dateien. Die Reihenfolge im `up` entscheidet, wer bei einem Konflikt drin ist.
+
+**Gelandet** wird weiter Branch für Branch über die Land-Tür; die Runde ist nur das Bild.
+
+**Sie endet**, wenn jeder ihrer Branches fertig ist: gelandet bis zu seiner Spitze (das Branch-Buch: das
+letzte Land hat genau diese Spitze, in jeder Land-Form), nach seinem Land beendet (`server/branch-ende.ts`)
+oder beiseitegelegt. Dann `testinstanz.sh down`, Worktree und Runde gehen. Was sie hält:
+- wer schaut oder in den letzten zehn Minuten schaute (unten, „Wer schaut, hält sie“);
+- eine Session im Runden-Worktree, eine Änderung darin, eine ignorierte Datei außer `node_modules/` und
+  Fleets Gerüst — dieselben Halte wie beim Ende eines Branches;
+- ein git-Fehler: Kann git eine Spitze nicht lesen, endet und baut der Takt in diesem Durchgang nichts.
+
+Eine Runden-Datei gilt nur an ihrem eigenen Pfad (`runde-<name>`), im Repo des Takts und in einem
+detached Worktree; jede andere überspringt der Takt und nennt sie. `bun tools/runde.ts tick` von Hand baut
+neu, beendet aber nichts (was gelandet ist und wer im Worktree sitzt, weiß nur der Server).
+`bun tools/runde.ts down <name>` beendet sie von Hand, nach derselben Schonfrist; `--force` übergeht nur
+die. Die TTL einer Runde ist die längste (1440 min).
+
+## Wann eine eigene Instanz sich lohnt
+
+Der Normalfall ist die Instanz der Runde. Eine eigene Instanz je Sitz lohnt sich nur:
+
+- **beim Live-Bau mit dem Owner** (unten): er klickt, während du baust, und jedes `refresh` gilt ihm;
+- **bei einer Änderung am Start oder an der Datenform des Servers** (Boot, `fleet.json`, Migration):
+  das muss allein hochkommen, bevor es neben anderen Branches etwas beweist;
+- **für einen riskanten Versuch**, der eine gemeinsame Instanz kaputt machen könnte.
+
+Wer baut, misst in seiner eigenen Instanz und beendet sie mit seinem Report (`./testinstanz.sh down`).
+Eine Instanz aus einem Branch endet sonst mit ihm: wenn er nach seinem Land endet oder beiseitegelegt
+wird, ruft der Server ihr `down` (`server/branch-ende.ts`). Wer hineinschaut oder in den letzten zehn
+Minuten schaute, hält sie.
 
 ## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt
 
@@ -263,6 +330,20 @@ verzeichnet (`lsof -iTCP:<port> -sTCP:LISTEN -t` — ein recycelter PID ist ein 
 `tmux -L <socket> kill-server` samt zurückgelassener Socket-Datei, jeden Prozess, dessen cwd im
 Instanzverzeichnis liegt, dann das Verzeichnis. Jede Entscheidung steht in einer Zeile.
 State-Dateien ohne `expiresAt` (alte Instanzen) werden nur gelistet, nie beendet.
+
+**Das Ende mit dem Branch.** Vor der TTL endet eine Instanz mit ihrem Branch: Endet ein gelandeter Branch
+von selbst (`server/branch-ende.ts`), ruft der Server vorher `testinstanz.sh down` in seinem Worktree; aus
+einem beiseitegelegten Worktree genauso. Innerhalb der Schonfrist, bei offener Verbindung oder neben einem
+Befehl vom Board bleiben Instanz und Branch bis zum nächsten Durchgang. Eine Instanz, die gerade startet
+(`pid=0`), hält den Branch ebenso.
+
+**Wer schaut, hält sie — auch ohne Verbindung in dieser Sekunde.** Ein Handy-Tab im Hintergrund trennt
+seinen Socket, ein Desktop-Tab wartet zwischen zwei Versuchen bis zu 15 s. Deshalb notiert eine Instanz
+jeden Poll des Boards (eine Anfrage mit dem Owner-Cookie, nie ein Bearer-Aufruf wie `status`) in
+`.testinstanz.seen` ihres Verzeichnisses (`server.ts#noteInstanceLook`). Was eine Instanz von außen beendet
+(das Ende eines Branches, ein Beiseitelegen, eine Runde, `tools/runde.ts down`), wartet zehn Minuten nach
+dem letzten Blick, bei einer nie geöffneten nach dem Start (`server/instanz-blick.ts`). Das `down` von Hand
+und `reap` kennen die Schonfrist nicht; für sie gilt die offene Verbindung.
 
 **Offene Verbindung = jemand schaut.** `reap` und `down` verweigern eine Instanz mit
 ESTABLISHED-Verbindung auf ihren Port (`lsof`, auf Linux ohne lsof `ss`) und nennen die

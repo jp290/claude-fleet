@@ -162,6 +162,8 @@ ti_manifest() {
 # the target's content, it is not lane work missing there.
 # THE LIMIT, accepted: a merge that carries its OWN conflict resolution is not counted either —
 # lanes land by rebase, so that is the rare edge, and --no-merges is the chosen trade.
+# A ROUND (server/runde.ts) keeps its branches, what went in and what stayed out in fleet-runde.json in the
+# worktree's own git dir; it rides along as `round` and the band shows it instead of a branch.
 # The target is never guessed: FLEET_TI_TARGET (the server passes the lane's recorded base), else
 # the lane's own `base` from GET /api/self when this runs in a lane pane (FLEET_SELF_URL + token,
 # read in-process so the token never reaches a command line), else none — and the band says
@@ -183,7 +185,11 @@ if(name&&run("check-ref-format","--branch",name)!==null){
   const n=th&&head?run("rev-list","--count","--no-merges","--cherry-pick","--right-only",th+"..."+head):null;
   target={branch:name,head:th,ahead:n!==null&&/^\d+$/.test(n)?Number(n):null};
 }
-console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt,target}));'
+let round=null;
+const gd=run("rev-parse","--absolute-git-dir");
+if(gd){try{const r=JSON.parse(require("node:fs").readFileSync(gd+"/fleet-runde.json","utf8")),b=r.built;
+  if(b)round={name:r.name,main:b.main,in:b.in.map((i)=>({branch:i.branch,head:i.head})),out:b.out.map((o)=>({branch:o.branch,why:o.why}))};}catch{}}
+console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\n").filter(Boolean).length,measuredAt,target,...(round?{round}:{})}));'
 }
 
 # The address the owner opens. Derived at RUN time, never written into this file: a tracked file

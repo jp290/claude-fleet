@@ -178,6 +178,8 @@ export function instanceNameFrom(value: unknown): string | null {
 export interface InstanceSource {
   branch: string | null; head: string | null; dirty: number | null; measuredAt: number | null;
   target: { branch: string; head: string | null; ahead: number | null } | null;
+  // A ROUND (server/runde.ts): several branches merged onto `main` for one look; `out` collided and stayed out
+  round?: { name: string; main: string | null; in: { branch: string; head: string | null }[]; out: { branch: string; why: string }[] };
 }
 // A BRANCH NAME AS GIT ALLOWS IT, not a positive list: `+`, `@`, `#` and umlauts are valid branch
 // names and must not read "unbekannt". Refused are exactly git check-ref-format's rules — control
@@ -201,9 +203,27 @@ export function instanceSourceFrom(value: unknown): InstanceSource | null {
   const t = v.target && typeof v.target === "object" && !Array.isArray(v.target) ? v.target as Record<string, unknown> : null;
   const targetBranch = instanceBranch(t?.branch);
   const measuredAt = instanceCount(v.measuredAt);
+  const round = instanceRound(v.round);
   return { branch: instanceBranch(v.branch), head: instanceSha(v.head), dirty: instanceCount(v.dirty),
     measuredAt: measuredAt && measuredAt > 0 ? measuredAt : null,
-    target: targetBranch ? { branch: targetBranch, head: instanceSha(t?.head), ahead: instanceCount(t?.ahead) } : null };
+    target: targetBranch ? { branch: targetBranch, head: instanceSha(t?.head), ahead: instanceCount(t?.ahead) } : null,
+    ...(round ? { round } : {}) };
+}
+const INSTANCE_ROUND_MAX = 20; // branches per side; a round is a handful
+const INSTANCE_WHY_MAX = 200;
+const records = (v: unknown): Record<string, unknown>[] =>
+  Array.isArray(v) ? v.slice(0, INSTANCE_ROUND_MAX).filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x)) : [];
+// a round needs its name; a member without a readable branch name is dropped, never shown as "unbekannt"
+function instanceRound(v: unknown): InstanceSource["round"] | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(r.name)) return null;
+  const ins = records(r.in).flatMap((m) => { const b = instanceBranch(m.branch); return b ? [{ branch: b, head: instanceSha(m.head) }] : []; });
+  const outs = records(r.out).flatMap((m) => {
+    const b = instanceBranch(m.branch);
+    return b ? [{ branch: b, why: typeof m.why === "string" ? m.why.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, INSTANCE_WHY_MAX) : "Grund unbekannt" }] : [];
+  });
+  return { name: r.name, main: instanceSha(r.main), in: ins, out: outs };
 }
 
 // THE BAND'S WORDS, one pure function so the claim is checkable without a browser. A run marked
@@ -213,6 +233,7 @@ export function instanceSourceFrom(value: unknown): InstanceSource | null {
 export interface InstanceBandRun { t: string; mono?: boolean }
 export interface InstanceBandText { segments: InstanceBandRun[][]; text: string; title: string }
 export function instanceBandText(s: InstanceSource, clock: (ms: number) => string): InstanceBandText {
+  if (s.round) return roundBandText(s.round, s.measuredAt, clock);
   const segments: InstanceBandRun[][] = [];
   segments.push(s.branch ? [{ t: "Zweig " }, { t: s.branch, mono: true }] : [{ t: "Zweig unbekannt" }]);
   if (!s.head) segments.push([{ t: "Stand unbekannt" }]);
@@ -238,6 +259,23 @@ export function instanceBandText(s: InstanceSource, clock: (ms: number) => strin
       + "Was danach im Worktree geändert wurde, ist hier nicht enthalten."
       + (s.target ? ` Verglichen mit ${s.target.branch}${s.target.head ? ` (${s.target.head.slice(0, 7)})` : ""} zum selben Zeitpunkt.` : "")
     : "Diese Testinstanz konnte beim Start nicht messen, welchen Stand sie zeigt.";
+  return { segments, text, title };
+}
+
+// A ROUND'S WORDS: its name, main and every branch in it, then each branch that stayed out with its reason
+function roundBandText(r: NonNullable<InstanceSource["round"]>, measuredAt: number | null, clock: (ms: number) => string): InstanceBandText {
+  const list = (names: string[]): InstanceBandRun[] => names.flatMap((b, i) => [...(i ? [{ t: ", " }] : []), { t: b, mono: true }]);
+  const segments: InstanceBandRun[][] = [[{ t: "Runde " }, { t: r.name, mono: true }]];
+  segments.push(r.main ? [{ t: "main " }, { t: r.main.slice(0, 7), mono: true }] : [{ t: "main unbekannt" }]);
+  segments.push(r.in.length ? [{ t: "mit " }, ...list(r.in.map((m) => m.branch))] : [{ t: "kein Branch dabei" }]);
+  for (const o of r.out) segments.push([{ t: "ohne " }, { t: o.branch, mono: true }, { t: `: ${o.why}` }]);
+  const text = segments.map((seg) => seg.map((x) => x.t).join("")).join(" · ");
+  const when = measuredAt ? clock(measuredAt) : "unbekannt";
+  const title = `Diese Testinstanz zeigt die Runde ${r.name}: main${r.main ? ` (${r.main.slice(0, 7)})` : ""}`
+    + (r.in.length ? ` mit ${r.in.map((m) => m.branch).join(", ")} zusammengeführt` : " ohne Branch")
+    + `, gebaut um ${when}. Bewegt sich main oder einer der Branches, wird sie neu gebaut.`
+    + (r.out.length ? ` Nicht dabei: ${r.out.map((o) => `${o.branch} (${o.why})`).join("; ")}.` : "")
+    + " Gelandet wird weiter Branch für Branch.";
   return { segments, text, title };
 }
 

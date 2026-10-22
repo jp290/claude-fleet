@@ -70,6 +70,15 @@ will see, and for how you get there.
   that state himself. An open owner question about the same surface is a stop. Night autonomy covers backend,
   audits and repairs, not a UI he sees for the first time when he wakes up: the lane holds, the instance stays
   up, the morning list names it.
+- **His look has to reach him.** The page you hand him carries, per branch, one sentence in his words on what he
+  gains, a before and an after of the same spot side by side at the measure of his own screen, and the click
+  path from where the page opens. Look at every picture yourself before you send the link. A change deep in a
+  collapsed box is invisible to him unless the path leads there: say where it is, or that it can't be seen at
+  all. Work he gains nothing from today stays off the page, with one line on why. A link and a port alone
+  never reach him.
+- **A seat that checks never changes what he is meant to see.** In an instance prepared for his look there is no
+  "seen", no save, no answer and no close. A picture that needs a changing click comes from an instance of its
+  own; otherwise he opens a state that no longer shows the change.
 - **A probe that misses because the column moves found a product bug.** When a DOM probe's press lands beside
   its target because content shifts after load or on repaint, a user's mouse hits the same shift. Fix the jump in
   `src/` (reserve space, keep layout stable across repaint). Never teach the probe to wait for a still column;

@@ -5406,7 +5406,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${unboundFreeSlot}/kill`, {});
   rmSync(unboundRepo, { recursive: true, force: true });
 
-  // DER START DER ORCHESTRATORIN: sieben Texte, in dieser Ordnung. Der Test listet die Pfade
+  // DER START DER ORCHESTRATORIN: acht Texte, in dieser Ordnung. Der Test listet die Pfade
   // selbst statt die Server-Konstanten zu importieren — eine Datei, die der Server aus seiner
   // Liste verliert, soll hier rot werden und nicht still mitverschwinden. Die Texte gehören ihrem
   // Autor und werden nicht umgeschrieben: der Test kopiert sie aus der gestagten Instanz (ROOT)
@@ -5422,6 +5422,7 @@ export async function run(ctx: Ctx): Promise<void> {
     "docs/packs/working-with-the-owner.md",
     "docs/packs/how-fleet-remembers.md",
     "docs/packs/working-toward-a-goal.md",
+    "docs/packs/who-it-is-for.md",
   ] as const;
   const orchStartQuelle = ORCH_START_FILES.map((pfad) => {
     try { return readFileSync(resolve(ROOT, pfad), "utf8"); } catch { return ""; }
@@ -5649,7 +5650,7 @@ export async function run(ctx: Ctx): Promise<void> {
       .history.at(-1)?.text ?? ""
     : "";
   const orchReceipt = (await contextReceipts()).receipts.filter((row) => row.slot === orchSlot).at(-1);
-  check("Orchestrator start: the spawn door delivers the seven texts from the session's repo, in their order",
+  check("Orchestrator start: the spawn door delivers the eight texts from the session's repo, in their order",
     orchRes.ok && orchBody.ok === true && orchBody.label === orchLabel
       && orchBody.roleCard?.delivered === true && orchBody.roleCard.receipt === true
       && orchStartFehlt.length === 0 && orchPrompt.startsWith(orchStartBlock)
@@ -5719,7 +5720,7 @@ export async function run(ctx: Ctx): Promise<void> {
       .history.at(-1)?.text ?? "";
   const orchSuccReceipt = (await contextReceipts()).receipts
     .filter((row) => row.slot === orchSuccSlot).at(-1);
-  check("Orchestrator start: the succession door delivers the SAME seven texts, in their order, over the line record it names",
+  check("Orchestrator start: the succession door delivers the SAME eight texts, in their order, over the line record it names",
     orchSuccRes.ok && orchSuccBody.ok === true && orchSuccBody.slot === orchSuccSlot && orchSuccSlot === orchSlot
       && orchSuccBody.roleCard?.delivered === true && orchSuccBody.roleCard.receipt === true
       && orchSuccPrompt.startsWith("[fleet Orchestrator succession] ")

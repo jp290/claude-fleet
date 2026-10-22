@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sectionAt } from "../context-sections";
 import { type Answer, branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
-import { SEAT_BOX, SEAT_OHNE, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, seatContextFacts, seatFassungAbschnitte,
+import { SEAT_BOX, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, seatContextFacts, seatFassungAbschnitte,
   seatPacks, seatSkillFiles, seatSkillsVerwaist, skillAufrufe, type SeatKnowledge } from "./sitz-wissen";
 
 const ROOT = realpathSync(join(import.meta.dir, ".."));
@@ -40,8 +40,7 @@ interface RegisterPack { id: string; useWhen: string; triggers: string[]; source
 const register = JSON.parse(sh(ROOT, "show", "HEAD:.fleet/context-packs.json")) as RegisterPack[];
 const pack = (id: string): RegisterPack => register.find((p) => p.id === id)!;
 // die Regel, wie sie der Auftrag beschreibt: überall `seat-start-any-repo`, im Fleet-Repo dazu `seat-start`
-// ...ohne das, was kein Sitz bekommt (SEAT_OHNE, Owner 22.10.)
-const erwartet = (fleet: boolean): string[] => register.filter((p) => !(p.id in SEAT_OHNE)).filter((p) => p.triggers.includes("seat-start-any-repo")
+const erwartet = (fleet: boolean): string[] => register.filter((p) => p.triggers.includes("seat-start-any-repo")
   || (fleet && p.triggers.includes("seat-start"))).map((p) => p.id);
 const box = (fleet: boolean): string[] => erwartet(fleet).filter((id) => id in SEAT_BOX);
 const skills = (fleet: boolean): string[] => erwartet(fleet).filter((id) => !(id in SEAT_BOX));
@@ -96,18 +95,6 @@ describe("Die Regel: welche Packs zu welchem Sitz kommen, und wie", () => {
       expect(erwartet(false)).toContain(id);
       expect(grund.length).toBeGreaterThan(40);
     }
-  });
-  // runde4 §6, Owner 22.10.: „[Zitat entfernt]“ — auch wenn das Register ihn noch trägt
-  test("„Auf ein Ziel hin“ bekommt kein Sitz, weder wörtlich noch als Skill, auch wenn sein Auslöser passt", () => {
-    expect(Object.keys(SEAT_OHNE)).toEqual(["working-toward-a-goal"]);
-    const k: SeatKnowledge = { tree: "foreign", repoRoot: "/f", head: "c".repeat(40), packs: [
-      { id: "working-toward-a-goal", useWhen: "Wenn du Arbeit beginnst.", sources: [{ path: "g.md", anchor: "G" }], text: "Ziel" },
-      { id: "who-it-is-for", useWhen: "Bevor du baust.", sources: [{ path: "w.md", anchor: "W" }], text: "Für wen" },
-      { id: "running-fleet", useWhen: "Bevor du landest.", sources: [{ path: "r.md", anchor: "R" }], text: "Landen" }] };
-    expect(seatPacks(k)).toEqual({ box: ["who-it-is-for"], skills: ["running-fleet"], skillListe: "- running-fleet: Bevor du landest." });
-    expect(seatSkillFiles(k).map((f) => f.pfad)).toEqual([".claude/skills/running-fleet/SKILL.md"]);
-    expect(JSON.stringify(seatFassungAbschnitte(k, true, "/s"))).not.toContain("working-toward-a-goal");
-    expect(JSON.stringify(seatFassungAbschnitte(k, false, "/s"))).not.toContain("working-toward-a-goal");
   });
 });
 
@@ -186,10 +173,6 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
       }
     }
     expect(starts[0][0].cwd).toBe(String(made?.body.path));
-    for (const [start] of starts) for (const id of Object.keys(SEAT_OHNE)) {
-      expect(start.appended).not.toContain(id);
-      expect(skillsIn(start.addDirs).has(id)).toBe(false);
-    }
 
     // EIN SITZ VERÄNDERT SEINEN ORDNER: eine SKILL.md umgeschrieben, ein Befehl daneben, Schreibrechte genommen. Ein anderer Sitz
     // mit demselben Inhalt bekommt seinen eigenen, unberührten Ordner; endet die Belegung, geht ihr Ordner mit ihr; was beim Start
@@ -281,7 +264,6 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
         expect(a?.grund).toContain("Skill");
       }
       expect(JSON.stringify(wissen)).not.toContain("keine stehende Rolle");
-      for (const id of Object.keys(SEAT_OHNE)) expect(JSON.stringify(wissen)).not.toContain(id);
     }
 
     // DER GRÜNDUNGSPLAN, DEN DAS FENSTER „NEUE SESSION“ LIEST, IST DERSELBE START (Fachblick 22.10.: „[Zitat entfernt]“
@@ -311,7 +293,7 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
         expect((antwort?.body.lieferung as { geliefert: { id: string; weg: string }[] }).geliefert)
           .toEqual(expect.arrayContaining([{ id: "bibliothek", weg: "Systemprompt" }, { id: "bibliothek-skills", weg: "Skill" }]));
       }
-      for (const id of [...erwartet(fleetSitz), ...Object.keys(SEAT_OHNE)]) {
+      for (const id of erwartet(fleetSitz)) {
         expect(zeilen(antwort).some((z) => z.id === `pack:${id}`)).toBe(false);
         expect((antwort?.body.omitted as { id: string }[]).some((o) => o.id === id)).toBe(false);
       }

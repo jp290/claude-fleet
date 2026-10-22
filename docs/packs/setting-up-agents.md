@@ -15,8 +15,7 @@ their defaults.
   that fits its pattern, so a wrong id dies in the pane, not at the route. Switching a living Claude pane is a
   pair: the slot's model route and `/model` typed into the pane itself.
 - **Start:** what the agent is told first. An agent that works for someone else gets the connecting piece below. An
-  agent the owner will talk to needs a sentence, or nothing at all. There is no goal field. If the work should
-  pull hard toward a goal, point the agent to the pack `working-toward-a-goal`.
+  agent the owner will talk to needs a sentence, or nothing at all. There is no goal field.
 - **Reads:** its role if it has one, the project's rules, and pointers to knowledge. Point instead of pasting. Leave
   out what it doesn't need, because everything in its start takes attention away from the task.
 - **May:** its rights and its permission mode. Keep them pragmatic: block only what has real consequences. An act

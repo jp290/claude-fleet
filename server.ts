@@ -250,7 +250,7 @@ import { baueFassung, textAbschnitt, unknownAbschnitt, type Fassung, type Fassun
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
-import { SEAT_OHNE, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatPacks, seatSkillFiles, seatSkillsDir,
+import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatPacks, seatSkillFiles, seatSkillsDir,
   seatSkillsVerwaist, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
 import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
@@ -42088,8 +42088,7 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge) }),
       (e: unknown) => ({ grund: `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}` }))
     : null;
-  // ...and what no seat gets (SEAT_OHNE) stands nowhere in it, not as a pack row either
-  const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills, ...Object.keys(SEAT_OHNE)] : []);
+  const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills] : []);
   const packs: PlanPackInstanz[] = [];
   for (const id of [...fp.plan.selected.map((pack) => pack.id), ...fp.plan.omitted.map((entry) => entry.id), ...forced]) {
     if (packs.some((pack) => pack.packId === id) || getragen.has(id)) continue;

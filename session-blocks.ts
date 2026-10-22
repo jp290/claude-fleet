@@ -208,7 +208,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
   {
     id: "orchestrator-card",
     wort: "Auftrag",
-    satz: "Richtung, Rolle, Systemkonzept und fünf Packs sagen der Orchestratorin, wo sie steht.",
+    satz: "Richtung, Rolle, Systemkonzept und vier Packs sagen der Orchestratorin, wo sie steht.",
     funktion: ["auftrag", "vertrag"],
     // Frage: Befund B „auftrag → Auftrag“, A18 „mehrere“; der Start aus server/orchestrator-start.ts, sein Korrekturen-Zeiger ist owner-heft
     frage: "auftrag",
@@ -219,7 +219,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
       { teil: "## Your knowledge", frage: "hintergrund" },
       { teil: "## Handing over", frage: "howto" },
     ],
-    grenze: {"art": "noetig", "grund": "Ohne ihre Richtung, Rolle, das Systemkonzept und die fünf Packs fehlen ihr Auftrag, Grenzen und Wissen."},
+    grenze: {"art": "noetig", "grund": "Ohne ihre Richtung, Rolle, das Systemkonzept und die vier Packs fehlen ihr Auftrag, Grenzen und Wissen."},
     schicht: "docs/start/ und docs/packs/",
     autor: ["Owner-Promotion"],
     harness: {"art": "alle"},
@@ -229,7 +229,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     belege: ["server/orchestrator-start.ts#readOrchestratorStartParts", "docs/start/direction.md#Direction: Harness 2.0",
       "docs/start/orchestrator.md#Orchestrator", "docs/start/system-concept.md#Claude Fleet",
       "docs/packs/setting-up-agents.md#Setting up an agent", "docs/packs/working-with-the-owner.md#Working with the owner",
-      "docs/packs/how-fleet-remembers.md#How Fleet remembers", "docs/packs/working-toward-a-goal.md#Working toward a goal",
+      "docs/packs/how-fleet-remembers.md#How Fleet remembers",
       "docs/packs/who-it-is-for.md#Who it is for"],
     breaksWithout: "Die Orchestratorin weiß nicht, wo sie steht, was Fleet ist und welches Wissen ihr Start trägt; der Name allein gibt ihr keine Rechte.",
     fassung: "unknown", bytes: "unknown",

@@ -31,12 +31,6 @@ export const SEAT_TRIGGERS: Readonly<Record<SeatTree, readonly ContextPackTrigge
   foreign: ["seat-start-any-repo"],
 };
 
-// WAS KEIN SITZ BEKOMMT, weder wörtlich noch als Skill, auch wenn sein Auslöser im Register passt; je Pack der Grund. Der
-// Eintrag im Register und die Datei bleiben, bis sie selbst gehen (runde4 §6).
-export const SEAT_OHNE: Readonly<Record<string, string>> = {
-  "working-toward-a-goal": "Owner 22.10.: „[Zitat entfernt]“",
-};
-
 // WAS WÖRTLICH IM START STEHT, je Pack ein Satz, warum. Nach Pack-Id, nicht nach Pfad: die Bibliothek zieht um.
 // who-it-is-for steht hier, weil einem Sitz an der Leiste genau das fehlte (Orchestratorin 22.10., runde4 §3).
 // Gemessen am 22.10. (claude 2.1.308, Opus 5.5, Usage der ersten Antwort im selben Ordner, ohne Bibliothek 29 284 Tokens): ein
@@ -76,10 +70,9 @@ export interface SeatKnowledge {
 }
 
 const isBox = (pack: SeatPack): boolean => pack.id in SEAT_BOX;
-const imSitz = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => !(pack.id in SEAT_OHNE));
 // ein Pack ohne lesbaren Text kommt weder in den Start noch als Skill: ein leerer Text wäre eine falsche Zusage
-const boxOf = (k: SeatKnowledge): SeatPack[] => imSitz(k).filter((pack) => isBox(pack) && pack.text !== null);
-const skillsOf = (k: SeatKnowledge): SeatPack[] => imSitz(k).filter((pack) => !isBox(pack) && pack.text !== null && pack.useWhen);
+const boxOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => isBox(pack) && pack.text !== null);
+const skillsOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => !isBox(pack) && pack.text !== null && pack.useWhen);
 const quelleOf = (pack: SeatPack): string => pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
 const groesse = (bytes: number): string => bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1).replace(".", ",")} kB`;
 
@@ -150,7 +143,7 @@ export function bibliothekDerTuer(body: Readonly<Record<string, unknown>>, plan:
 export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string): FassungAbschnittEingang[] {
   if (!claude)
     return [unknownAbschnitt("wissen", "dieser Harness liest weder Start-Block noch Skills; Fleets Packs leiht er über "
-      + `GET /api/self/context/<id> aus (${imSitz(k).map((pack) => pack.id).join(", ") || "keiner passt"})`)];
+      + `GET /api/self/context/<id> aus (${k.packs.map((pack) => pack.id).join(", ") || "keiner passt"})`)];
   const box = boxOf(k), skills = skillsOf(k);
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"

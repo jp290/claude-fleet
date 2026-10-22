@@ -209,6 +209,5 @@ export const PACK_WORDS: Record<string, { name: string; say: string }> = {
   "running-fleet": { name: "Fleet betreiben", say: "Landen, deployen, ein rotes Audit, den Helfer und lebende Sessions." },
   "who-it-is-for": { name: "Für wen", say: "Wer die Arbeit trifft und wie sie ihre Leute verfehlt." },
   "how-fleet-remembers": { name: "Wie Fleet erinnert", say: "Vom Notizbuch in Wissen, das bleibt." },
-  "working-toward-a-goal": { name: "Auf ein Ziel hin", say: "Wie ein Agent auf sein Ziel hinarbeitet." },
   "system-concept": { name: "Das Systemkonzept", say: "Was Fleet ist, wofür es gebaut wird und wohin es geht." },
 };

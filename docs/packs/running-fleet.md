@@ -17,10 +17,18 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   `refs/notes/merge-check`. `repo` in the land and check bodies is the checkout's path;
   a bare repo name answers 400 `not a directory`. A branch session has no self door there; the orchestrator
   starts that check.
+- **Wait for the verdict by its tip, not by the clock.** A check takes minutes and the file keeps every earlier
+  line of the same branch. The verdict for your check is the line whose `tip` is the branch tip you checked and
+  whose `main` is the main it ran against; a wake-up after a fixed time reads the line before it.
+- **The check replays commits, not merges.** `ci/merge-check.ts#candidateOf` sets the branch's commits one by one
+  onto main and skips merge commits (`--no-merges`), so a conflict you resolved in a merge of main comes back at
+  the commit that caused it. Before its first land, rebase a branch onto main instead.
 - **After a land, the branch grows from the landed tip.** `chargeBase` becomes the tip that landed. A branch reset
   or rebased onto main since no longer holds that tip, and land and check answer 409 "Branch seit der letzten
   Charge umgeschrieben" (`server/branch-land.ts#chargeRewritten`); no door resets the base. Merge main in or
-  commit on top.
+  commit on top. If the charge conflicts with main, merging main in does not help the check (it skips the merge):
+  rebuild the charge as a merge of the landed tip with main, plus one commit on top that carries the finished tree.
+  The land squashes anyway.
 - **A weight in the shard table reshuffles the whole plan.** `e2e/ctx.ts#SHARD_UNITS` is split greedily by
   `seconds`, so one changed weight can move a dozen units to another shard and run modules in a new order in the
   same instance. Before you commit a weight, diff `shardPlan` old against new and name the modules that now run

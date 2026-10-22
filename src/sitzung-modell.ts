@@ -269,10 +269,8 @@ function zusatzVon(b: Baustein): string | null {
 }
 // WAS DER OWNER VON DER BIBLIOTHEK HAT, in seinen Worten (Fachblick 22.10., Runde 2): sie kommt in jedes Repo (Owner 22.10.: „[Zitat entfernt]“
 // ), also muss er sehen, was er dort abschaltet. Je Box-Pack ein kurzes Stück der Unterzeile und eines für den Satz; die Teile deutsch.
-const BIBLIOTHEK_KURZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du sprichst", "who-it-is-for": "für wen er baut",
-  "working-toward-a-goal": "wie er am Ziel bleibt" };
-const BIBLIOTHEK_SATZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du arbeitest", "who-it-is-for": "für wen er baut",
-  "working-toward-a-goal": "wie er am Ziel bleibt" };
+const BIBLIOTHEK_KURZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du sprichst", "who-it-is-for": "für wen er baut" };
+const BIBLIOTHEK_SATZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du arbeitest", "who-it-is-for": "für wen er baut" };
 const BIBLIOTHEK_WO = "In jedem Repo. Fleets eigene Arbeit (Landen, Deploy, Testinstanz, Agenten aufsetzen, Systemkonzept) nur im Fleet-Repo.";
 function bibliothekWorte(b: Baustein): Partial<Pick<Teil, "unter" | "mehr">> {
   const packs = rec(b.details)?.packs;

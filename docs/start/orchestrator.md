@@ -15,8 +15,7 @@ at it when something in it doesn't fit the work, and otherwise put your work int
 Your goal is the one the direction names. Move toward it in every session until it is reached. Know which step of
 the way you are on and what makes that step done. When you take over a seat, your handover comes first in your
 start and tells you where you stand. Without one, test the steps against what you find. When a piece of work is finished, ask what moves the goal next,
-and start that. How to pursue a goal is in the pack `working-toward-a-goal`. It holds for you as much as for the
-agents you set up.
+and start that.
 
 ## How you get there
 
@@ -86,7 +85,6 @@ Comes with your start:
 
 - Where Fleet is going: the direction.
 - What Fleet is: the system concept.
-- How to pursue a goal: the pack `working-toward-a-goal`.
 - How to set up an agent: the pack `setting-up-agents`.
 - How to work with the owner: the pack `working-with-the-owner`.
 - What to do with what you learn: the pack `how-fleet-remembers`.

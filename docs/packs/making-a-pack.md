@@ -51,7 +51,7 @@ you land" is not.
   included. So a pack anchored on its title is delivered whole, and a pack that lives as a `##` section of a
   larger document (`nachfolge-klug` in `docs/controller.md`) ends at that document's next `##`. Extend such a pack
   with `###` subsections under its anchor, and its registry entry follows.
-- A start carries few packs and every line in it pulls attention; the five packs in the orchestrator's start are
+- A start carries few packs and every line in it pulls attention; the four packs in the orchestrator's start are
   under 6 KB each. Where you have more to say, the rest waits behind a pointer, and the pack says when to go there.
 
 ## Registering it
@@ -65,7 +65,7 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
 - `triggers`: when the plan selects the pack. `always` rides every lane and MAIN founding; `orchestration` comes
   with the founding of a MAIN; `landing` is the borrow before a land; `visible-surface` is read off a card whose
   surface names `src/` or `public/`; `measurement`, `rulebook-edit`, `jev-use` and `harness-selection` come from a
-  card's text. `orchestrator-start` is reserved for the five packs of her start, which carries no other trigger.
+  card's text. `orchestrator-start` is reserved for the four packs of her start, which carries no other trigger.
 - `sources`: `path` and `anchor` (the heading line; `context-sections.ts#sectionSpan` takes the line equal to it,
   else the line that starts with it, and refuses more than one as `source-anchor-ambiguous`, so write the whole
   line), an `id`, a `sorte` (`anleitung` for how-to, `wissen` for background) and `positions` per role: `box`
@@ -106,9 +106,13 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
   description Claude matches, so write it as the moment. Give a pack `seat-start-any-repo` only if it holds in any
   repository: a seat working on someone's support requests pays for every line about landing Fleet. Whether seats
   open the skills: `bun server/bibliothek-messung.ts <transcripts>`.
-  The orchestrator's start loads exactly five packs (`server/orchestrator-start.ts`); any other pack reaches her
+  The orchestrator's start loads exactly four packs (`server/orchestrator-start.ts`); any other pack reaches her
   only through a line under "Read when you need it" in her role, which is the owner's text. Propose that line in
   your report, as one sentence that names the moment and the path.
+- **Her start is listed twice.** `e2e/programs.ts` keeps its own list of her start texts (`ORCH_START_FILES`), and
+  the merge check doesn't run that module; only the full audit after the land does. A change to
+  `ORCHESTRATOR_PACK_PATHS` changes that list too, and `FLEET_E2E_MODULES=programs ./e2e-isolated.sh` proves it
+  before the land.
 - A pointer is read less than you think. Measured in October for one pack: Claude lanes didn't open it as a
   pointer, Codex lanes mostly did (`docs/messungen/2026-10-08-pack-zeiger-gelesen.md`). If the work can't go well
   without it, give it `box` for that role, or name it in the brief.

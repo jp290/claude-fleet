@@ -157,10 +157,10 @@ describe("das Notizbuch des Setups", () => {
 // Fleets Bibliothek eines Sitzes ohne Rolle (session-blocks.ts#bibliothek, Fachblick 22.10. zu wissen-kommt-an): der Start-Block steht
 // unter Hintergrund im Systemprompt, die Skills unter How-to in der Liste der Skills, beide als Fleets Teil mit ihrem Wortlaut
 describe("Fleets Bibliothek im Fenster", () => {
-  const start = "BIBLIOTHEK (server/sitz-wissen.ts): Fleets Wissen für deinen Sitz.\n\n--- working-toward-a-goal ---\nText", liste = "- running-fleet: Bevor du landest.";
+  const start = "BIBLIOTHEK (server/sitz-wissen.ts): Fleets Wissen für deinen Sitz.\n\n--- who-it-is-for ---\nText", liste = "- running-fleet: Bevor du landest.";
   const bib = (o: Partial<Baustein> = {}) => [
     baustein("bibliothek", { frage: "hintergrund", zustand: "an", bytes: 99, schaltbar: { ja: false, grund: "Fleet gibt sie jedem Claude-Sitz ohne Rolle mit." },
-      details: { text: start, packs: ["working-with-the-owner", "working-toward-a-goal"] }, ...o }),
+      details: { text: start, packs: ["working-with-the-owner", "who-it-is-for"] }, ...o }),
     baustein("bibliothek-skills", { frage: "howto", zustand: "an", bytes: 99, schaltbar: { ja: false, grund: "Fleet gibt sie jedem Claude-Sitz ohne Rolle mit." },
       details: { text: liste, packs: ["running-fleet"] }, ...o })];
   test("drin, mit Packs je Weg, Wortlaut am richtigen Ort, und Fleets Summe wächst um ihren Text", () => {
@@ -186,11 +186,11 @@ describe("Fleets Bibliothek im Fenster", () => {
 describe("Fleets Bibliothek in Owner-Worten", () => {
   test("Unterzeile und Kasten nennen, was er davon hat, und die Teile deutsch, nicht als Pack-Id", () => {
     const m = modell(antwort([baustein("bibliothek", { frage: "hintergrund", zustand: "an", bytes: 9,
-      details: { text: "x", packs: ["working-with-the-owner", "working-toward-a-goal"] } })]));
+      details: { text: "x", packs: ["working-with-the-owner"] } })]));
     const t = m.teile.find((x) => x.id === "bibliothek")!;
-    expect(t.unter).toBe("wie du sprichst, wie er am Ziel bleibt");
-    expect(t.mehr.slice(0, 2)).toEqual([["Was er davon hat", "Er weiß von Anfang an, wie du arbeitest und wie er am Ziel bleibt."],
-      ["Die Teile", "Mit dem Owner arbeiten · Auf ein Ziel hin"]]);
+    expect(t.unter).toBe("wie du sprichst");
+    expect(t.mehr.slice(0, 2)).toEqual([["Was er davon hat", "Er weiß von Anfang an, wie du arbeitest."],
+      ["Die Teile", "Mit dem Owner arbeiten"]]);
   });
   // die Box seit runde4 (Owner 22.10.): für wen und mit dem Owner; sie kommt in jedes Repo, Fleets eigene Arbeit nur ins Fleet-Repo
   test("die Box mit „Für wen“: Unterzeile und Satz nennen es, der Kasten sagt, wo sie hinkommt", () => {

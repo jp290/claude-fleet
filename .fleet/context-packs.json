@@ -205,7 +205,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6016,
+    "estimatedBytes": 5917,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -242,24 +242,6 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1754,
-    "evidence": "tree-anchor",
-    "owner": "owner",
-    "status": "active"
-  },
-  {
-    "id": "working-toward-a-goal",
-    "useWhen": "Wenn du Arbeit mit einem Ende beginnst oder einem Agenten sagst, wie er auf ein Ziel hinarbeitet.",
-    "scope": "repo-contract",
-    "audience": "agent",
-    "triggers": ["orchestrator-start", "seat-start-any-repo"],
-    "hardness": "guidance",
-    "sources": [
-      { "id": "working-toward-a-goal.text", "path": "docs/packs/working-toward-a-goal.md", "anchor": "# Working toward a goal", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
-    ],
-    "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
-    "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1800,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -314,7 +296,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 11838,
+    "estimatedBytes": 13392,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -333,7 +315,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 9962,
+    "estimatedBytes": 10413,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

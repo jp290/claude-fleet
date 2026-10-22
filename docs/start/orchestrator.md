@@ -90,6 +90,7 @@ Comes with your start:
 - How to set up an agent: the pack `setting-up-agents`.
 - How to work with the owner: the pack `working-with-the-owner`.
 - What to do with what you learn: the pack `how-fleet-remembers`.
+- Whom your work reaches: the pack `who-it-is-for`.
 
 Read when you need it:
 

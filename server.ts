@@ -14246,7 +14246,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const orchestrator = isOrchestratorLabel(label);
   const harness = spawn.harness !== undefined ? spawn.harness : s.harness;
   // DIE ROLLE, IHR START UND IHRE VIER PACKS — gelesen aus dem Baum, in dem die Vorgängerin steht.
-  // Keine Box und kein Ankerblock mehr: der Start ist genau die sieben Dateien.
+  // Keine Box und kein Ankerblock mehr: der Start ist genau die acht Dateien.
   const orchStart = orchestrator ? readOrchestratorStartParts(predecessor.cwd) : null;
   const ritual = orchestrator && orchStart
     ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry)
@@ -20560,8 +20560,8 @@ function fassungRoleRender(role: "main" | "orchestrator", sessionId: string | nu
   } catch { return null; }
 }
 
-// DER START DER ORCHESTRATORIN ALS FASSUNG (Runde 1, vierte Fassung in Runde 4): dieselben sieben
-// Dateien, die der Spawn liest. Richtung, Rolle, Systemkonzept und die vier Packs stehen einzeln mit
+// DER START DER ORCHESTRATORIN ALS FASSUNG (Runde 1, vierte Fassung in Runde 4): dieselben acht
+// Dateien, die der Spawn liest. Richtung, Rolle, Systemkonzept und die fünf Packs stehen einzeln mit
 // Quelle und Bytes; was fehlt, wird `unknown` mit Grund, nie eine leere Zeile. Die Richtung ist der
 // erste Startteil und steht deshalb als eigener Abschnitt vor der Rolle.
 function fassungStartDatei(datei: OrchestratorStartDatei | null, id: string, pfad: string, repoRoot: string): FassungAbschnittEingang {
@@ -20601,7 +20601,7 @@ function fassungOrchestratorArbeitet(repoRoot: string): FassungAbschnittEingang[
     : [unknownAbschnitt("arbeitet", `die Rolle ${ORCHESTRATOR_ROLE_PATH} trägt keinen Abschnitt „## Handing over“`, ORCHESTRATOR_ROLE_PATH)];
 }
 
-// DER PLAN ZEIGT DENSELBEN START WIE DIE FASSUNG: die sieben Dateien, die server/orchestrator-start.ts
+// DER PLAN ZEIGT DENSELBEN START WIE DIE FASSUNG: die acht Dateien, die server/orchestrator-start.ts
 // liest. Die Vorschau ist kein zweiter Text — sie rendert dieselben Bytes in derselben Ordnung.
 function orchestratorPlanSessionAgents(repoRoot: string): SessionAgents {
   const teile = readOrchestratorStartParts(repoRoot);

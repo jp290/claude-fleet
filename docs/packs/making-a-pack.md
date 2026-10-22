@@ -51,7 +51,7 @@ you land" is not.
   included. So a pack anchored on its title is delivered whole, and a pack that lives as a `##` section of a
   larger document (`nachfolge-klug` in `docs/controller.md`) ends at that document's next `##`. Extend such a pack
   with `###` subsections under its anchor, and its registry entry follows.
-- A start carries few packs and every line in it pulls attention; the four packs in the orchestrator's start are
+- A start carries few packs and every line in it pulls attention; the five packs in the orchestrator's start are
   under 6 KB each. Where you have more to say, the rest waits behind a pointer, and the pack says when to go there.
 
 ## Registering it
@@ -65,7 +65,7 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
 - `triggers`: when the plan selects the pack. `always` rides every lane and MAIN founding; `orchestration` comes
   with the founding of a MAIN; `landing` is the borrow before a land; `visible-surface` is read off a card whose
   surface names `src/` or `public/`; `measurement`, `rulebook-edit`, `jev-use` and `harness-selection` come from a
-  card's text. `orchestrator-start` is reserved for the four packs of her start, which carries no other trigger.
+  card's text. `orchestrator-start` is reserved for the five packs of her start, which carries no other trigger.
 - `sources`: `path` and `anchor` (the heading line; `context-sections.ts#sectionSpan` takes the line equal to it,
   else the line that starts with it, and refuses more than one as `source-anchor-ambiguous`, so write the whole
   line), an `id`, a `sorte` (`anleitung` for how-to, `wissen` for background) and `positions` per role: `box`
@@ -99,7 +99,7 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
 ## Whom it reaches
 
 - A pack only helps where it is loaded. Registered pointers reach lane and MAIN foundings through their triggers.
-  The orchestrator's start loads exactly four packs (`server/orchestrator-start.ts`); any other pack reaches her
+  The orchestrator's start loads exactly five packs (`server/orchestrator-start.ts`); any other pack reaches her
   only through a line under "Read when you need it" in her role, which is the owner's text. Propose that line in
   your report, as one sentence that names the moment and the path.
 - A pointer is read less than you think. Measured in October for one pack: Claude lanes didn't open it as a

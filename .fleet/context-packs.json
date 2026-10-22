@@ -205,7 +205,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6010,
+    "estimatedBytes": 6016,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -260,6 +260,24 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1800,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "who-it-is-for",
+    "useWhen": "Bevor du Arbeit wählst, beauftragst oder baust, die jemand nutzt: wer sie trifft und wie Arbeit ihre Leute verfehlt.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "who-it-is-for.text", "path": "docs/packs/who-it-is-for.md", "anchor": "# Who it is for", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2213,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

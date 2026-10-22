@@ -40,7 +40,7 @@ If you can't name which of the four it brings, set up one agent.
 
 Whatever you hand an agent (a task, a card, a message) has at most five parts:
 
-- **Why:** what it serves, in one or two sentences.
+- **Why:** who it is for and what they can do afterwards.
 - **Goal:** the result, and how anyone can tell it is done.
 - **What you need to know:** facts and pointers it can't find on its own, plus known traps.
 - **Limit:** only if there is a real one.

@@ -232,8 +232,9 @@ describe("eine Nachfolge im Lauf über den Server", () => {
     const QUICK = { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" };
     // die Röhre hält erst das Schreiben nach dem Start der Nachfolgerin an, 1,5 s lang, kürzer als die Grenze; die Tür davor (Schließen der
     // Vorgängerin, Start) ist da schon durch, also bleibt nur das Schreiben der Nachfolge in der Kette hängen (branches.drive.ts, `rohr`)
-    const [, , lauf] = await life(f, [{ rohr: "audit.jsonl", ms: 1500, nach: '"event":"self_heal_recreate"' },
+    const [rohr, , lauf] = await life(f, [{ rohr: "audit.jsonl", ms: 1500, nach: '"event":"self_heal_recreate"' },
       { method: "POST", path: "/api/self/succeed", body: { intent: "weiter" }, token: null, self: slot.selfToken }, get(`/api/k15/laeufe/${id}`)], QUICK);
+    expect(rohr?.body.gehalten).toBe(true);
     const l = lauf?.body.lauf as { ende: unknown; positionen: { pos: string; slot: number; openedAt: number; folgtAuf?: number }[] };
     expect(l.ende).toBeNull();
     expect(l.positionen.map((p) => [p.pos, p.slot, p.folgtAuf])).toEqual([["bauer", 1, undefined], ["bauer", 1, slot.openedAt]]);

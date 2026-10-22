@@ -51,17 +51,19 @@ for (const step of steps) {
     rmSync(pfad, { force: true });
     const r = Bun.spawnSync(["mkfifo", pfad]);
     if (r.exitCode !== 0) throw new Error(`mkfifo ${pfad}: ${r.stderr.toString()}`);
+    // `gehalten` in der Antwort: die Röhre hat gegriffen (ohne `nach` von Anfang an, mit `nach`, sobald die Zeile kam); ein Test, der auf das
+    // Halten baut, prüft es, denn bleibt der Auslöser aus, hält nichts, und er würde still grün
+    const antwort = { rohr: step.rohr, gehalten: step.nach === undefined };
     void (async () => {
       if (step.nach === undefined) await Bun.sleep(step.ms);
-      let gehalten = false;
       for (;;) {
         const fh = await open(pfad, "r");
         const text = await fh.readFile("utf8");
         await fh.close();
-        if (step.nach !== undefined && !gehalten && text.includes(step.nach)) { gehalten = true; await Bun.sleep(step.ms); }
+        if (step.nach !== undefined && !antwort.gehalten && text.includes(step.nach)) { antwort.gehalten = true; await Bun.sleep(step.ms); }
       }
     })();
-    out.push({ status: 200, body: { rohr: step.rohr } });
+    out.push({ status: 200, body: antwort });
     continue;
   }
   if ("until" in step) {

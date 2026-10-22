@@ -6,6 +6,8 @@ import {
   type Schalter, type Schiene, type Wert, type Werte,
 } from "./k15-entwurf-modell";
 import { MAX_PROFILE } from "./k15-speicher";
+import { aufgabeAus } from "./aufgabe";
+import { laufBerichteAus, type LaufBericht } from "./lauf-bericht";
 export { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE } from "./k15-speicher";
 
 // DIE GRENZEN: was größer ist, liest das Fenster nicht erst ein (eine gezogene Videodatei fror den Tab ein)
@@ -51,7 +53,10 @@ export function quelleAus(v: unknown): Quelle | null {
     const a = obj(x);
     const t = str(a?.titel, 400), text = str(a?.text, 400_000);
     if (t === null || text === null) return null;
-    abschnitte.push({ titel: t, text });
+    // bytes (die Größe, die abschnitte oben vor dem Kürzen zählt) bleibt, wie es stand: ohne es änderte jede eigene Datei ihre Fassung
+    // beim Import und beim Laden aus dem Speicher (konst-fassungen.ts#fassungsHash zählt es mit); nachzählen ginge nicht, der Text ist gekürzt
+    const bytes = a?.bytes;
+    abschnitte.push({ titel: t, text, ...(Number.isSafeInteger(bytes) && Number(bytes) >= 0 ? { bytes: Number(bytes) } : {}) });
   }
   const id = str(o.id, 80);
   return { ...(id ? { id } : {}), titel, v: Math.max(1, Math.floor(zahl(o.v) ?? 1)), pfad: str(o.pfad, 200) ?? "eigene Datei", abschnitte };
@@ -138,7 +143,8 @@ const kern = (p: Profil): string => JSON.stringify([p.rolle, p.schiene, p.agent,
 // `behalte` ist die Kennung einer auf dem Server gespeicherten Konstellation (k15-zustand.ts#lade): Sie behält dann ihre Kennung, so bleibt
 // jedes Laden derselbe Aufbau; ohne sie bekommt die Konstellation eine neue. Ihre Sessions behalten immer ihre Kennungen (sie gelten nur in
 // ihrer Konstellation): so hat ein Import dieselbe Fassung wie sein Export (konst-fassungen.ts#fassungsHash, server/fassung-reise.test.ts).
-export interface KonstImport { k: Konst; neueProfile: Profil[]; hinweise: string[] }
+// laeufe: die mitgereisten Läufe als Bericht (src/lauf-bericht.ts), nur zum Lesen
+export interface KonstImport { k: Konst; neueProfile: Profil[]; hinweise: string[]; laeufe: LaufBericht[] }
 export function importKonst(text: string, profile: readonly Profil[], jetzt: number, behalte?: string): KonstImport | string {
   let roh: unknown;
   try { roh = JSON.parse(text); } catch { return "kein gültiges JSON"; }
@@ -225,7 +231,12 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   const autor = str(o.autor, 40)?.trim();
   const protokoll = o.protokoll === undefined ? undefined : protokollAus(o.protokoll);
   if (protokoll === null) return "das Protokoll passt nicht";
+  const aufgabe = o.aufgabe === undefined ? undefined : aufgabeAus(o.aufgabe);
+  if (typeof aufgabe === "string") return `die Aufgabe passt nicht: ${aufgabe}`;
+  const laeufe = o.laeufe === undefined ? [] : laufBerichteAus(o.laeufe, ids);
+  if (typeof laeufe === "string") return laeufe;
+  if (laeufe.length) hinweise.push(`${laeufe.length === 1 ? "ein Lauf reist" : `${laeufe.length} Läufe reisen`} als Bericht mit, nur zum Lesen`);
   return { k: { id: behalte ?? `i${jetzt}`, name: str(o.name, 80) ?? "Importiert", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "importiert", eigen: true,
     ...(autor ? { autor } : {}), ...(typeof o.quer === "string" ? { quer: o.quer.slice(0, 300) } : {}),
-    ...(protokoll ? { protokoll } : {}), wurzeln }, neueProfile, hinweise };
+    ...(protokoll ? { protokoll } : {}), ...(aufgabe ? { aufgabe } : {}), wurzeln }, neueProfile, hinweise, laeufe };
 }

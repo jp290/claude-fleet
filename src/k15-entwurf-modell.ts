@@ -7,6 +7,7 @@
 import { icon } from "./icons";
 import { K15_DATEN as D } from "./k15-entwurf-daten";
 import type { Answer, Baustein } from "./founding";
+import type { Aufgabe } from "./aufgabe";
 
 export type Glyph = Parameters<typeof icon>[0];
 export interface Abschnitt { titel: string; text: string; pfad?: string; bytes?: number }
@@ -46,7 +47,8 @@ export interface Protokoll { ende: string | null; runden: number | null; regel: 
 export const ENDE_CI = "Die CI des Repos ist grün.";
 export const protokollLeer = (p: Protokoll | undefined): boolean => !p || (p.ende === null && p.runden === null && p.regel === null);
 // eigen = bearbeitbar; ohne eigen ist sie eine Fleet-Vorlage. autor: wer sie geschrieben hat (aus einem Import), sonst du
-export interface Konst { id: string; name: string; v: number; satz: string; eigen?: true; autor?: string; quer?: string; protokoll?: Protokoll;
+// aufgabe: die Aufgabe, mit der sie reist (docs/konstellation/restplan.md T3); sie zählt in die Fassung
+export interface Konst { id: string; name: string; v: number; satz: string; eigen?: true; autor?: string; quer?: string; protokoll?: Protokoll; aufgabe?: Aufgabe;
   // was an dieser Konstellation heute nicht geht, in einem Satz
   heuteNicht?: string; wurzeln: Position[] }
 
@@ -559,6 +561,7 @@ export function exportObjekt(o: ExportEingang): Record<string, unknown> {
   };
   const konst = (k: Konst) => ({ name: k.name, version: k.v, satz: k.satz, autor: k.eigen ? k.autor ?? DU : FLEET, ...(k.quer ? { quer: k.quer } : {}),
     ...(k.protokoll && !protokollLeer(k.protokoll) ? { protokoll: k.protokoll } : {}),
+    ...(k.aufgabe ? { aufgabe: k.aufgabe } : {}),
     positionen: alle(k.wurzeln).map((x) => position(k, x)) });
   const p = o.p;
   const obj = o.ebene === "system" ? { fleet: "system", konstellationen: o.konst.map(konst), profile: o.profile.map((x) => o.voll ? voll(x) : ref(x)) }

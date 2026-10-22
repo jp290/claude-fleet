@@ -178,6 +178,18 @@ MAIN schickt. Entwurf und Messung: `docs/design/live-bau-profil-2026-10.md`.
    drift und meldest wie jede Lane. Die Regelbuch-Abschnitte zu Verify, Suiten und Land, die dein
    `CLAUDE.md` in dieser Variante nicht trägt, nennt sein Schlussblock mit Lesepfad.
 
+## Probe — einen Befund an der eigenen Instanz zeigen
+
+Für eine Beweiserin, die einen Befund nicht nur liest, sondern vorführt (Schritt 4 der Richtung,
+`docs/aufgaben/sicherheitspruefung.fleet.json`):
+
+    ./testinstanz.sh probe GET|POST|PUT|PATCH|DELETE /path [--as owner|none|self:<slot>] [--body <file>]
+
+Eine Anfrage an die Instanz DIESES Worktrees, mit ihrem eigenen Ausweis: `owner` ist ihr Owner-Token
+(`.testinstanz.token`), `self:<slot>` der Self-Token dieses Slots aus ihrem `fleet.json`, `none` kein
+Ausweis. Gelesen wird beides in bun, nie in einer Kommandozeile, und gedruckt werden nur `HTTP <status>`
+und der Body. Ohne eigene laufende Instanz endet `probe` mit exit 2; den Live-Server erreicht es nie.
+
 ## Die Ableitung — eine Instanz je Worktree
 
 `cksum` über den absoluten Worktree-Pfad (POSIX, auf Mac und Workhorse dasselbe) ergibt den

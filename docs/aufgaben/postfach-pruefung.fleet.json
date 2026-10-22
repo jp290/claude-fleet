@@ -1,0 +1,180 @@
+{
+  "format": 1,
+  "fleet": "konstellation",
+  "name": "Finder and prover: postfach review",
+  "version": 1,
+  "satz": "a finder reviews three commits, an independent prover proves each finding by reading the code",
+  "autor": "du",
+  "protokoll": {
+    "ende": "Every finding has the prover's verdict.",
+    "runden": 1,
+    "regel": "A finding counts only once a second, independent seat proves it in the code, with file and line, and states a concrete failure case. The finder's confidence alone is not enough."
+  },
+  "aufgabe": {
+    "ziel": "Find correctness defects in three commits of this repository, 844372d2c, dedc87b22 and ed178bfbe (mailbox delivery per setup, direct delivery, read receipt), and keep only those an independent seat proves. You are the prover. Start the finder as a Claude Code subagent (Agent tool, subagent_type reviewer, model fable, effort not set) and give it its own file, unchanged, as the prompt. Then prove or set aside each finding it reports by reading the code at 4930071a1.",
+    "grenze": "Read-only for both seats: no edits, no commits, no servers, no e2e suites. The finder may run bun test server/zustellung.test.ts.",
+    "fertig": "Every finding of the finder has the prover's verdict: confirmed (the lines read, each with file and line, and a concrete failure case), plausible and not proven, or not pursued, each with its reason.",
+    "beleg": "The proof: for each confirmed finding the lines read and the failure case; for each finding set aside, why.",
+    "rueckweg": "The prover gives the proof to the owner, who decides what happens to a confirmed finding."
+  },
+  "positionen": [
+    {
+      "id": "beweiser",
+      "name": "Prover",
+      "profil": {
+        "id": "beweiser",
+        "version": 1,
+        "name": "Prover",
+        "glyph": "file",
+        "kurz": "proves or sets aside each finding",
+        "satz": "an independent seat that proves each finding or sets it aside",
+        "autor": "du",
+        "rolle": "nur-ordner",
+        "schiene": "session",
+        "agent": "claude",
+        "modell": "claude-opus-5-5[1m]",
+        "effort": null,
+        "uebergabeAb": null,
+        "einV": 1,
+        "rechteV": 1,
+        "werte": {
+          "permission-mode": "auto",
+          "subagenten": "nur lesende"
+        }
+      }
+    },
+    {
+      "id": "finder",
+      "name": "Finder",
+      "profil": {
+        "id": "finder-reviewer",
+        "version": 1,
+        "name": "Finder",
+        "glyph": "file",
+        "kurz": "finds defects, read-only",
+        "satz": "a reviewer that finds defects and proves nothing",
+        "autor": "du",
+        "rolle": "nur-ordner",
+        "schiene": "session",
+        "agent": "claude",
+        "modell": "claude-fable-5-1",
+        "effort": null,
+        "uebergabeAb": null,
+        "einV": 1,
+        "rechteV": 1,
+        "datei": {
+          "titel": "reviewer.md",
+          "v": 1,
+          "pfad": "Claude Code agent definition (subagent_type reviewer)",
+          "abschnitte": [
+            {
+              "titel": "Start",
+              "text": "---\nname: reviewer\ndescription: Critical code reviewer. Identifies bugs, security issues, performance problems, and maintainability concerns. Use as the \"critical\" perspective in the Agent Pyramid Pattern alongside the neutral analyst and professional advisor.\ntools: Read, Glob, Grep, Bash\n---\n\nYou are a critical code reviewer. Your job is to find what's wrong, not confirm what's right.\n\n**Rules:**\n- Read the code before critiquing it. Never characterize code you haven't read.\n- What's missing is usually more important than what's broken — missing validation, missing tests, missing error handling at boundaries.\n- Before evaluating whether code is well-implemented, ask whether it should exist in its current form. A wrong abstraction implemented correctly is worse than a bug.\n- Every finding must cite file:line and carry a cost — what breaks, what degrades, what becomes unmaintainable. If you can't articulate the cost, flag it as an uncosted observation.\n- State what you didn't review. Never let partial coverage read as complete coverage.\n- Five ranked findings beat twenty unranked ones.\n\n**Severity:**\n- **Critical**: will cause data loss, security breach, or production outage\n- **High**: wrong behavior users will hit, or reliability risk under load\n- **Medium**: maintainability debt that compounds over time\n- **Low**: style, naming, minor inconsistency\n\nArgue against your own conclusions before finalizing. If a finding doesn't survive your own scrutiny, cut it.",
+              "bytes": 1494
+            }
+          ]
+        },
+        "werte": {
+          "permission-mode": "auto"
+        }
+      },
+      "meldetAn": "beweiser",
+      "eigeneDatei": {
+        "titel": "finder-brief.md",
+        "v": 1,
+        "pfad": "the prompt the prover hands over, verbatim but for local paths",
+        "abschnitte": [
+          {
+            "titel": "Start",
+            "text": "Why: The owner of Claude Fleet (a local dashboard that runs agent sessions in tmux slots; repo in your working directory, Bun/TypeScript, server.ts is ~50k lines) landed three message-delivery changes on main today. Most of the code was written by a DeepSeek model in rounds; it passed e2e (2734 tests) and a merge check, but no independent reviewer has read it. You are that reviewer.\n\nGoal: a short list of real correctness defects in these three commits, most severe first, each with file:line, a concrete failure scenario (inputs/state → wrong result), and your confidence (confirmed by reading / plausible). An empty list is a valid answer. Done when you have read each commit's full diff and the code it calls into.\n\nThe commits (read with `git show <sha>`):\n- 844372d2c — per-slot delivery setting: mailbox messages go to a session \"direct\" or \"bundled\"; stored per slot, set via an owner route, carried across restart and succession, shown in the board's info column and hashed into the setup (\"Fassung\"). New files server/zustellung.ts and server/zustellung.test.ts.\n- dedc87b22 — mailbox messages to a session or role arrive after about a minute, with sender and full wording.\n- ed178bfbe — GET /api/self/messages?unread=1&read=1 acknowledges exactly the unread entries it returned.\n\nFocus: lost or duplicated messages, wrong recipient after succession or restart, read receipts that acknowledge more or fewer entries than were returned, races between the delivery tick and a session handover, setting not surviving restart.\n\nWhat you need to know: this is read-only work. Use git, Read, Grep. You may run `bun test server/zustellung.test.ts` from the repository root if it helps; do not run the e2e suites, do not start servers, do not edit, commit or write any file in the repo. Leave out style remarks.\n\nLimit: about 8 minutes of work; if you run short, report what you have and name what you did not read.\n\nBack to: your final message (it comes to the prover). End it with one sentence on what was missing from this brief.",
+            "bytes": 2050
+          }
+        ]
+      },
+      "wann": "started by the prover as a Claude Code subagent; its own file is the prompt"
+    }
+  ],
+  "laeufe": [
+    {
+      "fassung": "71044b5d3586fcf3b371322d2e66562c4f1995cb891718f60ba4bb046fe6a907",
+      "quelle": "Recorded afterwards from the run's material: the finder's prompt and transcript, its final report, and the proof. The run did not start from this constellation: the prover was a free session that started the finder itself, and it had no brief of its own, so the task above is written afterwards from the proof and the check rule. In the texts, local paths are replaced by repository paths and the prover's slot number by \"the prover\"; nothing else is changed. Line numbers refer to the code at 4930071a1.",
+      "start": "2026-10-21T19:50:22+02:00",
+      "ende": "2026-10-21T20:05:00+02:00",
+      "sitze": [
+        {
+          "pos": "beweiser",
+          "wie": "Claude Code session, Opus 5.5 with 1M context, permission mode auto; read the code on main at 4930071a1. It also read the project's AGENTS.md and its operator's private global instructions, which this record does not carry.",
+          "ablehnungen": [],
+          "zahlen": {}
+        },
+        {
+          "pos": "finder",
+          "wie": "Claude Code subagent of the prover: Agent tool, subagent_type reviewer, model fable (claude-fable-5-1), effort not set (the harness default).",
+          "ablehnungen": [],
+          "zahlen": {
+            "ms": 370537,
+            "tokens": 111986,
+            "werkzeugaufrufe": 22,
+            "bash": 11,
+            "read": 10
+          }
+        }
+      ],
+      "nachrichten": [
+        {
+          "von": "beweiser",
+          "an": "finder",
+          "was": "start",
+          "text": "Why: The owner of Claude Fleet (a local dashboard that runs agent sessions in tmux slots; repo in your working directory, Bun/TypeScript, server.ts is ~50k lines) landed three message-delivery changes on main today. Most of the code was written by a DeepSeek model in rounds; it passed e2e (2734 tests) and a merge check, but no independent reviewer has read it. You are that reviewer.\n\nGoal: a short list of real correctness defects in these three commits, most severe first, each with file:line, a concrete failure scenario (inputs/state → wrong result), and your confidence (confirmed by reading / plausible). An empty list is a valid answer. Done when you have read each commit's full diff and the code it calls into.\n\nThe commits (read with `git show <sha>`):\n- 844372d2c — per-slot delivery setting: mailbox messages go to a session \"direct\" or \"bundled\"; stored per slot, set via an owner route, carried across restart and succession, shown in the board's info column and hashed into the setup (\"Fassung\"). New files server/zustellung.ts and server/zustellung.test.ts.\n- dedc87b22 — mailbox messages to a session or role arrive after about a minute, with sender and full wording.\n- ed178bfbe — GET /api/self/messages?unread=1&read=1 acknowledges exactly the unread entries it returned.\n\nFocus: lost or duplicated messages, wrong recipient after succession or restart, read receipts that acknowledge more or fewer entries than were returned, races between the delivery tick and a session handover, setting not surviving restart.\n\nWhat you need to know: this is read-only work. Use git, Read, Grep. You may run `bun test server/zustellung.test.ts` from the repository root if it helps; do not run the e2e suites, do not start servers, do not edit, commit or write any file in the repo. Leave out style remarks.\n\nLimit: about 8 minutes of work; if you run short, report what you have and name what you did not read.\n\nBack to: your final message (it comes to the prover). End it with one sentence on what was missing from this brief."
+        },
+        {
+          "von": "finder",
+          "an": "beweiser",
+          "was": "bericht",
+          "text": "Review of 844372d2c, dedc87b22, ed178bfbe (read all three full diffs plus sendText/flushDeliveryBundle, parkFleetSend/tickParkedSends, canDeliver gates, messageAddressesFor/messageInboundFor/resolveMessageAddress, openSlot/teardown cleanup, the succession and restart paths, state snapshot/load). `bun test server/zustellung.test.ts server/postfach-zustellen.test.ts`: 13 pass, 0 fail.\n\n## Findings, most severe first\n\n### 1. High — a refused send that typed nothing is booked as a delivery attempt, so the message is never offered to that occupant again (confirmed by reading)\n\n`server.ts:26866-26877` (`zustellePostfachGebuendelt` catch) and `:26836-26841` (`zustellePostfachDirekt` catch): every error that is not `DeliveryCancelled` and not a parkable `SendComposerOccupied` ends in `rememberPostfachAttempt(s, ids)`. From then on `postfachSkipped` (26743-26751) hides those ids for the whole life of the occupant (cleared only in openSlot 10234 / teardown 10402, or when `backlogSessionKey` changes).\n\nBut the bundle rejects entries with \"nothing typed\" refusals that are *not* `DeliveryCancelled`:\n- `server.ts:11768-11772` → `DeliveryGateDropped` for gates `not-alive`, `blocked-screen`, `harness`; `:11789` `requireAgent: true` → `SendAgentNotAlive`. Both are handled at `:11803-11813` by `entry.reject(error)` to every entry in the bundle.\n\nConcrete scenario: a lane (default `gebuendelt`, zustellung.ts:40) gets a message from its MAIN. The tick queues it into the slot bundle (26855-26863). Fifteen minutes later the bundle flushes while the lane sits on a permission dialog (`canDeliver` 19608 → `blocked-screen`). `flushDeliveryBundle` throws `DeliveryGateDropped`, the entry is rejected, the catch runs `forgetPostfachQueued` then `rememberPostfachAttempt`. Nothing was typed, the message stays `readBy: null` in the record, and it is never planned again for this lane. The announcement that used to cover this case is gone too: `tickMessageNudge` now excludes direct targets (26634-26635), and it used to retry after its 10-minute cooldown (26713 sets key \"\" on failure). Fleet events survive the same drop through `onRefused`; the Postfach passes no `onRefused` and no retry.\n\nSame in the direct path with `bypassQueue`: `SendRefused(\"slot unavailable…\")` 11938, `SendRefused(\"slot is asleep and the wake failed…\")` 11966, `SendRefused(\"slot changed before send…\")` 11969/11974, `Error(\"Fleet residue submission unobservable…\")` 12011 — all \"nothing typed\", all booked as attempted. The comment at 26767 (\"a message that did not land is still retried\") describes behaviour the code does not have.\n\nCost: a teammate's message silently never reaches the pane for the rest of that session; the sender sees it unread and waits; the owner sees nothing on the board (no parked row, no held row).\n\n### 2. Medium — after a server restart (or a sessionId learn/`/clear`) every still-unread direct message is typed again in full (plausible; preconditions harness-dependent)\n\n`postfachAttempted`/`postfachQueued` (26725, 26729) are in-memory only and keyed by `backlogSessionKey` (26192: `sessionId ?? unbound:<selfToken>`). After a restart `planPostfachDelivery` sees the old `at` and is due at once (postfach-zustellen.ts:61-62; the test even asserts it). The paste only stops recurring when `readBy` is stamped, and that happens only on acceptance `\"observed\"` (postfach-zustellen.ts:78-81). Any paste that ended `unobservable`/`not-observed` (no composer for the harness, 11977; collapsed or unreadable composer) therefore leaves the message unread and it is pasted again, full 2000-char text, after every restart and whenever the session key changes (sessionId learned a few seconds after open, or `/clear`). The old announcement path had the same key but typed a one-line notice; this one types the whole wording. I could not confirm how often acceptance is non-observed on the harnesses in use — that decides whether this is noise or a real duplicate stream.\n\n### 3. Low / uncosted — `postfachQueued` is not cleared in openSlot\n\n`server.ts:10234` clears `postfachAttempted` only; `postfachQueued` is cleared in teardown (10402) but not in openSlot. The stale row is keyed by the predecessor's session, so it is ignored unless the successor resumes the same sessionId, and even then the bundle's cancellation (11750-11757) calls `forgetPostfachQueued` and heals it. I found no failing input; listed so it is not mistaken for reviewed-and-fine.\n\n## Checked and found no defect\n\n- **ed178bfbe read receipt**: `messageViewFor` 17374-17404 stamps exactly `unread` = the rows it returns under `unread=1`; outbound rows cannot be in `unread` because `messageInboundFor` excludes them; `read=1` without `unread=1` and `read≠1` are 400; one `saveStateNow`. Response entries are serialized after stamping and therefore carry `readBy` (same as POST /read's response) — not a defect.\n- **Wrong recipient after succession**: direct path guarded by `openedAt` + session key + `stillThere` in `beforePaste` (26820-26824, hook at 12066) and by sendText's own origin check (11960); bundle entries carry origin and are cancelled on occupant change (11750-11757, 11675). Successor inherits predecessor addresses via `laneSeats` / `lineageHandovers` (17284-17296), so a cancelled paste is re-planned for the successor.\n- **Setting across restart/succession**: persisted 5906, loaded 45256 via `zustellungGeladen`, carried by `restartLaneSession` 13831/13856, `succeedGeneric` 14246/14259, `succeedProgramMain` 43414/43439; the owner `restart` route (54448) is in-place via ensureSlot and does not touch `s.zustellung`.\n- **Duplicate queueing in the bundled path**: `postfachQueued` plus the parked-key check (26884-26886) prevent a second entry for the same ids while one waits; a session-key change between queue and flush cancels the first entry (26819-26823) rather than doubling it.\n\n## Not reviewed\n`src/board.ts`, `src/client.ts`, `e2e/*`, `docs/self-api.md`, `watchdog.sh`, `fleet-e2e-harness.ts`; the Fassung-hash consequences of adding the Zustellung sentence (whether a changed hash triggers anything); the body of `canDeliver` beyond its gate list; `parkSend` internals; whether a 2000-char paste is reliably \"observed\" on the Claude composer.\n\nMissing from the brief: which harnesses the lanes and sessions actually run (whether a paste is normally observed), and whether \"unread in the record but never typed into the pane\" counts as lost for the owner — the severity of findings 1 and 2 hinges on both."
+        },
+        {
+          "von": "beweiser",
+          "an": "owner",
+          "was": "beweis",
+          "text": "# Proof of the confirmed finding, and what was set aside\n\nProver: the free agent (slot 16, Opus 5.5, 1M context) in its own session, by reading the code on main at\n`4930071a1` (2026-10-21, about 19:57–20:05). The proof is by reading. Nothing ran against a test instance.\n\n## Finding 1: confirmed\n\n**Claim:** a postfach message whose send is refused with \"nothing typed\" is booked as attempted. It is never offered\nto that occupant again; it stays unread, and the board shows nothing.\n\n**Evidence, each line read:**\n- `server.ts:10830`, `10839`, `10842`: `SendAgentNotAlive` and `DeliveryGateDropped` extend `SendRefused`.\n  `server.ts:11463`: `DeliveryCancelled extends Error`, a separate class.\n- `server.ts:11768-11772`: in the bundle flush, the gates `not-alive`, `blocked-screen` and `harness` throw\n  `DeliveryGateDropped` with \"nothing typed\". At `11803-11813` every bundle entry is rejected with that error.\n- `server.ts:26866-26877` (`zustellePostfachGebuendelt`, catch): after `forgetPostfachQueued`, every error that is\n  neither a parkable `SendComposerOccupied` nor a `DeliveryCancelled` ends in `rememberPostfachAttempt(s, ids)`.\n  The direct path does the same at `26836-26841`.\n- `server.ts:26743-26751` (`postfachSkipped`): ids in `postfachAttempted` are skipped for the whole occupancy.\n  `postfachAttempted` is cleared only at `10234` (openSlot) and `10403` (teardown).\n- `server.ts:26765-26767`: the comment says \"a message that did not land is still retried\". The code doesn't do that\n  for these refusals.\n- `server.ts:26648`: `tickMessageNudge` excludes direct postfach targets (`!isDirectPostfachTarget(m.to)`), so the\n  old announcement doesn't catch the lost message either.\n\n**Failure case:** a lane (default `gebuendelt`, `server/zustellung.ts:29`) gets a message. Its bundle is flushed\nwhile the lane shows a permission dialog (`blocked-screen`). Nothing is typed, the message is booked as attempted,\nand it never reaches that lane. Its `readBy` stays null.\n\n## Set aside\n\n- **Finding 2 (plausible, medium):** after a server restart, unread direct messages whose earlier paste was never\n  observed are pasted again in full. Not proven. It depends on how often acceptance is not observed on the harnesses\n  in use, and that was not measured.\n- **Finding 3 (low):** `postfachQueued` is not cleared in openSlot. No failing input was found, and the finder\n  listed it only for completeness. Not pursued.\n- **Checked by the finder with no defect:** the read receipt (`ed178bfbe`), the recipient after succession, the\n  setting across restart and succession, double queueing in the bundled path. These are kept as negative results;\n  the prover did not re-read them."
+        }
+      ],
+      "befunde": [
+        {
+          "titel": "A refused send that typed nothing is booked as a delivery attempt, so the mailbox message is never offered to that occupant again",
+          "urteil": "bestaetigt",
+          "schwere": "high",
+          "beleg": "server.ts:26866-26877 (bundled) and :26836-26841 (direct) book every error that is neither DeliveryCancelled nor a parkable SendComposerOccupied with rememberPostfachAttempt; :11768-11772 and :11803-11813 reject the whole bundle with DeliveryGateDropped (nothing typed) for the gates not-alive, blocked-screen and harness; :26743-26751 skip attempted ids for the whole occupancy. Failure case: a lane's bundle flushes while it shows a permission dialog; nothing is typed, the message stays unread and never reaches that lane, and the board shows nothing."
+        },
+        {
+          "titel": "After a server restart, unread direct messages whose earlier paste was never observed are pasted again in full",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Not proven: it depends on how often acceptance is not observed on the harnesses in use, and that was not measured."
+        },
+        {
+          "titel": "postfachQueued is not cleared in openSlot",
+          "urteil": "nicht verfolgt",
+          "schwere": "low",
+          "beleg": "No failing input found; the finder listed it only for completeness."
+        }
+      ],
+      "ohneBefund": [
+        "the read receipt of ed178bfbe acknowledges exactly the unread entries it returns",
+        "the recipient after succession",
+        "the delivery setting across restart and succession",
+        "double queueing in the bundled path"
+      ],
+      "kosten": "Claude subscription, so no dollar figure. Finder: 111 986 subagent tokens in 6.2 minutes (the harness completion notice). Prover: part of a longer session, not measured separately.",
+      "grenzen": [
+        "The task was small: three commits.",
+        "The proof was by reading, not against a test instance.",
+        "No comparison with and without the second seat.",
+        "The prover was not a separate seat on the board, and its task is written afterwards.",
+        "The negative results are the finder's alone; the prover did not re-read them.",
+        "The finder's full transcript (855 533 bytes) does not travel: it holds local paths. Its tool calls and the classifier's denials (none, for both seats) are counted from it and from the prover's session between 19:50 and 20:10."
+      ]
+    }
+  ]
+}

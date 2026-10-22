@@ -3,7 +3,7 @@
 // exportiert, in einer anderen Fleet importiert und dort gespeichert, hat denselben Hash.
 import { describe, expect, test } from "bun:test";
 import { DU, PROFILE0, exportJson, exportObjekt, pos, type Konst, type Profil } from "../src/k15-entwurf-modell";
-import { importKonst } from "../src/k15-import";
+import { abschnitte, importKonst } from "../src/k15-import";
 import { fassungsHash } from "./konst-fassungen";
 
 // so legt das Fenster eine Konstellation am Server ab (src/k15-zustand.ts#konstForm)
@@ -28,5 +28,23 @@ describe("eine Fassung reist mit Export und Import", () => {
     const imp = importKonst(exportJson({ ebene: "konst", voll: true, konst: [V1], k: V1, profile: HIER, q: null, p: HIER[0]! }), HIER, 1792000000000);
     if (typeof imp === "string") throw new Error(imp);
     expect(fassungsHash(form(imp.k, [...HIER, ...imp.neueProfile]))).toBe(fassungsHash(form(V1, HIER)));
+  });
+  // eine eigene Datei, wie das Fenster sie aus einer hineingezogenen .md macht (k15-import.ts#abschnitte zählt bytes je Abschnitt)
+  test("mit einer eigenen Datei: derselbe Hash", () => {
+    const md = "# Regeln\nLies jeden Diff.\n## Melden\nEin Satz Urteil.";
+    const mitDatei: Konst = { ...V1, wurzeln: [pos("bauer", "Bauer", "bauer-eigen", { datei: { titel: "regeln.md", v: 1, pfad: "eigene Datei", abschnitte: abschnitte(md, "Anfang") },
+      kids: [pos("gegen", "Gegenspieler", "bau")] })] };
+    const imp = importKonst(exportJson({ ebene: "konst", voll: true, konst: [mitDatei], k: mitDatei, profile: HIER, q: null, p: HIER[0]! }), PROFILE0, 1792000000000);
+    if (typeof imp === "string") throw new Error(imp);
+    expect(fassungsHash(form(imp.k, [...PROFILE0, ...imp.neueProfile]))).toBe(fassungsHash(form(mitDatei, HIER)));
+  });
+  // docs/konstellation/restplan.md T3: „Export → Import ergibt denselben Hash und dieselbe Aufgabe“
+  test("mit ihrer Aufgabe: dieselbe Aufgabe und derselbe Hash, und die Aufgabe zählt in den Hash", () => {
+    const mitAufgabe: Konst = { ...V1, aufgabe: { ziel: "Den Bericht prüfen", fertig: "Jeder Befund hat ein Urteil.", rueckweg: "an den Owner" } };
+    const imp = importKonst(exportJson({ ebene: "konst", voll: true, konst: [mitAufgabe], k: mitAufgabe, profile: HIER, q: null, p: HIER[0]! }), PROFILE0, 1792000000000);
+    if (typeof imp === "string") throw new Error(imp);
+    expect(imp.k.aufgabe).toEqual(mitAufgabe.aufgabe);
+    expect(fassungsHash(form(imp.k, [...PROFILE0, ...imp.neueProfile]))).toBe(fassungsHash(form(mitAufgabe, HIER)));
+    expect(fassungsHash(form(mitAufgabe, HIER))).not.toBe(fassungsHash(form(V1, HIER)));
   });
 });

@@ -23,6 +23,9 @@
 #   ./testinstanz.sh fixtures [mixed|full]  replant against the running instance, no restart
 #   ./testinstanz.sh succession             plant the succession facts (stops+starts the server)
 #   ./testinstanz.sh states                 what the bar paints right now, per state
+#   ./testinstanz.sh probe <METHOD> /path [--as owner|none|self:<slot>] [--body <file>]
+#                                           one request against THIS worktree's instance with its own
+#                                           credential, never printed — how a prover shows a finding
 #   ./testinstanz.sh status                 is it up, where, rest of its ttl, and who holds the mutex
 #   ./testinstanz.sh source                 what `up` would record as the shown stand, measured now
 #   ./testinstanz.sh list                   every test instance of this machine, from state files
@@ -721,6 +724,40 @@ source)
   # Plants nothing, starts nothing: the JSON `up` would record as sourceBefore, measured now.
   ti_measure
   ;;
+probe)
+  # ONE REQUEST AGAINST THIS WORKTREE'S OWN INSTANCE, for a prover who shows a finding on it (docs/testinstanz.md §Probe).
+  # The credential comes from the instance's own files, inside bun: it is never printed and never on a command line, and
+  # it is never the live fleet's. Prints `HTTP <status>`, then the body.
+  ti_owned || { echo "probe: this worktree has no running instance of its own — ./testinstanz.sh up first" >&2; exit 2; }
+  TI_M=${2:-}; TI_PATH=${3:-}
+  case "$TI_M" in GET|POST|PUT|PATCH|DELETE) : ;; *) echo "usage: ./testinstanz.sh probe GET|POST|PUT|PATCH|DELETE /path [--as owner|none|self:<slot>] [--body <file>]" >&2; exit 2;; esac
+  case "$TI_PATH" in /*) : ;; *) echo "probe: the path starts with / — a path on the instance, not a URL" >&2; exit 2;; esac
+  shift 3
+  TI_AS=owner; TI_BODY=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --as) TI_AS=${2:-}; shift 2 ;;
+      --body) TI_BODY=${2:-}; [ -f "$TI_BODY" ] || { echo "probe: no body file ${TI_BODY:-given}" >&2; exit 2; }; shift 2 ;;
+      *) echo "probe: unknown argument $1" >&2; exit 2 ;;
+    esac
+  done
+  case "$TI_AS" in owner|none|self:[0-9]*) : ;; *) echo "probe: --as is owner, none or self:<slot>" >&2; exit 2;; esac
+  TI_PR_HOST=$(sed -n 's/^host=//p' "$STATE" | head -1) TI_PR_PORT="$PORT" TI_PR_DIR="$DIR" TI_PR_M="$TI_M" TI_PR_PATH="$TI_PATH" \
+    TI_PR_AS="$TI_AS" TI_PR_BODY="$TI_BODY" bun - <<'JS'
+const e=process.env,dir=e.TI_PR_DIR,as=e.TI_PR_AS??"owner",headers={};
+if(as==="owner")headers.authorization=`Bearer ${(await Bun.file(`${dir}/.testinstanz.token`).text()).trim()}`;
+else if(as.startsWith("self:")){
+  const slot=as.slice(5),t=(await Bun.file(`${dir}/fleet.json`).json().catch(()=>null))?.slots?.[slot]?.selfToken;
+  if(typeof t!=="string"||!t){console.error(`probe: slot ${slot} of the instance has no self credential`);process.exit(2);}
+  headers["x-fleet-self-token"]=t;
+}
+const body=e.TI_PR_BODY?await Bun.file(e.TI_PR_BODY).text():undefined;
+if(body!==undefined)headers["content-type"]="application/json";
+const r=await fetch(`http://${e.TI_PR_HOST}:${e.TI_PR_PORT}${e.TI_PR_PATH}`,{method:e.TI_PR_M,headers,body,redirect:"manual"});
+console.log(`HTTP ${r.status}`);
+console.log(await r.text());
+JS
+  ;;
 status)
   # the connections INTO this instance's port, measured once for both forms; UNKNOWN stays unknown
   if TI_CONNS=$(ti_conns "$PORT"); then TI_CONNS_KNOWN=1; else TI_CONNS=""; TI_CONNS_KNOWN=0; fi
@@ -917,5 +954,5 @@ reap)
   echo "[testinstanz-reap] ${TI_REAPED} expired reaped · ${TI_HELD} refused (open connection) · ${TI_OPEN} not yet expired · ${TI_OLD} without usable expiresAt (listed, never touched) · root $TI_ROOT"
   ;;
 *)
-  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | refresh | fixtures [mixed|full] | succession | states | status | source | list | down [--force] | reap [--dry-run] [--force]" >&2; exit 2;;
+  echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] | refresh | fixtures [mixed|full] | succession | states | probe <METHOD> /path [--as owner|none|self:<slot>] [--body <file>] | status | source | list | down [--force] | reap [--dry-run] [--force]" >&2; exit 2;;
 esac

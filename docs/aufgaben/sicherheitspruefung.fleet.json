@@ -1,0 +1,214 @@
+{
+  "format": 1,
+  "fleet": "konstellation",
+  "name": "Finder and prover: security review of Fleet",
+  "version": 1,
+  "satz": "a finder reviews Fleet's doors, an independent prover proves each finding on a test instance",
+  "autor": "du",
+  "protokoll": {
+    "ende": "Every finding has the prover's verdict.",
+    "runden": 2,
+    "regel": "A finding counts only when the prover reproduces it on a fresh test instance of the reviewed commit, with a probe anyone can rerun that shows the safe answer next to the observed one, and names the file and line of the cause."
+  },
+  "aufgabe": {
+    "ziel": "A security review of Fleet itself at one commit: who can make the server do what, with which credential. One seat finds problems, an independent seat proves each one against a test instance of the same commit.",
+    "grenze": "No live server, no deploy, no push, no fix. Probes only against the prover's own test instance. No denial-of-service probes, nothing outside this repository, no models from other providers.",
+    "fertig": "Every finding has the prover's verdict, and each confirmed one a probe that reproduces it on a fresh instance of the same commit.",
+    "beleg": "The run in laeufe of this file: each finding, its verdict, and for each confirmed one the probe with the safe and the observed answer.",
+    "rueckweg": "The prover reports to the orchestrator; the owner decides which findings get fixed and what is published."
+  },
+  "positionen": [
+    {
+      "id": "beweiser",
+      "name": "Prover",
+      "profil": {
+        "id": "beweiser",
+        "version": 1,
+        "name": "Prover",
+        "glyph": "file",
+        "kurz": "proves or sets aside each finding",
+        "satz": "an independent seat that proves each finding or sets it aside",
+        "autor": "du",
+        "rolle": "nur-ordner",
+        "schiene": "session",
+        "agent": "claude",
+        "modell": "claude-opus-5-5[1m]",
+        "effort": "high",
+        "uebergabeAb": null,
+        "einV": 1,
+        "rechteV": 1,
+        "werte": {
+          "permission-mode": "auto",
+          "subagenten": "nur lesende"
+        }
+      },
+      "eigeneDatei": {
+        "titel": "prover-brief.md",
+        "v": 1,
+        "pfad": "the prover's start",
+        "abschnitte": [
+          {
+            "titel": "# Prover: prove each finding against a test instance",
+            "text": "You open the finder (POST /api/self/branches, then /api/self/branches/open with its own file as the goal), wait for its list, and prove or set aside each finding. You do not fix anything. Read your mailbox with GET /api/self/messages rather than waiting for the pane: a refused delivery may not be retried.\n\nYour instance: ./testinstanz.sh up mixed --ttl 240 in your own worktree, at the same commit as the finder. It has its own port, tmux socket, directory and tokens; no agent runs in its panes (FLEET_CMD=true). Requests: ./testinstanz.sh probe <METHOD> /path --as owner|none|self:<slot> [--body file]. It prints the status and the body and never a token.\n\nA proof is a script beweise/<n>.sh on your branch: the commands, the answer a safe server gives, and the answer it gave. It is rerun on a fresh instance (./testinstanz.sh down, then up) before it counts. A finding that needs a live agent in a pane, or that you cannot reproduce, is plausible or rejected, with the reason.\n\nWhen every finding has a verdict, write the run into laeufe of this task file, in the form of docs/aufgaben/postfach-pruefung.fleet.json, check it with bun test server/aufgaben.test.ts, take your instance down, and report to the orchestrator.",
+            "bytes": 1281
+          }
+        ]
+      }
+    },
+    {
+      "id": "finder",
+      "name": "Finder",
+      "profil": {
+        "id": "finder-reviewer",
+        "version": 1,
+        "name": "Finder",
+        "glyph": "file",
+        "kurz": "finds defects, read-only",
+        "satz": "a reviewer that finds defects and proves nothing",
+        "autor": "du",
+        "rolle": "nur-ordner",
+        "schiene": "session",
+        "agent": "claude",
+        "modell": "claude-sonnet-5-5",
+        "effort": "high",
+        "uebergabeAb": null,
+        "einV": 1,
+        "rechteV": 1,
+        "datei": {
+          "titel": "reviewer.md",
+          "v": 1,
+          "pfad": "Claude Code agent definition (subagent_type reviewer)",
+          "abschnitte": [
+            {
+              "titel": "Start",
+              "text": "---\nname: reviewer\ndescription: Critical code reviewer. Identifies bugs, security issues, performance problems, and maintainability concerns. Use as the \"critical\" perspective in the Agent Pyramid Pattern alongside the neutral analyst and professional advisor.\ntools: Read, Glob, Grep, Bash\n---\n\nYou are a critical code reviewer. Your job is to find what's wrong, not confirm what's right.\n\n**Rules:**\n- Read the code before critiquing it. Never characterize code you haven't read.\n- What's missing is usually more important than what's broken — missing validation, missing tests, missing error handling at boundaries.\n- Before evaluating whether code is well-implemented, ask whether it should exist in its current form. A wrong abstraction implemented correctly is worse than a bug.\n- Every finding must cite file:line and carry a cost — what breaks, what degrades, what becomes unmaintainable. If you can't articulate the cost, flag it as an uncosted observation.\n- State what you didn't review. Never let partial coverage read as complete coverage.\n- Five ranked findings beat twenty unranked ones.\n\n**Severity:**\n- **Critical**: will cause data loss, security breach, or production outage\n- **High**: wrong behavior users will hit, or reliability risk under load\n- **Medium**: maintainability debt that compounds over time\n- **Low**: style, naming, minor inconsistency\n\nArgue against your own conclusions before finalizing. If a finding doesn't survive your own scrutiny, cut it.",
+              "bytes": 1494
+            }
+          ]
+        },
+        "werte": {
+          "permission-mode": "auto"
+        }
+      },
+      "meldetAn": "beweiser",
+      "eigeneDatei": {
+        "titel": "finder-brief.md",
+        "v": 1,
+        "pfad": "the finder's start",
+        "abschnitte": [
+          {
+            "titel": "# Finder: security review of Fleet",
+            "text": "Why: Fleet runs agent sessions for its owner and lets them, and guests, reach its server with different credentials. Nobody has reviewed who can make the server do what. You are the first reviewer; an independent prover checks every finding you report against a running test instance, so a finding without a way to show it does not count.\n\nGoal: a ranked list of at most eight security defects in this repository at the commit your branch stands on, most severe first. Each one: what an attacker holds (no credential, a share password, a session's self token, an imported setup), what they send, what the server does that it should not, file:line of the cause, and the probe you would use: method, path, credential, body, and the answer a safe server gives. An empty list is a valid answer.\n\nWhere to look: the HTTP doors in server.ts and server/*.ts and the credential each accepts; the guarantees the docs state: a share is a window, never a hand (SHARING.md); a self token cannot act as the owner (docs/self-api.md); a snapshot instance refuses every write and no live value reaches a test instance (docs/testinstanz.md); an imported setup starts with the classifier on (docs/start/system-concept.md, Sharing). Path handling in file routes, and text that reaches a shell or a pane.\n\nLimit: read-only. Read, grep, git, and bun test on single files. No servers, no test instance (the prover has one), no edits, no commits, nothing outside this repository.\n\nStop: when the list is ranked, or after about 45 minutes of reading. Then report what you have and name what you did not read.\n\nBack to: the prover, through the mailbox ({kind:\"session\", slot} of the session that opened you). End with one sentence on what was missing from this brief.",
+            "bytes": 1779
+          }
+        ]
+      },
+      "wann": "opened by the prover on its own branch at the same commit"
+    }
+  ],
+  "laeufe": [
+    {
+      "fassung": "364ceeec5f2721053a0ed9b10fb6e147c29431903fce3468fd89d15e2a6cc1cc",
+      "quelle": "Recorded by the prover right after the run, from the run itself: the finder's start (its brief from this file, word for word, as the goal of its branch session), its report as it arrived in the prover's mailbox in five parts (joined here unchanged), and the proof. Both seats were Fleet sessions on their own branches at 6f0f53558. Line numbers refer to that commit. The query parameter that carries the owner token is written \"?token\" or \"?token…<owner>\", without its equals sign, so the file holds no token pattern; nothing else in the texts is changed.",
+      "start": "2026-10-22T17:42:07+02:00",
+      "ende": "2026-10-22T18:05:00+02:00",
+      "sitze": [
+        {
+          "pos": "beweiser",
+          "wie": "Fleet session on its own branch, Claude Code, Opus 5.5 with 1M context, effort high, permission mode auto; opened by the orchestrator with its brief as the goal. It opened the finder through POST /api/self/branches and /api/self/branches/open, read its mailbox with GET /api/self/messages, and proved on its own test instance with ./testinstanz.sh probe and the scripts beweise/1.sh, 4.sh, 5.sh. It also read the project's AGENTS.md and its operator's private global instructions, which this record does not carry.",
+          "ablehnungen": [],
+          "zahlen": {
+            "ms": 1373000,
+            "apiAufrufe": 62,
+            "werkzeugaufrufe": 62,
+            "ausgabeTokens": 28470,
+            "cacheSchreibTokens": 125173,
+            "cacheLeseTokens": 6827025
+          }
+        },
+        {
+          "pos": "finder",
+          "wie": "Fleet session on its own branch on the prover's tip, Claude Code, Sonnet 5.5 (claude-sonnet-5-5), effort high, fresh, permission mode auto; opened by the prover with its finder brief from this file word for word as the goal. It reported through the mailbox in five parts and stopped.",
+          "ablehnungen": [],
+          "zahlen": {
+            "ms": 466889,
+            "apiAufrufe": 71,
+            "werkzeugaufrufe": 72,
+            "bash": 72,
+            "ausgabeTokens": 38053,
+            "cacheSchreibTokens": 240988,
+            "cacheLeseTokens": 12779373
+          }
+        }
+      ],
+      "nachrichten": [
+        {
+          "von": "beweiser",
+          "an": "finder",
+          "was": "start",
+          "text": "Why: Fleet runs agent sessions for its owner and lets them, and guests, reach its server with different credentials. Nobody has reviewed who can make the server do what. You are the first reviewer; an independent prover checks every finding you report against a running test instance, so a finding without a way to show it does not count.\n\nGoal: a ranked list of at most eight security defects in this repository at the commit your branch stands on, most severe first. Each one: what an attacker holds (no credential, a share password, a session's self token, an imported setup), what they send, what the server does that it should not, file:line of the cause, and the probe you would use: method, path, credential, body, and the answer a safe server gives. An empty list is a valid answer.\n\nWhere to look: the HTTP doors in server.ts and server/*.ts and the credential each accepts; the guarantees the docs state: a share is a window, never a hand (SHARING.md); a self token cannot act as the owner (docs/self-api.md); a snapshot instance refuses every write and no live value reaches a test instance (docs/testinstanz.md); an imported setup starts with the classifier on (docs/start/system-concept.md, Sharing). Path handling in file routes, and text that reaches a shell or a pane.\n\nLimit: read-only. Read, grep, git, and bun test on single files. No servers, no test instance (the prover has one), no edits, no commits, nothing outside this repository.\n\nStop: when the list is ranked, or after about 45 minutes of reading. Then report what you have and name what you did not read.\n\nBack to: the prover, through the mailbox ({kind:\"session\", slot} of the session that opened you). End with one sentence on what was missing from this brief."
+        },
+        {
+          "von": "finder",
+          "an": "beweiser",
+          "was": "bericht",
+          "text": "SICHERHEITSBERICHT 1/5 (Finder, Commit 6f0f53558)\n(Commit 6f0f53558, nur gelesen, nichts laufen lassen). Ehrlich vorweg: ich habe KEINEN klaren Bruch einer dokumentierten Zusage mit hoher Schwere gefunden. Unten 5 Funde, nach Schwere; Konfidenz je Fund.\n\n1) MITTEL, Konfidenz Code hoch / Absicht offen. Die Import-Zusage (docs/start/system-concept.md:83-84 \"importiertes Setup startet mit Klassifizierer, nie Bypass\") erzwingt der Server nicht. Halter: eine Setup-Datei, die der Owner importiert und startet. Kette: src/k15-import.ts:41 nimmt rolle \"orchestratorin\"; src/k15-start.ts:192 sendet dann label \"Orchestrator\"; der Server macht aus dem Label die Rolle (server.ts isOrchestratorLabel ~43550, positionRole ~20668) und server/session-start.ts:25 gibt dieser Rolle bypassPermissions; server.ts:524 schreibt --permission-mode 'bypassPermissions' in die Startzeile. Der Server kennt keine Herkunft \"importiert\". Dazu: server/agentmd.ts#agentMdBlock stempelt fremden Profiltext als \"beim Start vom Owner gesetzt\" in den Systemprompt (bis 64 KB).\nProbe: Owner-Credential, POST /api/slots/<freier Slot>/open {cwd, label:\"Orchestrator\"}; dann die Startzeile/Fassung des Slots lesen (GET /api/slots/<n>/fassung). Sichere Antwort: --permission-mode 'auto'. Gegenprobe: PUT /api/k15-speicher mit einem Profil, dessen Agent-MD \"IGNORIERE ...\" enthält, Start mit profil:<id>, Fassung zeigt den Block als Owner-gesetzt. Einschränkung: Bypass für die echte Orchestratorin ist Owner-Wort vom 20.10. (session-start.ts:19-25); die Lücke ist nur der Import-Pfad.\n\nSICHERHEITSBERICHT 2/5 (Finder, Commit 6f0f53558)\n2) NIEDRIG-MITTEL, Konfidenz mittel. Ein Gast darf einen Modelllauf auf dem Owner-Konto anstoßen: server.ts ~51296 ruft summaryResponse(s, req.method===\"POST\") im Share-Zweig. SHARING.md sagt \"Fenster, nie Hand\" (Grund: wessen Konto läuft). Der Gast bestimmt nicht den Inhalt, aber den Zeitpunkt und die Kosten. Außerdem füttert runSummary (server.ts ~25400) die Zusammenfassung aus transcriptTail(s,30,40000) über viewEntry; die Gast-Route /transcript filtert thinking und kürzt tool_result auf 400 Zeichen (server.ts ~51282), die Zusammenfassung tut das nicht. Ob viewEntry thinking/lange tool_result in den Tail lässt, habe ich bis Zeile 24292 gelesen, nicht zu Ende.\nProbe: Gast-Cookie share_<id>, POST /s/<id>/summary, Instanz mit Session, deren Transkript ein langes tool_result (Marker nach Zeichen 400) und einen thinking-Block mit Marker trägt. Sichere Antwort: 405 oder nur zwischengespeichertes Ergebnis ohne Lauf; und der Marker darf in der Zusammenfassung nicht auftauchen.\n\n\n3) NIEDRIG, Konfidenz hoch. Ein Fremder mit nur der Share-URL sperrt Gäste aus: POST /s/<id>/auth zählt jede falsche Eingabe (server/auth.ts#failStrike, 50 pro Stunde); server.ts ~51212 verweigert ab dann auch das richtige Passwort (429) für eine Stunde. Wer schon ein gültiges Cookie hat, bleibt drin (auth.ts:128-146). Dokumentiert als Absicht (\"locks the share\"), aber es ist ein Denial für jeden, der die URL kennt.\nProbe: ohne Credential 51x POST /s/<id>/auth {\"password\":\"x\"}, dann POST mit richtigem Passwort. Sichere Antwort: 200 (oder Sperre je Quell-IP statt je Share).\n\nSICHERHEITSBERICHT 3/5 (Finder, Commit 6f0f53558)\n4) NIEDRIG, Konfidenz mittel, vermutlich gewollt (bau/ohne-owner-token Schnitt 6). Die Self-Tür POST /api/self/branches/open (server.ts:50633) reicht harness, model, effort, permissions, rechte und profil des Kindes ungeprüft weiter (openBoardBranch server.ts:8659-8690). selfBranchRequest (server.ts:8584) prüft nur Repo und Rolle. Eine Claude-Session im Auto-Modus kann so ein Kind ohne Klassifizierer starten (codex Standard ist danger-full-access/never, server/types.ts:101) oder mit rechte {stufe:\"deployen\"} (Allow-Regeln für curl api/deploy in der Startzeile, session-rechte.ts). Einen Owner-Token bekommt das Kind dadurch nicht; /api/deploy bleibt am Owner-Tor.\nProbe: Self-Token einer Nicht-Lane-Session, POST /api/self/branches/open {repo, branch:<Board-Branch>, goal:\"x\", harness:\"codex\", permissions:{sandbox:\"danger-full-access\",approval:\"never\"}}. Erwartung beim Ist-Stand: 200. Sichere Antwort wäre: Kind nie mächtiger als der Öffner (409).\n\n5) INFO, Konfidenz hoch. server/auth.ts:35-40 (tokenFrom) und helperAuthed (server.ts ~36170) nehmen den Owner- bzw. Helper-Token auch aus ?token auf jeder Route; er landet so in URLs, Referern und Zugriffslogs. Beim Login wird bereinigt (302), bei API-Aufrufen nicht. Probe: GET /api/sessions?token…<Owner> -> 200. Der Helper-Token ist ein gemeinsamer Wert ohne Geräte-ID (auth.ts \"helper-token\").\n\nSICHERHEITSBERICHT 4/5 (Finder, Commit 6f0f53558)\nGELESEN UND DICHT (keine Probe nötig): Share-Zweig server.ts 51204-51330 (Cookie-Gate vor jeder Route, kein send-Zweig, WS-Eingabe für Gäste serverseitig verworfen server.ts ~55489); SHARE_HOSTS-Gate (nur die Share-Pfade); Snapshot-Sperre server.ts:49682 für alles außer GET/HEAD/OPTIONS plus WS-Close (~55490), und kein GET-Schreibpfad in den Routen, die ich las; Snapshot-Bereinigung testinstanz-snapshot.js (Secret-Schlüssel und .env-Werte werden ersetzt, shares/selfToken fallen weg); testinstanz.sh startet mit env -i; Self-Landung braucht \"passt\" auf genau die Spitze (server/branch-land.ts:64-71, \"seen\" setzt nur der Owner-Zweig server.ts:52923); Rollen-Label-Schließung (Nachfolge server.ts:14332, Board-Name beidseitig geprüft 50640/50645, auch nach cleanName); Konzept-ID-Regex (konzept-ledger.ts:22); Datei-Schreibrouten (Slot-Wurzel, Hash, Deny); Drop-Lesen (Gleichheit statt Präfix); src/*.ts ohne innerHTML mit dynamischem Inhalt (grep).\n\nNICHT GELESEN: der größte Teil der Owner-Routen server.ts 52100-54700 (Worktrees, Merge, Tasks, Programs); handleStewardRoute ab Zeile 49560; helperClaim/helperResult/helperBundle (kann der Helper-Token Audit-Urteile fälschen, Bundle = Quelltext?); contextBorrowRoute und memoryScopeFor (Query \"kann nur einengen\"); fileWritePath/FILE_WRITE_DENY selbst; server/drops.ts, opener.ts, transport.ts (Static-Map), dir-explorer.ts; tools/runde.ts und server/runde.ts (Branch-Namen in Pfaden und git); ctl.sh; public/*.js und src/md.ts#safeHref (XSS); das Schreibverhalten der GET-Routen nach Zeile 52100 einzeln; ob viewEntry thinking in den Tail lässt. Bun-Tests habe ich keine laufen lassen.\n\nSICHERHEITSBERICHT 5/5 (Finder, Commit 6f0f53558)\nWas dem Auftrag fehlte: ein Satz dazu, ob Funde zählen, die den Owner-Token verlangen und nur eine Doku-Zusage verletzen (Fund 1), und ein Hinweis, welche Rollen-Labels und Sessions die Testinstanz des Prüfers schon enthält."
+        },
+        {
+          "von": "beweiser",
+          "an": "owner",
+          "was": "beweis",
+          "text": "# Proof at 6f0f53558: each finding, its verdict\n\nProver: a Fleet session (Opus 5.5, 1M context, effort high, permission mode auto) on its own branch. Its own test instance (`./testinstanz.sh up mixed`, FLEET_CMD=true, no agent in any pane) at the same commit as the finder. Every instance proof below was rerun on a fresh instance (`down`, then `up`) before it counted. The scripts are `beweise/<n>.sh` on the prover's branch.\n\n## Finding 4: confirmed (medium)\nA Claude Code session under the classifier opens, with its self token alone, a codex session with no sandbox and no approvals. `beweise/4.sh`: as self:2 (harness claude, role generic, no lane) POST /api/self/branches, then POST /api/self/branches/open {harness:\"codex\", permissions:{sandbox:\"danger-full-access\", approval:\"never\"}}. Safe answer: 409, a child is never wider than its opener. Observed: HTTP 200, slot 14 opened; GET /api/sessions shows it as harness codex, permissions danger-full-access/never, opened by slot 2. Cause: server.ts:8584-8595 (selfBranchRequest checks only lane, steward and repo) passes the body to server.ts:8659-8690 (openBoardBranch), which takes harness, model, effort, permissions, rechte and profil from it like the owner door; server/types.ts:101 makes danger-full-access/never the codex default, so even without `permissions` the child is unsandboxed. No owner token is involved, and /api/deploy stays at the owner gate; what the child gains is the absence of the classifier its opener runs under.\n\n## Finding 5: confirmed (low)\nThe owner token is taken from the URL query on every API route. `beweise/5.sh`: GET /api/sessions with no credential gives 401; GET /api/sessions?token…<owner> gives 200 (safe answer 401). Cause: server/auth.ts:29-35 (tokenFrom falls back to searchParams \"token\"); only \"/\" with ?token sets the cookie and redirects to a clean URL (server.ts:51184-51194). The owner should know that docs/self-api.md:6153-6155 names \"a typed URL ?token\" as an accepted channel, so this may be intended. No place on the instance was found that writes such a URL to a log (its server.log logs the login line with the token masked).\n\n## Finding 1: plausible (medium)\nThe chain holds in the code, and `beweise/1.sh` runs the repository's own functions: an imported setup keeps the role \"orchestratorin\" (src/k15-import.ts:41), and that role starts with mode bypassPermissions (server/session-start.ts:24-25). Between those two steps: the window starts the role with label \"Orchestrator\" (src/k15-start.ts:192), the server derives the spawn role from that label (server.ts:20667-20671), and server.ts:524 writes the mode on the line. Nothing on the path knows that the setup was imported, which contradicts docs/start/system-concept.md (Sharing). It is not proven on an instance: agentCmd builds the claude line only when FLEET_CMD starts with \"claude\" (server.ts:504-507), and an instance runs FLEET_CMD=true, so its panes never show a mode. The owner ruled on 20.10 that the orchestrator runs in bypass; only the import path is open.\n\n## Finding 2: plausible (low)\nA guest can start a summary run (POST /s/<id>/summary, server.ts:51290-51296). Its prompt carries thinking blocks of up to 10 000 characters and tool results of up to 3 000 (viewEntry server.ts:24298, 24312-24313; transcriptTail server.ts:24967, used at 25437). The guest's own transcript route drops thinking and cuts tool results to 400 characters (server.ts:51276-51288). So the summary is built from more than the guest can see, though what the guest gets back is the model's paraphrase. Not probed: on an instance, the summary would start a real Claude worker. FLEET_SUMMARY_CMD is not among the values the instance receives (testinstanz.sh:441), and a test instance must not start a model. The cost half is documented as intended (server.ts:51291-51293: single flight per slot, cached on the git state).\n\n## Finding 3: plausible (low)\nFifty wrong passwords on POST /s/<id>/auth lock the share for an hour, for everyone without a valid cookie (server.ts:51210-51219, server/auth.ts:122-131). This was read in the code but not probed: showing it means locking out a share, which is a denial probe, and the task's limit forbids those."
+        }
+      ],
+      "befunde": [
+        {
+          "titel": "A session's self token opens a child session wider than itself: a Claude Code session under the classifier opens a codex session without sandbox or approvals",
+          "urteil": "bestaetigt",
+          "schwere": "medium",
+          "beleg": "beweise/4.sh on a fresh instance of 6f0f53558: as self:2 (claude, generic, no lane) POST /api/self/branches, then POST /api/self/branches/open {harness:\"codex\", permissions:{sandbox:\"danger-full-access\", approval:\"never\"}}. Safe answer: 409. Observed: HTTP 200, slot 14 opened, GET /api/sessions shows harness codex, permissions danger-full-access/never, openedBy slot 2. Cause: server.ts:8584-8595 (selfBranchRequest) and server.ts:8659-8690 (openBoardBranch takes harness, permissions, rechte, profil from the body); server/types.ts:101 (codex default danger-full-access/never)."
+        },
+        {
+          "titel": "The owner token is accepted from the URL query (?token) on every API route, not only by the login redirect",
+          "urteil": "bestaetigt",
+          "schwere": "low",
+          "beleg": "beweise/5.sh on a fresh instance of 6f0f53558: GET /api/sessions without credential 401; GET /api/sessions?token…<owner> safe answer 401, observed 200. Cause: server/auth.ts:29-35 (tokenFrom falls back to the query); server.ts:51184-51194 cleans the URL only for \"/\". Possibly intended: docs/self-api.md:6153-6155 names a typed URL ?token as a channel. No log sink was found on the instance."
+        },
+        {
+          "titel": "An imported setup with the role orchestratorin starts in bypass, against the promise that an import starts with the classifier on",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Read in the code and run with the repository's own functions (beweise/1.sh: an imported profile keeps rolle orchestratorin; startAspects gives bypassPermissions for that role): src/k15-import.ts:41, src/k15-start.ts:192, server.ts:20667-20671, server/session-start.ts:24-25, server.ts:524. Not proven on an instance: agentCmd puts the mode on the line only when FLEET_CMD starts with claude (server.ts:504-507), and an instance runs FLEET_CMD=true."
+        },
+        {
+          "titel": "A guest starts a summary run whose prompt carries thinking and long tool results that the guest's own transcript view hides",
+          "urteil": "plausibel",
+          "schwere": "low",
+          "beleg": "Read: server.ts:51290-51296 (guest POST /s/<id>/summary), viewEntry server.ts:24298 and 24312-24313 (tool results up to 3000, thinking up to 10000 characters) through transcriptTail into the prompt (server.ts:25437), against the guest transcript route server.ts:51276-51288 (no thinking, tool results cut to 400). Not probed: a summary on an instance would start a real Claude worker (FLEET_SUMMARY_CMD is not in the instance environment, testinstanz.sh:441). The cost half is documented as intended (server.ts:51291-51293)."
+        },
+        {
+          "titel": "Anyone with the share URL locks every guest without a cookie out for an hour with 51 wrong passwords",
+          "urteil": "plausibel",
+          "schwere": "low",
+          "beleg": "Read: server.ts:51210-51219 and server/auth.ts:122-131 (one counter per share, locked above 50 within the hour, the right password then gets 429). Not probed: the probe is a denial of service, which the task's limit forbids."
+        }
+      ],
+      "ohneBefund": [
+        "the share branch: cookie gate before every route, no send route, guest input on the socket dropped (the finder's reading)",
+        "the snapshot lock refusing every write but GET, HEAD and OPTIONS (the finder's reading)",
+        "the snapshot copy dropping secrets, shares and self tokens; the instance starting with env -i (the finder's reading)",
+        "a self land only on the tip the owner marked as seen (the finder's reading)",
+        "role labels refused on succession and on Board-Names (the finder's reading)"
+      ],
+      "kosten": "Claude subscription, so no dollar figure. Tokens from each seat's transcript (sum over API calls, each call counted once): finder 71 calls, 38 053 output, 240 988 cache write, 12 779 373 cache read, 142 uncached input, in 7.8 minutes; prover up to writing this record 62 calls, 28 470 output, 125 173 cache write, 6 827 025 cache read, 126 uncached input, in about 23 minutes. Cache reads are the context reread on every call, not new work.",
+      "grenzen": [
+        "The finder read about half of the doors and named what it left out: most owner routes, the steward routes, the helper routes, context borrowing and memory scope, the file write deny list, drops, opener, transport, dir explorer, runde, ctl.sh, the public client code and safeHref.",
+        "The negative results are the finder's alone; the prover did not re-read them.",
+        "Two of five findings are proven on an instance; three stay plausible because an instance runs no model (findings 1 and 2) or the probe would be a denial of service (finding 3).",
+        "The verdict on finding 5 calls a documented channel a defect; whether it is one is the owner's call.",
+        "The test instance ran the mixed fixtures; slot numbers in the proofs are those of a fresh mixed instance.",
+        "The transcripts do not travel: they hold local paths. Counts are taken from them; neither seat met a classifier denial."
+      ]
+    }
+  ]
+}

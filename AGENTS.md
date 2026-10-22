@@ -17,12 +17,8 @@ dieser Datei sind Änderungen am Regelwerk: nur mit Owner-Wort.
   („the short rulebook that travels“). [Plan §5, Umstieg]
 - **Nicht mehr in Kraft:**
   - das Fleet-Regelbuch (`CLAUDE.md`, `rulebook/`);
-  - Karten, Queue und Dispatcher;
-  - MAIN- und Orchestratorin-Rollen;
   - Rollen-Nachrichten über `/api/self` (das Postfach zwischen Sessions, `/api/self/messages`, bleibt).
-
-  Ihr Code bleibt im Server, bis K6 ihn räumt (`docs/neuaufbau/plan.md`). Niemand besetzt diese
-  Rollen, der Dispatcher bleibt aus.
+- **Für den Umbau abgeschaltet:** Karten, Queue und Dispatcher; die MAIN-Rolle. Sie haben gearbeitet; was davon dem neuen System dient, wird in es eingefügt, statt als eigener Teil erhalten zu bleiben, und das alte System wird eine Konstellation im neuen. Der Dispatcher bleibt bis dahin aus. [Owner 22.10.]
 - Der Lane-Vertrag `.fleet/vertraege/lane.md` gilt nur für eine Lane: Fleet schreibt ihn in deren
   Session-Datei (`context-packs.ts#CONTEXT_PACKS`).
 - Bau-Sessions und Helfer starten aus ihrem Auftrag (§4). §9 ist der Start der Bauleitung.

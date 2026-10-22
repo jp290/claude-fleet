@@ -100,9 +100,10 @@ export function sitzungModell(a: Answer, e: Eingaben, bausteinName: (b: Baustein
   const teile: Teil[] = [], bloecke: TextBlock[] = [];
   const an = anatomieVon(a.claudeCode);
   const cc = an ? jeToken(an) : 2.1, fl = fleetJe(a);
-  const teil = (t: Omit<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach"> & Partial<Pick<Teil, "zusatz" | "schalter" | "unbekannt" | "fest">>): Teil => {
-    const alltag = ALLTAG[t.id] ?? ALLTAG[t.name];
-    const x: Teil = { zusatz: null, schalter: null, unbekannt: false, fest: null, ...t, name: alltag ?? t.name, fach: alltag ? t.name : null };
+  // `fach` gesetzt: der Name ist schon das Alltagswort, ALLTAG übersetzt ihn nicht noch einmal
+  const teil = (t: Omit<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach"> & Partial<Pick<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach">>): Teil => {
+    const alltag = t.fach === undefined ? ALLTAG[t.id] ?? ALLTAG[t.name] : undefined;
+    const x: Teil = { zusatz: null, schalter: null, unbekannt: false, fest: null, ...t, name: alltag ?? t.name, fach: t.fach !== undefined ? t.fach : alltag ? t.name : null };
     teile.push(x);
     return x;
   };
@@ -172,11 +173,20 @@ export function sitzungModell(a: Answer, e: Eingaben, bausteinName: (b: Baustein
     const bytes = typeof b.bytes === "number" ? b.bytes : null;
     if (b.id === "native-agents") { regeln(b, frage); continue; }
     if (b.id === "auto-memory") {
-      const pfad = pfadVon(b.details);
-      teil({ id: b.id, frage, name: "Notizen von Claude", zusatz: "MEMORY.md", herkunft: "cc", stand: kommt ? "an" : "aus", tokens: kommt && bytes ? bytes / cc : 0,
-        fest: b.schaltbar.ja ? null : b.schaltbar.grund });
-      block({ id: b.id, teil: b.id, frage, ort: "dateien", herkunft: "cc", titel: pfad ? kurz(pfad) : "MEMORY.md", text: null, laden: kommt ? pfad : null,
-        tokens: kommt && bytes ? bytes / cc : 0 });
+      // das Notizbuch des Setups (server/notizbuch.ts): seine Art ist der Name der Zeile. Der Plan gilt dem Ordner; eine Session an einem
+      // Ziel startet aber auf ihrem neuen Branch, und der hat sein eigenes Notizbuch. Ein leeres Notizbuch ist an (leer ist der Normalfall),
+      // nur „kein Notizbuch“ ist aus. Ein Server ohne Angabe zur Art bekommt die Zeile wie bisher.
+      const art = rec(rec(b.details)?.notizbuch)?.art;
+      const branch = e.rolle === "branch" && art === "geteilt";
+      const name = branch ? "Notizbuch des Branches" : art === "eigen" ? "Eigenes Notizbuch" : art === "geteilt" ? "Geteiltes Notizbuch"
+        : art === "aus" ? "Kein Notizbuch" : null;
+      const stand = name ? (art === "aus" ? "aus" : "an") : kommt ? "an" : "aus";
+      const tk = stand === "an" && !branch && bytes ? bytes / cc : 0;
+      const pfad = branch ? null : pfadVon(b.details);
+      teil({ id: b.id, frage, herkunft: "cc", stand, tokens: tk, fest: b.schaltbar.ja ? null : b.schaltbar.grund,
+        ...(name ? { name, fach: "Notizen von Claude (Auto-Memory)" } : { name: "Notizen von Claude", zusatz: "MEMORY.md" }) });
+      block({ id: b.id, teil: b.id, frage, ort: "dateien", herkunft: "cc", titel: pfad ? kurz(pfad) : "MEMORY.md", text: null,
+        laden: tk ? pfad : null, tokens: tk });
       continue;
     }
     const name = bausteinName(b);

@@ -320,12 +320,12 @@ export const GRUPPEN: readonly Gruppe[] = [
     fund: "server.ts#planDoorRow (context-anchors, pack:*; lane-notes, source-pointers, source-code: PLAN_NUR_DISPATCH)",
     wo: "der Regler „Wie viel Wissen“ und die Pack-Schalter hier; ein fehlendes Thema als Kontextpack" },
   { id: "gedaechtnis", funktion: "gedaechtnis-zeiger", wort: "Gedächtnis", satz: "was sie von früherer Arbeit wiederfindet",
-    lauf: { lane: "Ein Hinweis in ihrer Session-Datei führt zu ihrem Arbeitsstand bei Fleet; Claudes eigene Notizen (Auto-Memory) sind bei einer Lane aus.",
-      main: "Ein Hinweis in der ersten Nachricht führt zu ihrem Arbeitsstand bei Fleet; Claude Code lädt dazu seine eigenen Notizen (Auto-Memory).",
-      orchestratorin: "Claude Code lädt seine eigenen Notizen (Auto-Memory); einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht.",
-      "nur-ordner": "Claude Code lädt seine eigenen Notizen (Auto-Memory); einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht." },
-    fund: "server.ts#memoryPointer (GET /api/self/memory) · server.ts#planDoorRow (memory-pointer; auto-memory: nur Claude, nicht in einer Lane)",
-    wo: "den Hinweis hier; das Auto-Memory pflegt Claude Code in deinem Konfig-Ordner, Fleet schaltet es nur für Lanes ab" },
+    lauf: { lane: "Ein Hinweis in ihrer Session-Datei führt zu ihrem Arbeitsstand bei Fleet; ein Notizbuch hat eine Lane nicht.",
+      main: "Ein Hinweis in der ersten Nachricht führt zu ihrem Arbeitsstand bei Fleet; dazu liest sie das geteilte Notizbuch des Projekts.",
+      orchestratorin: "Sie hat ihr eigenes Notizbuch; einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht.",
+      "nur-ordner": "Sie liest das geteilte Notizbuch des Projekts, auf einem Branch dessen eigenes; einen Hinweis auf einen Arbeitsstand bei Fleet bekommt sie nicht." },
+    fund: "server.ts#memoryPointer (GET /api/self/memory) · server/notizbuch.ts#notizbuchFuer (welches Notizbuch: eigen, geteilt oder keins)",
+    wo: "den Hinweis hier; das Notizbuch wählt Fleet beim Start: eigen für Profil, Orchestratorin und Branch, keins für eine Lane, sonst das geteilte des Projekts" },
 ];
 export const EINSTELLUNGEN_ID = "spawn-profile";
 // Zwei erste Funktionen des Registers lesen sich falsch (Prüfung 16.10., an die Bauleitung gemeldet): Die Rollenkarte der Orchestratorin

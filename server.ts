@@ -10,6 +10,7 @@ import { createClaudeQuotaReader } from "./server/usage";
 import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn } from "./server/session-start";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { notizbuchFuer, notizbuchSettings, type Notizbuch } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
 import { openerGeladen, openerVon } from "./server/opener";
@@ -482,8 +483,8 @@ function sessionListCut(role: SessionListRole): { skillOverrides: Record<string,
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
-  remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd)}; exec ${SHELL}`;
+  remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -491,7 +492,7 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
-  handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null): string {
+  handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
@@ -545,12 +546,13 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, ...anhang].filter(Boolean).join("\n"))}`;
     else if (rechte || agentMd) cmd += ` --append-system-prompt ${shellSingleQuote(anhang.filter(Boolean).join("\n\n"))}`;
     if (listRole && listRole !== "generic") cmd += ` --tools ${shellSingleQuote(SESSION_TOOLS[listRole].join(","))}`;
-    // A LANE STARTS WITHOUT AUTO-MEMORY (Z3, docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md
-    // M1): the shared project index stays MAIN's and the Orchestratorin's; a lane reads its state through
-    // memoryPointer("lane"). Per launch in the same --settings, never settings.local.json — the lane
-    // scaffold copies that file, and a switch there would reach MAIN and Orchestratorin too.
+    // THE SETUP'S NOTEBOOK (server/notizbuch.ts): its own directory, off for a lane (Z3,
+    // docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md M1 — a lane reads its state through
+    // memoryPointer("lane")), or nothing set and Claude's shared project folder. Per launch in the same
+    // --settings, never settings.local.json — the lane scaffold copies that file, and a switch there would
+    // reach every session in the checkout.
     const cutSettings = { ...(cut ? { skillOverrides: cut.skillOverrides } : {}),
-      ...(listRole === "lane" ? { autoMemoryEnabled: false } : {}), ...aspects?.settings, ...rechteSettings(rechte) };
+      ...(notizbuch ? notizbuchSettings(notizbuch) : {}), ...aspects?.settings, ...rechteSettings(rechte) };
     // DIE ORCHESTRATORIN LÄDT KEINEN ROLLEN-RENDER MEHR (TASK.md, Runde 1): ihre Rolle und ihr Start
     // stehen im Prompt (server/orchestrator-start.ts). Der Projekt-Monolith und die AGENTS.md-Fälle
     // bleiben trotzdem ausgeschlossen — sonst läse sie 80 kB Regeln, die ihr Start nicht nennt.
@@ -715,7 +717,9 @@ interface Harness {
     // what this session may do (Slot.rechte, server/rechte.ts); claude alone reads it, null = no rules
     rechte?: Rechte | null;
     // the Agent-MD of the profile it started from (Slot.agentMd, server/agentmd.ts); claude alone reads it
-    agentMd?: AgentMd | null }): string;
+    agentMd?: AgentMd | null;
+    // the notebook of this setup (server/notizbuch.ts, notizbuchFuerStart); claude alone reads it, null = nothing set
+    notizbuch?: Notizbuch | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -952,7 +956,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -9907,6 +9911,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // compaction stays on where Fleet does not act at the cap (server/succession.ts#autoCompactOff)
       const handoverOn = h.id === "claude" && occupant.label !== STEWARD_LABEL
         && autoCompactOff(thresholdFor(s).basePct, thresholdChoiceOf(s, sessionKindOf(s)));
+      // the setup's notebook (server/notizbuch.ts) — the same answer the Fassung shows under „Liest“
+      const notizbuch = h.id === "claude" ? await notizbuchFuerStart(occupant.cwd, listRole, occupant.agentMd?.profil ?? null) : null;
+      if (!current()) return;
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -9926,7 +9933,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // claude-only by construction: no other adapter is ever handed a name for its line
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
-          handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null })}`);
+          handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -20671,19 +20678,27 @@ function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "ma
     gelesen.bytes + renderBytes, dateien)];
 }
 
-async function fassungGedaechtnisAus(repoRoot: string, rolle: FassungRolle, harness: string): Promise<FassungAbschnittEingang[]> {
-  if (harnessFamilie(harness) !== "claude")
+// DAS NOTIZBUCH DES SETUPS (server/notizbuch.ts): eigen, geteilt oder aus, mit Ordner und den Bytes seiner MEMORY.md.
+// Ein leeres oder noch nicht angelegtes Notizbuch hat 0 Bytes und lädt keine Datei; aus ist bekannt, nicht unknown.
+async function fassungGedaechtnisAus(notizbuch: Notizbuch | null, harness: string): Promise<FassungAbschnittEingang[]> {
+  if (harnessFamilie(harness) !== "claude" || !notizbuch)
     return [unknownAbschnitt("gedaechtnis", "nur Claude lädt ein Auto-Memory; dieser Harness liest es nicht")];
-  if (rolle === "lane")
-    return [unknownAbschnitt("gedaechtnis", "aus: eine Claude-Lane startet mit autoMemoryEnabled:false (server.ts#agentCmd)")];
-  const memory = await autoMemoryBytes(repoRoot);
-  if (memory.bytes === "unknown") return [unknownAbschnitt("gedaechtnis", `Auto-Memory nicht gemessen (${memory.pfad})`)];
-  if (!memory.bytes) return [unknownAbschnitt("gedaechtnis", `kein Auto-Memory unter ${memory.pfad}`)];
+  const art = notizbuch.art === "eigen" ? "eigenes Notizbuch" : notizbuch.art === "geteilt" ? "geteiltes Notizbuch" : "kein Notizbuch";
+  const grund = `${art}; gehört ${notizbuch.wem}`;
+  if (!notizbuch.pfad) return [{ id: "gedaechtnis", quelle: null, aenderbar: true, text: "", bytes: 0, grund, notizbuch }];
+  const memory = await autoMemoryBytes(notizbuch);
+  if (memory.bytes === "unknown") return [{ ...unknownAbschnitt("gedaechtnis", `${grund} — ${memory.pfad} ist nicht lesbar`, notizbuch.pfad), notizbuch }];
+  if (!memory.bytes) return [{ id: "gedaechtnis", quelle: notizbuch.pfad, aenderbar: true, text: "", bytes: 0, grund, notizbuch }];
   try {
     const text = readFileSync(memory.pfad, "utf8");
-    return [textAbschnitt("gedaechtnis", memory.pfad, text, true, Buffer.byteLength(text), [{ pfad: memory.pfad, bytes: Buffer.byteLength(text) }])];
-  } catch { return [unknownAbschnitt("gedaechtnis", `${memory.pfad} ist nicht lesbar`)]; }
+    const bytes = Buffer.byteLength(text);
+    return [{ id: "gedaechtnis", quelle: notizbuch.pfad, aenderbar: true, text, bytes, grund, dateien: [{ pfad: memory.pfad, bytes }], notizbuch }];
+  } catch { return [{ ...unknownAbschnitt("gedaechtnis", `${grund} — ${memory.pfad} ist nicht lesbar`, notizbuch.pfad), notizbuch }]; }
 }
+// the role the next spawn of this slot knows (ensureSlot → spawnListRole), so the Fassung names the notebook it starts with
+const fassungSpawnRolle = (s: Slot, rolle: FassungRolle, harness: string): SessionSpawnRole | null =>
+  spawnListRole({ claude: harnessFamilie(harness) === "claude", lane: !!s.worktree, orchestrator: rolle === "orchestrator",
+    boundMain: boundProgramsForMain(s).length > 0 });
 
 async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string): Promise<FassungAbschnittEingang[]> {
   if (rolle === "lane" && s.worktree) {
@@ -20777,7 +20792,9 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       ...fassungRolleKarte(o.rolle, o.repoRoot),
       ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator"),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
-      ...(await fassungGedaechtnisAus(o.repoRoot, o.rolle, o.harness)),
+      // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
+      ...(await fassungGedaechtnisAus(claude ? await notizbuchFuerStart(o.repoRoot,
+        o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : "generic", null) : null, o.harness)),
       unknownAbschnitt("eigenes", !claude ? "dieser Harness liest keine Agent-MD (nur Claude Code)"
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
     ],
@@ -20864,7 +20881,8 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung>
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
       rolle === "orchestrator"),
     ...(await fassungWissen(s, rolle, cwd)),
-    ...(await fassungGedaechtnisAus(repoRoot, rolle, spawnPick.harness)),
+    ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
+      ? await notizbuchFuerStart(cwd, fassungSpawnRolle(s, rolle, spawnPick.harness), s.agentMd?.profil ?? null) : null, spawnPick.harness)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
     s.agentMd ? textAbschnitt("eigenes", `Slot.agentMd (Profil „${s.agentMd.profil}“)`, agentMdBlock(s.agentMd), true)
       : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
@@ -41647,12 +41665,27 @@ function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
   return { bytes: "unknown", grund: `der Loader von ${harness} ist nicht vermessen` };
 }
 
-// Claude's auto-memory lives under the MAIN checkout's namespace — a linked worktree finds the same
+// Claude's project folder lives under the MAIN checkout's namespace — a linked worktree finds the same
 // one (docs/messungen/2026-10-07-session-start-wirklich.md, Die Loader-Probe).
-async function autoMemoryBytes(repoRoot: string): Promise<{ erfuellt: boolean | "unknown"; bytes: PlanBytes; pfad: string }> {
-  const common = await gitRead(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir");
-  const namespace = common.code === 0 && common.out.endsWith("/.git") ? dirname(common.out) : repoRoot;
-  const pfad = `${projDir(namespace)}/memory/MEMORY.md`;
+async function claudeNamespace(dir: string): Promise<string> {
+  const common = await gitRead(dir, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  return common.code === 0 && common.out.endsWith("/.git") ? dirname(common.out) : dir;
+}
+// THE NOTEBOOK THIS START GETS (server/notizbuch.ts): the spawn (ensureSlot) and the Fassung ask this one
+// function. A board branch counts only in its own linked worktree and only with a Board-Name (branchBook).
+async function notizbuchFuerStart(cwd: string, rolle: SessionSpawnRole | null, profil: string | null): Promise<Notizbuch> {
+  const namespace = await claudeNamespace(cwd);
+  let branch: string | null = null;
+  if (rolle && realpathLoose(cwd) !== realpathLoose(namespace)) {
+    const head = await gitRead(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+    const name = head.code === 0 ? head.out.trim() : "";
+    if (name && name !== "HEAD" && findBranch(branchBook, repoCanon(namespace), name)?.name) branch = name;
+  }
+  return notizbuchFuer({ rolle, profil, branch, projektOrdner: projDir(namespace) });
+}
+async function autoMemoryBytes(n: Notizbuch): Promise<{ erfuellt: boolean | "unknown"; bytes: PlanBytes; pfad: string }> {
+  if (!n.pfad) return { erfuellt: false, bytes: 0, pfad: "aus" };
+  const pfad = `${n.pfad}/MEMORY.md`;
   const read = readPresent(pfad);
   return !read.ok ? { erfuellt: "unknown", bytes: "unknown", pfad }
     : read.bytes ? { erfuellt: true, bytes: read.bytes.length, pfad } : { erfuellt: false, bytes: 0, pfad };
@@ -41692,7 +41725,10 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
   const schalter: Record<string, string> = { ...o.schalter };
   if (o.packs !== null && input) for (const pack of fp.plan.selected) if (!forced.has(pack.id))
     schalter[`pack:${pack.id}`] ??= o.packs.includes(pack.id) ? "an" : "aus";
-  const memory = harnessFamilie(harness) === "claude" ? await autoMemoryBytes(fp.repoRoot) : null;
+  // the notebook the role's first spawn gets: a MAIN founded in the window starts "generic" (spawnListRole)
+  const notizbuch = harnessFamilie(harness) === "claude" ? await notizbuchFuerStart(fp.repoRoot,
+    o.rolle === "lane" ? "lane" : o.rolle === "orchestratorin" ? "orchestrator" : "generic", null) : null;
+  const memory = notizbuch ? await autoMemoryBytes(notizbuch) : null;
   const native = o.rolle === "nur-ordner" && o.ort === "ordner" ? nativeLoaderBytes(fp.repoRoot, harness) : null;
   const laneRulebook = o.rolle === "lane" ? laneRulebookFor(fp.repoRoot) : null;
   const ownRulebook = resolve(fp.repoRoot) === import.meta.dir && RULEBOOK_CUT_MODE !== "voll" && readRulebookFragments(import.meta.dir) !== null;
@@ -41709,8 +41745,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
       "private-rulebook": o.rolle === "lane" ? laneRulebook !== null : ownRulebook,
       "commit-expectation": o.ort === "worktree",
       "delivery-header": harnessFamilie(harness) === "claude",
-      // a Claude lane starts with autoMemoryEnabled:false (agentCmd): the index may exist, it never loads
-      ...(memory ? { "auto-memory": o.rolle === "lane" ? false : memory.erfuellt } : {}),
+      // a Claude lane starts with autoMemoryEnabled:false (server/notizbuch.ts): the index may exist, it never loads
+      ...(memory ? { "auto-memory": memory.erfuellt } : {}),
     },
     schalter,
   }, (zustand) => {
@@ -41724,7 +41760,7 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     if (laneRulebook !== null) bytes["private-rulebook"] = Buffer.byteLength(laneRulebook);
     else if (ownRulebook && (o.rolle === "main" || o.rolle === "orchestratorin"))
       bytes["private-rulebook"] = roleRulebookBytes(o.rolle === "main" ? "main" : "orchestrator");
-    if (memory) { bytes["auto-memory"] = memory.bytes; details["auto-memory"] = { pfad: memory.pfad }; }
+    if (memory && notizbuch) { bytes["auto-memory"] = memory.bytes; details["auto-memory"] = { ...(notizbuch.pfad ? { pfad: memory.pfad } : {}), notizbuch }; }
     if (native) { bytes["native-agents"] = native.bytes; details["native-agents"] = "grund" in native ? { grund: native.grund } : { dateien: native.dateien, nachgeladen: native.nachgeladen, regel: native.regel }; }
     if (!input) return { bytes, enthaltenIn, details };
     // the window's file is the one a planned spawn writes (plannedFileRows): the same rows, the same

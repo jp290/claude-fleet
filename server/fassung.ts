@@ -8,6 +8,7 @@
 // nur in die eine Form gebracht, die die Route zeigt, und gehasht. Fehlt eine Quelle, steht der
 // Abschnitt mit `unknown` und einem Grund da — nie als leere Zeile und nie weggelassen.
 import { createHash } from "node:crypto";
+import type { Notizbuch } from "./notizbuch";
 
 export type FassungAnlass = "neu" | "laufend" | "nachfolge";
 export type FassungByte = number | "unknown";
@@ -32,6 +33,8 @@ export interface FassungAbschnittEingang {
   readonly grund?: string;
   /** die Dateien, die dieser Abschnitt als geladen zeigt (Pfad und Bytes), in Ladereihenfolge */
   readonly dateien?: readonly { readonly pfad: string; readonly bytes: number }[];
+  /** nur „gedaechtnis“: das Notizbuch des Setups, eigen, geteilt oder aus (server/notizbuch.ts) */
+  readonly notizbuch?: Notizbuch;
 }
 
 export interface FassungAbschnitt {
@@ -42,6 +45,7 @@ export interface FassungAbschnitt {
   readonly text: string | null;
   readonly grund?: string;
   readonly dateien?: readonly { readonly pfad: string; readonly bytes: number }[];
+  readonly notizbuch?: Notizbuch;
 }
 
 export interface FassungTeil {
@@ -85,12 +89,13 @@ const byteLength = (text: string): number => Buffer.byteLength(text);
 function normalisiere(a: FassungAbschnittEingang): FassungAbschnitt {
   const text = typeof a.text === "string" ? a.text : null;
   const bytes = a.bytes ?? (text !== null ? byteLength(text) : "unknown");
+  const notizbuch = a.notizbuch ? { notizbuch: a.notizbuch } : {};
   // Eine fehlende Quelle bleibt ein Abschnitt: unknown, Grund, nie leer.
   if (text === null)
     return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes: "unknown", text: null,
-      grund: a.grund?.trim() || "keine Quelle — der Grund wurde nicht genannt", ...(a.dateien?.length ? { dateien: a.dateien } : {}) };
+      grund: a.grund?.trim() || "keine Quelle — der Grund wurde nicht genannt", ...(a.dateien?.length ? { dateien: a.dateien } : {}), ...notizbuch };
   return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes, text, ...(a.grund?.trim() ? { grund: a.grund } : {}),
-    ...(a.dateien?.length ? { dateien: a.dateien } : {}) };
+    ...(a.dateien?.length ? { dateien: a.dateien } : {}), ...notizbuch };
 }
 
 // kanonisch: Schlüssel sortiert, damit derselbe Inhalt denselben Hash ergibt, unabhängig von der
@@ -105,9 +110,11 @@ const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
 // ergeben denselben Hash. Von den Dateien zählen nur ihre Bytes und ihre Reihenfolge. Der `grund`
 // eines fehlenden Abschnitts ist ebenfalls Anzeige: fehlt die Quelle, ist `text` null, und das
 // genügt, um den Abschnitt als fehlend zu hashen, ohne einen lokalen Pfad in den Hash zu tragen.
+// Vom Notizbuch zählt nur, ob es eigen, geteilt oder aus ist; sein Ordner ist Anzeige wie `quelle`.
 const hashInhalt = (a: FassungAbschnitt): unknown => ({
   id: a.id, aenderbar: a.aenderbar, bytes: a.bytes, text: a.text,
   ...(a.dateien ? { dateien: a.dateien.map((datei) => datei.bytes) } : {}),
+  ...(a.notizbuch ? { notizbuch: a.notizbuch.art } : {}),
 });
 
 /** sha256 über den Inhalt der fünf Teile in kanonischer Form — claudeCode und Anlass gehören nicht dazu. */

@@ -53,7 +53,7 @@ interface StartSumme { fleetBytes: number; fleetUnbekannt: string[]; fleetTokens
 // the two native rows share the register word "Laedt nativ", which says their way, not what they are
 // (and three more share a word with a neighbour they are listed beside)
 // (and the register writes umlauts as ae/oe/ue, which a name on screen does not)
-const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordners", "auto-memory": "Auto-Memory",
+const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordners", "auto-memory": "Notizbuch",
   "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort",
   "lane-footer": "Rückweg und Ende", "memory-pointer": "Gedächtnis-Hinweis",
   // three rows share the register word "Auftrag", which is their function, not what each one is

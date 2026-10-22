@@ -131,3 +131,25 @@ describe("Auftrag und Dateien", () => {
     expect(m.bloecke.find((b) => b.laden === "/h/.claude/CLAUDE.md")?.text).toBe(null);
   });
 });
+
+// DAS NOTIZBUCH JE SETUP (server/notizbuch.ts): die Zeile „Notizen von Claude“ sagt, ob das Notizbuch eigen, geteilt oder aus ist
+describe("das Notizbuch des Setups", () => {
+  const zeile = (art: string | null, zustand: "an" | "aus" = "an", bytes = 12, e = ein()) => modell(antwort([baustein("auto-memory", { frage: "hintergrund",
+    zustand, bytes, details: { pfad: "/r/MEMORY.md", ...(art ? { notizbuch: { art, pfad: "/r", wem: "x" } } : {}) } })]), e).teile.find((t) => t.id === "auto-memory");
+  // die Art ist der Name der Zeile, nicht ein angehängter Zusatz, den eine schmale Spalte abschneidet (UI-Abnahme 22.10.)
+  test("die Art des Notizbuchs ist der Name der Zeile, ohne Zusatz", () => {
+    expect(zeile("eigen")).toMatchObject({ name: "Eigenes Notizbuch", zusatz: null, stand: "an", fach: "Notizen von Claude (Auto-Memory)" });
+    expect(zeile("geteilt")).toMatchObject({ name: "Geteiltes Notizbuch", zusatz: null, stand: "an" });
+    expect(zeile("aus", "aus", 0)).toMatchObject({ name: "Kein Notizbuch", zusatz: null, stand: "aus" });
+  });
+  test("ein leeres Notizbuch ist an, mit 0 Tokens: leer ist der Normalfall, nicht „nicht verfügbar“", () => {
+    expect(zeile("geteilt", "aus", 0)).toMatchObject({ name: "Geteiltes Notizbuch", stand: "an", tokens: 0 });
+    expect(zeile("eigen", "aus", 0)).toMatchObject({ stand: "an", tokens: 0 });
+  });
+  test("eine Session an einem Ziel startet auf ihrem Branch mit dessen eigenem, leerem Notizbuch, nicht mit dem geteilten", () => {
+    expect(zeile("geteilt", "an", 12, ein({ rolle: "branch" }))).toMatchObject({ name: "Notizbuch des Branches", zusatz: null, stand: "an", tokens: 0 });
+  });
+  test("ein Server ohne Notizbuch-Angabe zeigt die Zeile wie bisher", () => {
+    expect(zeile(null)).toMatchObject({ name: "Notizen von Claude", zusatz: "MEMORY.md" });
+  });
+});

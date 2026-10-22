@@ -107,6 +107,32 @@ describe("die fünf Teile", () => {
   });
 });
 
+// DAS NOTIZBUCH DES SETUPS (server/notizbuch.ts) steht unter „Liest“ als eigen, geteilt oder aus, mit Pfad und
+// Größe. Ob es eigen, geteilt oder aus ist, zählt zum Setup; wo es auf diesem Rechner liegt, ist Anzeige.
+describe("das Notizbuch unter Liest", () => {
+  const mitNotizbuch = (art: "eigen" | "geteilt" | "aus", pfad: string | null, text: string) => eingang({ liest: [...eingang().liest,
+    { id: "gedaechtnis", quelle: pfad, aenderbar: true, text, ...(art === "aus" ? { bytes: 0 } : {}),
+      notizbuch: { art, pfad, wem: "dem Test" } }] });
+  const gedaechtnis = (f: ReturnType<typeof baueFassung>) =>
+    f.teile.find((t) => t.id === "liest")!.abschnitte.find((a) => a.id === "gedaechtnis")!;
+
+  test("der Abschnitt trägt Art, Pfad und Bytes; ein leeres eigenes Notizbuch hat 0 Bytes, nicht unknown", () => {
+    const leer = gedaechtnis(baueFassung(mitNotizbuch("eigen", "/p/notizbuecher/orchestratorin", "")));
+    expect(leer).toMatchObject({ bytes: 0, text: "", notizbuch: { art: "eigen", pfad: "/p/notizbuecher/orchestratorin", wem: "dem Test" } });
+    expect(gedaechtnis(baueFassung(mitNotizbuch("geteilt", "/p/memory", "- notiz\n")))).toMatchObject({ bytes: 8, notizbuch: { art: "geteilt" } });
+    expect(gedaechtnis(baueFassung(mitNotizbuch("aus", null, "")))).toMatchObject({ bytes: 0, notizbuch: { art: "aus", pfad: null } });
+  });
+
+  test("eigen, geteilt und aus ergeben verschiedene Hashes, auch bei gleichem leerem Inhalt", () => {
+    const hashes = (["eigen", "geteilt", "aus"] as const).map((art) => baueFassung(mitNotizbuch(art, art === "aus" ? null : "/p", "")).hash);
+    expect(new Set(hashes).size).toBe(3);
+  });
+
+  test("der Ort auf diesem Rechner gehört nicht in den Hash", () => {
+    expect(baueFassung(mitNotizbuch("eigen", "/home/a/x", "n")).hash).toBe(baueFassung(mitNotizbuch("eigen", "/home/b/y", "n")).hash);
+  });
+});
+
 // DIE STARTBYTES BLEIBEN (Fertig-kriterium 5): die Fixture wurde VOR dem Herausziehen der
 // Rollenkarten aus dem damaligen server.ts aufgenommen. Der Test lädt server.ts in einem eigenen
 // Prozess (wie server/load.test.ts) und vergleicht Startbrief und Startzeile der drei Slots.
@@ -117,6 +143,9 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
     const script = `
       const out = process.env.FASSUNG_OUT;
       const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+      const N = await import(${JSON.stringify(join(ROOT, "server/notizbuch.ts"))});
+      // das Notizbuch, das ensureSlot jeder Zeile gibt (server/notizbuch.ts): aus für die Lane, sonst der geteilte Projektordner
+      const buch = (rolle) => N.notizbuchFuer({ rolle, profil: null, branch: null, projektOrdner: "/fixture/projects/-repo" });
       const rechte = { stufe: "standard", an: ["lesen", "bearbeiten"], aus: ["loeschen"] };
       const agentMd = { profil: "p1", titel: "agent.md", text: "Eigene Regel A\\nEigene Regel B", sha256: "0".repeat(64) };
       const laneRows = [
@@ -127,16 +156,16 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
         reason: "context 80 %", decision: "fleet-report r1: accepted", footer: "\\n\\n--- HOW THIS LANE ENDS (fixture) ---\\n", contextBlock: "\\n\\nANKER (fixture)\\n",
         ownerInputs: [], korrekturen: "OWNER-KORREKTUREN (fixture)" });
       const laneCmd = S.slotCmd("22222222-2222-4222-8222-222222222222", false, "claude-opus-5[1m]", "high",
-        false, null, [], "lane", true, null, rechte, agentMd);
+        false, null, [], "lane", true, null, rechte, agentMd, buch("lane"));
       const freeBrief = await S.buildSuccessionBrief("/nonexistent/fixture-free", null, { obligations: [], intent: null, pointer: null, carry: false, now: 1_760_000_000_000, laneNow: () => null });
-      const freeCmd = S.slotCmd("33333333-3333-4333-8333-333333333333", false, null, null, true, null, [], "generic", false, null, null, null);
+      const freeCmd = S.slotCmd("33333333-3333-4333-8333-333333333333", false, null, null, true, null, [], "generic", false, null, null, null, buch("generic"));
       const program = { id: "p1", title: "Fassung", intent: "die Fassung zeigen", successCriterion: "Route und Test", nonGoals: ["nichts anderes"],
         decisions: [], evidence: [], openQuestions: [], status: "active", createdAt: 1, proposedBy: { kind: "owner" } };
       const mainBrief = S.buildProgramMainBrief(program, "fleet-control", "\\n\\nANKER (fixture)\\n", "OWNER-KORREKTUREN (fixture)");
       const mainCmd = S.slotCmd("44444444-4444-4444-8444-444444444444", false, "claude-opus-5[1m]", "high",
-        true, "main", [], "main", true, null, rechte, agentMd);
+        true, "main", [], "main", true, null, rechte, agentMd, buch("main"));
       const stewardCmd = S.slotCmd("55555555-5555-4555-8555-555555555555", false, "claude-opus-5[1m]", "high",
-        true, "main", [], "main", true, null, null, null);
+        true, "main", [], "main", true, null, null, null, buch("main"));
       const roleCards = { main: S.MAIN_ROLE_CARD, lane: S.LANE_ROLE_CARD };
       await Bun.write(out, JSON.stringify({ laneBrief, laneCmd, freeBrief, freeCmd, mainBrief, mainCmd, stewardCmd, roleCards }, null, 2) + "\\n");
     `;
@@ -391,7 +420,13 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       const common = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: repo }).stdout.toString().trim();
       return common.endsWith("/.git") ? dirname(common) : repo;
     };
-    const memRoot = memory(namespace(ROOT), "MEM ROOT\n");
+    // DIE ORCHESTRATORIN HAT IHR EIGENES NOTIZBUCH (server/notizbuch.ts): der geteilte Ordner des Repos liegt
+    // daneben und wird von ihr nicht geladen
+    memory(namespace(ROOT), "MEM ROOT\n");
+    const orchBuch = join(projects, slug(namespace(ROOT)), "notizbuecher", "orchestratorin");
+    mkdirSync(orchBuch, { recursive: true });
+    writeFileSync(join(orchBuch, "MEMORY.md"), "MEM ORCH\n");
+    const memOrch = join(orchBuch, "MEMORY.md");
     const memFree = memory(namespace(freeRepo), "MEM FREE\n");
     // das rulebook/ ist ein Fixture IM Server-Checkout, weil der Spawn genau dort den Rollen-Render
     // nimmt (rulebookRoleForSpawn: resolve(cwd) === import.meta.dir). Vorher sichern, danach zurück.
@@ -478,7 +513,7 @@ describe("Liest stimmt mit dem Transkript überein", () => {
         "docs/packs/working-with-the-owner.md", "docs/packs/how-fleet-remembers.md",
         "docs/packs/working-toward-a-goal.md", "docs/packs/who-it-is-for.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
       expect(got.orch!.dateien).toEqual(transkript([...mitInhalt(startRolle), ...mitInhalt(geladen.orch),
-        ...mitInhalt(startWissen), datei(memRoot)]));
+        ...mitInhalt(startWissen), datei(memOrch)]));
       expect(got.lane!.dateien).toEqual(transkript(mitInhalt(geladen.lane)));
       expect(got.free!.dateien).toEqual(transkript([...mitInhalt(geladen.free), datei(memFree)]));
       // Auto-Memory ist bei der Lane kein Abschnitt mit Datei: sie startet ohne (autoMemoryEnabled:false)

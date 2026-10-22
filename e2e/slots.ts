@@ -14145,8 +14145,10 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     const oo = orch ? await post(`/api/slots/${orch}/open`, { cwd: without, label: "🎛 Orchestratorin · auto-memory" }) : null;
     if (oo?.ok) opened.push(orch);
     const orchArgv = oo?.ok ? await argvNow(orch) : "";
-    check("auto-memory: the Orchestratorin's claude keeps its auto-memory — no autoMemoryEnabled on its line",
-      orchArgv.includes("FLEET-LISTENSCHNITT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled"),
+    // her notebook is her own (server/notizbuch.ts): autoMemoryDirectory on her line, never the shared project folder
+    check("auto-memory: the Orchestratorin's claude starts with her own notebook — autoMemoryDirectory …/notizbuecher/orchestratorin, no autoMemoryEnabled",
+      orchArgv.includes("FLEET-LISTENSCHNITT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled")
+        && /"autoMemoryDirectory":"[^"]*\/notizbuecher\/orchestratorin"/.test(orchArgv),
       `slot=${orch} ${oo?.status ?? "-"} ${orchArgv.slice(-400) || "no claude argv"}`);
     check("session tools: the Orchestratorin's claude starts with the orchestrator allowlist on --tools, Skill and Workflow in it",
       orchArgv.includes("--tools Bash,Read,Write,ToolSearch,PushNotification,Agent,Artifact,WebSearch,Edit,WebFetch,TaskStop,Skill,Workflow,AskUserQuestion,ScheduleWakeup"),

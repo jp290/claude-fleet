@@ -456,9 +456,9 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     lieferart: ["native Datei"],
     rollenDefault: {"lane": "aus", "main": {"zustand": "bedingt", "grund": "Claude hat eigene Notizen"}, "orchestratorin": {"zustand": "bedingt", "grund": "Claude hat eigene Notizen"}, "nur-ordner": {"zustand": "bedingt", "grund": "Claude hat eigene Notizen"}},
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
-    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "server.ts#agentCmd"],
+    belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "server.ts#agentCmd", "server/notizbuch.ts#notizbuchFuer"],
     breaksWithout: "Claudes eigene Notizen fehlen; der Arbeitsstand bei Fleet ist davon getrennt.",
-    nichtSchaltbar: "Claude lädt seine Notizen selbst; Fleet schaltet sie nur beim Start einer Lane ab (autoMemoryEnabled:false), im Plan ist das kein Schalter.",
+    nichtSchaltbar: "Fleet wählt beim Start das Notizbuch: eigen für Profil, Orchestratorin und Branch, keins für eine Lane, sonst das geteilte des Projekts. Das ist kein Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {

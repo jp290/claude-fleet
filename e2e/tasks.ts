@@ -12706,7 +12706,8 @@ export async function run(ctx: Ctx): Promise<void> {
 
     // (kr6) The MAIN's create door uses the same card-role adoption as the owner door in (kr1).
     // Removing adoptSpawnFromCard(t) from createTaskForMain leaves this stored row without spawn.
-    const mRole = { harness: "codex", model: "gpt-6-sol", effort: "high" };
+    // A Claude role: since kind-nie-weiter a Claude MAIN files no Codex card (409).
+    const mRole = { harness: "claude", model: "claude-sonnet-5-5", effort: "high" };
     const mRoleRes = await mFile(mToken, { text: "KARTEN-ROLLE kr6: AGENTS.md bekommt eine Zeile.", kind: "auftrag",
       card: { ziel: "AGENTS.md bekommt eine Zeile", rolle: mRole,
         surface: { files: ["AGENTS.md"], symbols: [] }, done: "die Zeile steht in AGENTS.md",
@@ -12716,7 +12717,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(kr6) POST /api/self/tasks with a valid card role: Task.spawn carries the card's harness/model/effort at birth",
       mRoleRes.status === 200 && mRoleRow?.card?.valid === true
       && JSON.stringify(mRoleRow.card.rolle) === JSON.stringify(mRole)
-      && JSON.stringify(mRoleRow.spawn) === JSON.stringify({ ...mRole, permissions: { sandbox: "danger-full-access", approval: "never" } }),
+      && JSON.stringify(mRoleRow.spawn) === JSON.stringify({ ...mRole, harness: null }),
       `${mRoleRes.status} ${JSON.stringify({ card: mRoleRow?.card, spawn: mRoleRow?.spawn })}`);
     // A pending MAIN auftrag spends PROGRAM_MAX_PENDING (5): left standing, this row fills the cap
     // one filing early and (rc2b)'s MAIN filing is refused 409.

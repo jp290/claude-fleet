@@ -6,11 +6,12 @@
 // stufenweise auf (Owner 19.10. 09:5x): erst die fünf Fragen mit Zahl und Balken, dann je Frage die Teile in drei Zuständen — drin (in
 // Farbe), aus mit einem Schalter, und „[Zitat entfernt]“ eingeklappt mit Grund —, dann die Einzelheiten eines Teils. Die Ansicht
 // „Aufbau“ (Lane, MAIN, Orchestratorin) bleibt das bisherige Fenster (src/k15-entwurf.ts), erreichbar über „Mit anderen Sessions arbeiten“.
+import { fassungZeile } from "./fassung-zeile";
 import { el, api, bausteinName, OMIT_SAY, flotte, starte, zeigeSlot, meldung } from "./k15-haupt";
 import { icon } from "./icons";
 import { SESSION_FRAGEN, type SessionFrage } from "../session-fragen";
 import { RECHTE_STANDARD, type Rechte } from "../session-rechte";
-import { antwort, hole, planUrl, render, S, type St } from "./k15-zustand";
+import { antwort, hole, planUrl, render, S, type Dazu, type St } from "./k15-zustand";
 import { DAUER, HERKUNFT_WORT, ORTE, PLATZ, platzVon, sitzungModell, type Herkunft, type SitzungModell, type SitzungRolle, type Teil, type TextBlock } from "./sitzung-modell";
 import { ROLLEN, spalteLinks } from "./sitzung-links";
 import { agentVon, agentWort, standardAgent } from "./k15-agent";
@@ -45,10 +46,19 @@ const FARBE: Readonly<Record<Herkunft, string>> = { cc: "var(--ks-cc)", du: "var
 function dreier(z: SitzStand): { harness?: string; model?: string; effort?: string } {
   return { ...(z.agent ? { harness: z.agent } : {}), ...(z.modell ? { model: z.modell } : {}), ...(z.effort ? { effort: z.effort } : {}) };
 }
+// was der Start dieses Fensters außer dem Plan an die Tür schickt (los): Rechte für Claude Code, das Profil der Attrappe, die Bibliothek ohne Plan.
+// Die Vorschau bekommt dasselbe, damit der Hash, den sie zeigt, der des Starts ist.
+function dazuVon(s: St): Dazu {
+  const z = s.sitz;
+  const ag = z.agent || (s.katalog ? standardAgent(s.katalog) ?? "claude" : "claude");
+  const profil = attrappeFuer(s) ? attrappeProfil(s).profil : undefined;
+  return { ...(ag === "claude" ? { rechte: z.rechte } : {}), ...(profil ? { profil } : {}),
+    ...(z.schalter.bibliothek ? { bibliothek: z.schalter.bibliothek === "an" } : {}) };
+}
 // der Plan dieser Session: Rolle „Nur Ordner“ (beide Türen dieses Fensters starten ohne Rolle), dazu Agent und Schalter
 function planVon(s: St): { a: Answer | null; fehler: string | null; laedt: boolean } {
   if (!s.repo) return { a: null, fehler: null, laedt: false };
-  const st = hole(s, planUrl(s.repo, "nur-ordner", s.sitz.schalter, dreier(s.sitz)));
+  const st = hole(s, planUrl(s.repo, "nur-ordner", s.sitz.schalter, dreier(s.sitz), dazuVon(s)));
   const a = antwort(st);
   if (a) s.sitz.letzte = a;
   return { a: a ?? s.sitz.letzte, fehler: typeof st === "object" && "fehler" in st ? st.fehler : null, laedt: st === "laedt" };
@@ -419,6 +429,12 @@ function fuss(s: St, m: SitzungModell | null): void {
   const rechts = el("div", "ksfussr");
   const summe = el("div", "kssumme");
   summe.append(el("span", "", m ? `Start ${tk(m.summe.alle)} Tokens` : "Start …"), el("small", "", m ? `davon Fleet ${m.summe.fleet ? tk(m.summe.fleet) : "nichts"}` : ""));
+  // die Fassung, die dieser Start trägt (die Tür prüft sie gegen den Start); am Branch gibt es sie nicht, seine Tür nimmt keinen Hash
+  if (a?.fassungsHash && z.rolle !== "branch") {
+    const fz = el("small", "ksfass", fassungZeile(a.fassungsHash));
+    fz.title = a.fassungsHash;
+    summe.append(fz);
+  }
   const go = el("button", "ksgo", z.busy ? "Startet …" : "Session starten") as HTMLButtonElement;
   go.type = "button";
   go.disabled = z.busy || (nein !== null && !z.fehler);
@@ -448,6 +464,7 @@ async function los(s: St): Promise<void> {
     : slot === null ? { ok: false, fehler: "Kein freier Platz in der Leiste." }
     : await starte({ tuer: "open", cwd: s.repo, slot, dreier: d, ...rechte, ...profil,
       plan: a.start.startbar ? { hash: a.plan.planHash, role: "nur-ordner", ...(sw ? { bausteine: sw } : {}) } : null,
+      ...(a.fassungsHash ? { fassung: a.fassungsHash } : {}),
       // ohne Plan geht der Schalter „Fleets Bibliothek“ als eigenes Feld mit (server.ts#bibliothekDerTuer)
       ...(!a.start.startbar && z.schalter.bibliothek ? { bibliothek: z.schalter.bibliothek === "an" } : {}) });
   if (S !== s) return;

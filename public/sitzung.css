@@ -184,6 +184,7 @@
 .k15sitz .kssay b { color: var(--chat-ink); font-weight: 600; }
 .k15sitz .kssatz { color: var(--chat-faint); font-size: 12.5px; }
 .k15sitz .kssatz.warn { color: #ffb38a; }
+.k15sitz .kssumme small.ksfass { font: 12px var(--chat-mono); color: var(--chat-faint); }
 .k15sitz .ksfussr { display: flex; align-items: center; gap: 18px; flex: none; }
 .k15sitz .kssumme { text-align: right; font: 600 15px var(--chat-mono); color: var(--chat-ink); white-space: nowrap; }
 .k15sitz .kssumme small { display: block; font: 12px var(--chat-sans); color: var(--chat-mute); }
@@ -204,7 +205,7 @@
   .k15sitz .kstkopf { padding: 9px 14px; }
   .k15sitz .kstkopf .kswahl { margin-left: 0; }
   .k15sitz .ksdok { padding: 4px 14px 30vh; }
-  .k15sitz .kssay, .k15sitz .kssatz { display: none; }
+  .k15sitz .kssay, .k15sitz .kssatz:not(.warn) { display: none; }
   .k15sitz .kssumme { text-align: left; font-size: 14px; }
   .k15sitz .ksfussr { flex: 1; justify-content: space-between; }
   .k15sitz .ksgo { padding: 10px 16px !important; }

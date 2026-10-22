@@ -36,20 +36,24 @@ async function gedaechtnis(f: Fixture, slot: number): Promise<Gedaechtnis> {
 describe("jedes Setup startet mit seinem Notizbuch", () => {
   test("eine Session auf einem Board-Branch: das Notizbuch ihres Branches auf der Zeile und in der Fassung, mit Größe", async () => {
     const f = fixture();
-    const [made, opened] = await life(f, [post("/api/branches", { repo: f.repo, name: "Notiz A" }),
-      post("/api/branches/open", { repo: f.repo, branch: "branch/notiz-a" })]);
-    const slot = offen(opened);
+    // das Notizbuch steht vor dem Start da: `anlass=laufend` zeigt, womit die Session gestartet wurde (server/start-fassung.ts), nicht den Stand von jetzt
     const ordner = `${projekt(f.repo)}/notizbuecher/branch-branch%2Fnotiz-a`;
-    const zeile = startzeile(f, String(made?.body.path));
-    expect(zeile).toContain(`"autoMemoryDirectory":"${ordner}"`);
-    expect(zeile).not.toContain("autoMemoryEnabled");
     mkdirSync(ordner, { recursive: true });
     const index = "- [Falle](falle.md) — der Port\n";
     writeFileSync(join(ordner, "MEMORY.md"), index);
+    const [made, opened] = await life(f, [post("/api/branches", { repo: f.repo, name: "Notiz A" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/notiz-a" })]);
+    const slot = offen(opened);
+    const zeile = startzeile(f, String(made?.body.path));
+    expect(zeile).toContain(`"autoMemoryDirectory":"${ordner}"`);
+    expect(zeile).not.toContain("autoMemoryEnabled");
     const bytes = Buffer.byteLength(index);
-    expect(await gedaechtnis(f, slot)).toMatchObject({ bytes, text: index, notizbuch: { art: "eigen", pfad: ordner },
-      dateien: [{ pfad: `${ordner}/MEMORY.md`, bytes }] });
-  }, LIFE_DEADLINE_MS * 3);
+    const erwartet = { bytes, text: index, notizbuch: { art: "eigen", pfad: ordner }, dateien: [{ pfad: `${ordner}/MEMORY.md`, bytes }] };
+    expect(await gedaechtnis(f, slot)).toMatchObject(erwartet);
+    // was die Session später dazuschreibt, ändert nicht, was sie beim Start las
+    writeFileSync(join(ordner, "MEMORY.md"), `${index}- [Neu](neu.md) — nach dem Start\n`);
+    expect(await gedaechtnis(f, slot)).toMatchObject(erwartet);
+  }, LIFE_DEADLINE_MS * 4);
 
   test("ein Profil hat sein eigenes, auch auf einem Branch", async () => {
     const f = fixture();

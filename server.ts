@@ -8,9 +8,11 @@ import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
 import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
-import { hubHostOf, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek } from "./server/session-start";
+import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek } from "./server/session-start";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
+import { halteFassung, holeFassung, vergissFassung } from "./server/start-fassung";
+import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
 import { notizbuchFuer, notizbuchSettings, type Notizbuch } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
@@ -503,6 +505,18 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
 // `browserMcp` false = a text lane (Slot.browser): claude starts with NO ambient MCP server.
+// DIE MCP-FLAGS EINER CLAUDE-ZEILE, an einer Stelle: das strikte Flag, wenn keine Browser-MCP läuft, danach die Server der Packs (claudeMcpConfigFlag).
+// agentCmd hängt sie an die Zeile, und die Fassung (fassungFleetStart) nennt dieselben Flags als Text: beide lesen sie hier, keine zweite Ableitung.
+function claudeMcpFlags(browserMcp: boolean, packMcp: readonly ContextPackMcpServer[]): { strict: boolean; config: string | null } {
+  return { strict: !browserMcp, config: packMcp.length ? claudeMcpConfigFlag(packMcp) : null };
+}
+// DIE RECHTE EINES ECHTEN SITZES: seine Deny-Regeln (session-start.ts#REAL_SEAT_DENY) stehen neben den eigenen Rechten der Session, nie an ihrer Stelle.
+// Die Zeile (agentCmd) und die Fassung (fassungFleetStart) rechnen es mit dieser einen Funktion; ohne Regeln bleibt es leer.
+function sitzRechte(rechte: Rechte | null, sitzDeny: readonly string[] | undefined): { permissions?: { allow: string[]; deny: string[] } } {
+  if (!sitzDeny) return {};
+  const eigene = rechteSettings(rechte).permissions;
+  return { permissions: { allow: [...(eigene?.allow ?? [])], deny: [...(eigene?.deny ?? []), ...sitzDeny] } };
+}
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
@@ -542,14 +556,15 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // per-server switch on the command line, so this drops EVERY ambient MCP (the figma/github
     // plugins and the claude.ai connectors too); a lane that needs one is a browser lane. Nothing is
     // written to ~/.claude/settings.json — the profile lives on this line only (pinned).
-    if (!browserMcp) cmd += " --strict-mcp-config";
+    const mcp = claudeMcpFlags(browserMcp, packMcp);
+    if (mcp.strict) cmd += " --strict-mcp-config";
     // THE PACK'S MCP SERVERS (a Zusatz with `mcp`, context-packs.ts#CONTEXT_PACK_MCP_ANSCHLUSS): right
     // after the strict flag, so a text lane loads exactly these and no ambient one; a browser lane or
     // a MAIN keeps its ambient servers beside them. The spelling is claudeMcpConfigFlag's alone — the
     // plan names the same bytes (e2e/context-plan.ts holds both). Per launch, never a settings write.
     // THE CALLER is ensureSlot alone, with the slot's persisted founding selection (Slot.packMcp), on
     // every spawn cause; [] adds nothing, so a slot without an MCP Zusatz spawns byte for byte as before.
-    if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;
+    if (mcp.config) cmd += ` ${mcp.config}`;
     // THE ROLE'S LIST CUT (SESSION_LIST_CUT): agents as deny rules, skills in the one --settings below,
     // and the way back as one appended system-prompt line. null role (the container adapter, a
     // worker) = nothing added, the line of before.
@@ -570,8 +585,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const cutSettings = { ...(cut ? { skillOverrides: cut.skillOverrides } : {}),
       ...(notizbuch ? notizbuchSettings(notizbuch) : {}), ...aspects?.settings, ...rechteSettings(rechte),
       // a real seat's deny rules (session-start.ts#REAL_SEAT_DENY) stand beside the session's own rights, never instead
-      ...(aspects?.settings.permissions ? { permissions: { allow: rechteSettings(rechte).permissions?.allow ?? [],
-        deny: [...(rechteSettings(rechte).permissions?.deny ?? []), ...aspects.settings.permissions.deny] } } : {}) };
+      ...sitzRechte(rechte, aspects?.settings.permissions?.deny) };
     // DIE ORCHESTRATORIN LÄDT KEINEN ROLLEN-RENDER MEHR (TASK.md, Runde 1): ihre Rolle und ihr Start
     // stehen im Prompt (server/orchestrator-start.ts). Der Projekt-Monolith und die AGENTS.md-Fälle
     // bleiben trotzdem ausgeschlossen — sonst läse sie 80 kB Regeln, die ihr Start nicht nennt.
@@ -9543,6 +9557,21 @@ interface OpenSlotIntent {
   foundingPlan?: AcceptedFoundingPlan;
 }
 const openSlotIntents = new Set<OpenSlotIntent>();
+// DIE ÖFFNUNG GEHÖRT DEM SLOT, BIS SIE ZURÜCKKOMMT: der Heal-Takt (alle 2 s, ensureSlot für jeden Slot mit cwd) baut keine Pane, solange ein
+// open den Slot gestempelt hat und seine Fassung noch hält. Sonst startete die Pane vor der Prüfung des gezeigten Hashes (openSlot, FassungBewegt).
+// a count per slot, not a flag: two opens of one slot that overtake each other must not release the second one's hold in the first one's `finally`
+const slotOpenHold = new Map<number, number>();
+// ONE HEAL TICK (every 2 s, registered below only when this file is the main module): ensureSlot for every slot, except one whose pane another
+// route rebuilds. A function of its own so a test can let a tick fall exactly between an open's stamp and its Fassung.
+function healAlleSlots(): void {
+  for (const s of slots) {
+    if (restarting.has(s.id)) continue; // the ↻ route owns this pane's rebuild — see `restarting`
+    if (slotOpenHold.has(s.id)) continue; // an open holds the slot until its Fassung is held and checked (slotOpenHold)
+    void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
+  }
+}
+// Prüfhaken der Tests (wie waitForGameMakerOpenTestLatch): zwischen der Prüfung der Tür und openSlot, und zwischen dem Stempel und dem Halten der Fassung
+const fassungTestHaken: { nachPruefung?: () => Promise<void>; vorHalten?: () => Promise<void> } = {};
 
 class GameMakerTreeConflict extends Error {
   constructor(message: string) {
@@ -10316,7 +10345,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // how its Postfach arrives (server/zustellung.ts): the choice a successor carries, else null
   zustellung: Zustellung | null = null,
   // Fleet's library for this session (seatLibraryOn): the door's choice, null = the place decides; claude only
-  bibliothek: boolean | null = null): Promise<SlotOpenResult> {
+  bibliothek: boolean | null = null,
+  // the fassungsHash the preview showed (door field `fassung`): an open that would run another Fassung stops before the pane exists
+  gezeigt?: string): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10349,6 +10380,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   const openIntent: OpenSlotIntent = { root: repoCanon(cwd), lease: gameMakerLease };
   assertGameMakerTreeOpen(openIntent.root, gameMakerLease);
   openSlotIntents.add(openIntent);
+  slotOpenHold.set(s.id, (slotOpenHold.get(s.id) ?? 0) + 1);
   try {
   const selection = modelOf({ model }, h);
   if (!selection.ok) throw new Error(selection.error);
@@ -10529,6 +10561,13 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
       || hashSelfToken(s.selfToken) !== treeLease.founding.target.selfTokenHash)
       throw new GameMakerTreeConflict("Program-MAIN target identity changed during candidate persistence");
   } else saveState();
+  // der Start hält seine Fassung fest, bevor die Zeile gespawnt wird (server/start-fassung.ts)
+  if (fassungTestHaken.vorHalten) await fassungTestHaken.vorHalten();
+  const gehalten = await halteStart(s, "laufend");
+  if (gezeigt && gehalten?.hash !== gezeigt) {
+    vergissFassung(STATE_DIR, s.id, s.openedAt);
+    throw new FassungBewegt(gezeigt, gehalten?.hash ?? null);
+  }
   await ensureSlot(s, "open", preparedLaneAgents);
   // Completion is effect-free: a superseded open retains main's successful return without claiming its target still stands.
   if (!openOccupantCurrent()) return { superseded: true, occupant: expected, modelSupport: modelSupport
@@ -10539,6 +10578,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   return { superseded: false, occupant: expected, modelSupport };
   } finally {
     openSlotIntents.delete(openIntent);
+    const rest = (slotOpenHold.get(s.id) ?? 1) - 1;
+    if (rest > 0) slotOpenHold.set(s.id, rest); else slotOpenHold.delete(s.id);
   }
 }
 
@@ -14598,6 +14639,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
     saveHistory(s);
     logPrompt(s, brief, "auto", now);
     if (orchestrator && orchStart) await appendOrchestratorStartReceipt(s, orchStart, "nachfolge", brief, now);
+    else await halteStart(s, "nachfolge");
     await saveStateNow();
     const rearm = await rearmLineObligations(s, openedAt);
     return json({ ok: true, slot: s.id, label: s.label,
@@ -21076,11 +21118,41 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
     `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
 
+// WAS FLEET SELBST IN DEN START LEGT (nicht Claude Code): die Zeile am Systemprompt (Listenschnitt, Auto-Mode-Satz), der Berechtigungsmodus,
+// die Werkzeug- und Sperrliste und die Settings der Zeile. Dieselben Funktionen wie server.ts#agentCmd, damit der Hash sie sieht; die Adressen
+// (Fleet-URL, tmux-Socket, Hub) bleiben draußen, der Hash hängt am Inhalt und nicht am Ort. Nicht im Hash: `autoCompactEnabled`, das am
+// Slot hängt (Übergabe-Schwelle), nicht an der Rolle.
+function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | null,
+  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }): { zusatz: FassungAbschnittEingang; darf: FassungAbschnittEingang[] } {
+  if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), darf: [] };
+  const aspects = startAspects({ role: listRole, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS });
+  const flags = claudeMcpFlags(mcp.browserMcp, mcp.packMcp);
+  const cut = sessionListCut(listRole === "generic" ? "main" : listRole);
+  const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
+  const zusatz = [cut?.line, cut ? aspects.briefLine : null, habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null].filter(Boolean).join("\n");
+  const werkzeuge = listRole === "generic" ? "alle eingebauten" : SESSION_TOOLS[listRole].join(",");
+  return {
+    zusatz: textAbschnitt("systemzusatz", "server.ts#sessionListCut · server/session-start.ts#AUTO_MODE_BRIEF", zusatz, false),
+    darf: [
+      textAbschnitt("modus", "server/session-start.ts#PERMISSION_MODE", aspects.mode, false),
+      textAbschnitt("werkzeuge", "server.ts#SESSION_TOOLS · #sessionListCut", `--tools ${werkzeuge}\n--disallowedTools ${cut?.disallowed || "keine"}`, false),
+      textAbschnitt("einstellungen", "--settings der Zeile (Vorlage ohne Adressen)", JSON.stringify({ skillOverrides: cut?.skillOverrides ?? {},
+        autoMode: { environment: AUTOMODE_ENVIRONMENT }, ...rechteSettings(rechte), ...sitzRechte(rechte, aspects.settings.permissions?.deny) }), false),
+      textAbschnitt("mcp", "server.ts#claudeMcpFlags (das strikte Flag und die Server der Packs)",
+        `--strict-mcp-config ${flags.strict ? "ja" : "nein"}\n${flags.config ?? MCP_CONFIG_KEINE}`, false),
+    ],
+  };
+}
+// the role a NEW spawn knows (a MAIN founded in the window starts "generic": spawnListRole)
+const fassungNeueListRolle = (rolle: FassungRolle, harness: string): SessionSpawnRole | null =>
+  spawnListRole({ claude: harnessFamilie(harness) === "claude", lane: rolle === "lane", orchestrator: rolle === "orchestrator", boundMain: false });
+
 async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; modell: string | null; effort: string | null;
   repoRoot: string; claudeCode?: unknown }): Promise<Fassung> {
   const claude = harnessFamilie(o.harness) === "claude";
   const modell = o.modell ?? (claude ? DEFAULT_MODEL : null);
   const rulebookRole = fassungRulebookRole(o.repoRoot, o.rolle, null);
+  const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] });
   return baueFassung({
     slot: 0, anlass: "neu",
     wer: [
@@ -21091,6 +21163,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     aufgabe: fassungAufgabeFuerPlan(o.rolle, o.repoRoot),
     liest: [
       ...fassungRolleKarte(o.rolle, o.repoRoot),
+      fleet.zusatz,
       ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator"),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
@@ -21101,7 +21174,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     ],
     darf: !claude ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
       : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true)],
+        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf],
     arbeitet: fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot),
     claudeCode: o.claudeCode ?? null,
   });
@@ -21177,8 +21250,10 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung>
   // denselben realpath, damit „Liest“ und der Hash dieselben Quellen nennen.
   const cwd = realpathLoose(s.cwd!);
   const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
+  const fleet = fassungFleetStart(fassungSpawnRolle(s, rolle, spawnPick.harness), s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp });
   const liest: FassungAbschnittEingang[] = [
     ...fassungRolleKarte(rolle, repoRoot),
+    fleet.zusatz,
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
       rolle === "orchestrator"),
     ...(await fassungWissen(s, rolle, cwd)),
@@ -21205,13 +21280,56 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung>
     liest,
     darf: harnessFamilie(spawnPick.harness) !== "claude"
       ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
-      : s.rechte ? [textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)]
-        : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true)],
+      : [s.rechte ? textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)
+        : textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
+          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf],
     arbeitet: fassungArbeitet(s, rolle, repoRoot),
     claudeCode,
   });
 }
+// DER START HÄLT SEINE FASSUNG FEST (server/start-fassung.ts): gerechnet aus denselben Bausteinen wie die Zeile, die gleich gespawnt wird,
+// und abgelegt unter Slot und Belegung. Eine Fassung, die sich nicht rechnen lässt, bricht den Start nicht ab; dann fehlt die Datei, und
+// `anlass=laufend` rechnet wie vor dem Festhalten.
+async function halteStart(s: Slot, anlass: FassungAnlass): Promise<Fassung | null> {
+  if (!s.cwd || !s.openedAt) return null;
+  try {
+    const fassung = await fassungFuerSlot(s, anlass);
+    halteFassung(STATE_DIR, s.id, s.openedAt, fassung, anlass);
+    return fassung;
+  } catch (e) {
+    logError("halteStart", e);
+    return null;
+  }
+}
+// DIE FASSUNG EINES FENSTERSTARTS (Abnahme 22.10., FIX 1/2): was `POST /api/slots/:id/open` aus seinen Eingaben startet, gerechnet mit
+// derselben Funktion wie die laufende Fassung (`fassungFuerSlot`), über den Slot, den die Öffnung stempeln würde (openSlot, „s.cwd = cwd“
+// bis „s.packMcp“). Die Vorschau (`/api/founding-plan?anlass=neu`) und die Tür rechnen beide so; stimmt der gestempelte Slot nicht mit dem
+// echten, hält openSlot den echten Hash fest und bricht bei einem anderen gezeigten ab (FassungBewegt). Nichts davon wird gespeichert.
+interface OeffnungEingang {
+  readonly cwd: string; readonly label: string | null; readonly harness: string | null; readonly model: string | null; readonly effort: string | null;
+  readonly rechte: Rechte | null; readonly agentMd: AgentMd | null; readonly bibliothek: boolean | null;
+  readonly packMcp: readonly ContextPackMcpServer[];
+}
+// (Parameter `eingang`, nicht `o`: e2e/context-plan.ts zählt die Lesungen der Adapter-Option dieses Namens)
+const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => {
+  const claude = harnessOf(eingang.harness).id === "claude";
+  return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt: Date.now(), awaiting: null, successionRetirement: null, mission: null, worktree: null,
+    model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: false,
+    rechte: claude ? eingang.rechte : null, agentMd: claude ? eingang.agentMd : null, bibliothek: claude ? eingang.bibliothek : null, zustellung: null, lauf: null,
+    packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
+    programId: null, releasedBy: null, lineageId: null, handover: null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
+    sessionIdLearned: null, sleeping: null, standingHandover: null, compaction: null, spawn: null, startCompact: null, laneStandNudged: null, history: [] };
+};
+const fassungDerOeffnung = (basis: Slot, o: OeffnungEingang): Promise<Fassung> => fassungFuerSlot(fassungSlotDerOeffnung(basis, o), "laufend");
+// the free slot a preview computes over: an open stamps every field the Fassung reads, so which free slot it is does not matter
+const freierSlotFuerVorschau = (): Slot => slots.find((x) => !x.cwd) ?? slots[0]!;
+
+class FassungBewegt extends Error {
+  constructor(readonly gezeigt: string, readonly jetzt: string | null) {
+    super("the Fassung this start would run differs from the one the preview showed — nothing was started");
+  }
+}
+
 function laneExitFooter(harness: string | null, receiver: { role: string; slot: number; openedAt: number } | null,
   variante: ContextPositionVariante | null = null): string {
   const handoffMeaning = nativeCompaction(harness) ? LANE_EXIT_HANDOFF_CODEX : LANE_EXIT_HANDOFF;
@@ -42402,7 +42520,9 @@ type FoundingPlanQuery = { readonly repo: string; readonly role: string | null; 
   readonly mode: string | null; readonly harness: string | undefined; readonly model: string | undefined;
   readonly effort: string | undefined; readonly bausteine: string | null; readonly packs: string | null;
   readonly parts: string | null; /** `neu` asks for the same five-part Fassung a new session would start with */
-  readonly anlass?: string | null };
+  readonly anlass?: string | null;
+  /** what the open door would also read from its body (rechte, profil, bibliothek): the Fassung of THAT start, not of a bare one */
+  readonly start?: Record<string, unknown> };
 type FoundingPlanAnswer = { readonly ok: false; readonly status: number; readonly error: string }
   | { readonly ok: true; readonly body: Record<string, unknown>; readonly fp: FoundingPlan; readonly plan: SessionPlan;
     readonly sessionAgents: SessionAgents | null; readonly rolle: SessionRole; readonly harness: string | null;
@@ -42513,15 +42633,69 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // Plan-Beleg und wird NICHT als Fassungs-Hash ausgegeben.
   // Die Orchestratorin hat gar keinen alten Plan mehr: ihre Fassung steht auch ohne `anlass=neu` da,
   // weil das Fenster sonst einen Start zeigte, den sie nicht bekommt.
-  const fassung = q.anlass === "neu" || rolle === "orchestratorin"
-    ? await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
-      effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode })
-    : null;
+  // Die Türen /open (nur-ordner, Orchestratorin) rechnen mit den Eingaben, die der Start liest (Rechte, Profil, Bibliothek, Ordner, MCP der
+  // Packs), über den Slot, den die Öffnung stempelt: so zeigt die Vorschau den Hash, der läuft. Lane und MAIN haben vor dem Start keinen Slot.
+  let fassung: Fassung | null = null;
+  if (q.anlass === "neu" || rolle === "orchestratorin") {
+    if (rolle === "nur-ordner" || rolle === "orchestratorin") {
+      const startBody = q.start ?? {};
+      const hh = harnessOf(ho.harness);
+      const rt = rechteDerTuer(startBody, hh.id);
+      if (!rt.ok) return refuse(rt.error);
+      const am = await agentMdDerTuer(startBody, hh.id, STATE_DIR);
+      if (!am.ok) return refuse(am.error);
+      const startbar = verdict.refusals.length === 0;
+      // mit Plan wählt die Bibliothek die Plan-Zeile (bausteine=bibliothek=…); das Feld `bibliothek` gilt nur ohne Plan, wie an der Tür
+      const { bibliothek: feld, ...startOhneBib } = startBody;
+      const bib = bibliothekDerTuer(startbar ? startOhneBib : startBody, startbar ? resolved.plan.bausteine : null, "owner");
+      if (!bib.ok) return refuse(bib.error);
+      const packMcp = startbar ? lieferteMcp(plan.selected, verdict.geliefert) : [];
+      // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
+      fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { cwd: resolve(expandCwd(repo)),
+        label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
+        rechte: rt.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp }), anlass: "neu" };
+    } else {
+      fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
+        effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
+    }
+  }
   return { ok: true, body: { ...body, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
     lieferung: { tuer: rolle === "main" ? "main" : tuer, geliefert: lieferung.geliefert, ausgelassen: lieferung.ausgelassen },
     claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode),
     ...(fassung ? { fassung, fassungsHash: fassung.hash } : {}) },
     fp: fp.value, plan: resolved.plan, sessionAgents: planSessionAgents, rolle, harness: ho.harness, selection, packs: resolved.packs, ownerHeft: resolved.ownerHeft };
+}
+
+// WAS DIE ÖFFNUNG AUSSER DEM PLAN NOCH LIEST, AUS DER ADRESSE DER VORSCHAU: `rechte` (JSON), `profil`, `bibliothek` (true|false) — dieselben
+// Felder wie im Body der Tür, damit die Vorschau die Fassung dieses Starts rechnet und nicht die eines nackten.
+function startVonAdresse(q: URLSearchParams): Record<string, unknown> {
+  const start: Record<string, unknown> = {};
+  const rechte = q.get("rechte");
+  if (rechte) { try { start.rechte = JSON.parse(rechte); } catch { start.rechte = rechte; } }
+  const profil = q.get("profil");
+  if (profil) start.profil = profil;
+  const bibliothek = q.get("bibliothek");
+  if (bibliothek === "true" || bibliothek === "false") start.bibliothek = bibliothek === "true";
+  else if (bibliothek) start.bibliothek = bibliothek;
+  return start;
+}
+
+// DER GEZEIGTE HASH GILT BEIM START: schickt die Tür den `fassungsHash` mit, den die Vorschau gezeigt hat (`fassung`), rechnet der Server die
+// Fassung dieses Starts jetzt aus den Eingaben, die die Tür gelesen hat (Rechte, Profil, Bibliothek, Ordner, MCP der Packs), und lehnt mit 409
+// ab, wenn sie nicht mehr dieselbe ist: Register, Pack, Rolle, Datei oder die Wahl des Fensters haben sich seit dem Zeigen bewegt. Ohne
+// `fassung` bleibt die Tür, wie sie war. Der Hash der 409 ist der, den ein Start jetzt trüge (nicht der der nackten Vorschau).
+async function fassungGezeigtPruefung(body: Record<string, unknown>, s: Slot, o: OeffnungEingang):
+  Promise<{ status: number; body: Record<string, unknown> } | null> {
+  if (body.fassung === undefined) return null;
+  if (typeof body.fassung !== "string" || !/^[0-9a-f]{64}$/.test(body.fassung))
+    return { status: 400, body: { error: "fassung must be the fassungsHash the preview showed (64 hex chars)" } };
+  let jetzt: string | null = null;
+  let grund = "no fassungsHash";
+  try { jetzt = (await fassungDerOeffnung(s, o)).hash; } catch (e) { grund = e instanceof Error ? e.message : String(e); }
+  if (jetzt === body.fassung) return null;
+  return { status: 409, body: { error: jetzt ? "the Fassung moved since the preview (register, pack, role, file or the window's choice) — nothing was started; fassungsHash is the one a start would carry now"
+    : `the Fassung of this start cannot be computed now (${grund}) — nothing was started`,
+    staleHash: body.fassung, ...(jetzt ? { fassungsHash: jetzt } : {}) } };
 }
 
 // --- A PLANNED START (faafc637): the window's plan-hash is the start's contract --------------------
@@ -42720,7 +42894,13 @@ async function plannedLaneAgents(acc: AcceptedFoundingPlan, at: { repoRoot: stri
 // The MCP servers an accepted plan's founding carries: those of the packs its door delivers, so a pack
 // the window switched off or the door cannot carry brings none. openSlot stamps them on the slot.
 function acceptedPlanMcp(acc: AcceptedFoundingPlan): ContextPackMcpServer[] {
-  return planMcpServers({ selected: acc.answer.fp.plan.selected.filter((pack) => acc.geliefert.some((row) => row.id === `pack:${pack.id}`)) });
+  return lieferteMcp(acc.answer.fp.plan.selected, acc.geliefert);
+}
+// the MCP servers of the packs a door DELIVERS (rows `pack:<id>`): the start's (acceptedPlanMcp) and the preview's (foundingPlanAnswer) are this one
+// expression, so the Fassung of a preview cannot drift from the line of the start. Through /open no row `pack:<id>` exists today (the Orchestratorin
+// delivers `context-anchors`, a plain seat has no startable plan), so the list is empty there; the MAIN door delivers them.
+function lieferteMcp(selected: Parameters<typeof planMcpServers>[0]["selected"], geliefert: readonly { readonly id: string }[]): ContextPackMcpServer[] {
+  return planMcpServers({ selected: selected.filter((pack) => geliefert.some((row) => row.id === `pack:${pack.id}`)) });
 }
 
 const sha256Of = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -43645,7 +43825,9 @@ async function appendOrchestratorStartReceipt(s: Slot, start: OrchestratorStartT
   // DER HASH IM BELEG IST DER HASH DER GEZEIGTEN FASSUNG (docs/agent-objekt.md, Schnitt 4): dieselbe
   // Funktion, die GET /api/slots/:id/fassung rechnet, mit demselben Anlass. Kein zweiter Hash über
   // eine daneben gebaute Liste.
-  const hash = (await fassungFuerSlot(s, anlass)).hash;
+  const hash = (anlass === "nachfolge" ? await halteStart(s, "nachfolge")
+    : (s.openedAt ? holeFassung(STATE_DIR, s.id, s.openedAt)?.fassung : null) ?? await halteStart(s, anlass))?.hash
+    ?? (await fassungFuerSlot(s, anlass)).hash;
   await appendEvent(CONTEXT_RECEIPT_FILE, {
     id: randomBytes(16).toString("hex"), hash, at, repo: s.cwd!, head: preflight.ok ? preflight.value.head : null,
     taskId: null, originId: null, programId: null, slot: s.id, branch: preflight.ok ? preflight.value.branch : null,
@@ -46817,12 +46999,7 @@ setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tic
 setInterval(() => void tickWarteHinweis().catch((e: unknown) => logError("tickWarteHinweis", e)), WARTE_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
-setInterval(() => {
-  for (const s of slots) {
-    if (restarting.has(s.id)) continue; // the ↻ route owns this pane's rebuild — see `restarting`
-    void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
-  }
-}, 2000);
+setInterval(healAlleSlots, 2000);
 });
 }
 
@@ -52485,7 +52662,13 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const anlass = url.searchParams.get("anlass");
       if (anlass !== "laufend" && anlass !== "nachfolge")
         return json({ error: "anlass must be laufend or nachfolge" }, 400);
-      return json(await fassungFuerSlot(s, anlass));
+      // `laufend` ist der festgehaltene Start dieser Belegung (server/start-fassung.ts), nicht eine Neurechnung von jetzt; fehlt er,
+      // wird gerechnet und `festgehalten` sagt es. Nach einer Nachfolge hält der Start die Fassung MIT Übergabe.
+      if (anlass === "laufend" && s.openedAt) {
+        const gehalten = holeFassung(STATE_DIR, s.id, s.openedAt);
+        if (gehalten) return json({ ...gehalten.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am } });
+      }
+      return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null });
     }
     const chainMatch = /^\/api\/slots\/(\d+)\/succession$/.exec(url.pathname);
     if (req.method === "GET" && chainMatch) {
@@ -53921,7 +54104,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const answer = await foundingPlanAnswer({ repo: q.get("repo") ?? "", role: q.get("role"), ort: q.get("ort"),
         mode: q.get("mode"), harness: q.get("harness") ?? undefined, model: q.get("model") ?? undefined,
         effort: q.get("effort") ?? undefined, bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts"),
-        anlass: q.get("anlass") });
+        anlass: q.get("anlass"), start: startVonAdresse(q) });
       return answer.ok ? json(answer.body) : json({ error: answer.error }, answer.status);
     }
     // what the folder under the picker's cursor actually IS. A SEPARATE route from /api/dirs on purpose:
@@ -55012,12 +55195,18 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           founding = fp.value;
           chosen = pick.chosen;
         }
+        // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
+        const packMcp = acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [];
+        const gezeigt = await fassungGezeigtPruefung(body, s, { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
+          harness: ho.harness, model: mo.model, effort: eo.effort, rechte: rt.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp });
+        guard();
+        if (gezeigt) return json(gezeigt.body, gezeigt.status);
+        if (fassungTestHaken.nachPruefung) await fassungTestHaken.nachPruefung();
         let modelSupport: CodexModelSupport | null = null;
         try {
-          // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [], undefined, rt.rechte, am.agentMd, null, bib.wahl);
+            packMcp, undefined, rt.rechte, am.agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;
@@ -55025,6 +55214,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           s.openedBy = openerOf(req, s);
           if (s.openedBy) { saveState(); await merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
         } catch (e) {
+          // the Fassung held for this very start is not the one the preview showed: nothing runs; the slot the open had taken is given back
+          if (e instanceof FassungBewegt) {
+            await killSlot(s, "reopen");
+            return json({ error: e.message, staleHash: e.gezeigt, ...(e.jetzt ? { fassungsHash: e.jetzt } : {}) }, 409);
+          }
           return json({ error: e instanceof Error ? e.message : "open failed",
             ...(e instanceof TmuxNewSessionUnavailable ? { availability: e.availability } : {}),
             ...(e instanceof CodexModelUnavailable ? { modelSupport: e.modelSupport } : {}) },
@@ -55572,6 +55766,6 @@ if (process.stdout.isTTY) {
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
-  fassungFuerSlot, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
+  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };

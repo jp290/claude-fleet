@@ -11,12 +11,13 @@ import type { Answer } from "./founding";
 import type { Auftrag, ProgZeile } from "./start-tuer";
 import type { BranchOtherView } from "./protocol";
 import type { Eingang } from "./k15-lader";
-import { S, antwort, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
+import { S, agentMdKommt, antwort, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
 import { PROFILE0, alle, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
 import { eigeneVon } from "./k15-wortlaut-ui";
 import { bindeLauf, laufSatz } from "./k15-lauf";
 import { agentVon, agentWort, standardAgent } from "./k15-agent";
 import { modelLabel } from "./modelname";
+import { fassungZeile } from "./fassung-zeile";
 
 export interface StartStand {
   busy: boolean; fehler: string | null;
@@ -92,10 +93,6 @@ function nichtMit(s: St, p: Profil, q: Position, l: Lage, a: Answer): string[] {
   return out;
 }
 
-// ob die Agent-MD des Profils mitkommt: die Türen /open und Branch nehmen `profil`, der Server liest es aus dem Speicher, und nur Claude Code
-// liest den Block; die Tür der MAIN und der Lane nehmen es noch nicht
-const agentMdKommt = (s: St, p: Profil, q: Position): boolean =>
-  !!p.datei && s.speicher === "da" && (tuerVon(p) === "open" || tuerVon(p) === "branch") && wahlVon(s, p, q, "agent").wert === "claude";
 
 // OB DIESER START JETZT GEHT — null, wenn ja. Der Satz steht neben dem Knopf, nie nur als graues Bedienelement
 export function startBlocker(s: St): string | null {
@@ -162,6 +159,10 @@ export function startHinweis(s: St): string | null {
   return null;
 }
 
+// DIE FASSUNG, DIE DAS FENSTER ZEIGT UND DER START MITSCHICKT: dieselbe Regel für die Zeile im Fuß und für den Auftrag (nur die offene Tür)
+const fassungGezeigt = (p: Profil, a: Answer): string | null =>
+  tuerVon(p) === "open" && a.fassungsHash && (p.rolle === "orchestratorin" || p.rolle === "nur-ordner") ? a.fassungsHash : null;
+
 // DER AUFTRAG an die Tür, aus genau den Werten, mit denen das Fenster den Plan las (k15-zustand.ts#lage, #dreier)
 function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   const repo = s.repo;
@@ -189,7 +190,9 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   if (t === "lane") return { tuer: "lane", repo, dreier: d, plan, ...(slot !== undefined ? { slot } : {}), ...(plus?.parent ? { parent: plus.parent } : {}) };
   const frei = freierPlatz(s);
   if (frei === null) return null;
-  return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}),
+  const gezeigt = fassungGezeigt(p, a);
+  return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(gezeigt ? { fassung: gezeigt } : {}),
+    ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}),
     ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}) };
 }
 
@@ -417,16 +420,21 @@ function andereListe(s: St): HTMLElement {
 }
 
 // der Knopf: er nennt, was startet; ein Fehler der Tür steht über ihrem Satz
-export function startKnopf(s: St): { knopf: HTMLButtonElement; satz: HTMLElement | null } {
+export function startKnopf(s: St): { knopf: HTMLButtonElement; satz: HTMLElement | null; fassung: HTMLElement | null } {
   const z = startZiel(s);
+  const l = z ? lage(s, z.p, z.q) : null;
+  const a = l ? antwort(l.plan) : null;
+  const h = z && a ? fassungGezeigt(z.p, a) : null;
+  const fassung = h ? el("span", "k15stfass", fassungZeile(h)) : null;
+  if (fassung && h) fassung.title = h;
   const block = startBlocker(s);
   const go = knopf("k15go");
   go.textContent = s.start.busy ? "Startet …" : z ? `${z.q.name} starten` : "Starten";
   go.disabled = s.start.busy || block !== null;
   go.onclick = () => { void los(s); };
   const text = s.start.fehler ?? block ?? [startHinweis(s), laufSatz(s)].filter(Boolean).join(" ");
-  if (!text) return { knopf: go, satz: null };
+  if (!text) return { knopf: go, satz: null, fassung };
   const satz = el("span", `k15stsatz${s.start.fehler || block ? " warn" : ""}`, text);
   satz.setAttribute("role", "status");
-  return { knopf: go, satz };
+  return { knopf: go, satz, fassung };
 }

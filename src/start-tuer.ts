@@ -17,7 +17,7 @@ export interface PlanKoerper { hash: string; role: string; bausteine?: string }
 export type Auftrag =
   | { tuer: "lane"; repo: string; dreier: Dreier; plan: PlanKoerper; slot?: number; parent?: LaneAnchor }
   | { tuer: "lane-fort"; repo: string; worktree: string; dreier: Dreier; slot?: number }
-  | { tuer: "open"; cwd: string; slot: number; dreier: Dreier; plan: PlanKoerper | null; label?: string; rechte?: Rechte; profil?: string; bibliothek?: boolean }
+  | { tuer: "open"; cwd: string; slot: number; dreier: Dreier; plan: PlanKoerper | null; fassung?: string; label?: string; rechte?: Rechte; profil?: string; bibliothek?: boolean }
   | { tuer: "main"; program: string; cwd: string; dreier: Dreier }
   | { tuer: "branch"; repo: string; name: string; punkte: string[]; ziel: string; dreier: Dreier; bestehend?: string; gemacht?: string; rechte?: Rechte; profil?: string; aufgabe?: Aufgabe;
       // Fleets Bibliothek für diese Session (server.ts#seatLibraryOn); ohne Angabe entscheidet der Ort
@@ -41,7 +41,7 @@ export async function starte(a: Auftrag): Promise<Antwort> {
     }
     if (a.tuer === "lane-fort")
       return await tuer("/api/lanes", { repo: a.repo, attach: a.worktree, ...(a.slot !== undefined ? { slot: a.slot } : {}), ...a.dreier }, a.slot);
-    return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}),
+    return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}), ...(a.fassung ? { fassung: a.fassung } : {}),
       ...(a.rechte ? { rechte: a.rechte } : {}), ...(a.profil ? { profil: a.profil } : {}), ...(a.bibliothek !== undefined ? { bibliothek: a.bibliothek } : {}) }, a.slot);
   } catch (e) {
     return nichtErreichbar(e);

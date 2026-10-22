@@ -42,6 +42,8 @@ export interface Answer extends Plan {
   // what reaches the start row by row (the role's own door), what Claude Code brings itself, and the
   // sum in tokens — optional: an older server omits them and the window then shows no start block
   lieferung?: Lieferung; claudeCode?: ClaudeCode | null; startSumme?: StartSumme;
+  // der Hash der Fassung, die ein Start jetzt trüge (nur mit anlass=neu); der Start schickt ihn als `fassung` zurück
+  fassungsHash?: string;
 }
 interface Lieferung { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] }
 interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string; frage?: Frage; details?: unknown }

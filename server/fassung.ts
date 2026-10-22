@@ -16,8 +16,8 @@ export type FassungByte = number | "unknown";
 /** Die Reihenfolge unter „Liest“ ist die Ladereihenfolge. Übergabe gibt es nur bei einer Nachfolge;
  *  Gedächtnis (Claudes Auto-Memory) lädt zwischen Wissen und Übergabe. „richtung“ trägt nur die
  *  Orchestratorin (ihr erster Startteil); für jede andere Rolle fehlt der Abschnitt, ohne als
- *  `unknown` aufzutauchen. */
-export const LIEST_REIHENFOLGE = ["richtung", "rolle", "projektregeln", "wissen", "gedaechtnis", "uebergabe", "eigenes"] as const;
+ *  `unknown` aufzutauchen. „systemzusatz“ ist, was Fleet selbst an den Systemprompt hängt (Listenschnitt, Auto-Mode-Zeile). */
+export const LIEST_REIHENFOLGE = ["richtung", "rolle", "systemzusatz", "projektregeln", "wissen", "gedaechtnis", "uebergabe", "eigenes"] as const;
 export type LiestAbschnittId = (typeof LIEST_REIHENFOLGE)[number];
 /** Abschnitte, die nur eine Rolle trägt: fehlen sie, wird kein `unknown` erfunden. */
 export const OPTIONALE_LIEST: ReadonlySet<LiestAbschnittId> = new Set(["richtung"]);

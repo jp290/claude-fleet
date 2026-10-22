@@ -829,9 +829,12 @@ function packMcpChecks(check: ContextPlanCheck): void {
   const acStart = source.indexOf("function agentCmd(");
   const acCode = source.slice(acStart, source.indexOf("\n}\n", acStart)).split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
   const claudeBranch = acCode.slice(acCode.indexOf("if (claude) {"), acCode.indexOf("else if (HARNESS_MODEL_FLAG"));
-  check("pack mcp: agentCmd appends claudeMcpConfigFlag right after --strict-mcp-config, once, on the claude branch",
-    claudeBranch.includes('if (!browserMcp) cmd += " --strict-mcp-config";\n    if (packMcp.length) cmd += ` ${claudeMcpConfigFlag(packMcp)}`;')
-      && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 1, `branch=${claudeBranch.length}b`);
+  // the flags come from claudeMcpFlags, which the Fassung (fassungFleetStart) reads too: the line and the text it shows share ONE derivation
+  // (server/start-fassung.test.ts holds the two equal); claudeMcpConfigFlag itself is called once in the source, below
+  const mcpFlagsLines = 'const mcp = claudeMcpFlags(browserMcp, packMcp);\n    if (mcp.strict) cmd += " --strict-mcp-config";\n    if (mcp.config) cmd += ` ${mcp.config}`;';
+  check("pack mcp: agentCmd appends the pack's flag from claudeMcpFlags right after --strict-mcp-config, once, on the claude branch",
+    claudeBranch.replace(/\n\s*\n/g, "\n").includes(mcpFlagsLines) && (acCode.match(/claudeMcpFlags\(/g) ?? []).length === 1
+      && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 0, `branch=${claudeBranch.length}b`);
   check("pack mcp: only the claude adapter reads o.packMcp — the one harness the evidence table says apply to",
     (source.match(/o\.packMcp/g) ?? []).length === 1
       && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.rulebookRole, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null, o\.agentMd \?\? null, o\.notizbuch \?\? null, o\.seat \?\? null\)/.test(source),

@@ -539,6 +539,7 @@ export async function checkCodexSpawnFixtures(source: string,
       ensureSlot: async () => { effects.push("ensure"); await barrier("ensure"); },
       NO_BOX: { container: null, containerContext: null }, singletonSpawn: new Set(), merkeStart: async () => {}, STATE_DIR: "/fixture-state",
       REAL_SEAT_GATE: null,
+      slotOpenHold: new Map(), fassungTestHaken: {}, halteStart: async () => null, vergissFassung: () => {}, FassungBewegt: class extends Error {},
     });
     try {
       const open = new Function("scope", `with (scope) { ${code}; return openSlot; }`)(scope) as
@@ -1445,6 +1446,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const inboxNudgeTried=new Set(),postfachAttempted=new Map(),postfachQueued=new Map();
       const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
       const merkeStart=async()=>{},STATE_DIR="/fixture-state",REAL_SEAT_GATE=null;
+      const slotOpenHold=new Map(),fassungTestHaken={},halteStart=async()=>null,vergissFassung=()=>{};class FassungBewegt extends Error{}
       ${open}
       let error=null; try {
         if(scenario.startsWith("open-")) await openSlot(s,"/fixture",null,null,null,"codex",null,{},null,false,null,false,

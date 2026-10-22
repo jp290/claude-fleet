@@ -24,6 +24,7 @@ import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
 import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
+import { fassungKurz } from "./fassung-zeile";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
 // poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
@@ -2413,15 +2414,32 @@ function moreSection(c: BoardCtx): HTMLElement {
 }
 // SETUP, unchanged inside its tab: what this session is MADE of (owner 2026-09-19: „[Zitat entfernt]“
 // )
+// DIE FASSUNG, MIT DER DIESER SITZ LÄUFT: der festgehaltene Start (GET /api/slots/:id/fassung?anlass=laufend), einmal je Belegung gelesen.
+// Das Fenster zeigt vor dem Start dieselben acht Zeichen; null = die Antwort kam nicht, dann steht keine Zeile.
+const fassungLaeuft = new Map<string, string | null>(), fassungImFlug = new Set<string>();
+function fassungLesen(slot: number, openedAt: number, wohin: HTMLElement): void {
+  const key = `${slot}:${openedAt}`;
+  if (fassungImFlug.has(key)) return;
+  fassungImFlug.add(key);
+  void api(`/api/slots/${slot}/fassung?anlass=laufend`).then(async (r) => {
+    const j: unknown = r.ok ? await r.json().catch(() => null) : null;
+    const h = j && typeof j === "object" && "hash" in j && typeof j.hash === "string" ? j.hash : null;
+    fassungLaeuft.set(key, h); fassungImFlug.delete(key);
+    if (!wohin.isConnected) return;
+    if (h) { wohin.textContent = fassungKurz(h); wohin.title = h; } else wohin.closest(".bsrow")?.remove();
+  }).catch(() => { fassungLaeuft.set(key, null); fassungImFlug.delete(key); wohin.closest(".bsrow")?.remove(); });
+}
 function setupBody(c: BoardCtx, su: HTMLElement): void {
   const { s, slot, facts } = c;
   su.classList.add("bsetup");
   const row = (label: string, value: string, title?: string) => {
     const r = el("div", "bsrow");
     r.appendChild(el("span", "bskey", label));
-    r.appendChild(el("span", "bsval", value));
+    const v = el("span", "bsval", value);
+    r.appendChild(v);
     if (title) r.title = title;
     su.appendChild(r);
+    return v;
   };
   const setup = facts?.setup;
   // "Program type" since the founding window (F4): "Profile" is the founding choice there, the
@@ -2430,6 +2448,14 @@ function setupBody(c: BoardCtx, su: HTMLElement): void {
     setup?.profile === "game-maker" ? "the owner granted this session's program the game-maker profile"
       : setup?.profile === "standard" ? "this session's program runs on the standard profile"
       : "standard by default — this session has no program bracket to grant another profile");
+  if (s.openedAt) {
+    const key = `${slot}:${s.openedAt}`, gehalten = fassungLaeuft.get(key);
+    const FASSUNG_TITLE = "what this session was started with, as a short hash — the start window shows the same one before the start";
+    if (gehalten !== null) {
+      const v = row("Fassung", gehalten ? fassungKurz(gehalten) : "…", FASSUNG_TITLE);
+      if (gehalten) v.title = gehalten; else fassungLesen(slot, s.openedAt, v);
+    }
+  }
   if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
   if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,
     "the box and docker context this session's agent runs in");

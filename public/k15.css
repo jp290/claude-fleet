@@ -428,6 +428,7 @@
 .k15 .k15sayc { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
 .k15 .k15stsatz { font-size: 12.5px; line-height: 1.4; color: var(--chat-mute); max-width: 90ch; }
 .k15 .k15stsatz.warn { color: var(--amber); }
+.k15 .k15stfass { font: 12px/1.3 var(--chat-mono); color: var(--chat-faint); }
 .k15 .k15start { display: flex; flex-direction: column; gap: 12px; margin: 2px 0 14px; padding: 12px 14px; border: 1px solid var(--chat-edge); border-radius: 12px; }
 .k15 .k15stf { display: flex; flex-direction: column; gap: 6px; }
 .k15 .k15stl { font-size: 12px; font-weight: 600; color: var(--chat-mute); }

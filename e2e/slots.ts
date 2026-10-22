@@ -11605,8 +11605,10 @@ async function runCodexPermissions(): Promise<void> {
         { harness: "claude" }, { surprise: true }, { programId: "foreign" }, { repo: `${cwd}-not-known` }]) {
         const refused = await selfPost(actor.selfToken, "/api/self/tasks", { ...request, ...patch });
         const detail = await refused.text();
+        // a foreign harness meets kind-nie-weiter first: 409, still before row or spawn
+        const expected = "harness" in patch ? 409 : 400;
         check("Program-MAIN profile founding rejects shape/enum/unsupported/body/program/repo before row or spawn",
-          refused.status === 400 && (await taskRows()).length === taskCount && args().length === argvCount,
+          refused.status === expected && (await taskRows()).length === taskCount && args().length === argvCount,
           `${JSON.stringify(patch)} status=${refused.status} ${detail}`);
       }
       const foreignActor = await selfPost("not-a-self-token", "/api/self/tasks", request);

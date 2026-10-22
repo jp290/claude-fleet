@@ -268,8 +268,8 @@ function fuss(s: St): void {
   // Herkunft und Version stehen über dem Aufbau (Spalte 2); hier nur, ob er geändert ist (Runde 4, Z60)
   say.append(el("span", "k15sayk", s.k.name), ...(s.konstNeu.has(s.k.id) ? [geaendertTag("ungespeicherte Änderung am Aufbau")] : []),
     el("span", "", ` ${plural(n, "Session", "Sessions")} · ${s.repo ? baseName(s.repo) : "kein Repo"}`));
-  const { knopf, satz } = startKnopf(s);
-  links.append(say, ...(satz ? [satz] : []));
+  const { knopf, satz, fassung } = startKnopf(s);
+  links.append(say, ...(satz ? [satz] : []), ...(fassung ? [fassung] : []));
   const rechts = el("div", "k15footr");
   rechts.append(tokenSumme(s), knopf);
   f.append(links, rechts);

@@ -67,6 +67,9 @@ export function fillEnvironment(template: readonly string[], f: StartFacts): str
 // A REAL SEAT STARTS NO FURTHER CLAUDE (acceptance 22.10.): it runs under the owner's HOME, whose shell puts the real claude
 // first on PATH, so its Bash would reach it past the test instance's wrapper — uncounted, and `--dangerously-skip-permissions`
 // there asks nothing. The rules deny the command by name and by path; the classifier still stands in front of anything else.
+// was die Fassung für „keine Pack-Server auf der Zeile“ sagt (server.ts#fassungFleetStart); die Zeile selbst trägt dann kein --mcp-config
+export const MCP_CONFIG_KEINE = "--mcp-config keine";
+
 export const REAL_SEAT_DENY: readonly string[] = ["Bash(claude:*)", "Bash(*/claude *)", "Bash(*/claude)"];
 
 export function startAspects(f: StartFacts, template: readonly string[] = AUTOMODE_ENVIRONMENT): StartAspects {

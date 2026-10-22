@@ -3,6 +3,7 @@
 // und Schalter einmal gelesen.
 import { api, flotte, baseName, OMIT_SAY, bausteinName, validAnswer } from "./k15-haupt";
 import type { DirInfoResp } from "./client";
+import type { Rechte } from "../session-rechte";
 import type { Answer, Baustein } from "./founding";
 import { nativVon, type WerPlan } from "./k15-wer";
 import type { Shell } from "./shell";
@@ -355,11 +356,18 @@ export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
 // und Effort nimmt die Route wie ein Start (server.ts#foundingPlanAnswer: harness, model, effort); was nicht gesetzt ist, fehlt in der
 // Adresse, dann gilt der Standard der Rolle
 export interface Dreier { harness?: string; model?: string; effort?: string }
-export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier = {}): string => {
-  const q = new URLSearchParams({ repo, role: rolle });
+// was die Öffnung außer dem Plan noch liest (server.ts#startVonAdresse): damit die Vorschau die Fassung DIESES Starts rechnet und der gezeigte
+// Hash der ist, der läuft. Rechte als JSON, das Profil als Kennung, die Bibliothek nur für einen Start ohne Plan.
+export interface Dazu { rechte?: Rechte; profil?: string; bibliothek?: boolean }
+export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier = {}, dazu: Dazu = {}): string => {
+  // `anlass=neu`: die Antwort trägt den fassungsHash, den die Tür beim Start gegenprüft (server.ts#fassungGezeigtPruefung)
+  const q = new URLSearchParams({ repo, role: rolle, anlass: "neu" });
   if (d.harness) q.set("harness", d.harness);
   if (d.model) q.set("model", d.model);
   if (d.effort) q.set("effort", d.effort);
+  if (dazu.rechte) q.set("rechte", JSON.stringify(dazu.rechte));
+  if (dazu.profil) q.set("profil", dazu.profil);
+  if (dazu.bibliothek !== undefined) q.set("bibliothek", String(dazu.bibliothek));
   const b = Object.entries(sch).map(([id, v]) => `${id}=${v}`).sort().join(",");
   if (b) q.set("bausteine", b);
   return `/api/founding-plan?${q}`;
@@ -406,7 +414,8 @@ export interface Lage { voll: PlanStand; plan: PlanStand; umfang: Partial<Record
 export function lage(s: St, p: Profil, q: Position | null): Lage | null {
   if (!s.repo) return null;
   const d = dreier(s, p, q);
-  const voll = hole(s, planUrl(s.repo, p.rolle, {}, d));
+  const dazu: Dazu = agentMdKommt(s, p, q) ? { profil: p.id } : {};
+  const voll = hole(s, planUrl(s.repo, p.rolle, {}, d, dazu));
   const va = antwort(voll);
   const umfang: Partial<Record<GruppeId, Stufe>> = {}, regler: Partial<Record<GruppeId, Regler>> = {};
   let vs: Schalter = {};
@@ -420,7 +429,7 @@ export function lage(s: St, p: Profil, q: Position | null): Lage | null {
   }
   const sch = schalterVon(vs, p, q);
   const wartet = !va && p.rolle !== "nur-ordner" && GRUPPEN.some((g) => umfangVon(p, q, g.id) !== "standard");
-  const plan = wartet ? voll : hole(s, planUrl(s.repo, p.rolle, sch, d));
+  const plan = wartet ? voll : hole(s, planUrl(s.repo, p.rolle, sch, d, dazu));
   return { voll, plan, umfang, regler, unten: q ? { ...vs, ...p.schalter } : vs, eigen: (q ? q.schalter : p.schalter) ?? {}, sch };
 }
 // die Bausteine, die Spalte 3 und 4 für diese Rolle zeigen; die übrigen schaltet der Plan nur für andere Rollen an. Dazu, was sich in
@@ -506,6 +515,10 @@ export interface Wahl { wert: string; wort: string; herkunft: string; quelle: st
 const rollenStd = (s: St, p: Profil) => s.repo ? antwort(hole(s, planUrl(s.repo, p.rolle, {})))?.rollen.find((r) => r.id === p.rolle)?.standard ?? null : null;
 // ob der Plan, der den Standard der Rolle nennt, schon da ist: vorher schickte ein Start ihn nicht mit (#dreier)
 export const rollenStandardGelesen = (s: St, p: Profil): boolean => !!s.repo && antwort(hole(s, planUrl(s.repo, p.rolle, {}))) !== null;
+// ob die Agent-MD des Profils mitkommt: die Türen /open und Branch nehmen `profil`, der Server liest es aus dem Speicher, und nur Claude Code
+// liest den Block; die Tür der MAIN und der Lane nehmen es noch nicht. Hier statt im Start, weil auch die Vorschau das Profil mitrechnet.
+export const agentMdKommt = (s: St, p: Profil, q: Position | null): boolean =>
+  !!p.datei && s.speicher === "da" && (p.schiene === "bau" || (p.rolle !== "lane" && p.rolle !== "main")) && wahlVon(s, p, q, "agent").wert === "claude";
 export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): Wahl {
   const std = rollenStd(s, p), kat = s.katalog ?? null;
   const gesetzt = (v: unknown, gilt: (x: string) => boolean) => typeof v === "string" && v !== "" && gilt(v);

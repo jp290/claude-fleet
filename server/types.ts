@@ -2119,6 +2119,9 @@ interface Slot {
   openedBy: import("./opener").Opener | null;
   lauf: import("./laeufe").LaufBindung | null; // der Lauf einer Konstellation und die Position darin (server/laeufe.ts), gesetzt nach dem Start
   agentMd: import("./agentmd").AgentMd | null; // the Agent-MD of the profile it started from (server/agentmd.ts), set at open; claude only
+  // Fleets Bibliothek for this session (server.ts#seatLibraryOn), chosen at its opening: null = no choice, the place decides
+  // (on in Fleet's own repo, off elsewhere). claude only; carried by a generic succession; persisted; cleared on open/kill.
+  bibliothek: boolean | null;
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
   // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.

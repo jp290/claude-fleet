@@ -98,11 +98,21 @@ export function spawnListRole(f: { claude: boolean; lane: boolean; orchestrator:
 // really has). Bound to the occupation like a standing handover: persisted with the slot, so a server restart keeps
 // it, and a record of another occupation, or a malformed one, loads as none. No timestamp: a restart that re-runs the
 // spawn must leave the persisted record as it was (e2e/lanes-lifecycle.ts), and nothing read one.
-export interface SlotSpawn { role: ClaudeStartRole; openedAt: number }
+export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; bibliothek?: SpawnBibliothek }
+// FLEETS BIBLIOTHEK AT THAT SPAWN (server/sitz-wissen.ts): which start block the conversation reads. Claude Code records
+// the system prompt on a conversation's first request and keeps it after --resume until the conversation is compacted
+// (code.claude.com/docs/en/cli-reference, „System prompt flags in resumed conversations“). `wirksam` = the sha256 of the
+// block in that recorded prompt (null: not known to be in it), `zuletzt` = the block the newest spawn appended, `am` =
+// that spawn, so a compaction after it makes `zuletzt` the one that counts.
+export interface SpawnBibliothek { wirksam: string | null; zuletzt: string; am: number }
 const START_ROLES: readonly string[] = ["lane", "main", "orchestrator", "generic"];
+const SHA = /^[0-9a-f]{64}$/;
 export function slotSpawnFrom(raw: unknown, openedAt: number): SlotSpawn | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.role !== "string" || !START_ROLES.includes(r.role) || r.openedAt !== openedAt) return null;
-  return { role: r.role as ClaudeStartRole, openedAt };
+  const b = typeof r.bibliothek === "object" && r.bibliothek !== null ? r.bibliothek as Record<string, unknown> : null;
+  const bibliothek = b && (b.wirksam === null || typeof b.wirksam === "string" && SHA.test(b.wirksam)) && typeof b.zuletzt === "string"
+    && SHA.test(b.zuletzt) && typeof b.am === "number" && Number.isFinite(b.am) ? { wirksam: b.wirksam as string | null, zuletzt: b.zuletzt, am: b.am } : null;
+  return { role: r.role as ClaudeStartRole, openedAt, ...(bibliothek ? { bibliothek } : {}) };
 }

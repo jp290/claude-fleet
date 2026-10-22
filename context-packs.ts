@@ -23,6 +23,9 @@ export const CONTEXT_PACK_TRIGGERS = [
   // DER START DER ORCHESTRATORIN (TASK.md, Runde 1): reserviert für die vier Packs in docs/packs/.
   // Keine andere Gründung trägt diesen Auslöser, damit MAIN, Lane und freie Session byte-gleich bleiben.
   "orchestrator-start",
+  // DER START EINES SITZES OHNE STEHENDE ROLLE (server/sitz-wissen.ts): Branch-Session, freie Session, Sitz in
+  // einem anderen Repo. `seat-start` nur im Fleet-Repo, `seat-start-any-repo` überall. Nur dieser Start trägt sie.
+  "seat-start", "seat-start-any-repo",
 ] as const;
 export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 

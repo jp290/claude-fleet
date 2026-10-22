@@ -41,9 +41,9 @@ export function taskContextTriggers(texts: readonly string[], possible: readonly
     ["rulebook-edit", rulebookEdit],
     ["visible-surface", visibleSurface],
   ];
-  // `orchestrator-start` is passed by the orchestrator's own founding only. It is never a baseline
-  // trigger of a task and no card text can turn it on.
-  const callerOnly = new Set<ContextPackTrigger>(["orchestrator-start"]);
+  // `orchestrator-start` is passed by the orchestrator's own founding only, the two seat triggers by a
+  // seat's start only (server/sitz-wissen.ts). None is a baseline trigger of a task; no card text turns one on.
+  const callerOnly = new Set<ContextPackTrigger>(["orchestrator-start", "seat-start", "seat-start-any-repo"]);
   const selected = new Set(possible.filter((trigger) => !callerOnly.has(trigger)
     && !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
   for (const [trigger, pattern] of taskTriggers) {

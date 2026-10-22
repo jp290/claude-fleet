@@ -91,7 +91,10 @@ async function paneArgv(target: string, prefix: string): Promise<string[]> {
     const name = (await new Response(comm.stdout).text()).trim().split("/").pop() ?? "";
     await comm.exited;
     if (!name.startsWith(prefix)) continue;
-    const ps = Bun.spawn(["ps", "-ww", "-o", "command=", "-p", pid], { stdout: "pipe" });
+    // under the C locale (a shell without LANG, as an agent's Bash on this Mac) macOS ps prints a non-ASCII byte as M-…,
+    // and the brief line's „läufst“ would never match; read it as UTF-8 unless the caller named a locale
+    const utf8 = process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG ? {} : { LC_ALL: "C.UTF-8" };
+    const ps = Bun.spawn(["ps", "-ww", "-o", "command=", "-p", pid], { stdout: "pipe", env: { ...process.env, ...utf8 } });
     const argv = (await new Response(ps.stdout).text()).trim();
     await ps.exited;
     if (argv) out.push(argv);

@@ -1470,8 +1470,16 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: app
 Eine Session holt eine Katalogkarte per Pack-ID nach: Fleet-Seed, Pack aus dem getrackten
 Repo-Manifest oder Pack ihres eigenen Programs. Header: `x-fleet-self-token`. Scope und optionale
 Verengung durch `task=`/`program=` kommen aus `memoryScopeFor`, wie bei `memory`. Owner-Token:
-401; ungebundene Session: 409 `no-scope`; fremdes Program-Pack: 409 `foreign-program`;
+401; Steward: 409 `no-scope`; fremdes Program-Pack: 409 `foreign-program`;
 unbekannte ID: 404 `unknown-id`. Mehrdeutige IDs: 409 `ambiguous-id`.
+
+Ein Sitz ohne stehende Rolle (Branch-Session, freie Session; keine Lane, keine gebundene MAIN, nicht
+die Orchestratorin) leiht aus Fleets Register (`.fleet/context-packs.json` am HEAD von Fleets
+eigenem Ordner), auch wenn er in einem anderen Repo arbeitet: `origin:"fleet-manifest"`, `repo`
+und `head` sind Fleets. Im Fleet-Repo (derselbe git-Objektspeicher) öffnet das Ausleihen jeden
+Auslöser; in einem anderen Repo nur `seat-start-any-repo`, sonst 409 `trigger-not-matched`
+(`server/sitz-wissen.ts`). Ein Claude-Sitz hat dieselben Packs schon: die aus `SEAT_BOX` wörtlich im
+Start, die übrigen als Skills (`--add-dir`); die Tür ist der Weg der anderen Harnesses.
 
 Der explizite Abruf ersetzt nur den Trigger der Katalogauswahl: Status, Harness, Mode,
 Capabilities und Quellverfügbarkeit bleiben Grenzen. Die Auswahl im Spawn-Brief bleibt gleich.

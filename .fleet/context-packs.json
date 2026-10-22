@@ -150,7 +150,7 @@
     "useWhen": "Wenn du Sichtbares baust oder abnimmst: fertig ist erst die durchgeklickte Testinstanz mit Link und Bild.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["visible-surface", "orchestration"],
+    "triggers": ["visible-surface", "orchestration", "seat-start"],
     "hardness": "hard",
     "group": "pruefen-landen",
     "sources": [
@@ -194,10 +194,10 @@
   },
   {
     "id": "setting-up-agents",
-    "useWhen": "Bevor die Orchestratorin einen Agenten oder ein Team aufsetzt: die fünf Teile und das Verbindungsstück.",
+    "useWhen": "Bevor du einen Agenten oder ein Team aufsetzt: die fünf Teile und das Verbindungsstück.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start"],
+    "triggers": ["orchestrator-start", "seat-start"],
     "hardness": "guidance",
     "sources": [
       { "id": "setting-up-agents.text", "path": "docs/packs/setting-up-agents.md", "anchor": "# Setting up an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -212,10 +212,10 @@
   },
   {
     "id": "working-with-the-owner",
-    "useWhen": "Wenn die Orchestratorin mit dem Owner spricht oder etwas schreibt, das er liest.",
+    "useWhen": "Wenn du mit dem Owner sprichst oder etwas schreibst, das er liest.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start"],
+    "triggers": ["orchestrator-start", "seat-start-any-repo"],
     "hardness": "guidance",
     "sources": [
       { "id": "working-with-the-owner.text", "path": "docs/packs/working-with-the-owner.md", "anchor": "# Working with the owner", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -230,10 +230,10 @@
   },
   {
     "id": "how-fleet-remembers",
-    "useWhen": "Wenn die Orchestratorin etwas gelernt hat und entscheiden muss, wohin die Notiz gehört.",
+    "useWhen": "Wenn du etwas gelernt hast und entscheiden musst, wohin die Notiz gehört.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start"],
+    "triggers": ["orchestrator-start", "seat-start"],
     "hardness": "guidance",
     "sources": [
       { "id": "how-fleet-remembers.text", "path": "docs/packs/how-fleet-remembers.md", "anchor": "# How Fleet remembers", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -248,10 +248,10 @@
   },
   {
     "id": "working-toward-a-goal",
-    "useWhen": "Wenn die Orchestratorin einem Agenten sagt, wie er auf ein Ziel hinarbeitet — ein Verweis zum Lesen bei Bedarf.",
+    "useWhen": "Wenn du Arbeit mit einem Ende beginnst oder einem Agenten sagst, wie er auf ein Ziel hinarbeitet.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start"],
+    "triggers": ["orchestrator-start", "seat-start-any-repo"],
     "hardness": "guidance",
     "sources": [
       { "id": "working-toward-a-goal.text", "path": "docs/packs/working-toward-a-goal.md", "anchor": "# Working toward a goal", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
@@ -269,7 +269,7 @@
     "useWhen": "Bevor du Arbeit wählst, beauftragst oder baust, die jemand nutzt: wer sie trifft und wie Arbeit ihre Leute verfehlt.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start"],
+    "triggers": ["orchestrator-start", "seat-start-any-repo"],
     "hardness": "guidance",
     "sources": [
       { "id": "who-it-is-for.text", "path": "docs/packs/who-it-is-for.md", "anchor": "# Who it is for", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -283,11 +283,29 @@
     "status": "active"
   },
   {
+    "id": "system-concept",
+    "useWhen": "Wenn du verstehen musst, was Fleet ist, wofür es gebaut wird und wohin es geht: das Systemkonzept.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "system-concept.text", "path": "docs/start/system-concept.md", "anchor": "# Claude Fleet", "sorte": "wissen", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 8234,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "running-fleet",
     "useWhen": "Bevor du landest, deployst, ein rotes Audit beurteilst, den Helfer anfasst oder in eine lebende Session eingreifst.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["landing", "orchestration"],
+    "triggers": ["landing", "orchestration", "seat-start"],
     "hardness": "guidance",
     "group": "pruefen-landen",
     "sources": [
@@ -315,7 +333,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 9314,
+    "estimatedBytes": 9962,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

@@ -99,6 +99,13 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
 ## Whom it reaches
 
 - A pack only helps where it is loaded. Registered pointers reach lane and MAIN foundings through their triggers.
+  A seat without a standing role (a branch session, a free session) gets every pack of the library with the trigger
+  `seat-start-any-repo`, in any repository and on by default, and in Fleet's own repo also `seat-start`
+  (`server/sitz-wissen.ts`); the owner can switch the library off for one session when opening it. In a Claude seat the
+  packs in `SEAT_BOX` stand verbatim in its start; every other one is a Claude Code skill, and its useWhen line is the
+  description Claude matches, so write it as the moment. Give a pack `seat-start-any-repo` only if it holds in any
+  repository: a seat working on someone's support requests pays for every line about landing Fleet. Whether seats
+  open the skills: `bun server/bibliothek-messung.ts <transcripts>`.
   The orchestrator's start loads exactly five packs (`server/orchestrator-start.ts`); any other pack reaches her
   only through a line under "Read when you need it" in her role, which is the owner's text. Propose that line in
   your report, as one sentence that names the moment and the path.

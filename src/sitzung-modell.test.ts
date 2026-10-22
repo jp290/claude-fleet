@@ -153,3 +153,57 @@ describe("das Notizbuch des Setups", () => {
     expect(zeile(null)).toMatchObject({ name: "Notizen von Claude", zusatz: "MEMORY.md" });
   });
 });
+
+// Fleets Bibliothek eines Sitzes ohne Rolle (session-blocks.ts#bibliothek, Fachblick 22.10. zu wissen-kommt-an): der Start-Block steht
+// unter Hintergrund im Systemprompt, die Skills unter How-to in der Liste der Skills, beide als Fleets Teil mit ihrem Wortlaut
+describe("Fleets Bibliothek im Fenster", () => {
+  const start = "BIBLIOTHEK (server/sitz-wissen.ts): Fleets Wissen für deinen Sitz.\n\n--- working-toward-a-goal ---\nText", liste = "- running-fleet: Bevor du landest.";
+  const bib = (o: Partial<Baustein> = {}) => [
+    baustein("bibliothek", { frage: "hintergrund", zustand: "an", bytes: 99, schaltbar: { ja: false, grund: "Fleet gibt sie jedem Claude-Sitz ohne Rolle mit." },
+      details: { text: start, packs: ["working-with-the-owner", "working-toward-a-goal"] }, ...o }),
+    baustein("bibliothek-skills", { frage: "howto", zustand: "an", bytes: 99, schaltbar: { ja: false, grund: "Fleet gibt sie jedem Claude-Sitz ohne Rolle mit." },
+      details: { text: liste, packs: ["running-fleet"] }, ...o })];
+  test("drin, mit Packs je Weg, Wortlaut am richtigen Ort, und Fleets Summe wächst um ihren Text", () => {
+    const ohne = modell(antwort([])), m = modell(antwort(bib()));
+    expect(m.teile.find((t) => t.id === "bibliothek")).toMatchObject({ frage: "hintergrund", name: "Fleets Bibliothek", zusatz: "2",
+      herkunft: "fleet", stand: "an", schalter: null });
+    expect(m.teile.find((t) => t.id === "bibliothek-skills")).toMatchObject({ frage: "howto", zusatz: "1", herkunft: "fleet", stand: "an" });
+    expect(m.bloecke.find((b) => b.id === "bibliothek")).toMatchObject({ ort: "system", text: start, leise: false });
+    expect(m.bloecke.find((b) => b.id === "bibliothek-skills")).toMatchObject({ ort: "listen", text: liste });
+    // der Wortlaut zählt, nicht die Byte-Zahl daneben: 2 Bytes je Token in dieser Antwort
+    const utf8 = (t: string) => new TextEncoder().encode(t).length;
+    expect(m.summe.fleet - ohne.summe.fleet).toBeCloseTo((utf8(start) + utf8(liste)) / 2, 6);
+  });
+  test("aus (ein anderer Agent): nicht im Start, kein Wortlaut, nichts gezählt", () => {
+    const ohne = modell(antwort([])), m = modell(antwort(bib({ zustand: "aus" })));
+    expect(m.teile.find((t) => t.id === "bibliothek")).toMatchObject({ stand: "aus", tokens: 0 });
+    expect(m.bloecke.find((b) => b.id === "bibliothek")?.text).toBeNull();
+    expect(m.summe.fleet).toBe(ohne.summe.fleet);
+  });
+});
+
+// den Schalter schaltet der Owner in einem fremden Repo bewusst an: die Zeile sagt in seinen Worten, was er davon hat (Fachblick 22.10.)
+describe("Fleets Bibliothek in Owner-Worten", () => {
+  test("Unterzeile und Kasten nennen, was er davon hat, und die Teile deutsch, nicht als Pack-Id", () => {
+    const m = modell(antwort([baustein("bibliothek", { frage: "hintergrund", zustand: "an", bytes: 9,
+      details: { text: "x", packs: ["working-with-the-owner", "working-toward-a-goal"] } })]));
+    const t = m.teile.find((x) => x.id === "bibliothek")!;
+    expect(t.unter).toBe("wie du sprichst, wie er am Ziel bleibt");
+    expect(t.mehr.slice(0, 2)).toEqual([["Was er davon hat", "Er weiß von Anfang an, wie du arbeitest und wie er am Ziel bleibt."],
+      ["Die Teile", "Mit dem Owner arbeiten · Auf ein Ziel hin"]]);
+  });
+  // die Box seit runde4 (Owner 22.10.): für wen und mit dem Owner; sie kommt in jedes Repo, Fleets eigene Arbeit nur ins Fleet-Repo
+  test("die Box mit „Für wen“: Unterzeile und Satz nennen es, der Kasten sagt, wo sie hinkommt", () => {
+    const m = modell(antwort([baustein("bibliothek", { frage: "hintergrund", zustand: "an", bytes: 9,
+      details: { text: "x", packs: ["who-it-is-for", "working-with-the-owner"] } })]));
+    const t = m.teile.find((x) => x.id === "bibliothek")!;
+    expect(t.unter).toBe("für wen er baut, wie du sprichst");
+    expect(t.mehr).toEqual([["Was er davon hat", "Er weiß von Anfang an, für wen er baut und wie du arbeitest."],
+      ["Die Teile", "Für wen · Mit dem Owner arbeiten"],
+      ["Wo", "In jedem Repo. Fleets eigene Arbeit (Landen, Deploy, Testinstanz, Agenten aufsetzen, Systemkonzept) nur im Fleet-Repo."]]);
+  });
+  test("eine andere Zeile bekommt keine Unterzeile", () => {
+    expect(modell(antwort([baustein("lane-notes", { frage: "hintergrund", zustand: "an" })])).teile.find((x) => x.id === "lane-notes"))
+      .toMatchObject({ unter: null, mehr: [] });
+  });
+});

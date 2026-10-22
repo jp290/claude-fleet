@@ -160,6 +160,8 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       gitRead: async (dir: string, ...args: string[]) => { const r = await gitRaw(dir, ...args); return { ...r, out: r.out.trim() }; },
       gitReadRaw: gitRaw, appendEventStrict, readLedger, CONTEXT_BORROW_FILE: borrowFile, CONTEXT_RECEIPT_FILE: receiptFile,
       MEMORY_RECEIPTS_MAX: 20, SERVER_BOOT_AT: 1, privatePackResolutions: new WeakMap(), KONZEPT_ROOT: null,
+      // the probe's occupant is a lane: never a seat without a standing role (server.ts#isSeat, server/sitz-wissen.ts)
+      isSeat: () => false,
     };
     const functions = [fn("secretEq", auth), fn("resolveSelfPrincipal", auth), ...["sessionIdMatchOf", "mainUnboundError", "boundProgramsForMain", "mainBindingOf", "ownProgramsPhrase", "boundProgramForMain", "waveRowsOf",
       "memoryScopeFor", "contextCatalogFor", "contextBorrowRoute", "contextLedgersFor", "memorySourcesView", "treeListingAt", "showAtHead", "repoManifestContextPlan",

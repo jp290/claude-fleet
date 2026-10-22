@@ -199,6 +199,7 @@ function teilZeile(s: St, t: Teil, frage: SessionFrage): HTMLElement[] {
   li.title = [t.fach, zu === "nv" ? t.fest : null].filter(Boolean).join(" · ");
   const n = el("span", "ksn", t.name);
   if (t.zusatz) n.append(el("small", "", t.zusatz));
+  if (t.unter) n.append(el("span", "ksnu", t.unter));
   li.append(el("span", "ksd"), n, el("span", "kstk", t.tokens ? `${t.unbekannt ? "≥" : ""}${Math.round(t.tokens).toLocaleString("de-DE")}` : ""));
   if (t.schalter) {
     const sw = el("button", "kssw") as HTMLButtonElement;
@@ -219,22 +220,24 @@ function teilZeile(s: St, t: Teil, frage: SessionFrage): HTMLElement[] {
   if (s.sitz.detail !== t.id) return [li];
   li.classList.add("offen");
   const d = el("li", "ksdetail");
-  const zeilen: [string, string][] = [["Woher", HERKUNFT_WORT[t.herkunft]]];
+  const zeilen: [string, string][] = [...t.mehr, ["Woher", HERKUNFT_WORT[t.herkunft]]];
   if (t.fach) zeilen.push(["Fachwort", t.fach]);
   if (zu === "nv" && t.fest) zeilen.push(["Warum nicht", t.fest]);
   else if (t.fest) zeilen.push(["Abschalten", t.fest]);
   for (const [k, v] of zeilen) { const r = el("div", ""); r.append(el("span", "", k), el("span", "", v)); d.append(r); }
   if (zu !== "nv") {
+    // die beiden Knöpfe in einer Zeile für sich, durch eine Linie abgesetzt — nicht unter der letzten Beschriftung, wo sie wie ein Fachwort ohne Wert standen
+    const tun = el("div", "kstun");
     const zeig = el("button", "ksdetailk", "im Text zeigen") as HTMLButtonElement;
     zeig.type = "button";
     zeig.onclick = imText;
-    d.append(zeig);
     const um = el("button", "ksprobek klein") as HTMLButtonElement;
     um.type = "button";
     um.disabled = true;
     um.title = "Den Text dieses Teils für diesen Start ersetzen. Kommt bald.";
     um.append(icon("pencil"), el("span", "", "umschreiben"), el("small", "", "bald"));
-    d.append(um);
+    tun.append(zeig, um);
+    d.append(tun);
   }
   return [li, d];
 }
@@ -441,10 +444,12 @@ async function los(s: St): Promise<void> {
   const aufgabe = aufgabeVon(z);
   const r: Antwort = z.rolle === "branch"
     ? await starte({ tuer: "branch", repo: s.repo, name: z.name.trim(), ziel: z.ziel.trim(), punkte: [], dreier: d, ...rechte, ...profil, ...(fort ? { bestehend: fort } : {}),
-      ...(aufgabe ? { aufgabe } : {}) })
+      ...(aufgabe ? { aufgabe } : {}), ...(z.schalter.bibliothek ? { bibliothek: z.schalter.bibliothek === "an" } : {}) })
     : slot === null ? { ok: false, fehler: "Kein freier Platz in der Leiste." }
     : await starte({ tuer: "open", cwd: s.repo, slot, dreier: d, ...rechte, ...profil,
-      plan: a.start.startbar ? { hash: a.plan.planHash, role: "nur-ordner", ...(sw ? { bausteine: sw } : {}) } : null });
+      plan: a.start.startbar ? { hash: a.plan.planHash, role: "nur-ordner", ...(sw ? { bausteine: sw } : {}) } : null,
+      // ohne Plan geht der Schalter „Fleets Bibliothek“ als eigenes Feld mit (server.ts#bibliothekDerTuer)
+      ...(!a.start.startbar && z.schalter.bibliothek ? { bibliothek: z.schalter.bibliothek === "an" } : {}) });
   if (S !== s) return;
   z.busy = false;
   if (r.ok) {

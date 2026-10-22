@@ -229,7 +229,7 @@ export function attrappeModell(m: SitzungModell): SitzungModell {
   if (!ausgehend) return m;
   const text = ausgehend.md, tokens = new TextEncoder().encode(text).length / 2.1;
   const id = "attrappe-profil-md";
-  const teil = { id, frage: "auftrag" as const, name: "Agent-MD des Profils", fach: null, zusatz: ausgehend.name, herkunft: "du" as const, stand: "an" as const,
+  const teil = { id, frage: "auftrag" as const, name: "Agent-MD des Profils", fach: null, zusatz: ausgehend.name, unter: null, mehr: [], herkunft: "du" as const, stand: "an" as const,
     fest: ausgehend.echt ? "Kommt beim Start mit Claude Code in den Systemprompt (server/agentmd.ts)."
       : "Attrappe: ein erfundenes Profil; nur ein gespeichertes bringt seine Agent-MD wirklich mit.", schalter: null, tokens, unbekannt: false };
   const block = { id, teil: id, frage: "auftrag" as const, ort: "dateien" as const, herkunft: "du" as const, titel: `Profil „${ausgehend.name}“ · Agent-MD${ausgehend.echt ? "" : " (Attrappe)"}`,

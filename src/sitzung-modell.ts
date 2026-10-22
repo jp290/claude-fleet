@@ -2,7 +2,7 @@
 // bekommt, nach den fünf Fragen geordnet, die es für den Agenten beantwortet. Aus der Antwort des Gründungsplans (GET /api/founding-plan) wird
 // eine Übersicht (Teile mit Frage, Herkunft, Stand und Tokens) und der Text, den der Agent liest (Blöcke mit Ort). Jede Frage kommt vom
 // Server (Feld `frage` an Baustein und Anatomie-Teil, session-blocks.ts); dieses Modul ordnet nur. Kein DOM: src/sitzung.ts zeichnet.
-import type { Answer, Baustein } from "./founding";
+import { PACK_WORDS, type Answer, type Baustein } from "./founding";
 import { anatomieVon, jeToken, type AnatomieTeil } from "./k15-anatomie";
 import { SESSION_FRAGEN, istFrage, type SessionFrage } from "../session-fragen";
 
@@ -47,6 +47,8 @@ export type SitzungRolle = "einfach" | "branch";
 export interface Teil {
   // `name` in Alltagswörtern (Owner 09:5x „[Zitat entfernt]“), `fach` der Fachbegriff, wenn es einen gibt
   id: string; frage: SessionFrage; name: string; fach: string | null; zusatz: string | null; herkunft: Herkunft;
+  // eine Unterzeile in Owner-Worten, was er davon hat, und weitere Zeilen für den aufgeklappten Kasten
+  unter: string | null; mehr: [string, string][];
   stand: "an" | "abruf" | "aus";
   // warum hier kein Schalter steht; null, wenn einer steht
   fest: string | null;
@@ -79,10 +81,11 @@ const ALLTAG: Readonly<Record<string, string>> = {
   "auto-memory": "Notizen von Claude", "owner-heft": "Deine Korrekturen", "lane-notes": "Notizen zur Aufgabe", "commit-expectation": "Pflicht zu committen",
   "lane-footer": "Wie er zurückmeldet", "role-card": "Rolle", "private-rulebook": "Fleets Regelbuch",
   Listenschnitt: "Gekürzte Liste der Skills", "Auto-Mode": "Hinweis zum Auto-Mode", Gepflogenheiten: "Fleets Gepflogenheiten",
+  bibliothek: "Fleets Bibliothek", "bibliothek-skills": "Fleets Bibliothek als Skills",
 };
 // der Weg, auf dem die Tür liefert (server.ts#PlanWeg), in Alltagswörtern
 const WEG_WORT: Readonly<Record<string, string>> = { plan: "über die Startzeile", Zustellung: "im Kopf jeder Nachricht", "native Datei": "als Datei im Ordner",
-  Prompt: "in der ersten Nachricht", "Session-Datei": "in seiner Startdatei" };
+  Prompt: "in der ersten Nachricht", "Session-Datei": "in seiner Startdatei", Systemprompt: "im Systemprompt", Skill: "in der Liste der Skills" };
 // der Grund des Registers, warum „Nur Ordner“ einen Baustein nicht schaltet (session-blocks.ts#foundingSessionPlan), in den Worten des Fensters
 const NUR_ORDNER = /^Nur Ordner liefert nur /;
 const MIT_ROLLE = "Kommt nur mit einer Rolle (Lane, MAIN, Orchestratorin): „Mit anderen Sessions arbeiten“.";
@@ -101,9 +104,9 @@ export function sitzungModell(a: Answer, e: Eingaben, bausteinName: (b: Baustein
   const an = anatomieVon(a.claudeCode);
   const cc = an ? jeToken(an) : 2.1, fl = fleetJe(a);
   // `fach` gesetzt: der Name ist schon das Alltagswort, ALLTAG übersetzt ihn nicht noch einmal
-  const teil = (t: Omit<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach"> & Partial<Pick<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach">>): Teil => {
+  const teil = (t: Omit<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach" | "unter" | "mehr"> & Partial<Pick<Teil, "zusatz" | "schalter" | "unbekannt" | "fest" | "fach" | "unter" | "mehr">>): Teil => {
     const alltag = t.fach === undefined ? ALLTAG[t.id] ?? ALLTAG[t.name] : undefined;
-    const x: Teil = { zusatz: null, schalter: null, unbekannt: false, fest: null, ...t, name: alltag ?? t.name, fach: t.fach !== undefined ? t.fach : alltag ? t.name : null };
+    const x: Teil = { zusatz: null, schalter: null, unbekannt: false, fest: null, unter: null, mehr: [], ...t, name: alltag ?? t.name, fach: t.fach !== undefined ? t.fach : alltag ? t.name : null };
     teile.push(x);
     return x;
   };
@@ -194,11 +197,11 @@ export function sitzungModell(a: Answer, e: Eingaben, bausteinName: (b: Baustein
     const grund = wege.has(b.id) ? `Kommt bei jedem Start mit, ${WEG_WORT[wege.get(b.id) ?? ""] ?? wege.get(b.id)}; abschalten geht noch nicht.`
       : b.id.startsWith("pack:") && b.zustand !== "an" ? omit[a.omitted.find((o) => `pack:${o.id}` === b.id)?.reason ?? ""] ?? nein
       : nein;
-    const wort = kommt ? bausteinText(b.id, e.slot) : null;
+    const wort = kommt ? bausteinText(b.id, e.slot) ?? textVon(b.details) : null;
     const tk = !kommt ? 0 : wort !== null ? bytesVon(wort) / fl : bytes ? bytes / fl : 0;
     // was in den Start kommt, steht im Text, auch wenn der Server dem Fenster seinen Wortlaut nicht gibt (luecken.md S11)
     const text = !kommt ? null : wort ?? `${ALLTAG[b.id] ?? name}: kommt in den Start${bytes ? ` (${bytes.toLocaleString("de-DE")} Byte)` : ""}; den Wortlaut zeigt das Fenster noch nicht.`;
-    teil({ id: b.id, frage, name, herkunft: "fleet", stand: kommt ? "an" : "aus", tokens: tk, unbekannt: kommt && wort === null && bytes === null,
+    teil({ id: b.id, frage, name, zusatz: zusatzVon(b), ...bibliothekWorte(b), herkunft: "fleet", stand: kommt ? "an" : "aus", tokens: tk, unbekannt: kommt && wort === null && bytes === null,
       fest: grund, schalter: b.schaltbar.ja && !wege.has(b.id) ? { baustein: b.id, an: b.zustand === "an" } : null });
     // wo er landet, sagt der Weg, auf dem die Tür ihn liefert, wo sie ihn nennt (ein Prompt ist die erste Nachricht)
     block({ id: b.id, teil: b.id, frage, ort: wege.get(b.id) === "Prompt" ? "erste" : ortVon(b), herkunft: "fleet", text, tokens: tk, falte: 4,
@@ -258,7 +261,38 @@ function bausteinText(id: string, slot: number | null): string | null {
   if (id === "spawn-profile") return "Agent, Modell und Effort stehen in der Startzeile.";
   return null;
 }
+// die Bibliothek eines Sitzes ohne Rolle (session-blocks.ts#bibliothek): wie viele Packs, als Zahl wie bei „Regeln des Ordners“ —
+// ein längerer Zusatz wird in der schmalen Spalte abgeschnitten (UI-Abnahme 22.10. zum Notizbuch); der Weg steht in der Frage
+function zusatzVon(b: Baustein): string | null {
+  const packs = rec(b.details)?.packs;
+  return (b.id === "bibliothek" || b.id === "bibliothek-skills") && Array.isArray(packs) && packs.length ? String(packs.length) : null;
+}
+// WAS DER OWNER VON DER BIBLIOTHEK HAT, in seinen Worten (Fachblick 22.10., Runde 2): sie kommt in jedes Repo (Owner 22.10.: „[Zitat entfernt]“
+// ), also muss er sehen, was er dort abschaltet. Je Box-Pack ein kurzes Stück der Unterzeile und eines für den Satz; die Teile deutsch.
+const BIBLIOTHEK_KURZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du sprichst", "who-it-is-for": "für wen er baut",
+  "working-toward-a-goal": "wie er am Ziel bleibt" };
+const BIBLIOTHEK_SATZ: Readonly<Record<string, string>> = { "working-with-the-owner": "wie du arbeitest", "who-it-is-for": "für wen er baut",
+  "working-toward-a-goal": "wie er am Ziel bleibt" };
+const BIBLIOTHEK_WO = "In jedem Repo. Fleets eigene Arbeit (Landen, Deploy, Testinstanz, Agenten aufsetzen, Systemkonzept) nur im Fleet-Repo.";
+function bibliothekWorte(b: Baustein): Partial<Pick<Teil, "unter" | "mehr">> {
+  const packs = rec(b.details)?.packs;
+  if ((b.id !== "bibliothek" && b.id !== "bibliothek-skills") || !Array.isArray(packs) || !packs.length) return {};
+  const ids = packs.filter((p): p is string => typeof p === "string");
+  const teile: [string, string] = ["Die Teile", ids.map((id) => PACK_WORDS[id]?.name ?? id).join(" · ")];
+  if (b.id === "bibliothek-skills")
+    return { unter: "ruft er auf, wenn er davor steht", mehr: [["Was er davon hat", "Wenn er davor steht, lädt er das Wissen dazu; vorher kostet es nur eine Zeile je Teil."], teile, ["Wo", BIBLIOTHEK_WO]] };
+  const satz = ids.map((id) => BIBLIOTHEK_SATZ[id] ?? PACK_WORDS[id]?.name ?? id);
+  return { unter: ids.map((id) => BIBLIOTHEK_KURZ[id] ?? PACK_WORDS[id]?.name ?? id).join(", "),
+    mehr: [["Was er davon hat", `Er weiß von Anfang an, ${satz.length > 1 ? `${satz.slice(0, -1).join(", ")} und ${satz.at(-1)}` : satz[0]}.`], teile, ["Wo", BIBLIOTHEK_WO]] };
+}
+// der Wortlaut, den der Server mitschickt, wo er ihn kennt (die Bibliothek: Start-Block und Skill-Zeilen)
+function textVon(v: unknown): string | null {
+  const t = rec(v)?.text;
+  return typeof t === "string" ? t : null;
+}
 function ortVon(b: Baustein): Ort {
+  if (b.id === "bibliothek") return "system";
+  if (b.id === "bibliothek-skills") return "listen";
   if (b.id === "self-credential") return "umgebung";
   if (b.id === "spawn-profile") return "aussen";
   if (b.id === "delivery-header" || b.id === "task-brief" || b.id === "main-rail" || b.id === "orchestrator-card" || b.id.startsWith("pack:")) return "erste";

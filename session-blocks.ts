@@ -31,7 +31,7 @@ export interface SessionBlock {
   readonly autor: readonly ("Owner-Promotion" | "MAIN" | "Repo-Autor" | "Fleet" | "Session selbst")[];
   readonly harness: { readonly art: "alle" }
     | { readonly art: "eingeschraenkt"; readonly werte: readonly ("claude" | "codex" | "pi")[]; readonly grund: string };
-  readonly lieferart: readonly ("plan" | "native Datei" | "Session-Datei" | "Prompt" | "Abruf" | "Zustellung")[];
+  readonly lieferart: readonly ("plan" | "native Datei" | "Session-Datei" | "Prompt" | "Systemprompt" | "Skill" | "Abruf" | "Zustellung")[];
   readonly rollenDefault: Readonly<Record<SessionRole, SessionDefault>>;
   readonly source: SessionSource | "nicht zugestellt";
   readonly belege: readonly SessionSource[];
@@ -44,7 +44,7 @@ export interface SessionBlock {
 }
 
 // Defaults describe the agreed target, not today's switches. Conditional defaults name their
-// prerequisite; "nur-ordner" receives only native loader material. Required functions can be
+// prerequisite; "nur-ordner" receives native loader material and Fleet's library. Required functions can be
 // replaced equivalently; the owner-heft and portable-contract remain locked by owner decision.
 export const SESSION_BLOCKS: readonly SessionBlock[] = [
   {
@@ -313,6 +313,44 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "server.ts#renderContextAnchorBlock",
     belege: ["server.ts#renderContextAnchorBlock"],
     breaksWithout: "Es fehlen die Hinweise, was sie lesen soll und was bewusst weggelassen ist, und mit ihnen die Packs.",
+    fassung: "unknown", bytes: "unknown",
+  },
+  {
+    id: "bibliothek",
+    wort: "Fleets Bibliothek",
+    satz: "Was jeder Sitz ohne Rolle vom ersten Akt an braucht, steht wörtlich in seinem Systemprompt.",
+    funktion: ["orientierung"],
+    // Frage: Wissen, das der Sitz mitbringt, ist Hintergrund (Fachblick 22.10. zu wissen-kommt-an); welche Packs: server/sitz-wissen.ts#SEAT_BOX
+    frage: "hintergrund",
+    grenze: {"art": "frei"},
+    schicht: "Fleets Register, Packs mit seat-start(-any-repo)",
+    autor: ["Owner-Promotion", "Fleet"],
+    harness: {"art": "eingeschraenkt", "werte": ["claude"], "grund": "Nur Claude liest Fleets Start-Block; andere Agenten leihen die Packs über GET /api/self/context/<id> aus."},
+    lieferart: ["Systemprompt"],
+    // an in jedem Repo (server.ts#seatLibraryOn, Owner 22.10.: „[Zitat entfernt]“); was sie dort bringt, entscheiden die Auslöser im Register
+    rollenDefault: {"lane": "aus", "main": "aus", "orchestratorin": "aus", "nur-ordner": {"zustand": "bedingt", "grund": "Claude, und ein Pack aus Fleets Bibliothek passt zu diesem Sitz"}},
+    source: "server.ts#seatStartFor",
+    belege: ["server.ts#seatStartFor", "server.ts#seatLibraryOn", "server/sitz-wissen.ts#renderSeatStart", "server.ts#agentCmd"],
+    breaksWithout: "Der Sitz weiß beim ersten Akt nicht, für wen er baut und wie der Owner mit ihm spricht; ausleihen kann er es weiter.",
+    fassung: "unknown", bytes: "unknown",
+  },
+  {
+    id: "bibliothek-skills",
+    wort: "Fleets Bibliothek als Skills",
+    satz: "Der Rest der Bibliothek kommt als Skills: im Kontext steht die Beschreibung, den Text lädt Claude, wenn sie passt.",
+    funktion: ["orientierung"],
+    // Frage: How-to, Wissen auf Abruf in der Skill-Liste (Fachblick 22.10.); welche Packs: alles aus der Bibliothek außer SEAT_BOX
+    frage: "howto",
+    grenze: {"art": "frei"},
+    schicht: "Fleets Register, Packs mit seat-start(-any-repo)",
+    autor: ["Owner-Promotion", "Fleet"],
+    harness: {"art": "eingeschraenkt", "werte": ["claude"], "grund": "Nur Claude Code lädt Skills über --add-dir; andere Agenten leihen die Packs über GET /api/self/context/<id> aus."},
+    lieferart: ["Skill"],
+    rollenDefault: {"lane": "aus", "main": "aus", "orchestratorin": "aus", "nur-ordner": {"zustand": "bedingt", "grund": "Claude, und ein Pack aus Fleets Bibliothek kommt als Skill"}},
+    source: "server.ts#seatStartFor",
+    belege: ["server.ts#seatStartFor", "server/sitz-wissen.ts#seatSkillFiles", "server.ts#agentCmd"],
+    breaksWithout: "Landen, Testinstanz, Agenten aufsetzen und für wen stehen dem Sitz nicht als Skill bereit; ausleihen kann er sie weiter.",
+    nichtSchaltbar: "Folgt dem Schalter „Fleets Bibliothek“: beide kommen zusammen oder gar nicht.",
     fassung: "unknown", bytes: "unknown",
   },
   {
@@ -612,6 +650,8 @@ export interface SessionPlanInput {
   readonly bedingungen: Readonly<Partial<Record<string, boolean | "unknown">>>;
   /** the requested switches, id → "an" | "aus" | "ersetzt:<id>" */
   readonly schalter: Readonly<Record<string, string>>;
+  /** a `bedingt` row's default where another switch decides it (Fleets Bibliothek als Skills follows „Fleets Bibliothek“); absent = an */
+  readonly voreinstellung?: Readonly<Partial<Record<string, "an" | "aus">>>;
 }
 
 export interface SessionPlanMessung {
@@ -694,7 +734,7 @@ export function resolveSessionPlan(input: SessionPlanInput, messe: (zustaende: R
     if (!harnessOf(row).gueltig) return "aus";
     const value = defaultOf(row);
     if (typeof value !== "object") return value;
-    return bedingungOf(row)!.erfuellt === false ? "aus" : "an";
+    return bedingungOf(row)!.erfuellt === false ? "aus" : input.voreinstellung?.[row.id] ?? "an";
   };
   const kandidatenOf = (row: Row): string[] => row.pack || (row.block.grenze.art === "noetig" && row.block.grenze.gesperrt) ? []
     : rows.filter((other) => !other.pack && other.id !== row.id && harnessOf(other).gueltig
@@ -711,7 +751,7 @@ export function resolveSessionPlan(input: SessionPlanInput, messe: (zustaende: R
     const forced = erzwungen(row);
     if (forced && value !== "an") return { ok: false, error: `${id}: ${forced}` };
     if (input.rolle === "nur-ordner" && !nativ(row) && value !== "aus")
-      return { ok: false, error: `${id}: Nur Ordner liefert nur native-agents und auto-memory` };
+      return { ok: false, error: `${id}: Nur Ordner liefert nur native-agents, auto-memory und Fleets Bibliothek` };
     if (value === "an") {
       const harness = harnessOf(row);
       if (!harness.gueltig) return { ok: false, error: `${id} gilt nicht fuer ${input.harness}: ${harness.grund}` };
@@ -753,7 +793,7 @@ export function resolveSessionPlan(input: SessionPlanInput, messe: (zustaende: R
       harness: harnessOf(row),
       schaltbar: row.block.nichtSchaltbar ? { ja: false, grund: row.block.nichtSchaltbar }
         : erzwungen(row) ? { ja: false, grund: erzwungen(row)! }
-        : input.rolle === "nur-ordner" && !nativ(row) ? { ja: false, grund: "Nur Ordner liefert nur native-agents und auto-memory." }
+        : input.rolle === "nur-ordner" && !nativ(row) ? { ja: false, grund: "Nur Ordner liefert nur native-agents, auto-memory und Fleets Bibliothek." }
         : { ja: true },
       bytes: messung.bytes[row.id] ?? "unknown", ...(enthaltenIn ? { enthaltenIn } : {}),
       ersatzKandidaten: kandidatenOf(row),

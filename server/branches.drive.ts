@@ -42,9 +42,10 @@ interface Background { background: Step }
 interface Touch { touch: string }
 const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | "end" | "save")[];
 
-const { serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom } = await import("../server");
+const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom }
+  = await import("../server");
 const t0 = Date.now();
-await loadPersistedState(join(stateDir, "fleet.json"));
+await loadStateAndReap(join(stateDir, "fleet.json"));
 await settleBranchBook();
 adoptTokens();
 const fetch = serveOptions.fetch;

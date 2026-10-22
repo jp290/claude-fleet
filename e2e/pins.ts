@@ -2601,8 +2601,9 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
     return typeof value === "object" ? value.zustand : value;
   };
   const folder = SESSION_BLOCKS.filter((block) => state(block, "nur-ordner") !== "aus").map((block) => block.id).sort();
-  pin("S3 session blocks: Nur Ordner receives only native agents and auto-memory",
-    folder.join() === "auto-memory,native-agents", folder.join());
+  // Fleets Bibliothek reaches a seat without a standing role (Owner-Ja 22.10. über Slot 16, branch/wissen-kommt-an)
+  pin("S3 session blocks: Nur Ordner receives native agents, auto-memory and Fleet's library",
+    folder.join() === "auto-memory,bibliothek,bibliothek-skills,native-agents", folder.join());
   const heft = SESSION_BLOCKS.find((block) => block.id === "owner-heft");
   pin("S3 session blocks: the required owner heft names its startup reader pointer",
     heft?.grenze.art === "noetig" && heft.source === "server.ts#ownerKorrekturenPointer"
@@ -2685,10 +2686,11 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
       { packId: "verify-e2e", vorlage: "founding-packs", ausgelassen: null, harnesses: null },
       { packId: "konzept-x", vorlage: "konzept", ausgelassen: harness === "codex" ? null : "harness-unsupported", harnesses: ["codex"] },
     ],
-    bedingungen: { "auto-memory": true, "commit-expectation": true, "private-rulebook": true }, schalter,
+    bedingungen: { "auto-memory": true, "commit-expectation": true, "private-rulebook": true, bibliothek: true, "bibliothek-skills": true }, schalter,
   });
   const measure = (): SessionPlanMessung => ({ bytes: { "lane-footer": 100, "role-card": 50, "context-anchors": 400,
-    "pack:portable-core": 300, "pack:verify-e2e": 80, "native-agents": 1000, "auto-memory": 2000, "commit-expectation": "unknown" },
+    "pack:portable-core": 300, "pack:verify-e2e": 80, "native-agents": 1000, "auto-memory": 2000, "commit-expectation": "unknown",
+    bibliothek: 500, "bibliothek-skills": 40 },
     enthaltenIn: { "commit-expectation": "lane-footer", "pack:portable-core": "context-anchors", "pack:verify-e2e": "context-anchors" } });
   const planOf = (input: SessionPlanInput) => resolveSessionPlan(input, measure);
   const errorOf = (input: SessionPlanInput): string => { const r = planOf(input); return r.ok ? "" : r.error; };
@@ -2733,9 +2735,12 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
       && errorOf(planInput("lane", "codex", { "pack:portable-core": "aus" })).includes("traegt den Vertrag")
       && errorOf(planInput("lane", "claude", { "konzept": "an" })).includes("is a template"));
   const folderPlan = planOf(planInput("nur-ordner", "claude"));
-  pin("S3 plan: Nur Ordner delivers only native-agents and auto-memory, with their bytes",
-    folderPlan.ok && folderPlan.plan.bausteine.filter((b) => b.zustand !== "aus").map((b) => b.id).sort().join() === "auto-memory,native-agents"
-      && folderPlan.plan.bytesVorAuftrag.bytes === 3000 && folderPlan.plan.bytesVorAuftrag.unknown.length === 0
+  // Fleets Bibliothek reaches a Claude seat without a standing role (branch/wissen-kommt-an); without a pack for it, it stays off
+  const folderOhne = planOf({ ...planInput("nur-ordner", "claude"), bedingungen: { "auto-memory": true, bibliothek: false, "bibliothek-skills": false } });
+  pin("S3 plan: Nur Ordner delivers only native-agents, auto-memory and Fleet's library, with their bytes",
+    folderPlan.ok && folderPlan.plan.bausteine.filter((b) => b.zustand !== "aus").map((b) => b.id).sort().join() === "auto-memory,bibliothek,bibliothek-skills,native-agents"
+      && folderPlan.plan.bytesVorAuftrag.bytes === 3540 && folderPlan.plan.bytesVorAuftrag.unknown.length === 0
+      && folderOhne.ok && folderOhne.plan.bausteine.filter((b) => b.zustand !== "aus").map((b) => b.id).sort().join() === "auto-memory,native-agents"
       && errorOf(planInput("nur-ordner", "claude", { "memory-pointer": "an" })).includes("Nur Ordner liefert nur"),
     folderPlan.ok ? JSON.stringify(folderPlan.plan.bytesVorAuftrag) : folderPlan.error);
   const anchorsOff = planOf(planInput("lane", "claude", { "context-anchors": "aus" }));

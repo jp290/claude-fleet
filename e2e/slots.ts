@@ -5128,7 +5128,7 @@ async function runThresholdAct(): Promise<void> {
 // Invalid values are refused with the setting left as it was; the retired `warmBound` field sets nothing. ---
 // THE RESOLVED FOUNDING PLAN (GET /api/founding-plan → `plan`, session-blocks.ts#resolveSessionPlan): for
 // each role the route answers one plan whose hash is a function of its inputs, every row carries its
-// own facts, Nur Ordner delivers only what the folder loads natively, and the session file the window
+// own facts, Nur Ordner delivers only what the folder loads natively and Fleet's library, and the session file the window
 // shows is the plan's own render. A fixture repo of its own, so no other section's tree is read.
 // THE ROLE'S BUILT-IN TOOLS WHERE THE SPAWN KNOWS THE ROLE (server.ts#SESSION_TOOLS, Nachbesserung f88a2e99):
 // a MAIN bound at its spawn starts with the MAIN allowlist on --tools, a session bound to nothing keeps every
@@ -5232,8 +5232,8 @@ async function runFoundingPlanProbe(scratch: string): Promise<void> {
   const folder = (await plan("role=nur-ordner")).plan;
   const native = folder?.bausteine.find((row) => row.id === "native-agents");
   const files = native?.details?.dateien ?? [];
-  check("founding plan: Nur Ordner delivers only native-agents and auto-memory, the folder's files with their bytes",
-    !!folder && folder.bausteine.filter((row) => row.zustand !== "aus").every((row) => ["native-agents", "auto-memory"].includes(row.id))
+  check("founding plan: Nur Ordner delivers only native-agents, auto-memory and Fleet's library, the folder's files with their bytes",
+    !!folder && folder.bausteine.filter((row) => row.zustand !== "aus").every((row) => ["native-agents", "auto-memory", "bibliothek", "bibliothek-skills"].includes(row.id))
       && native?.zustand === "an" && native.bytes === files.reduce((sum, f) => sum + f.bytes, 0)
       && files.some((f) => f.pfad.endsWith("/founding-plan/CLAUDE.md") && f.bytes === Buffer.byteLength("# Plan fixture\n@rules.md\n"))
       && files.some((f) => f.pfad.endsWith("/founding-plan/rules.md") && f.bytes === Buffer.byteLength("imported rule\n")),

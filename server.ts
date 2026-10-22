@@ -10403,7 +10403,9 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   rmSync(historyPath(streamOccupant.slot), { force: true });
   audit("slot_kill", streamOccupant.slot, why);
   closeProgramLineageForOccupant(s.id, s.openedAt, Date.now());
-  if (s.lauf) void laufZu(s.lauf, s.id, s.openedAt, STATE_DIR); // ...and its run learns that this session is closed (server/laeufe.ts)
+  // ...and its run learns that this session is closed (server/laeufe.ts). Queued here, before openedAt is cleared, but awaited at the end:
+  // whoever reads the run after the door of the close has answered finds the close in it
+  const laufEnde = s.lauf ? laufZu(s.lauf, s.id, s.openedAt, STATE_DIR) : null;
   s.label = null;
   s.openedAt = 0;
   s.successionRetirement = null;
@@ -10476,6 +10478,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   recentComposed.delete(s.id);
   s.cwd = null;
   saveState();
+  await laufEnde;
 }
 
 async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<void> {
@@ -13014,16 +13017,20 @@ async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentit
     s.handover = settingForSuccessor(lineSetting, { slot: s.id, openedAt: s.openedAt }, Date.now());
     keepCacheRuns.delete(s.id);
   }
+  // the successor joins its run's positions here, in the same synchronous step; the door waits for that write only after the step
+  // (below): until it stands, the run shows the predecessor's `zu` alone and reads as ended (server/laeufe.ts#liesLaeufe)
+  let laufNachfolgeWrite: Promise<void> | null = null;
   if (s.cwd === predecessor.cwd) {
     s.openedBy = lineOpener;
     s.lauf = lineLauf;
-    if (lineLauf) void laufNachfolge(lineLauf, s.id, s.openedAt, predecessor.openedAt, STATE_DIR);
+    if (lineLauf) laufNachfolgeWrite = laufNachfolge(lineLauf, s.id, s.openedAt, predecessor.openedAt, STATE_DIR);
   }
   // THE LANES FOLLOW THEIR MAIN'S LINE, in the same synchronous step as the open and before any rail
   // binds or saves — so the rail's own state cut persists them. Only a SUCCESSFUL open reaches this
   // line; a respawn that failed leaves every anchor naming the ended predecessor (respawnLost above).
   rebindLaneAnchors({ slot: predecessor.slot, openedAt: predecessor.openedAt }, { slot: s.id, openedAt: s.openedAt },
     `${rail} succession`);
+  await laufNachfolgeWrite;
   return { ok: true, ...(opened.modelSupport ? { modelSupport: opened.modelSupport } : {}) };
 }
 
@@ -17567,7 +17574,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   }
   // EIN LAUF BEHÄLT DIE NACHRICHTEN SEINER SESSIONS selbst, nicht nur im Ring (server/laeufe.ts, Harness 2.0 4b)
   const laeufe = [s.lauf?.id, resolved.ok ? resolved.holder?.lauf?.id : undefined].filter((x): x is string => !!x);
-  if (laeufe.length) void merkeLaufNachricht(laeufe, { id: entry.id, at: entry.at, from: entry.from, to: entry.to, text: entry.payload.text, replyTo: entry.replyTo }, STATE_DIR);
+  if (laeufe.length) await merkeLaufNachricht(laeufe, { id: entry.id, at: entry.at, from: entry.from, to: entry.to, text: entry.payload.text, replyTo: entry.replyTo }, STATE_DIR);
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,

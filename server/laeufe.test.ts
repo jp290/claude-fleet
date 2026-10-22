@@ -186,8 +186,9 @@ describe("Ende und Ergebnis über den Server", () => {
     const [bind] = await life(f, [post("/api/k15/laeufe", { konst: "c1", pos: "bauer", slot: S })]);
     const id = (bind?.body.lauf as { id: string }).id;
     const sha = commitIn(String(made?.body.path), "s1.txt", "S1 gebaut");
-    const [vorher, zu, nachher, lauf] = await life(f, [get(`/api/k15/laeufe/${id}/ergebnis`), post(`/api/slots/${S}/kill`, {}),
-      get(`/api/k15/laeufe/${id}/ergebnis`), get(`/api/k15/laeufe/${id}`)]);
+    // das Ende steht im Lauf, wenn die Tür des Schließens antwortet, auch wenn das Schreiben erst nach 400 ms durchkommt (branches.drive.ts, `rohr`)
+    const [vorher, , zu, nachher, lauf] = await life(f, [get(`/api/k15/laeufe/${id}/ergebnis`), { rohr: "audit.jsonl", ms: 400 },
+      post(`/api/slots/${S}/kill`, {}), get(`/api/k15/laeufe/${id}/ergebnis`), get(`/api/k15/laeufe/${id}`)]);
     expect([bind?.status, zu?.status]).toEqual([201, 200]);
     const e = vorher?.body.ergebnis as { ende: unknown; branches: unknown[] };
     expect(e.ende).toBeNull();
@@ -195,6 +196,16 @@ describe("Ende und Ergebnis über den Server", () => {
     expect((nachher?.body.ergebnis as { ende: { wie: string } }).ende.wie).toBe("zu");
     expect((lauf?.body.lauf as { positionen: { zu?: number }[] }).positionen[0]?.zu).toEqual(expect.any(Number));
   }, LIFE_DEADLINE_MS * 3);
+  test("hängt die Schreibkette, ohne je freizukommen: die Tür des Schließens antwortet nach der Grenze trotzdem, und der Slot ist danach leer", async () => {
+    const f = fixture();
+    writeFileSync(join(f.state, FASSUNGEN_DATEI), JSON.stringify(buch(H2)));
+    const [, bind] = await life(f, [post("/api/slots/1/open", { cwd: f.repo }), post("/api/k15/laeufe", { konst: "c1", pos: "bauer", slot: 1 })]);
+    expect(bind?.status).toBe(201);
+    // die Röhre wird in diesem Leben nie gelesen (branches.drive.ts, `rohr`): ohne Grenze endete das Leben erst an seiner Frist
+    const [, zu, sessions] = await life(f, [{ rohr: "audit.jsonl", ms: 10 * LIFE_DEADLINE_MS }, post("/api/slots/1/kill", {}), get("/api/sessions")]);
+    expect(zu?.status).toBe(200);
+    expect((sessions?.body.slots as { id: number; cwd?: string | null }[]).find((x) => x.id === 1)?.cwd ?? null).toBeNull();
+  }, LIFE_DEADLINE_MS * 2);
   test("von Hand beendet: die Session läuft weiter, trägt den Lauf aber nicht mehr", async () => {
     const f = fixture();
     writeFileSync(join(f.state, FASSUNGEN_DATEI), JSON.stringify(buch(H2)));
@@ -206,6 +217,26 @@ describe("Ende und Ergebnis über den Server", () => {
     expect(zeile?.cwd).toBe(f.repo);
     expect(zeile?.lauf).toBeUndefined();
     expect((persisted(f).slots as Record<string, { lauf?: unknown }>)["1"]?.lauf).toBeUndefined();
+  }, LIFE_DEADLINE_MS * 2);
+});
+
+describe("eine Nachfolge im Lauf über den Server", () => {
+  test("die succeed-Tür antwortet, wenn die Nachfolgerin im Lauf steht: der Lauf ist nicht zu Ende und hat ihre Position", async () => {
+    const f = fixture();
+    writeFileSync(join(f.state, FASSUNGEN_DATEI), JSON.stringify(buch(H2)));
+    const [, bind] = await life(f, [post("/api/slots/1/open", { cwd: f.repo }), post("/api/k15/laeufe", { konst: "c1", pos: "bauer", slot: 1 })]);
+    const id = (bind?.body.lauf as { id: string }).id;
+    const slot = (persisted(f).slots as Record<string, { openedAt?: number; selfToken?: string }>)["1"];
+    if (!slot?.openedAt || !slot.selfToken) throw new Error("Slot 1 ist in fleet.json nicht besetzt");
+    // der Ersatz ist kein Agent: succeed endet als Schuld (500), nachdem die Nachfolgerin schon im Lauf steht (server/succession-rearm.test.ts)
+    const QUICK = { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" };
+    // die Röhre hält erst das Schreiben nach dem Start der Nachfolgerin an, 1,5 s lang, kürzer als die Grenze; die Tür davor (Schließen der
+    // Vorgängerin, Start) ist da schon durch, also bleibt nur das Schreiben der Nachfolge in der Kette hängen (branches.drive.ts, `rohr`)
+    const [, , lauf] = await life(f, [{ rohr: "audit.jsonl", ms: 1500, nach: '"event":"self_heal_recreate"' },
+      { method: "POST", path: "/api/self/succeed", body: { intent: "weiter" }, token: null, self: slot.selfToken }, get(`/api/k15/laeufe/${id}`)], QUICK);
+    const l = lauf?.body.lauf as { ende: unknown; positionen: { pos: string; slot: number; openedAt: number; folgtAuf?: number }[] };
+    expect(l.ende).toBeNull();
+    expect(l.positionen.map((p) => [p.pos, p.slot, p.folgtAuf])).toEqual([["bauer", 1, undefined], ["bauer", 1, slot.openedAt]]);
   }, LIFE_DEADLINE_MS * 2);
 });
 
@@ -239,7 +270,8 @@ describe("eine Nachricht zwischen Sessions eines Laufs über den Server", () => 
       { ...post("/api/branches/open", { repo: f.repo, branch: "branch/strang" }), self: leadTok },
       post("/api/k15/laeufe", { konst: "c1", pos: "bauer", slot: L })]);
     const S = Number(strand?.body.slot), id = (bind?.body.lauf as { id: string }).id;
-    const [sent, prot] = await life(f, [
+    // das Protokoll des Lauf steht, wenn die Tür antwortet, auch wenn das Schreiben erst nach 400 ms durchkommt (branches.drive.ts, `rohr`)
+    const [, sent, prot] = await life(f, [{ rohr: "audit.jsonl", ms: 400 },
       { ...post("/api/self/messages", { to: { kind: "session", slot: S }, payload: { kind: "text", text: "Bitte S1 bauen." }, idempotencyKey: "a1" }), token: null, self: leadTok },
       get(`/api/k15/laeufe/${id}/nachrichten`)]);
     expect(sent?.status).toBe(200);

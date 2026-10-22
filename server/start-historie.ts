@@ -8,7 +8,7 @@ import { aufgabeAus, type Aufgabe } from "../src/aufgabe";
 import type { AgentMd } from "./agentmd";
 import type { Opener } from "./opener";
 import { json } from "./json";
-import { appendEvent, readEventLog } from "./persist";
+import { appendEvent, binnenGrenze, readEventLog } from "./persist";
 import type { Rechte } from "../session-rechte";
 
 export const HISTORIE_DATEI = "start-historie.jsonl";
@@ -26,16 +26,16 @@ export interface StartEintrag {
 
 export function merkeStart(s: Belegung, dir: string, jetzt = Date.now()): Promise<void> {
   if (!s.cwd) return Promise.resolve();
-  return appendEvent(join(dir, HISTORIE_DATEI), { art: "start", slot: s.id, openedAt: s.openedAt, at: jetzt, cwd: s.cwd, label: s.label,
+  return binnenGrenze(appendEvent(join(dir, HISTORIE_DATEI), { art: "start", slot: s.id, openedAt: s.openedAt, at: jetzt, cwd: s.cwd, label: s.label,
     harness: s.harness, model: s.model, effort: s.effort, branch: s.worktree?.branch ?? null, rechte: s.rechte,
-    profil: s.agentMd ? { id: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256, name: s.agentMd.name ?? null } : null });
+    profil: s.agentMd ? { id: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256, name: s.agentMd.name ?? null } : null }));
 }
 // was eine Tür erst nach dem Öffnen weiß: wer sie geöffnet hat, der Branch einer Branch-Session mit ihrem Ziel und ihrer Aufgabe
 export type Nachtrag = { openedBy: Opener } | { branch: string; repo: string; goal?: string; aufgabe?: Aufgabe }
   | { lauf: LaufNachtrag };
 export interface LaufNachtrag { id: string; pos: string; posName: string; konst: string; name: string; version: number | null; hash: string }
 export function merkeNachtrag(slot: number, openedAt: number, n: Nachtrag, dir: string): Promise<void> {
-  return appendEvent(join(dir, HISTORIE_DATEI), { art: "nachtrag", slot, openedAt, ...n });
+  return binnenGrenze(appendEvent(join(dir, HISTORIE_DATEI), { art: "nachtrag", slot, openedAt, ...n }));
 }
 
 const laufVon = (v: unknown): LaufNachtrag | null => {

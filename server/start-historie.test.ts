@@ -73,4 +73,19 @@ describe("jeder Start steht in der Historie", () => {
     expect(wieder?.status).toBeLessThan(300);
     expect(wieder?.body.branch).toBe("branch/planer-b");
   }, LIFE_DEADLINE_MS);
+
+  // die Röhre wird in diesem Leben nie gelesen (branches.drive.ts, `rohr`): ohne Grenze für das Warten auf die Historie endete das Leben erst an seiner Frist
+  test("hängt die Schreibkette, ohne je freizukommen: die Tür zum Öffnen antwortet nach der Grenze trotzdem", async () => {
+    const f = fixture();
+    const [, opened] = await life(f, [{ rohr: "audit.jsonl", ms: 10 * LIFE_DEADLINE_MS }, post("/api/slots/1/open", { cwd: f.repo })]);
+    expect(opened?.status).toBe(200);
+  }, LIFE_DEADLINE_MS);
+
+  test("hängt die Schreibkette, ohne je freizukommen: die Tür zum Branch-Öffnen antwortet nach der Grenze trotzdem", async () => {
+    const f = fixture();
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Haengt" })]);
+    expect(made?.status).toBe(201);
+    const [, opened] = await life(f, [{ rohr: "audit.jsonl", ms: 10 * LIFE_DEADLINE_MS }, post("/api/branches/open", { repo: f.repo, branch: "branch/haengt" })]);
+    expect(opened?.status).toBe(200);
+  }, LIFE_DEADLINE_MS);
 });

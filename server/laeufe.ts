@@ -11,7 +11,7 @@ import { json } from "./json";
 import { fassungsHash, fassungVon } from "./konst-fassungen";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { liesHistorie, merkeNachtrag } from "./start-historie";
-import { appendEvent, appendEventStrict, readEventLog } from "./persist";
+import { appendEvent, appendEventStrict, binnenGrenze, readEventLog } from "./persist";
 
 export const LAEUFE_DATEI = "k15-laeufe.jsonl";
 
@@ -91,7 +91,10 @@ function posName(form: Record<string, unknown>, pos: string): string {
 // Zeile dazu, die auf die Vorgängerin verweist, und ihr Start steht mit dem Lauf in der Historie (Partner 20.10.: sonst stand sie da wie ein
 // freier Start, und der Lauf nannte nur die beendete Belegung). Am besten bemüht wie jedes Ereignisprotokoll (persist.ts#appendEvent):
 // eine Nachfolge scheitert nie an ihrem Lauf
-export async function laufNachfolge(b: LaufBindung, slot: number, openedAt: number, vorher: number, dir: string, jetzt = Date.now()): Promise<void> {
+export function laufNachfolge(b: LaufBindung, slot: number, openedAt: number, vorher: number, dir: string, jetzt = Date.now()): Promise<void> {
+  return binnenGrenze(schreibeNachfolge(b, slot, openedAt, vorher, dir, jetzt));
+}
+async function schreibeNachfolge(b: LaufBindung, slot: number, openedAt: number, vorher: number, dir: string, jetzt: number): Promise<void> {
   const l = (await liesLaeufe(dir).catch(() => [])).find((x) => x.id === b.id);
   if (!l) return;
   // sie arbeitet, wo die Vorgängerin gearbeitet hat (die Nachfolge bleibt im selben Ordner, server.ts#respawnInPlace)
@@ -110,7 +113,10 @@ export const LAUF_NACHRICHTEN_MAX = 1000;
 export const nachrichtenDatei = (dir: string, id: string): string => join(dir, `k15-lauf-${id}.jsonl`);
 export interface LaufNachricht { id: string; at: number; from: unknown; to: unknown; text: string; replyTo: string | null }
 const gezaehlt = new Map<string, Promise<number>>();
-export async function merkeLaufNachricht(laeufe: readonly string[], n: LaufNachricht, dir: string, max = LAUF_NACHRICHTEN_MAX): Promise<void> {
+export function merkeLaufNachricht(laeufe: readonly string[], n: LaufNachricht, dir: string, max = LAUF_NACHRICHTEN_MAX): Promise<void> {
+  return binnenGrenze(schreibeLaufNachricht(laeufe, n, dir, max));
+}
+async function schreibeLaufNachricht(laeufe: readonly string[], n: LaufNachricht, dir: string, max: number): Promise<void> {
   for (const id of new Set(laeufe)) {
     const datei = nachrichtenDatei(dir, id);
     // der Zähler steht, bevor gewartet wird: zwei Nachrichten zugleich zählen nicht dieselbe Zeile
@@ -131,7 +137,7 @@ export async function liesLaufNachrichten(dir: string, id: string): Promise<{ na
 // DAS ENDE EINER BELEGUNG IM LAUF (server.ts#teardownSlotOccupant, auch die Vorgängerin einer Nachfolge): ihre Session ist zu. Sind alle zu,
 // ist der Lauf zu Ende (liesLaeufe). Am besten bemüht wie jedes Ereignisprotokoll: ein Schließen scheitert nie an seinem Lauf
 export function laufZu(b: LaufBindung, slot: number, openedAt: number, dir: string, jetzt = Date.now()): Promise<void> {
-  return appendEvent(join(dir, LAEUFE_DATEI), { art: "zu", id: b.id, pos: b.pos, slot, openedAt, at: jetzt });
+  return binnenGrenze(appendEvent(join(dir, LAEUFE_DATEI), { art: "zu", id: b.id, pos: b.pos, slot, openedAt, at: jetzt }));
 }
 
 // DAS ERGEBNIS EINES LAUFS (4c, harness-2-0-antwort.md Lücke 3: „Ergebnisse (Reports, Commits, Dateien) … und Ende“): je Branch seiner

@@ -56,6 +56,16 @@ function rotateEventLog(file: string): void {
 export function appendEvent(file: string, obj: Record<string, unknown>): Promise<void> {
   return queueEventWrite(file, obj).catch(() => undefined);
 }
+// WIE LANGE EINE TÜR AUF EIN SCHREIBEN IN DER KETTE WARTET. Die Kette ist eine für alle Ereignisprotokolle und hat keine Zeitgrenze: hängt sie,
+// hinge jede Tür, die auf ihr Schreiben wartet (Öffnen, Schließen, Nachfolge, Postfach), bis zum Neustart, und ein Slot mit ihr
+// (server.ts#slotTeardownInflight). Wer auf sein Schreiben wartet, damit der Leser nach der Antwort es findet, wartet darum nur so lange; ein
+// Schreiben, das nicht ankam, bleibt am Ende der Kette und landet, wenn sie wieder läuft.
+export const EVENT_WARTEN_MAX_MS = 2000;
+export async function binnenGrenze(schreiben: Promise<void>, ms = EVENT_WARTEN_MAX_MS): Promise<void> {
+  let uhr: ReturnType<typeof setTimeout> | undefined;
+  const abgelaufen = new Promise<void>((fertig) => { uhr = setTimeout(fertig, ms); });
+  try { await Promise.race([schreiben, abgelaufen]); } finally { clearTimeout(uhr); }
+}
 // Founding receipts are evidence promised by the authority transition, so their caller must see a
 // failed append and roll back. Every unrelated event keeps the historical best-effort contract.
 export function appendEventStrict(file: string, obj: Record<string, unknown>): Promise<void> {

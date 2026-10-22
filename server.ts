@@ -217,6 +217,7 @@ import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KO
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { createTranscriptPush } from "./server/transcript-push";
+import { RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
 import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
   type PostfachEntry, type PostfachPlan } from "./server/postfach-zustellen";
 import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
@@ -930,6 +931,14 @@ const CLAUDE_TRUST_DIALOG: ScreenBlock = {
   why: "claude trust dialog",
 };
 
+// Claude Code's PERMISSION QUESTION ("Do you want to proceed?", "Do you want to create x?") with "1. Yes" preselected:
+// a paste+Enter from any automatic path answers it with Yes and releases exactly the action the classifier or an ask
+// rule wanted a person to judge. MEASURED 2026-10-22 on test instance :8997 (claude 2.1.307, manual mode): a postfach
+// delivery to a seat on "Do you want to create beweis2.txt?" was typed (acceptance unobservable, no composer row on
+// screen) and the file was written. The pattern and its measurement live in server/warte-hinweis.ts#RUECKFRAGE_RE, which
+// the waiting notice reads too; the person answers in the board terminal, whose raw keys are no sendText.
+const CLAUDE_PERMISSION_QUESTION: ScreenBlock = { re: RUECKFRAGE_RE, why: "claude permission question" };
+
 // THE COMPOSER GLYPH, and it is the only thing on a claude frame that says "input is kept now".
 // MEASURED 2026-09-21 on claude 2.1.278 in throwaway tmux sockets (own socket, --session-id, the
 // transcript as the independent witness — scratchpad probe, three runs): a fresh pane paints
@@ -1010,7 +1019,7 @@ const CLAUDE_HARNESS: Harness = {
   // had not drawn anything yet. The pane ate it, the post-Enter composer read empty, the ledger
   // booked `observed`, and the predecessor was retired onto a successor that had never been told
   // what it was for. The marker below is what makes that wait a wait.
-  readiness: { accept: IS_CLAUDE ? CLAUDE_READY_FRAME : null, blocks: [CLAUDE_TRUST_DIALOG] },
+  readiness: { accept: IS_CLAUDE ? CLAUDE_READY_FRAME : null, blocks: [CLAUDE_TRUST_DIALOG, CLAUDE_PERMISSION_QUESTION] },
   modelFooter: /^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\] (?:\d+|--)% {2}\| {2}(.+?)(?: {3,}.*)?$/m,
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,
@@ -12081,7 +12090,9 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
     const bound: BoundSlotPane = { occupant, paneId: target.paneId, composer, comms, bootSettleMs };
     deliveryRead.pane = bound;
     const observes = !!bound.composer;
-    if (options.path === "owner") {
+    // EVERY path, not only the owner's: a parked resend (tickParkedSends) never asks canDeliver, and a screen can
+    // turn into a block between a caller's gate and this paste — a permission question answered by Enter is a grant
+    {
       const readiness = await paneReadiness(s);
       if (!sameBoundPane(s, bound)) throw new SendRefused("slot changed during send readiness probe — nothing typed");
       if (readiness?.state === "blocked")
@@ -12414,10 +12425,15 @@ async function paneAgentAt(target: string, comms: string[]): Promise<AgentState>
 async function paneReadiness(s: Slot): Promise<{ state: "ready" | "blocked" | "pending"; why?: string } | null> {
   const r = harnessOf(s.harness).readiness;
   if (!r) return null;
-  const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
-  if (cap.code !== 0) return r.accept ? { state: "pending" } : null;
-  for (const b of r.blocks) if (b.re.test(cap.out)) return { state: "blocked", why: b.why };
+  // BLOCKS ON A JOINED FRAME (-J): the board sizes the window to the device, and on a phone Claude Code's permission
+  // question wraps — "Do you want to create docs/…/\n2026-10-22-lang.md?" — which a pattern for one line never matched,
+  // so a paste+Enter chose "1. Yes" (Abnahme 722bedda0). The ready markers keep the frame they were measured on.
+  const joined = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
+  if (joined.code !== 0) return r.accept ? { state: "pending" } : null;
+  for (const b of r.blocks) if (b.re.test(joined.out)) return { state: "blocked", why: b.why };
   if (!r.accept) return null;
+  const cap = await tmux("capture-pane", "-p", "-t", paneTarget(sess(s.id)));
+  if (cap.code !== 0) return { state: "pending" };
   return r.accept.test(cap.out) ? { state: "ready" } : { state: "pending" };
 }
 
@@ -19679,7 +19695,7 @@ function inQuietHours(ts: number): boolean {
 // work-prompt path may drive it". Collapsing the two would recreate the silent skip this row was
 // filed about.
 // "blocked-screen" is the screen-level sibling of "not-alive": the agent process is there, but the
-// pane is on a harness-declared blocking screen (codex trust prompt / sign-in, claude trust dialog) where a paste is
+// pane is on a harness-declared blocking screen (codex trust prompt / sign-in, claude trust dialog or permission question) where a paste is
 // silently consumed. `detail` carries the declared why, so every caller reports the concrete
 // screen instead of a generic refusal. Only ever returned for a harness that declares `readiness`.
 type DeliveryGate = "kill-switch" | "harness" | "not-alive" | "blocked-screen" | "quiet-hours" | "busy";
@@ -25964,6 +25980,8 @@ if (API_STALL_RESUME_RAW && !API_STALL_RESUME_ON && !/^(0|off|false|no)$/i.test(
 const RATE_LIMIT_RESUME_RAW = (process.env.FLEET_RATE_LIMIT_RESUME ?? "").trim();
 const RATE_LIMIT_RESUME_ON = /^(1|true|on|yes)$/i.test(RATE_LIMIT_RESUME_RAW);
 const RATE_LIMIT_TICK_MS = 10_000;
+const WARTE_RUHIG_MS = 5_000;
+const WARTE_TICK_MS = 5_000; // tickWarteHinweis — declared here, above the START block that schedules it; 5 s since the board shows the question
 if (RATE_LIMIT_RESUME_RAW && !RATE_LIMIT_RESUME_ON && !/^(0|off|false|no)$/i.test(RATE_LIMIT_RESUME_RAW))
   console.log(`[fleet] FLEET_RATE_LIMIT_RESUME=${JSON.stringify(RATE_LIMIT_RESUME_RAW)} is not a recognised`
     + " value — the rate-limit auto-resume is OFF. Recognised: 1/true/on/yes · 0/off/false/no.");
@@ -46449,6 +46467,7 @@ if (LANE_STAND_COMMITS > 0 || LANE_STAND_IDLE_MS > 0) setInterval(() => void tic
 setInterval(() => void tickKeepCache().catch((e: unknown) => logError("tickKeepCache", e)), MIGRATE_TICK_MS);
 setInterval(() => void tickApiStallResume().catch((e: unknown) => logError("tickApiStallResume", e)), API_STALL_TICK_MS);
 setInterval(() => void tickRateLimitResume().catch((e: unknown) => logError("tickRateLimitResume", e)), RATE_LIMIT_TICK_MS);
+setInterval(() => void tickWarteHinweis().catch((e: unknown) => logError("tickWarteHinweis", e)), WARTE_TICK_MS);
 // self-heal: recreate any activated slot whose pane died (crash, accidental kill-session).
 // ensureSlot is a cheap no-op (three tmux queries) per healthy slot
 setInterval(() => {
@@ -47794,6 +47813,135 @@ async function tickRateLimitResume(): Promise<void> {
   } finally {
     rateLimitTickBusy = false;
   }
+}
+
+// --- THE WAITING NOTICE (server/warte-hinweis.ts): a seat whose pane has stood on Claude Code's permission question
+// for WARTE_HINWEIS_MS tells the session that gives it its work, once per question. Measured 2026-10-21: a branch seat
+// stood 98 minutes on the question after three classifier denials, and the board showed only an aging output time.
+// RECEIVER: the session that opened this one (Slot.openedBy), found by its seat — slot and folder, so the opener's
+// succession stays the receiver, like branchPeers. A session without an opener was opened by the owner, who sees its
+// pane: it waits on him on purpose and gets no notice. A Program lane has no opener; the lane-permission hook already
+// reports its dialogs to its MAIN (openHarnessBlock).
+// CHANNEL: the mailbox, from the seat's address to the receiver's own (an Orchestratorin reads under her role, a
+// session under its session address). The branch pair already writes there, tickPostfachZustellung types it into the
+// receiver's pane, and an answer goes back to the seat. The episodes are this process's memory: after a restart a
+// pane still on its question counts from the first look again.
+const WARTE_HINWEIS_MS = Math.max(0, Number(process.env.FLEET_WARTE_HINWEIS_SEC ?? 180) | 0) * 1000;
+const warteEpisoden = new Map<number, WarteEpisode>();
+// THE BOARD'S READING (UI-Abnahme 22.10., Runde 2): the board said „arbeitet“ and a green dot while a session stood on
+// the question, and the owner learned of it only by being refused. /api/sessions carries the question this tick saw on
+// THIS occupant; null when none, or when the last look is older than three ticks (a stopped tick claims nothing).
+function rueckfrageView(s: Slot, now: number): string | null {
+  const ep = warteEpisoden.get(s.id);
+  return ep && ep.openedAt === s.openedAt && now - (warteGesehen.get(s.id) ?? 0) <= 3 * WARTE_TICK_MS ? ep.frage : null;
+}
+const warteGesehen = new Map<number, number>();
+let warteTickBusy = false;
+function warteEmpfaenger(s: Slot): Slot | null {
+  const by = s.openedBy;
+  const r = by ? slotFrom(by.slot) : null;
+  return r?.cwd && r.cwd === by?.cwd && r !== s ? r : null;
+}
+// `now` is a parameter for the route test (server/warte-hinweis-route.test.ts); the ids of the notices written
+async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
+  if (warteTickBusy) return [];
+  warteTickBusy = true;
+  const written: string[] = [];
+  try {
+    for (const s of slots) {
+      // EVERY claude pane, not only a seat with an opener: the board shows the question on any session (rueckfrageView)
+      if (!s.cwd || s.sleeping || harnessOf(s.harness) !== CLAUDE_HARNESS) { warteEpisoden.delete(s.id); continue; }
+      // a pane at the question is quiet (measured on :8997: last output 11 min back); one that spoke within 5 s is not read,
+      // which spares the busy panes their capture — its last look ages out of rueckfrageView on its own
+      if (s.lastOutput > 0 && Date.now() - s.lastOutput < WARTE_RUHIG_MS) continue;
+      const openedAt = s.openedAt;
+      // -J: a dialog line wider than the pane is one line again, as measured
+      const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
+      // an unreadable pane is neither a start nor an end of the episode
+      if (cap.code !== 0 || slotFrom(s.id) !== s || s.openedAt !== openedAt) continue;
+      const receiver = warteEmpfaenger(s);
+      const to = receiver ? messageAddressesFor(receiver)[0] : undefined;
+      const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS, !!to);
+      if (step.episode) warteEpisoden.set(s.id, step.episode);
+      else warteEpisoden.delete(s.id);
+      warteGesehen.set(s.id, Date.now());
+      if (!step.melden || !step.episode || !to) continue;
+      const from = messageAddressesFor(s)[0] ?? { kind: "session" as const, slot: s.id, openedAt };
+      const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now });
+      const entry = appendMessage(from, to, { kind: "text", text }, `warte-hinweis:${s.id}:${openedAt}:${step.episode.seit}`, null);
+      audit("warte_hinweis", s.id, `${entry.id} -> ${addressLabel(to)} since=${step.episode.seit}`);
+      written.push(entry.id);
+    }
+    if (written.length) await saveStateNow();
+  } finally {
+    warteTickBusy = false;
+  }
+  return written;
+}
+
+// THE DELIBERATE ANSWER (Owner 22.10. 08:30: „[Zitat entfernt]“
+// ). No delivery ever answers the question (CLAUDE_PERMISSION_QUESTION);
+// this door does, on purpose: it types exactly one key, and only while exactly the question the caller names is on screen.
+// WHO: the seat's opener — the receiver of the waiting notice — and the Orchestratorin, she only for a seat that HAS an
+// opener: a seat the owner opened waits on him on purpose (tickWarteHinweis). Any other session gets 409.
+// BOUND TO THE DIALOG: the caller reads it whole (GET, with the command — never through the mailbox) and answers with its
+// `kennung`; a different dialog on screen, even the same question with another command, is 409 and nothing is typed.
+const RUECKFRAGE_TASTE = { freigeben: "1", ablehnen: "Escape" } as const;
+const RUECKFRAGE_ZU_HOCH = "the dialog is taller than the pane — its top is not on screen, so it cannot be read whole or bound; "
+  + "answer it in the terminal or widen the pane and read again";
+function rueckfrageRecht(caller: Slot, s: Slot | null): { ok: true; s: Slot; by: string } | { ok: false; response: Response } {
+  if (!s?.cwd || s === caller) return { ok: false, response: json({ error: "slot holds no other live session" }, 409) };
+  if (warteEmpfaenger(s) === caller) return { ok: true, s, by: `slot ${caller.id} (opener)` };
+  if (s.openedBy && deliveryRecipient({ kind: "orchestrator" }) === caller) return { ok: true, s, by: `slot ${caller.id} (orchestrator)` };
+  return { ok: false, response: json({ error: "only the seat's opener, or the Orchestratorin for a seat that has an opener, reads or answers its permission question — nothing typed" }, 409) };
+}
+async function leseRueckfrage(s: Slot): Promise<RueckfrageDialog | "zu-hoch" | null> {
+  const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
+  return cap.code === 0 ? rueckfrageDialog(cap.out) : null;
+}
+async function zeigeRueckfrage(caller: Slot, slot: unknown): Promise<Response> {
+  const recht = rueckfrageRecht(caller, slotFrom(slot));
+  if (!recht.ok) return recht.response;
+  const d = await leseRueckfrage(recht.s);
+  if (d === "zu-hoch") return json({ error: RUECKFRAGE_ZU_HOCH }, 409);
+  return d ? json({ slot: recht.s.id, ...d }) : json({ error: "no permission question on screen" }, 409);
+}
+async function beantworteRueckfrage(caller: Slot, body: Record<string, unknown> | null): Promise<Response> {
+  if (!body || Object.keys(body).some((k) => k !== "slot" && k !== "kennung" && k !== "wahl"))
+    return json({ error: "body must contain only slot, kennung and wahl" }, 400);
+  if (body.wahl !== "freigeben" && body.wahl !== "ablehnen") return json({ error: "wahl must be 'freigeben' or 'ablehnen'" }, 400);
+  if (typeof body.kennung !== "string" || !/^[0-9a-f]{16}$/.test(body.kennung))
+    return json({ error: "kennung must be the one GET /api/self/rueckfrage gave for this dialog" }, 400);
+  const wahl = body.wahl, kennung = body.kennung;
+  const recht = rueckfrageRecht(caller, slotFrom(body.slot));
+  if (!recht.ok) return recht.response;
+  const { s, by } = recht;
+  const openedAt = s.openedAt;
+  // in the slot's input chain, like the terminal's own keys: the screen read and the key cannot be split by a paste
+  // the CURRENT kennung goes to the audit, never into the answer: a caller handed it could resend it without reading
+  const task = s.inputChain.then(async (): Promise<{ refused: string | null; frage: string | null; jetzt: string | null }> => {
+    const d = await leseRueckfrage(s);
+    if (slotFrom(s.id) !== s || s.openedAt !== openedAt) return { refused: "the slot changed", frage: null, jetzt: null };
+    if (d === "zu-hoch") return { refused: RUECKFRAGE_ZU_HOCH, frage: null, jetzt: null };
+    if (!d) return { refused: "no permission question on screen", frage: null, jetzt: null };
+    if (d.kennung !== kennung)
+      return { refused: `another dialog is on screen: „${d.frage}“ — read it again with GET (a resized pane redraws it too)`,
+        frage: d.frage, jetzt: d.kennung };
+    // a pane in copy mode swallows the key (Abnahme 9d7f7d588): a door that says ok must have typed
+    const modus = await tmux("display-message", "-p", "-t", paneTarget(sess(s.id)), "#{pane_in_mode}");
+    if (modus.code !== 0 || modus.out.trim() !== "0")
+      return { refused: "the pane is in copy mode (someone is scrolling it) — leave copy mode, then read again", frage: d.frage, jetzt: d.kennung };
+    const k = await tmux("send-keys", "-t", paneTarget(sess(s.id)), RUECKFRAGE_TASTE[wahl]);
+    return { refused: k.code === 0 ? null : "send-keys failed", frage: d.frage, jetzt: d.kennung };
+  });
+  s.inputChain = task.then(() => {}, () => {});
+  const { refused, frage, jetzt } = await task;
+  audit("rueckfrage_antwort", s.id, `${wahl} by ${by} kennung=${kennung}${refused ? ` refused (on screen ${jetzt ?? "-"}): ${refused}` : `: ${frage}`}`.slice(0, 600));
+  if (refused) return json({ error: `${refused} — nothing typed` }, 409);
+  if (s.lauf) await merkeLaufNachricht([s.lauf.id], { id: randomBytes(12).toString("hex"), at: Date.now(),
+    from: { kind: "session", slot: caller.id, openedAt: caller.openedAt }, to: { kind: "session", slot: s.id, openedAt },
+    text: `[rueckfrage] ${wahl} durch ${by} (kennung ${kennung}): ${frage}`, replyTo: null }, STATE_DIR);
+  return json({ ok: true, slot: s.id, wahl, kennung, frage });
 }
 
 function stewardSlotsView(now: number) {
@@ -49744,6 +49892,13 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // a lane's Claude Code hook reporting a dialog only a human could answer (openHarnessBlock). Lane-
     // only on the same predicate FLEET_SELF_LANE is baked from, so hook and door can never disagree
     // about who is a lane; the steward's worktree counts, because nobody answers its pane either.
+    // the deliberate answer to a waiting permission question (beantworteRueckfrage)
+    if (url.pathname === "/api/self/rueckfrage" && (req.method === "POST" || req.method === "GET")) {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return req.method === "GET" ? zeigeRueckfrage(s, url.searchParams.get("slot")) : beantworteRueckfrage(s, await readJson(req));
+    }
     if (url.pathname === "/api/self/harness-block" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
@@ -51233,6 +51388,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(stuckDeliveryFor(s) ? { stuckDelivery: stuckDeliveryFor(s) } : {}),
             // Fleet deliveries a bundle holds for this occupant (heldDeliveriesView); omitted when none
             ...(held ? { heldDeliveries: held } : {}),
+            // Claude Code's permission question on screen (rueckfrageView): header and question, no command; omitted when none
+            ...(() => { const frage = rueckfrageView(s, Date.now()); return frage ? { rueckfrage: frage } : {}; })(),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             ...(s.worktree && s.webSearch ? { webSearch: true } : {}),
@@ -55064,4 +55221,4 @@ if (process.stdout.isTTY) {
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
-  appendOrchestratorStartReceipt };
+  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom };

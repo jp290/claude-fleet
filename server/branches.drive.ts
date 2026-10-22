@@ -17,6 +17,16 @@ interface Until { until: string; ms: number }
 // antwortet vor dem Schreiben“ ein fester Ausgang statt eines Zufalls der Plattenzeit
 // Mit `nach` wird erst gelesen, was die Zeile mit diesem Text trägt, und dann `ms` gewartet: das nächste Schreiben hängt, die früheren nicht
 interface Rohr { rohr: string; ms: number; nach?: string }
+// `datei`: eine Datei schreiben und danach `ms` warten — der Ersatz-claude einer Pane zeigt, was darin steht (server/warte-hinweis-route.test.ts)
+interface Datei { datei: string; text: string; ms: number }
+// `warte`: ein Takt des Warte-Hinweises zur Uhrzeit Lebensbeginn + `warte` ms; die Antwort nennt die geschriebenen Nachrichten
+interface Warte { warte: number }
+// `postfach`: ein Takt der Postfach-Zustellung (server.ts#tickPostfachZustellung); was er tippt, läuft danach im Hintergrund weiter
+interface Postfach { postfach: true }
+// `geparkt`: ein Takt der geparkten Sendungen (server.ts#tickParkedSends)
+interface Geparkt { geparkt: true }
+// `ausgabe`: die Pane dieses Slots gab vor `vorMs` zuletzt etwas aus — sonst setzt das nur der poll-Takt, der in diesem Leben nicht läuft
+interface Ausgabe { ausgabe: number; vorMs: number }
 
 const stateDir = process.env.FLEET_STATE_DIR;
 const port = process.env.FLEET_PORT;
@@ -29,9 +39,10 @@ if (!arg) throw new Error("keine Schritte");
 // sobald das Leben endet. `touch`: legt eine leere Datei an (das `.release` eines Test-Riegels), Antwort 200
 interface Background { background: Step }
 interface Touch { touch: string }
-const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | "save" | "end")[];
+const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | "end" | "save")[];
 
-const { serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow } = await import("../server");
+const { serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom } = await import("../server");
+const t0 = Date.now();
 await loadPersistedState(join(stateDir, "fleet.json"));
 await settleBranchBook();
 adoptTokens();
@@ -70,6 +81,16 @@ for (const step of steps) {
   }
   if (typeof step === "object" && "touch" in step) { writeFileSync(step.touch, ""); out.push({ status: 200, body: { touch: step.touch } }); continue; }
   if (step === "end") { out.push({ status: 200, body: await endLandedBranchesNow() }); continue; }
+  if ("datei" in step) { writeFileSync(step.datei, step.text); await Bun.sleep(step.ms); out.push({ status: 200, body: { datei: step.datei } }); continue; }
+  if ("ausgabe" in step) {
+    const s = slotFrom(step.ausgabe);
+    if (s) s.lastOutput = Date.now() - step.vorMs;
+    out.push({ status: s ? 200 : 404, body: { ausgabe: step.ausgabe } });
+    continue;
+  }
+  if ("geparkt" in step) { await tickParkedSends(); out.push({ status: 200, body: { geparkt: true } }); continue; }
+  if ("postfach" in step) { await tickPostfachZustellung(); out.push({ status: 200, body: { postfach: true } }); continue; }
+  if ("warte" in step) { out.push({ status: 200, body: { geschrieben: await tickWarteHinweis(t0 + step.warte) } }); continue; }
   if ("rohr" in step) {
     const pfad = join(stateDir, step.rohr);
     rmSync(pfad, { force: true });

@@ -6,7 +6,7 @@ import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell
 import { initFieldPerf } from "./fieldperf";
 import { pasteText } from "./paste";
 import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, reloadGsView, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
-import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
+import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderFrageHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -35,7 +35,7 @@ import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
-import { sendFailureMessage } from "./pendingsend";
+import { RUECKFRAGE_SATZ, sendFailureMessage, sendFailureToastMs } from "./pendingsend";
 import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { openKonstellation, renderKonstellation } from "./konstellation";
@@ -602,6 +602,9 @@ export interface SlotInfo {
   // Fleet deliveries a bundle holds for this session (server.ts#heldDeliveriesView): how many, when
   // the bundle is due (null = until the next send), which paths. ABSENT = nothing held.
   heldDeliveries?: HeldDeliveries;
+  // Claude Code's permission question on this session's screen (server.ts#rueckfrageView): its header and question,
+  // never the command. ABSENT = none. The session waits on a person: nothing sent from here answers it.
+  rueckfrage?: string;
   // the board's last model/effort switch and what Claude Code made of it (server.ts#startModelSwitch). ABSENT = none
   modelSwitch?: ModelSwitch;
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
@@ -5562,6 +5565,7 @@ function setIsland(open: boolean): void {
 // guessed. A session the pane does not show yet has no line.
 export function nowSentence(s: SlotInfo | undefined): { text: string; owner: boolean } | null {
   if (!s?.cwd) return null;
+  if (s.rueckfrage) return { text: RUECKFRAGE_SATZ, owner: true };
   if (s.awaiting === "owner") return { text: "Wartet auf dich", owner: true };
   if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return { text: "Hängt — die Session antwortet nicht", owner: false };
   if (s.awaiting === "main") return { text: "Wartet auf ihre MAIN", owner: false };
@@ -6595,7 +6599,11 @@ function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
 export type SlotState = OutputState | "wait" | "wait owner";
 export function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
   const out = outputState(s, now, awake);
-  if (out === "bad" || !s.awaiting) return out;
+  if (out === "bad") return out;
+  // a permission question waits on a person, whatever the output's freshness says (UI-Abnahme 22.10.: the board said
+  // „arbeitet“ and showed a green dot while the session stood on it)
+  if (s.rueckfrage) return "wait owner";
+  if (!s.awaiting) return out;
   return s.awaiting === "owner" ? "wait owner" : "wait";
 }
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
@@ -7484,8 +7492,14 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       const state = slotState(s, serverNow, visible || hidHot);
       // the mark reads the output's freshness and `awaiting` itself (src/marks.ts#markFacts)
       markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
+      // the permission question as a word beside the glyph, in the colour that means "waits for you"
+      if (s.rueckfrage) {
+        const frage = el("span", "frage", "Frage");
+        frage.title = `${RUECKFRAGE_SATZ}\n${s.rueckfrage}`;
+        r1.appendChild(frage);
+      }
       const live = el("span", `act ${state}`);
-      live.title = STATE_WORD[state]
+      live.title = STATE_WORD[state] + (s.rueckfrage ? ` — Rechte-Frage: ${s.rueckfrage}` : "")
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
         + `\nlast output ${sinceShort(serverNow - s.lastOutput)} ago · ${new Date(s.lastOutput).toLocaleString()}`;
       if (s.codexRecovery) live.title += `\n${codexTurnLine(s)}`;
@@ -7899,6 +7913,7 @@ export async function refresh() {
     renderChips(data.chips);
     renderParkHint();
     renderHeldHint();
+    renderFrageHint();
     renderWorkplaceField();
     for (const p of panes) p.syncHeld();
     // hot also for a PROPOSED done-criterion (2026-08-05): a clarify lane that filed its
@@ -11284,11 +11299,11 @@ function caretOnEdgeRow(dir: number): boolean {
 // dispatch toggles) — their views re-derive from refresh(), so a failed POST otherwise no-ops
 // silently. Layout stays inline so it needs no CSS-file change; the one colour comes from the
 // page's --danger token, so the toast cannot drift away from the rest of the error red.
-export function toast(msg: string) {
+export function toast(msg: string, ms = 2600) {
   const t = el("div", "", msg);
   t.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--danger);color:#fff;padding:8px 14px;border-radius:6px;z-index:9999;font-size:13px;max-width:80%;box-shadow:0 2px 8px rgba(0,0,0,.4)";
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
+  setTimeout(() => t.remove(), ms);
 }
 
 // --- compose box: Enter sends (bracketed paste + Enter server-side), Shift+Enter = newline ---
@@ -11309,7 +11324,8 @@ export function deliver(slot: number, text: string): Promise<boolean> {
       measured.response = res;
       if (!res.ok) {
         const body: unknown = await res.clone().json().catch(() => null);
-        toast(sendFailureMessage(res.status, body));
+        const message = sendFailureMessage(res.status, body);
+        toast(message, sendFailureToastMs(message));
         flashSendError();
         return false;
       }

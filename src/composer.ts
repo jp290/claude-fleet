@@ -7,6 +7,7 @@ import { prefBool, prefSetBool } from "./prefs";
 import { popover } from "./popover";
 import { runningEffort, runningModel } from "./running";
 import { askRisk } from "./dialog";
+import { RUECKFRAGE_SATZ } from "./pendingsend";
 
 // --- THE ONE COMPOSER ------------------------------------------------------------------------
 // Owner 2026-09-19: the conversation view's input REPLACES the box under the terminal — there is
@@ -191,6 +192,19 @@ export function renderHeldHint(): void {
   hint.hidden = !hd;
   const text = !hd ? "" : pane?.isChat ? "Senden nimmt sie mit" : `${heldDeliveriesLine(hd)} · Senden nimmt sie mit`;
   if (hint.textContent !== text) hint.textContent = text;
+}
+
+// the focused session's permission question (server.ts#rueckfrageView), BEFORE anything is typed: one line under the
+// field in the "waits for you" colour, and the field's frame in it. Gone when the question is (UI-Abnahme 22.10., Runde 2).
+export function renderFrageHint(): void {
+  const hint = $("compfrage");
+  const pane = panes[focused];
+  const frage = pane?.pastN == null ? fleet.find((x) => x.id === pane?.slot)?.rueckfrage : undefined;
+  hint.hidden = !frage;
+  const text = frage ? RUECKFRAGE_SATZ : "";
+  if (hint.textContent !== text) hint.textContent = text;
+  hint.title = frage ?? "";
+  compEl.classList.toggle("frage", !!frage);
 }
 
 // the model/effort switches: conversation view only, and only what the SLOT'S ADAPTER carries

@@ -385,6 +385,8 @@
   .slot .act.wait, #mtop .act.wait, #msheet .act.wait { border-radius: 0; background: var(--chat-mute);
     clip-path: polygon(0 0, 100% 0, 62% 50%, 100% 100%, 0 100%, 38% 50%); }
   .slot .act.wait.owner, #mtop .act.wait.owner, #msheet .act.wait.owner { background: var(--q-wait); }
+  /* the word beside it when the wait is Claude Code's permission question (client.ts, rueckfrage) */
+  .slot .frage { flex: none; margin-right: 4px; font: 500 11px var(--chat-mono); color: var(--q-wait); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
   /* ...and it HIDES the reading zone (ctx + state) instead of painting over a guessed width of it.
      It used to be a solid strip of min-width 62px ("ctx 78%" + gap + the state box) — which on a
@@ -860,6 +862,11 @@
   /* a held Fleet bundle (src/composer.ts#renderHeldHint): the same quiet ink as the parked line */
   #compheld { padding: 0 8px; font: 400 12px var(--chat-sans); color: var(--chat-mute); }
   #compheld[hidden] { display: none; }
+  /* the permission question BEFORE a send (src/composer.ts#renderFrageHint): under the field in --q-wait, the one colour
+     that means "waits for you" (grammatik G0.2), at the text size the owner chose; the field's frame in the same colour */
+  #compfrage { padding: 4px 2px 0; font: 400 calc(var(--chat-fs) * .9) var(--chat-sans); color: var(--q-wait); }
+  #compfrage[hidden] { display: none; }
+  #comp.frage:not(.err) #compsurface { border-color: var(--q-wait); }
   #compspace { flex: 1; }
   #mobmore { display: none; }
   #input { flex: 1; min-height: 24px; max-height: 140px; resize: none; padding: 4px 0; border: 0;
@@ -3955,6 +3962,8 @@
         border-radius: 14px; background: var(--chat-surface); box-shadow: inset 0 0 0 1px var(--chat-edge-soft);
         font-size: 16px; line-height: 1.4; }
       #main #comp #input:focus { box-shadow: inset 0 0 0 1px var(--chat-mute); }
+      /* the permission question (src/composer.ts#renderFrageHint): on the phone the field's frame is this inset line */
+      #main #comp.frage:not(.err) #input { box-shadow: inset 0 0 0 1px var(--q-wait); }
       /* an EMPTY field is one line high (owner 2026-10-07); its placeholder never wraps.
          The height itself: src/composer.ts#fitTextarea */
       #main #comp #input::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4418,6 +4427,7 @@
             <button id="send" title="send to this session"></button>
           </div>
         </div>
+        <div id="compfrage" hidden></div>
         <div id="compfoot"></div>
         <div id="comptray"></div>
         <input id="dropfile" type="file" multiple hidden>

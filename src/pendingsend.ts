@@ -71,6 +71,15 @@ export function isInterruptMark(text: string): boolean {
   return INTERRUPT_MARKS.has(text);
 }
 
+// THE PERMISSION-QUESTION REFUSAL stands longer than the other toasts (UI-Abnahme 22.10.: 88 characters, four lines on a
+// phone over the input field, and whoever looks at the terminal while sending missed it at 2.6 s)
+export const RECHTE_FRAGE_SATZ = "Die Session wartet an einer Rechte-Frage — im Terminal beantworten (1 oder Esc); nichts wurde getippt";
+export const RECHTE_FRAGE_TOAST_MS = 6000;
+// what the board says BEFORE a send, while the focused session stands on the question (composer, island, row tooltip)
+export const RUECKFRAGE_SATZ = "Wartet an einer Rechte-Frage — im Terminal antworten (1 oder Esc)";
+export const sendFailureToastMs = (message: string): number | undefined =>
+  message === RECHTE_FRAGE_SATZ ? RECHTE_FRAGE_TOAST_MS : undefined;
+
 export function sendFailureMessage(status: number, body: unknown): string {
   const record = (value: unknown): Record<string, unknown> | null =>
     value !== null && typeof value === "object" && !Array.isArray(value)
@@ -93,6 +102,9 @@ export function sendFailureMessage(status: number, body: unknown): string {
       return "send refused — no live agent in the pane; nothing was typed";
     if (/^slot (?:occupant changed|changed|pane unavailable or changed)/.test(error))
       return "send refused — slot occupant changed or unavailable; nothing was typed";
+    // the owner's input field and chat bar on a pane that waits at Claude Code's permission question (server.ts#
+    // CLAUDE_PERMISSION_QUESTION): no automatic text answers it, the terminal's own keys do
+    if (/^gate=blocked-screen: claude permission question — nothing typed$/.test(error)) return RECHTE_FRAGE_SATZ;
     const gate = /^gate=(kill-switch|harness|not-alive|no-agent|no-pane|blocked-screen|quiet-hours|busy)(?=:| — nothing typed$)/.exec(error)?.[1];
     if (gate) return `send refused — delivery gate=${gate}; nothing was typed`;
     return "send refused — nothing was typed; reason unavailable";

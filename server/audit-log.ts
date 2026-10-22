@@ -280,6 +280,10 @@ type AuditEvent =
   // `harness_block` row per report — deny or wait, minted, deduplicated or skipped alike — because
   // the count and the escalation are judged from the reports, not from the rows they minted.
   | "harness_block"
+  // a seat's pane stood on Claude Code's permission question and its opener got the mailbox notice (server.ts#tickWarteHinweis)
+  | "warte_hinweis"
+  // a deliberate answer to a waiting permission question through POST /api/self/rueckfrage, typed or refused (server.ts#beantworteRueckfrage)
+  | "rueckfrage_antwort"
   // a ③ verdict for a row that asked for one (server.ts#fileLaneReview): minted, deduplicated or
   // skipped alike — one line each, so "the reviewer ran and nobody heard" is readable off the trail
   | "lane_review"

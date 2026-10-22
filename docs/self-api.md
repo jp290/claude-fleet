@@ -5468,8 +5468,9 @@ es rotiert nicht, weil eine überschriebene `.1`-Generation wieder ein Löschen 
 Gemessener Anlass (2026-09-13): Lane `2d3c8f44` (Slot 5) stand im Bypass-Modus auf Claude Codes
 „Dangerous rm operation on possibly-empty variable path: $SP/$v … Do you want to proceed? ❯ 1. Yes /
 2. No“. Kein Fleet-Sensor sah es (`server.ts#paneReadiness` kannte Blocks nur für codex/pi; seit
-2026-09-15 kennt es für claude genau einen, den Trust-Dialog — diesen Dialog weiterhin nicht), und ein
-Server-Paste+Enter hätte die vorausgewählte „1. Yes“ getroffen.
+2026-09-15 kennt es für claude den Trust-Dialog), und ein Server-Paste+Enter hätte die vorausgewählte
+„1. Yes“ getroffen. Seit 2026-10-22 ist jede Rechte-Frage mit „1.“ und „Esc to cancel“ ein blockierender
+Schirm (`server.ts#CLAUDE_PERMISSION_QUESTION`): keine automatische Eingabe tippt hinein.
 
 **Zwei Hälften, und nur die zweite ist diese Route.** `.claude/settings.json` (getrackt) registriert
 `.claude/hooks/lane-permission.ts` zweimal:

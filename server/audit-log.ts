@@ -440,7 +440,10 @@ type AuditEvent =
   // the detail names the sendId and the draft's LENGTH — never the text, never the draft.
   | "send_parked"
   | "delivery_bundle_queued" | "delivery_bundle_sent" | "delivery_bundle_refused"
-  | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted";
+  | "delivery_bundle_uncertain" | "delivery_bundle_dropped" | "delivery_bundle_rerouted"
+  // a landed branch ended by itself (server/branch-ende.ts): `repo`, `branch`, `head`, `path`, `land` ride as
+  // fields; the whole record, notepad included, stands in branch-ends.jsonl and the head under refs/fleet/ended/<branch>
+  | "branch_ended";
 // `fields` — machine-readable columns for the rows that need them, beside (not instead of) the
 // prose `detail` every other event uses. Identity keys are RESERVED: a caller cannot
 // overwrite what row this is, which is why they are filtered rather than merely documented.

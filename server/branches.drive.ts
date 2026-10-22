@@ -3,7 +3,7 @@
 // Schritte aus argv[2] über den Route-Handler; die Antworten gehen als JSON nach stdout. Ein eigener
 // Prozess je Leben, weil bun test alle Testdateien in einem Prozess fährt: ein Import von server.ts
 // hier legte FLEET_STATE_DIR für server/load.test.ts mit fest.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -24,14 +24,20 @@ const token = process.env.FLEET_TOKEN;
 if (!stateDir || !port || !token) throw new Error("FLEET_STATE_DIR, FLEET_PORT und FLEET_TOKEN fehlen");
 const arg = process.argv[2];
 if (!arg) throw new Error("keine Schritte");
-const steps = JSON.parse(arg) as (Step | Until | Rohr | "save")[];
+// "end": ein Durchgang des Endes gelandeter Branches (server.ts#endLandedBranchesNow), Antwort 200 mit seinem Ergebnis.
+// `background`: die Anfrage läuft los, ohne dass der nächste Schritt auf sie wartet; ihre Antwort steht an ihrem Platz,
+// sobald das Leben endet. `touch`: legt eine leere Datei an (das `.release` eines Test-Riegels), Antwort 200
+interface Background { background: Step }
+interface Touch { touch: string }
+const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | "save" | "end")[];
 
-const { serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow } = await import("../server");
+const { serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow } = await import("../server");
 await loadPersistedState(join(stateDir, "fleet.json"));
 await settleBranchBook();
 adoptTokens();
 const fetch = serveOptions.fetch;
 if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+const handle = fetch; // in call() ist `fetch` nicht mehr eingeengt
 // der Handler liest vom Server nur die Peer-Adresse (finishHttp)
 const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
 
@@ -44,8 +50,26 @@ const earlier = (v: unknown): unknown => {
   if (Array.isArray(v)) return v.map(earlier);
   return v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, earlier(x)])) : v;
 };
+async function call(step: Step): Promise<{ status: number; body: unknown }> {
+  const auth = step.token === undefined ? token : step.token;
+  const headers: Record<string, string> = { host: `127.0.0.1:${port}`, ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+    ...(step.self ? { "x-fleet-self-token": step.self } : {}),
+    ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
+  const res = await handle.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,
+    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(earlier(step.body)) }) }), server);
+  if (!res) throw new Error(`${step.path}: der Handler gab keine Antwort`);
+  return { status: res.status, body: await res.json() };
+}
+const pending: Promise<void>[] = [];
 for (const step of steps) {
   if (step === "save") { await saveStateNow(); continue; }
+  if (typeof step === "object" && "background" in step) {
+    const at = out.push({ status: 0, body: null }) - 1;
+    pending.push(call(step.background).then((a) => { out[at] = a; }));
+    continue;
+  }
+  if (typeof step === "object" && "touch" in step) { writeFileSync(step.touch, ""); out.push({ status: 200, body: { touch: step.touch } }); continue; }
+  if (step === "end") { out.push({ status: 200, body: await endLandedBranchesNow() }); continue; }
   if ("rohr" in step) {
     const pfad = join(stateDir, step.rohr);
     rmSync(pfad, { force: true });
@@ -72,14 +96,8 @@ for (const step of steps) {
     out.push({ status: existsSync(step.until) ? 200 : 408, body: { until: step.until } });
     continue;
   }
-  const auth = step.token === undefined ? token : step.token;
-  const headers: Record<string, string> = { host: `127.0.0.1:${port}`, ...(auth ? { authorization: `Bearer ${auth}` } : {}),
-    ...(step.self ? { "x-fleet-self-token": step.self } : {}),
-    ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
-  const res = await fetch.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,
-    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(earlier(step.body)) }) }), server);
-  if (!res) throw new Error(`${step.path}: der Handler gab keine Antwort`);
-  out.push({ status: res.status, body: await res.json() });
+  out.push(await call(step));
 }
+await Promise.all(pending);
 process.stdout.write(`${JSON.stringify(out)}\n`);
 process.exit(0);

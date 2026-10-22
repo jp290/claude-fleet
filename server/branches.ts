@@ -158,6 +158,11 @@ const donePoints = (text: string): string[] => text.split("\n").flatMap((l) => {
   const m = POINT_RE.exec(l);
   return m && m[1] !== " " && m[2]?.trim() ? [m[2].trim()] : [];
 });
+// die offenen Punkte, „- [ ] …“
+export const openPoints = (text: string): string[] => text.split("\n").flatMap((l) => {
+  const m = POINT_RE.exec(l);
+  return m && m[1] === " " && m[2]?.trim() ? [m[2].trim()] : [];
+});
 // erledigt und in keiner früheren Charge genannt
 export function doneSinceLastLand(r: BranchRecord): string[] {
   const before = new Set(r.lands.flatMap((l) => l.points));

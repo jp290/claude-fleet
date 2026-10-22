@@ -230,6 +230,7 @@ import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type Br
   dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
+import { endLandedBranches, type BranchEnd, type EndDeps } from "./server/branch-ende";
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
@@ -8804,6 +8805,74 @@ const branchLandDeps: LandDeps = {
   deployNote: (repo) => (FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? "nötig — der Server fährt den neuen Stand erst nach einem Deploy" : null),
 };
 
+// THE END OF A LANDED BRANCH (server/branch-ende.ts): what holds a worktree here is a slot whose cwd lies in it, an attach
+// in flight, a succession between kill and open (successionPaths), or a test instance whose state file names it as `src`
+// with a live pid or with pid=0, which testinstanz.sh#up writes until its server answers. The ledger keeps each ended
+// record whole, notepad included, beside fleet.json and never in the audit log (the notepad rule at /api/worktrees/note).
+// FLEET_BRANCH_END_MS is the sweep's cadence; 0 registers no timer.
+const BRANCH_END_MS = Math.max(0, Number(process.env.FLEET_BRANCH_END_MS ?? 300_000) | 0);
+const BRANCH_ENDS_FILE = `${STATE_DIR}/branch-ends.jsonl`;
+const TI_ROOT = process.env.FLEET_TI_ROOT || "/tmp";
+// what Fleet itself leaves ignored in a worktree, as `git status --ignored` names it (PRIVATE_SCAFFOLD, laneGraphView), and
+// the bundles `bun run build` makes again from the tree (package.json#build, .gitignore)
+const BRANCH_END_SCAFFOLD = [...PRIVATE_SCAFFOLD, "node_modules/", "graphify-out/", ...LANE_SCRATCH_IGNORES,
+  "public/app.js", "public/share.js", "public/helper.js", "public/hub.js", "public/k15.js"];
+// a counter per path: two successions in one folder each hold it until their own open
+const successionPaths = new Map<string, number>();
+function holdSuccessionPaths(paths: readonly (string | null)[]): () => void {
+  const held = [...new Set(paths.filter((p): p is string => !!p))];
+  for (const p of held) successionPaths.set(p, (successionPaths.get(p) ?? 0) + 1);
+  return () => {
+    for (const p of held) {
+      const n = (successionPaths.get(p) ?? 1) - 1;
+      if (n > 0) successionPaths.set(p, n); else successionPaths.delete(p);
+    }
+  };
+}
+const realOf = (p: string): string => { try { return realpathSync(p); } catch { return resolve(p); } };
+function runningTestinstanzWorktrees(): string[] {
+  const out: string[] = [];
+  let entries: import("node:fs").Dirent[];
+  try { entries = readdirSync(TI_ROOT, { withFileTypes: true }); } catch { return out; } // no root: no instance
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("fleet-testinstanz-")) continue;
+    let state: string;
+    try { state = readFileSync(`${TI_ROOT}/${entry.name}/testinstanz.state`, "utf8"); }
+    catch { continue; } // no state file: no instance
+    const src = /^src=(.*)$/m.exec(state)?.[1], pid = Number(/^pid=(\d+)$/m.exec(state)?.[1]);
+    if (!src || !Number.isInteger(pid) || pid === 1) continue;
+    if (pid === 0) { out.push(realOf(src)); continue; } // starting: the server has not answered yet
+    try { process.kill(pid, 0); out.push(realOf(src)); }
+    catch (e) { if (e instanceof Error && "code" in e && e.code === "EPERM") out.push(realOf(src)); } // EPERM: alive, someone else's
+  }
+  return out;
+}
+let branchEndBusy = false;
+async function endLandedBranchesNow(): Promise<{ ended: BranchEnd[]; kept: { branch: string; why: string }[] }> {
+  if (branchEndBusy) return { ended: [], kept: [] };
+  branchEndBusy = true;
+  try {
+    const instances = runningTestinstanzWorktrees();
+    const deps: EndDeps = {
+      gitRead, git, worktrees: (repo) => listWorktrees(repo, true),
+      holds: { busy: attachBusy, transit: () => [...successionPaths.keys()], real: realOf,
+        cwds: () => slots.flatMap((s) => (s.cwd ? [s.cwd] : [])) },
+      instance: (path) => instances.includes(realOf(path)),
+      scaffold: BRANCH_END_SCAFFOLD,
+      book: () => branchBook, setBook: (book) => { branchBook = book; }, saveStateNow,
+      log: async (e, record) => {
+        await appendEventStrict(BRANCH_ENDS_FILE, { at: Date.now(), ...e, record });
+        audit("branch_ended", undefined, `${e.branch} ${e.head}`, { repo: e.repo, branch: e.branch, head: e.head, path: e.path ?? "", land: e.land });
+      },
+      ended: (e) => { if (e.path) dropShelved(e.path, "its branch ended after its land"); mergeParked.delete(e.branch); },
+      landing: branchLanding,
+    };
+    const r = await endLandedBranches(deps);
+    if (r.ended.length) { workplacesCache = null; void tickGit().catch(() => {}); }
+    return r;
+  } finally { branchEndBusy = false; }
+}
+
 // the /api/slots/:id/worktrees board, cached serve-stale-while-revalidate (see the route):
 // a session switch must not wait for ~150 git spawns (~5 s on a loaded machine, measured
 // 2026-09-20), and EVERY other displayed git fact on this dashboard already carries the
@@ -9748,6 +9817,18 @@ async function waitForSlotTeardown(slot: number): Promise<void> {
 
 const SLOT_TEARDOWN_TEST_LATCH = process.env.FLEET_TEST_SLOT_TEARDOWN_LATCH ?? null;
 let slotTeardownTestLatchUsed = false;
+// THE GAP OF A SUCCESSION, for a test: the predecessor is gone (cwd null), the successor not yet open. The test holds it
+// open with FLEET_TEST_SUCCESSION_GAP_LATCH (a path: `.reached` is written here, `.release` ends the wait)
+const SUCCESSION_GAP_TEST_LATCH = process.env.FLEET_TEST_SUCCESSION_GAP_LATCH ?? null;
+async function waitForSuccessionGapTestLatch(): Promise<void> {
+  if (!SUCCESSION_GAP_TEST_LATCH) return;
+  writeFileSync(`${SUCCESSION_GAP_TEST_LATCH}.reached`, "", { mode: 0o600 });
+  for (let waited = 0; waited < 10_000; waited += 10) {
+    if (existsSync(`${SUCCESSION_GAP_TEST_LATCH}.release`)) return;
+    await Bun.sleep(10);
+  }
+  throw new Error("succession gap latch timed out before release");
+}
 async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target: TmuxTarget | null): Promise<void> {
   if (!SLOT_TEARDOWN_TEST_LATCH || slotTeardownTestLatchUsed || !existsSync(SLOT_TEARDOWN_TEST_LATCH)) return;
   const expected = readFileSync(SLOT_TEARDOWN_TEST_LATCH, "utf8").trim();
@@ -10505,6 +10586,7 @@ async function killSlot(s: Slot, why: Exclude<SlotEnding, "unknown">): Promise<v
   } finally {
     if (slotTeardownInflight.get(s.id) === latch) slotTeardownInflight.delete(s.id);
   }
+  if (why === "handoff") await waitForSuccessionGapTestLatch();
 }
 
 // --- SLEEP: an idle session gives its RAM back without ending (owner idea 2026-09-17). Not a kill:
@@ -14277,6 +14359,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
     if (refused) return refused;
   }
   laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
+  const transit = holdSuccessionPaths([predecessor.cwd]); // ...and so is its worktree: no landed branch ends under it
   try {
     const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
       { brief, path: "succession", draft, label },
@@ -14343,6 +14426,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
         ...(orchStart?.fehlt.length ? { missing: orchStart.fehlt } : {}) } } : {}) });
   } finally {
     laneSpawn.delete(s.id);
+    transit();
   }
 }
 
@@ -43566,6 +43650,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     }
 
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
+    const transit = holdSuccessionPaths([s.cwd, openRoot]); // ...and so are both worktrees: no landed branch ends under them
     try {
       const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
@@ -43750,6 +43835,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
         ...(receipt ? {} : { receipt: false }) });
     } finally {
       laneSpawn.delete(s.id);
+      transit();
     }
   } finally {
     releaseGameMakerTreeLease(treeLease);
@@ -46353,6 +46439,7 @@ else if (REVIEW_OPTIN_TICK_MS > 0) setInterval(() => {
 // uses instead of minting a knob of its own — the close is level-triggered and nothing waits on it.
 if (LANE_AUTOCLOSE_ON) setInterval(() => void tickLaneAutoClose().catch((e: unknown) => logError("tickLaneAutoClose", e)), AUTOS_TICK_MS);
 if (ACCEPT_BY_LAND_MS > 0) setInterval(() => void tickAcceptByLand("tick").catch((e: unknown) => logError("tickAcceptByLand", e)), ACCEPT_BY_LAND_MS);
+if (BRANCH_END_MS > 0) setInterval(() => void endLandedBranchesNow().catch((e: unknown) => logError("endLandedBranches", e)), BRANCH_END_MS);
 if (AUDIT_PING_MS > 0) setInterval(() => void tickAuditPing().catch((e: unknown) => logError("tickAuditPing", e)), AUDIT_PING_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickInboxNudge().catch((e: unknown) => logError("tickInboxNudge", e)), INBOX_NUDGE_MS);
 if (INBOX_NUDGE_MS > 0) setInterval(() => void tickMessageNudge().catch((e: unknown) => logError("tickMessageNudge", e)), INBOX_NUDGE_MS);
@@ -54974,7 +55061,7 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, saveStateNow, viewEntry, crossSessionEntry,
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt };

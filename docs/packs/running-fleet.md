@@ -38,6 +38,17 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
 - **Braces in every refspec.** The shell here is zsh, which reads `$SHA:refs/...` as a history modifier and eats
   the `:r`. Write `"${SHA}:refs/heads/x"` and `"${SHA}:path"`, and after a push to the hub confirm with
   `git ls-remote <hub> refs/heads/main`.
+- **A landed branch ends by itself, and comes back in three steps.** Once nothing has been added since its land and
+  no session, test instance, open point or ignored upload holds it, the server removes its worktree, git branch and
+  board entry (`server/branch-ende.ts`). To bring one back:
+  1. Run `git branch <branch> refs/fleet/ended/<branch>` in the repo.
+  2. Put it on the board with `POST /api/branches` `{ repo, name, branch }`. `branch` is required: without it the
+     door makes a second branch `branch/<slug>-xxxx` and leaves the old one without an entry.
+  3. Write its notepad back with `POST /api/branches/note` `{ repo, branch, text, rev }`. `text` is `record.text` from
+     that branch's line in `<state dir>/branch-ends.jsonl`; `rev` is the one step 2 answered (0), not `record.rev`,
+     which answers 409.
+
+  Its lands do not come back, so a restored branch ends again only after its next land.
 
 ## Deploying
 

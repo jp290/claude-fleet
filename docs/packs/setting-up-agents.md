@@ -55,6 +55,8 @@ It never says how to do the work.
 - Write for the model that gets it. A weaker or less familiar model needs more about the situation and more
   material, not more prohibitions.
 - Ask it to say at the end, in one sentence, what was missing from its start.
+- Say what it does after its report. If the work ends there, write "then stop: no handover, no succeed"; a branch
+  or free session that isn't told may hand over, and its successor starts with nothing to do.
 
 ## How seats start today
 
@@ -63,7 +65,7 @@ It never says how to do the work.
 - **A branch session with a task:** `POST /api/branches/open`, or `POST /api/self/branches/open` from a session.
   The opener and the branch session form a pair that may message each other. Open it with your own self token,
   never with the owner credential: a branch session opened the other way has no mailbox back to you, and you none
-  to it.
+  to it. If the worktree holds an earlier conversation, the open resumes it; pass `"fresh": true` for a new start.
 - **A model from another provider:** pi on the workhorse, inside the bwrap fence, in rounds. One round is one run
   with the task and the last verdict, and report and verdict are stored as files. Example:
   `~/local-notes/agent-objekt-bau/runde.sh`. The cost of a round is the sum of `cost.total` over the

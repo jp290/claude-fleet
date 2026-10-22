@@ -39,6 +39,13 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   the blocker: a deploy already building or in flight, a land, audit, succession or founding in flight, an
   unreadable HEAD, or a tip not audited yet (then `next` says what to do). A failed build is a 500 at
   `stage: "build"`, and the running server is untouched. Act on the reason; a loop over any 409 can wait forever.
+- **An unaudited tip doesn't wait for the night.** With helper audits, the full audit after a land waits for a
+  quiet window or the nightly run (`server.ts#AUDIT_QUIET_MS`, `#AUDIT_NIGHTLY_AT`). The deploy door doesn't wait:
+  it goes out on the youngest green-audited ancestor's word when every land since then passed the full gate
+  (`unaudited: gate-only`, `server.ts#deployGateOnlyOf`), and otherwise answers 409; either way it queues the tip's
+  full audit at once (`server.ts#deployAuditOf`). A direct commit or a land that ran only the docs or source gate
+  breaks that chain, and the deploy then waits for the tip's own audit. A red tip without a verdict queues
+  nothing: judge it first.
 - **Check the helper's claims yourself.** The server refuses a deploy while a local audit, a land or a succession
   is in flight, but it does not see a helper that has just claimed the shards of a waiting audit. In the same
   command as the deploy, read `./ctl.sh audits --last 1` (the `live:` line must say idle) and the tail of
@@ -84,6 +91,9 @@ reads as his.
 - **A lane that waits hours on its MAIN may wait on an unsent line.** Read the MAIN's input line, the `❯` between
   the two rules at the bottom. A pasted delivery that was never sent goes out with one Enter. An occupied composer
   blocks every delivery, your own included: `grep -c 'composer occupied' server.log`, and check your own line.
+- **Write to a seat through the mailbox, as its counterpart.** To a branch session you opened, write freely; the
+  opener is matched by slot and folder, so your successor on the same slot keeps the pair. To any other session the
+  orchestrator writes only a reply, with `replyTo` on a message from its current occupant; anything else is a 409.
 - **Stop a test instance through its door.** `./testinstanz.sh down` refuses while a connection is open, because
   an open connection is somebody looking, most likely the owner's tab. Never kill one by tmux socket or PID. Age and
   „[Zitat entfernt]“ don't prove nobody looks.

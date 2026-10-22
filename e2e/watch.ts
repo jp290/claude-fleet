@@ -26,7 +26,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { sendFailureMessage } from "../src/pendingsend";
+import { sendFailureMessage, sendFailureToastMs } from "../src/pendingsend";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 
 const composerByteDetail = (text: string, expected: string) => {
@@ -2166,9 +2166,10 @@ export async function run(): Promise<void> {
         let calls = 0;
         let flashes = 0;
         const notices: string[] = [];
-        const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage", "perfDeliveries",
+        // every free name of the extracted deliver() comes in here; a rejection reads sendFailureToastMs too (437e457b)
+        const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage", "sendFailureToastMs", "perfDeliveries",
           `${compiled}; return deliver;`)(async () => { calls++; return response.clone(); },
-          (text: string) => notices.push(text), () => { flashes++; }, formatter, new WeakMap()) as
+          (text: string) => notices.push(text), () => { flashes++; }, formatter, sendFailureToastMs, new WeakMap()) as
           (slot: number, text: string) => Promise<boolean>;
         const outgoing = "local text retained on rejection";
         let localText = outgoing;

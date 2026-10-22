@@ -124,6 +124,12 @@ const PRE_AUTH_ROUTES = [
   // receiver is derived from the lane's live Program-MAIN binding or is the owner inbox, never named
   // by the body. It mints a notification row and grants nothing: no land, dispatch, auto or Watch.
   '= /api/self/harness-block',
+  // The deliberate answer to Claude Code's permission question (2026-10-22, server.ts#beantworteRueckfrage). Session
+  // principal only (no steward, no helper; unknown credential 401 after 400 ms), and only the seat's opener or the
+  // Orchestratorin for a seat that has an opener — every other session 409. GET reads the dialog whole; POST takes a
+  // closed three-field body and types exactly one key ("1" or Escape), only while the dialog with that GET's kennung
+  // is on screen and the pane is not in copy mode. It grants nothing else: no land, dispatch, auto or Watch.
+  '= /api/self/rueckfrage',
   // The PROGRAM INBOX, the durable pull half of the same back-channel, and the narrowest entry on
   // this list: both verbs are PROGRAM-BOUND on top of the non-lane rule — the caller must be the
   // current bound MAIN of an ACTIVE Program (boundProgramForMain, slot AND openedAt), so a lane, a

@@ -1,10 +1,10 @@
-// perf-probe.ts — isolated browser measurements of rebuilds, Long Tasks and the four Fleet journeys.
+// tools/perf-probe.ts — isolated browser measurements of rebuilds, Long Tasks and the four Fleet journeys.
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
-import type { RebuildCounts } from "./src/perfmarks";
-import type { PerfRecord } from "./src/protocol";
-import type { TaskInfo } from "./src/client";
+import type { RebuildCounts } from "../src/perfmarks";
+import type { PerfRecord } from "../src/protocol";
+import type { TaskInfo } from "../src/client";
 
 export const CONVERSATION_ID = "00000000-0000-4000-8000-000000000001";
 export const CONVERSATION_LINES = Array.from({ length: 24 }, (_, i) => JSON.stringify({
@@ -12,7 +12,7 @@ export const CONVERSATION_LINES = Array.from({ length: 24 }, (_, i) => JSON.stri
   message: { role: i % 2 ? "assistant" : "user", ...(i % 2 ? { model: "claude-sonnet-4-6" } : {}),
     content: [{ type: "text", text: `Fixture turn ${i}: ${"fixed conversation text. ".repeat(5)}` }] },
 }));
-const sourceRoot = (): string => import.meta.dir;
+const sourceRoot = (): string => join(import.meta.dir, "..");
 const run = async (argv: string[], cwd: string, env: Record<string, string>): Promise<string> => {
   const p = Bun.spawn(argv, { cwd, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);

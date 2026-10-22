@@ -137,7 +137,7 @@ export const settleForMerge = async (slot: number): Promise<MergeSettle> => {
 // is observable in the pane's own output.
 //
 // HOW the `claude` is made is platform-dependent, and both halves are load-bearing — this suite
-// also runs on Debian inside ./docker-verify.sh (docs/container.md), so a macOS-only trick here
+// also runs on Debian inside ./ops/docker-verify.sh (docs/container.md), so a macOS-only trick here
 // would break that run silently:
 //   · macOS → SYMLINK. A copied platform binary is SIGKILLed (its signature does not survive a
 //     plain cp — measured here: exit 137 and a pane dead on the spot), and `ps -o comm=` on a

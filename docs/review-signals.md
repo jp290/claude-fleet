@@ -121,10 +121,10 @@ Kosten. Anker über Symbole und Überschriften, nie über Zeilennummern.
 
 ---
 
-## Teil 3 — Der mechanische Teil: `review-sweep.ts` (WP3, gelandet 2026-08-17)
+## Teil 3 — Der mechanische Teil: `tools/review-sweep.ts` (WP3, gelandet 2026-08-17)
 
-Vier der Signale oben sind ohne Modell prüfbar, und genau die fährt `review-sweep.ts` —
-`bun review-sweep.ts` in einem beliebigen Git-Baum, Sekunden, JSON-Zeilen auf stdout, ein
+Vier der Signale oben sind ohne Modell prüfbar, und genau die fährt `tools/review-sweep.ts` —
+`bun tools/review-sweep.ts` in einem beliebigen Git-Baum, Sekunden, JSON-Zeilen auf stdout, ein
 stabiler Fingerprint je Befund. Es ist ein **Sensor**: kein Gate, kein Auto-Fix, kein
 Server-Tick. `--queue` legt je NEUEM Fingerprint eine `notiz` über die Owner-Task-API ab
 (`--api` und `--token`/`FLEET_SWEEP_TOKEN` sind PFLICHT — ohne beides verweigert es laut, es

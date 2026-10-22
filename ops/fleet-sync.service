@@ -45,8 +45,8 @@
 #
 # Install (an owner act on the follower, after fleet-sync.sh has ARRIVED THERE THROUGH A LAND —
 # an untracked hand-copied twin of a tracked file is exactly what makes the next ff-only sync fail):
-#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" fleet-sync.service > ~/.config/systemd/user/fleet-sync.service
-#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" fleet-sync.timer   > ~/.config/systemd/user/fleet-sync.timer
+#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" ops/fleet-sync.service > ~/.config/systemd/user/fleet-sync.service
+#   sed "s|FLEET-DIR|$HOME/claude-fleet|g" ops/fleet-sync.timer   > ~/.config/systemd/user/fleet-sync.timer
 #   systemctl --user daemon-reload
 #   systemctl --user start fleet-sync.service     # measure the fetch ONCE by hand before arming it
 #   systemctl --user enable --now fleet-sync.timer

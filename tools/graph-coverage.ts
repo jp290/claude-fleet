@@ -1,14 +1,15 @@
-// graph-coverage.ts — share of server function declarations missing from the graphify graph.
+// tools/graph-coverage.ts — share of server function declarations missing from the graphify graph.
 //
 // Counts top-level `function` declarations of server.ts + server/*.ts that the graph does NOT carry
 // as a node label. Above 10 % the graph is not usable for symbol resolution; use rg/ast-grep
 // (docs/messungen/2026-09-13-worktrail-iv-agents-ctxpacks-fable.md §3.5).
 //
-//   bun graph-coverage.ts --graph <path/to/graph.json>
+//   bun tools/graph-coverage.ts --graph <path/to/graph.json>
 //
 // exit 0 = at most 10 % missing · exit 1 = more than 10 % missing · exit 2 = the probe itself could
 // not run (no --graph, file missing or unparsable, no declarations found) — never read as coverage.
 import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 const MAX_MISSING_PCT = 10;
 const LIST_MAX = 20;
@@ -38,13 +39,13 @@ export function graphLabels(raw: string): Set<string> {
 async function main(): Promise<void> {
   const i = process.argv.indexOf("--graph");
   const graphPath = i >= 0 ? process.argv[i + 1] : undefined;
-  if (!graphPath) fail("usage: bun graph-coverage.ts --graph <graph.json>");
+  if (!graphPath) fail("usage: bun tools/graph-coverage.ts --graph <graph.json>");
   const file = Bun.file(graphPath);
   if (!(await file.exists())) fail(`graph file missing: ${graphPath}`);
   let labels: Set<string>;
   try { labels = graphLabels(await file.text()); } catch (e) { fail(`graph file does not parse: ${graphPath} (${(e as Error).message})`); }
 
-  const root = import.meta.dir;
+  const root = resolve(import.meta.dir, "..");
   const sources = ["server.ts", ...readdirSync(`${root}/server`).filter((f) => f.endsWith(".ts")).sort().map((f) => `server/${f}`)];
   const declared: { file: string; name: string }[] = [];
   for (const rel of sources) {

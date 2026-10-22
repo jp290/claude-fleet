@@ -169,7 +169,7 @@ Der Post-Land-Audit bleibt unverändert voll — die Kurzkette ist der schnelle 
 
 **3 — Keine Lane landet Code, also nimmt keine Lane den Suite-Mutex.** Der maschinenweite Mutex
 `/tmp/fleet-e2e.lock` wird an genau einer Stelle im Suite-Pfad genommen: `e2e-stage.sh`, das alle
-sieben Suite-Wrapper einlesen (`docker-verify.sh` nimmt denselben Pfad für den Container-Lauf).
+sieben Suite-Wrapper einlesen (`ops/docker-verify.sh` nimmt denselben Pfad für den Container-Lauf).
 Eine Findings-Lane fährt keine Suite: `bun e2e/pins.ts` startet keinen Server, kein tmux, kein
 Netzwerk und geht nicht durch `e2e-stage.sh`. Der Schwarm konkurriert also **nicht** mit dem
 Post-Land-Audit des Servers, der genau diesen Mutex braucht. Landet eine Schwarm-Lane doch Code,

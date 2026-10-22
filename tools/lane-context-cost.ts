@@ -7,10 +7,10 @@
 // (context-snippets.ts#renderSnippetBlock) lower that cost, with the card head held apart as a
 // covariate so its effect is not read as the package's.
 //
-//   bun lane-context-cost.ts                         # cohorts A/B, markdown tables
-//   bun lane-context-cost.ts --json                  # the same rows as JSON (no brief text, no commands)
-//   bun lane-context-cost.ts --baseline 1789204092324  # the 2026-09-12 baseline: outcomes with ts <= that
-//   bun lane-context-cost.ts --budget --quality <land-quality.jsonl> [--until <iso>] [--days 14]
+//   bun tools/lane-context-cost.ts                         # cohorts A/B, markdown tables
+//   bun tools/lane-context-cost.ts --json                  # the same rows as JSON (no brief text, no commands)
+//   bun tools/lane-context-cost.ts --baseline 1789204092324  # the 2026-09-12 baseline: outcomes with ts <= that
+//   bun tools/lane-context-cost.ts --budget --quality <land-quality.jsonl> [--until <iso>] [--days 14]
 //                                                    # peak context vs land quality, pots, waves, baton
 //   flags: --root <checkout> (default: main checkout) · --projects <dir> (default ~/.claude/projects)
 //          --b-from <iso> · --a-from <iso> · --until <iso>
@@ -42,11 +42,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { readLedger } from "./server/persist";
-import { landWaveUnits } from "./task-land-waves";
-import type { TaskCardSize } from "./task-waves";
-import { CARD_HEAD_MARK } from "./wave-brief";
-import { MODEL_REGISTER } from "./model-register";
+import { readLedger } from "../server/persist";
+import { landWaveUnits } from "../task-land-waves";
+import type { TaskCardSize } from "../task-waves";
+import { CARD_HEAD_MARK } from "../wave-brief";
+import { MODEL_REGISTER } from "../model-register";
 
 export const DEFAULT_A_FROM = "2026-09-13T01:17:00+02:00";
 /** the first lane brief that carried a rendered source package */
@@ -268,7 +268,7 @@ function countJsonl(dir: string): number {
     n + (e.isDirectory() ? countJsonl(join(dir, e.name)) : e.name.endsWith(".jsonl") ? 1 : 0), 0);
 }
 
-// server/persist.ts#readLedger itself, not a copy (the pattern of briefstats.ts#readJsonl): the hand
+// server/persist.ts#readLedger itself, not a copy (the pattern of tools/briefstats.ts#readJsonl): the hand
 // copy that stood here delivered an array line as a row and dropped torn lines uncounted. The
 // cohort tables have no place for a hole count, so only the rows travel on.
 export async function readJsonl(file: string): Promise<Row[]> {
@@ -419,7 +419,7 @@ export function renderCohorts(rows: LaneRow[]): string {
 //     transcript does not show as text); fed = peak − first − ownOutput (tool results, reminders,
 //     prompts). `retainRatio` checks that output really stays in context: on turns whose tool result
 //     is < 200 chars, (context delta) / (previous output) — ≈ 1 means it does.
-//   - quality: joined by branch to a land-quality.jsonl (bun land-quality.ts --out), never recomputed.
+//   - quality: joined by branch to a land-quality.jsonl (bun tools/land-quality.ts --out), never recomputed.
 //   - nudges: prompts whose text opens with the server's migrate head; armed = the first such delivery.
 
 const MIGRATE_HEAD = "[fleet] Dein Kontext ist bei ";

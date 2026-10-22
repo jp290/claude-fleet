@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { CONVERSATION_ID, CONVERSATION_LINES, scratchInstance } from "../perf-probe";
+import { CONVERSATION_ID, CONVERSATION_LINES, scratchInstance } from "../tools/perf-probe";
 import { perfRebuild, perfRebuilds, REBUILD_SURFACES } from "../src/perfmarks";
 
 // Captured on 2026-10-05 at 256c7e5c; sessions recaptured on 2026-10-06 after path normalization,

@@ -1853,7 +1853,7 @@ for (const [k, pid] of [["", ${foreign.pid ?? 0}], ["group", ${process.pid}]]) c
   // ===== §6d THE CONTAINER ADAPTER =====
   // Stage 1: a slot whose agent runs inside a container the OPERATOR started. There is deliberately
   // no docker here and there must never be — a container runtime in the gate is an external
-  // dependency no lane has (docs/container.md says the same about ./docker-verify.sh). So what is
+  // dependency no lane has (docs/container.md says the same about ./ops/docker-verify.sh). So what is
   // asserted is the SPAWN STRING tmux was told to run, which is recorded whether or not the
   // container (or docker itself) exists. That splits cleanly: the wrapper is the new code and is
   // pinned here; the agent line inside it is agentCmd's, already proven by every slotCmd row in

@@ -354,11 +354,11 @@ function processesForPath(path: string): Exclude<TaskProcess, "cross-cutting">[]
   if (path === "src/protocol.ts") return ["client-ui", "server"];
   if (path.startsWith("e2e/") || path.startsWith("drills/")
     || /^fleet-e2e(?:-|\.)/.test(path) || /^e2e-(?:.*\.)?sh$/.test(path)
-    || path === "e2e-stage.sh" || path === "docker-verify.sh") return ["e2e-gates"];
+    || path === "e2e-stage.sh" || path === "ops/docker-verify.sh") return ["e2e-gates"];
   if (path.startsWith("docs/") || path.startsWith("briefs/") || path.endsWith(".md")
     || path === "LICENSE") return ["docs"];
-  if (path === "Dockerfile" || path === ".dockerignore" || path === "container-firewall.sh"
-    || path === "docker-entrypoint.sh" || path === "attic/worker-deepseek.py"
+  if (path === "ops/Dockerfile" || path === ".dockerignore" || path === "ops/container-firewall.sh"
+    || path === "ops/docker-entrypoint.sh" || path === "attic/worker-deepseek.py"
     || path.startsWith(".claude/")) return ["harness-adapter"];
   if (path.startsWith("public/") || path.startsWith("src/")) return ["client-ui"];
   if (path === "watchdog.sh" || path === "register.sh" || path === "state.sh"

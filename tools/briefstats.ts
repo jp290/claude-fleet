@@ -5,8 +5,8 @@
 // them: a grep for `briefHash|ownerPrompts|disposition` across state.sh, register.sh, slotstats.ts
 // and trailstats.ts finds one hit, and it counts dispositions. This module is that reader.
 //
-//   bun briefstats.ts                                   # the live ledgers in the cwd
-//   bun briefstats.ts <lane-outcomes.jsonl> <context-receipts.jsonl> [--json]
+//   bun tools/briefstats.ts                                   # the live ledgers in the cwd
+//   bun tools/briefstats.ts <lane-outcomes.jsonl> <context-receipts.jsonl> [--json]
 //
 // It is a READER. Nothing here collects, schedules, gates or alarms — same stance as slotstats.ts,
 // trailstats.ts and continuity.ts, and the same shape: every input is an argument, so a synthetic
@@ -50,7 +50,7 @@
 // of these two ledgers can separate them; inventing a third state would only hide that.
 
 import { existsSync } from "node:fs";
-import { readLedger } from "./server/persist";
+import { readLedger } from "../server/persist";
 
 /** where the delivered text came from — server.ts's BriefSource, the seven values a receipt carries */
 export const BRIEF_SOURCES = ["compiled", "owner", "main", "raw", "clarify", "founding", "card"] as const;

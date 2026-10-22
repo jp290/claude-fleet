@@ -342,7 +342,7 @@ const steps: Step[] = [
     await intake.run(ctx);
   } },
 
-  // --- the deterministic cleanliness sweep (review-sweep.ts). Directly after the task family because
+  // --- the deterministic cleanliness sweep (tools/review-sweep.ts). Directly after the task family because
   // its --queue half mints rows through the same owner route those checks exercise — and it deletes
   // every row it minted again, so the sections after it see the queue the tasks family left behind.
   { unit: "sweep", module: "sweep", run: async () => {

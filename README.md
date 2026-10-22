@@ -23,6 +23,16 @@ On boot the server prints a one-click login URL carrying the access token — bu
 a terminal; redirected to a log it withholds the token, which then has to be read out of
 `fleet.json`. The token goes into a `SameSite=Strict` cookie, so you log in once per browser.
 
+To check a change:
+```sh
+bun run typecheck        # tsc over every .ts in the tree (tsconfig.json)
+bun run pins             # milliseconds: the must-agree pairs no compiler sees (e2e/pins.ts)
+bun run test             # unit tests in server/, ci/ and src/
+```
+Before a merge, `bun ci/merge-check.ts <branch>` checks something else: the tree main would have
+after the merge, on a helper machine — pins, typecheck, build, the unit tests of `ci/` and
+`server/` (not `src/`), the gate suites and the small e2e units.
+
 ## The core objects
 
 **Slot and session.** A slot is one of 16 fixed places (`server/types.ts#MAX_SLOTS`), each backed by
@@ -152,13 +162,15 @@ the landing page are separate documents in `public/`.
 
 ## Ops
 
-The recommended setup is the launchd/systemd watchdog, which survives crashes *and* reboots and is
+The recommended setup is the launchd/systemd watchdog (templates in `ops/`, beside the container's
+`ops/Dockerfile`), which survives crashes *and* reboots and is
 also where the live land-path configuration is written: `watchdog.sh` holds the spawn line, and
 `FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD` and `FLEET_CLEAN_REVIEW` on it decide what the gate,
 tier 2 and the advisory reviewer actually do. `bun run build` rebuilds the client bundles;
 `./e2e-isolated.sh` runs the full suite against a throwaway instance on its own tmux socket and port,
 and `bun e2e/pins.ts` is the millisecond-fast first stage that catches drift no compiler sees.
-`bun review-sweep.ts` and `bun repo-map.ts` are the read-only sensors over the tree itself.
+`bun tools/review-sweep.ts` and `bun tools/repo-map.ts` are the read-only sensors over the tree itself;
+the other command-line tools sit beside them in `tools/`.
 
 Env worth knowing: `FLEET_HOST`, `FLEET_PORT`, `FLEET_SOCK`, `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`,
 `FLEET_CMD`, `FLEET_DISPATCH_REPO`, `FLEET_DISPATCH_MAX_LANES` (default 3),

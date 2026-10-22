@@ -95,7 +95,7 @@ EXPOSE 8790
 # The entrypoint is a passthrough unless the container is started as root: then it applies the
 # egress firewall (with FLEET_FIREWALL=1) and drops to `fleet` before exec'ing the command. The
 # image's own USER is still fleet, so nothing changes for a normal run or for the e2e suites.
-COPY --chown=root:root docker-entrypoint.sh container-firewall.sh /usr/local/bin/
+COPY --chown=root:root ops/docker-entrypoint.sh ops/container-firewall.sh /usr/local/bin/
 USER root
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/container-firewall.sh
 USER fleet

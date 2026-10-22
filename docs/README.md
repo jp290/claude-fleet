@@ -165,7 +165,7 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   `e2e-isolated.sh` stages it. Moving it to the attic breaks the manifest, not just a link.
 
 **Running it somewhere else**
-- **`container.md`** — the `Dockerfile` and what `./docker-verify.sh` attests (the harness,
+- **`container.md`** — `ops/Dockerfile` and what `./ops/docker-verify.sh` attests (the harness,
   not the agent), plus the three traps: publishing needs `FLEET_ALLOWED_HOSTS` as well as a
   bind, the instance's identity lives in the app directory with no override, and a container
   that runs untrusted work must never hold the owner's credentials. Read before standing an
@@ -190,9 +190,10 @@ One line per doc — its *purpose*, not its contents, so this index points witho
 embeds — not docs. How they were made is written up in the demo repository's `docs/fixtures.md`.)*
 
 *(`docs/repo-map.generated.md` and `docs/system-capabilities.generated.md` are GENERATED
-projections — `bun repo-map.ts` and `bun capability-map.ts` write them and `e2e/pins.ts` holds
-each byte-for-byte against its source. They are not knowledge documents and are deliberately not
-indexed above: you never edit them, you re-render them.)*
+projections — `bun tools/repo-map.ts` and `bun tools/capability-map.ts` write them. Nothing checks
+them against their source, so re-render them after a change to the top level or to the capability
+vocabulary. They are not knowledge documents and are deliberately not indexed above: you never edit
+them, you re-render them.)*
 
 ## The attic
 

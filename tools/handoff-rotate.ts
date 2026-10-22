@@ -1,7 +1,7 @@
-// handoff-rotate.ts — keeps HANDOFF.md's top `#` section and appends every other one, byte for byte, to docs/attic.
+// tools/handoff-rotate.ts — keeps HANDOFF.md's top `#` section and appends every other one, byte for byte, to docs/attic.
 //
-//   bun handoff-rotate.ts --dry-run    names the kept section and every section that would move
-//   bun handoff-rotate.ts              moves them: HANDOFF.md keeps the top, the rest is APPENDED to
+//   bun tools/handoff-rotate.ts --dry-run    names the kept section and every section that would move
+//   bun tools/handoff-rotate.ts              moves them: HANDOFF.md keeps the top, the rest is APPENDED to
 //                                      docs/attic/handoff-archiv-<YYYY-MM-DD>.md, in source order
 //   --root <dir>  --date <YYYY-MM-DD>  what the pin in e2e/pins.ts drives it with (fixture dir, fixed date)
 //
@@ -75,7 +75,7 @@ if (import.meta.main) {
       if (a === "--root") rootArg = v; else dateArg = v;
     } else fail(`unknown argument ${a}`);
   }
-  const root = resolve(rootArg ?? import.meta.dir);
+  const root = resolve(rootArg ?? resolve(import.meta.dir, ".."));
   const date = dateArg ?? localDate();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(`--date must be YYYY-MM-DD, got ${date}`);
 

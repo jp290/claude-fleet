@@ -7,8 +7,8 @@
 // hunk's old side, attributed back to the land's own commits base..mainAfter). File overlap does not
 // separate lands (72/83 Opus lands touch server.ts or e2e/*); the line level does.
 //
-//   bun land-quality.ts [--since 14d] [--json] [--at <rev>] [--out <file>] [--root <checkout>]
-//   bun land-quality.ts --summary [--since 14d]   # three lines off the written ledger, no git (state.sh)
+//   bun tools/land-quality.ts [--since 14d] [--json] [--at <rev>] [--out <file>] [--root <checkout>]
+//   bun tools/land-quality.ts --summary [--since 14d]   # three lines off the written ledger, no git (state.sh)
 //
 // It is a READER of lane-outcomes.jsonl, post-land-audits.jsonl, audit-adjudications.jsonl,
 // fleet.json, tasks-archive.jsonl and git (read-only, GIT_OPTIONAL_LOCKS=0). Its one write is land-quality.jsonl, a
@@ -32,7 +32,7 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import { readLedger } from "./server/persist";
+import { readLedger } from "../server/persist";
 
 const DAY = 86_400_000;
 const CONCURRENCY = 8;
@@ -199,12 +199,12 @@ export function renderSummary(rows: LandRow[], label: string): string {
     `    ${LEGEND.rework3d} — nacharbeit is that line count over ALL inserted lines; rw is the LAND share`
       + ` · ${LEGEND.auditRed}, real = the reds whose newest adjudication says real · ${LEGEND.fix3dCode}`,
     `    model: ${models.slice(0, SUMMARY_GROUPS).map(brief).join(" · ") || "—"}`
-      + (models.length > SUMMARY_GROUPS ? ` · +${models.length - SUMMARY_GROUPS} more (bun land-quality.ts)` : ""),
+      + (models.length > SUMMARY_GROUPS ? ` · +${models.length - SUMMARY_GROUPS} more (bun tools/land-quality.ts)` : ""),
     `    size:  ${aggregate(rows, (r) => r.size ?? "null").map(brief).join(" · ") || "—"}`,
   ].join("\n");
 }
 
-// server/persist.ts#readLedger itself, not a copy (the pattern of briefstats.ts#readJsonl): the hand
+// server/persist.ts#readLedger itself, not a copy (the pattern of tools/briefstats.ts#readJsonl): the hand
 // copy that stood here delivered an array line as a row with malformed=0.
 export async function readJsonl(file: string): Promise<{ rows: Record<string, unknown>[]; malformed: number }> {
   const { rows, malformed } = await readLedger<Record<string, unknown>>(file);

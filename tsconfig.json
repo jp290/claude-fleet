@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["bun"],
+    "noEmit": true
+  },
+  "include": ["**/*.ts", ".claude/hooks/*.ts"],
+  "exclude": ["node_modules", "attic", "docs", "graphify-out", "drops", "streams", "e2e-trail"]
+}

@@ -1,6 +1,6 @@
 # Running Fleet in a container
 
-What the `Dockerfile` is for, what `./docker-verify.sh` actually attests, and the three
+What `ops/Dockerfile` is for, what `./ops/docker-verify.sh` actually attests, and the three
 traps that each look like a different bug than they are.
 
 ## Why the whole app, never the slots
@@ -242,10 +242,10 @@ The hand-run that establishes this — container up, bind-mount, and a canary wr
 `$HOME` *outside* the repo that must fail mechanically — is the owner's, not a lane's: docker,
 `$HOME` and running containers are shared reality outside this repo. Nothing in the suite touches
 docker; the checks assert the spawn *string* (`e2e/security.ts` §6d, `e2e/lanes-basic.ts`), which
-is recorded whether or not a container runtime exists, for the same reason `./docker-verify.sh` is
+is recorded whether or not a container runtime exists, for the same reason `./ops/docker-verify.sh` is
 not a gate: no lane has one.
 
-## What `./docker-verify.sh` attests, and what it does not
+## What `./ops/docker-verify.sh` attests, and what it does not
 
 It builds the image and runs the full `./e2e-isolated.sh` inside it, with **no mounts at all**:
 the suite builds its own throwaway git repo, so a green run demonstrates the isolation as well
@@ -330,8 +330,8 @@ is weaker than "cannot get there". The concern is the AGENT inside, which with
 `--dangerously-skip-permissions` and a hostile repository can be steered at every address it can
 route to.
 
-`container-firewall.sh` closes that. It runs as root inside the container before the server starts
-(`docker-entrypoint.sh`, which then drops to `fleet` via `setpriv`) and needs two capabilities:
+`ops/container-firewall.sh` closes that. It runs as root inside the container before the server starts
+(`ops/docker-entrypoint.sh`, which then drops to `fleet` via `setpriv`) and needs two capabilities:
 
     --user root --cap-add NET_ADMIN --cap-add NET_RAW -e FLEET_FIREWALL=1
 

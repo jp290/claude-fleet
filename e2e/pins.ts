@@ -32,10 +32,8 @@ import {
   FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderRoleRulebook, LANE_CUT_INLINE,
   rulebookBody, type RoleAudience, type RoleRulebook, type RulebookFragment,
 } from "../rulebook";
-// capability-map.ts lost its only reader with the §3b pins (K4a Posten 10); this import keeps it under tsc
-import "../capability-map";
-import { HANDOFF_WARN_KB, splitHandoff } from "../handoff-rotate";
-import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../land-log";
+import { HANDOFF_WARN_KB, splitHandoff } from "../tools/handoff-rotate";
+import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../tools/land-log";
 import { SHARD_UNITS, selectSkipUnits, shardPlan } from "./ctx";
 // the module filter's map is IMPORTED and RUN, never re-spelled: a pin holding a second copy of
 // the edges would pin the copy. What cannot be imported is the modules' own sources — those are
@@ -56,13 +54,13 @@ import { readEventLog, readLedger } from "../server/persist";
 // pi-zai's read-fence builder is IMPORTED and RUN: the pin holds the profile it generates, not prose
 import { ALLOWED as BW_ALLOWED, PROTECTED as BW_PROTECTED, probeBwrapFence } from "./pi-zai-bwrap-probe";
 import { LIVE_TMUX_SOCK, PIZAI_NSIRD_TOOLS, PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piZaiFenceProfile, piZaiGitOf } from "../server/pi-zai-fence";
-import { readJsonl } from "../briefstats";
+import { readJsonl } from "../tools/briefstats";
 import { laneStandNudge, laneStandNudgeText, type LaneStandView } from "../lane-signals";
 import { quotaPosition, newResetEntries, parseQuotaRollout, readLocalQuota, readIdentityBound, createSubscriptionReader, SUBSCRIPTION_STALE_MS, PROVIDER_UNSUPPORTED } from "../codex-quota";
 import {
   readJsonl as landQualityReadJsonl, modelKey, renderSummary, sizeIndexOf, sizeStampOrJoin,
-} from "../land-quality";
-import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../lane-context-cost";
+} from "../tools/land-quality";
+import { measureTranscript, readJsonl as laneContextCostReadJsonl, sessionAnatomy } from "../tools/lane-context-cost";
 import { CAPABILITY_FUNCTIONS, INSTANCE_URL_RE } from "../src/protocol";
 import { BoxDraft, DraftBook } from "../src/drafts";
 import { fleetEventBundleText } from "../src/delivery-format";
@@ -147,7 +145,7 @@ function universe(name: string, rels: readonly string[]): Universe {
   };
 }
 const isDir = (rel: string): boolean => { try { return statSync(`${ROOT}/${rel}`).isDirectory(); } catch { return false; } };
-// server.ts stays the ENTRY name (plan §Randbedingung 2: stage sentinel, Dockerfile, watchdog.sh,
+// server.ts stays the ENTRY name (plan §Randbedingung 2: stage sentinel, ops/Dockerfile, watchdog.sh,
 // state.sh pgrep all read it), so it leads; `server/` is where the split puts its modules.
 const serverU = universe("server", ["server.ts",
   ...(isDir("server") ? readdirSync(`${ROOT}/server`).filter((f) => f.endsWith(".ts")).sort().map((f) => `server/${f}`) : [])]);
@@ -518,15 +516,15 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     pin(`${RULE_LEDGER} — readEventLog inherits it`,
       viaEventLog.total === 1 && viaEventLog.rows.every((r) => r !== null && typeof r === "object"),
       `total=${viaEventLog.total}`);
-    // briefstats.ts#readJsonl was a hand copy of this reader that kept the old defect after 99c8d74d.
+    // tools/briefstats.ts#readJsonl was a hand copy of this reader that kept the old defect after 99c8d74d.
     // Run it, not grep it: a delegation that re-grew its own parse loop must still turn this red.
     const brief = `${dir}/briefstats.jsonl`;
     writeFileSync(brief, `${valid[0]}\nnull\n`);
     const viaBrief = await readJsonl<Record<string, unknown>>(brief);
-    pin(`${RULE_LEDGER} — briefstats.ts#readJsonl inherits it (one record + one null line → rows=1 malformed=1)`,
+    pin(`${RULE_LEDGER} — tools/briefstats.ts#readJsonl inherits it (one record + one null line → rows=1 malformed=1)`,
       viaBrief.rows.length === 1 && viaBrief.malformed === 1 && JSON.stringify(viaBrief.rows) === `[${valid[0]}]`,
       `rows=${JSON.stringify(viaBrief.rows).slice(0, 120)} malformed=${viaBrief.malformed}`);
-    // land-quality.ts and lane-context-cost.ts carried the last two hand copies: `v && typeof v ===
+    // tools/land-quality.ts and tools/lane-context-cost.ts carried the last two hand copies: `v && typeof v ===
     // "object"` let an array line through as a row, and lane-context-cost swallowed torn lines uncounted.
     // Run both over record + array + null + torn, AND hold the source: each CLI imports readLedger and
     // its readJsonl body carries no JSON.parse of its own.
@@ -534,14 +532,14 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
     writeFileSync(cli, `${valid[0]}\n[]\nnull\n{"event":"torn"\n`);
     const viaLandQuality = await landQualityReadJsonl(cli);
     const viaLaneCost = await laneContextCostReadJsonl(cli);
-    const copies = ["land-quality.ts", "lane-context-cost.ts"].map((file) => {
+    const copies = ["tools/land-quality.ts", "tools/lane-context-cost.ts"].map((file) => {
       const src = readFileSync(`${ROOT}/${file}`, "utf8"); // `read` is shadowed by the ledger fixture above
       const start = src.search(/\n(export )?async function readJsonl\(/);
       const body = start < 0 ? "" : src.slice(start, src.indexOf("\n}", start));
-      return `${file}: ${/import \{[^}]*\breadLedger\b[^}]*\} from "\.\/server\/persist";/.test(src) ? "imports" : "NO import"}`
+      return `${file}: ${/import \{[^}]*\breadLedger\b[^}]*\} from "\.\.\/server\/persist";/.test(src) ? "imports" : "NO import"}`
         + ` · ${!body ? "readJsonl missing" : body.includes("readLedger") && !body.includes("JSON.parse") ? "delegates" : "HAND COPY"}`;
     });
-    pin(`${RULE_LEDGER} — land-quality.ts#readJsonl and lane-context-cost.ts#readJsonl delegate to it, no hand copy`,
+    pin(`${RULE_LEDGER} — tools/land-quality.ts#readJsonl and tools/lane-context-cost.ts#readJsonl delegate to it, no hand copy`,
       viaLandQuality.rows.length === 1 && viaLandQuality.malformed === 3
         && JSON.stringify(viaLandQuality.rows) === `[${valid[0]}]` && JSON.stringify(viaLaneCost) === `[${valid[0]}]`
         && copies.every((c) => c.endsWith("imports · delegates")),
@@ -885,7 +883,7 @@ const gateSuites = [...verifyCmd.matchAll(/\.\/(e2e-[a-z-]+\.sh)/g)].map((m) => 
 }
 
 {
-  // the READER half, run rather than read: land-quality.ts's model groups must keep the three
+  // the READER half, run rather than read: tools/land-quality.ts's model groups must keep the three
   // origins apart, and an old row's null must stay the one that says nothing. Without this a
   // `default` land silently joins the pinned population and the 16 % becomes invisible instead of
   // addressable — the same loss the ledger fix undoes, one file further on.
@@ -2239,14 +2237,14 @@ export default function (pi) {
 // ================================================================================================
 // HANDOFF.md rotation — the archive gets every byte the handoff loses, and nothing else
 // ================================================================================================
-// handoff-rotate.ts slices HANDOFF.md as bytes: the top `#` section stays, the rest is appended to
+// tools/handoff-rotate.ts slices HANDOFF.md as bytes: the top `#` section stays, the rest is appended to
 // docs/attic/handoff-archiv-<date>.md. Its whole value is that nothing is lost or rewritten, so the
 // rule is held on a FIXTURE through the file run, not on the live HANDOFF.md (a lane never touches
 // it). The fixture carries the three ways a heading scan goes wrong: `#` inside a ``` fence, `#`
 // inside a ~~~~ fence that a ``` line does not close, and `#hashtag` with no space — plus a
 // preamble, umlauts (bytes != chars), a CRLF heading and a last line with no newline.
 {
-  const RULE_ROTATE = "handoff-rotate.ts keeps the top # section and appends the rest byte-exact to the archive";
+  const RULE_ROTATE = "tools/handoff-rotate.ts keeps the top # section and appends the rest byte-exact to the archive";
   const fixture = Buffer.from([
     "vorspann\n",
     "# HANDOFF — neueste Übergabe\n", "## 0. unterabschnitt\n", "```sh\n# kein abschnitt (fence)\n```\n", "text\n\n",
@@ -2265,7 +2263,7 @@ export default function (pi) {
   try {
     const handoff = `${dir}/HANDOFF.md`;
     const archive = `${dir}/docs/attic/handoff-archiv-2026-01-02.md`;
-    const run = (...extra: string[]) => spawnSync("bun", [`${ROOT}/handoff-rotate.ts`, "--root", dir, "--date", "2026-01-02", ...extra],
+    const run = (...extra: string[]) => spawnSync("bun", [`${ROOT}/tools/handoff-rotate.ts`, "--root", dir, "--date", "2026-01-02", ...extra],
       { encoding: "utf8", timeout: 10_000 });
     writeFileSync(handoff, fixture);
 
@@ -2306,7 +2304,7 @@ export default function (pi) {
     rmSync(dir, { recursive: true, force: true });
   }
 
-  pin("state.sh warns about HANDOFF.md above handoff-rotate.ts#HANDOFF_WARN_KB",
+  pin("state.sh warns about HANDOFF.md above tools/handoff-rotate.ts#HANDOFF_WARN_KB",
     read("state.sh").includes(`-gt $((${HANDOFF_WARN_KB} * 1024))`), `threshold ${HANDOFF_WARN_KB} KB`);
 }
 
@@ -2352,13 +2350,13 @@ export default function (pi) {
 // ================================================================================================
 // Land-Chronik — one line per land off the notes, and a land with no audit row yet is RUNNING
 // ================================================================================================
-// land-log.ts is a view, so the only thing to hold is what it says. The formatter is pure and runs on
+// tools/land-log.ts is a view, so the only thing to hold is what it says. The formatter is pure and runs on
 // a FIXTURE: two days of main, four lands (a three-commit land, a failed gate with no audit row, a
 // no-gate land judged by a covers-less audit row, a note whose mainAfter left main), direct commits
 // on both days and one commit before the window. The label that must never drift is the missing
 // audit row: it is "laeuft" (queued or running), never a claim that the audit was lost or passed.
 {
-  const RULE_LANDLOG = "land-log.ts prints one line per land and one direct-commit line per day";
+  const RULE_LANDLOG = "tools/land-log.ts prints one line per land and one direct-commit line per day";
   const t = (day: number, h: number, mi = 0) => Date.UTC(2026, 8, day, h, mi);
   const long = "feat(a): first of three — a subject long enough to be cut at the sixty-character column";
   const commits: MainCommit[] = [
@@ -2406,7 +2404,7 @@ export default function (pi) {
     verifyLabel({ ok: false }), verifyLabel({ ok: true, proportional: true }), verifyLabel({ ok: true })];
   pin(`${RULE_LANDLOG} — verify reads no gate, the skip exit and a waitedOut as skipped`,
     labels.join(",") === "skipped,skipped,skipped,failed,proportional,ok", labels.join(","));
-  pin("land-log.ts#VERIFY_SKIP_EXIT is server.ts#VERIFY_SKIP_EXIT",
+  pin("tools/land-log.ts#VERIFY_SKIP_EXIT is server.ts#VERIFY_SKIP_EXIT",
     new RegExp(`^const VERIFY_SKIP_EXIT = ${LAND_LOG_SKIP_EXIT};`, "m").test(server), `land-log says ${LAND_LOG_SKIP_EXIT}`);
 }
 

@@ -10,6 +10,9 @@
   "private": true,
   "scripts": {
     "start": "bun server.ts",
+    "typecheck": "tsc -p .",
+    "pins": "bun e2e/pins.ts",
+    "test": "bun test ./server ./ci ./src ./session-blocks.test.ts",
     "build": "bun build src/client.ts --outfile public/app.js --target browser --minify && bun build src/share.ts --outfile public/share.js --target browser --minify && bun build src/helper.ts --outfile public/helper.js --target browser --minify && bun build src/hub.ts --outfile public/hub.js --target browser --minify && bun build src/k15-entwurf.ts --outfile public/k15.js --target browser --minify"
   },
   "dependencies": {

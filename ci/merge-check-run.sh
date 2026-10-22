@@ -4,7 +4,7 @@
 # Der Commit liegt schon in $CI_HOME/repo.git (merge-check.ts schiebt ihn per git push dorthin).
 # Fährt die Teile des Urteils parallel, jedes mit eigenem TMPDIR, eigenem Suite-Lock und eigenem
 # Port-Band (FLEET_E2E_BAND 7–9; der Helfer-Daemon nimmt die kleinsten freien, 0–4 bei fünf Plätzen):
-#   local   pins, tsc (Einstiege wie VERIFY_CMD in watchdog.sh), build, bun test ./ci ./server (falls vorhanden)
+#   local   pins, tsc (bun run typecheck, tsconfig.json), build, bun test ./ci ./server (falls vorhanden)
 #   gate    ./e2e-claude-gate.sh
 #   review  ./e2e-clean-review.sh, danach ./e2e-security.sh
 #   s1–s3   die kleinen Units in drei Shards; die großen laufen nachts und vor jedem Deploy
@@ -45,8 +45,8 @@ cd "$RUN/tree" || exit 3
 if ! bun install --frozen-lockfile > "$RUN/install.log" 2>&1; then
   echo "merge-check red $(( $(now_ms) - T0 )) — bun install schlug fehl ($RUN/install.log)"; exit 3
 fi
-TSC=$(grep -o "bunx tsc [^&]*" watchdog.sh | head -n 1)
-[ -n "$TSC" ] || { echo "merge-check red $(( $(now_ms) - T0 )) — keine tsc-Zeile in watchdog.sh"; exit 3; }
+TSC="bun run typecheck"
+grep -q "\"typecheck\":" package.json || { echo "merge-check red $(( $(now_ms) - T0 )) — kein typecheck-Skript in package.json"; exit 3; }
 # die Unit-Tests gehören zum Kandidaten: ein Baum ohne ci/*.test.ts und server/*.test.ts hat keine,
 # und das ist „nicht anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
 TESTS=""

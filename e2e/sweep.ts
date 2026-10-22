@@ -1,4 +1,4 @@
-// The deterministic cleanliness sweep (review-sweep.ts, plan WP3/WP3′), proved against PREPARED
+// The deterministic cleanliness sweep (tools/review-sweep.ts, plan WP3/WP3′), proved against PREPARED
 // trees rather than against this repo. Two fixtures, because one of them is the half that catches a
 // sensor rotting into an all-clear:
 //
@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { BASE, ROOT, TOKEN, check, get, post } from "./harness";
-import { SIZE_LIMIT_LINES, SWEEP_MARK, sweep, type Finding } from "../review-sweep";
+import { SIZE_LIMIT_LINES, SWEEP_MARK, sweep, type Finding } from "../tools/review-sweep";
 
 const TMP = `${process.env.TMPDIR ?? "/tmp"}/fleet-sweep-fixtures-${process.pid}`;
 
@@ -172,7 +172,7 @@ export async function run(): Promise<void> {
 
   // ── §4 the CLI: exit codes, the refusals, and a check that could not run ──────────────────────
   const cli = async (args: string[], env: Record<string, string> = {}): Promise<{ out: string; err: string; code: number }> => {
-    const p = Bun.spawn([process.execPath, `${ROOT}/review-sweep.ts`, ...args], {
+    const p = Bun.spawn([process.execPath, `${ROOT}/tools/review-sweep.ts`, ...args], {
       cwd: ROOT, stdout: "pipe", stderr: "pipe",
       env: { ...process.env, ...env },
     });
@@ -232,7 +232,7 @@ export async function run(): Promise<void> {
   // A finding whose note the owner has closed is mintable again — the finding is still in the tree,
   // so re-reporting it is the honest behaviour, and the dedup must be over OPEN rows only.
   // ITS FIXTURE IS THE ROW MINTED ABOVE, and it may not exist: on a machine without ast-grep the
-  // cast check cannot run, review-sweep.ts correctly exits 2 and mints nothing, and `mine` is
+  // cast check cannot run, tools/review-sweep.ts correctly exits 2 and mints nothing, and `mine` is
   // empty. `mine[0]!` then threw on `closed.id` and BEHEADED THE RUNNER — every module after this
   // one went unmeasured, and the run's last word was a TypeError about a task id instead of the
   // tool that was missing (measured 2026-08-30 on the Linux workhorse, where the log ended at

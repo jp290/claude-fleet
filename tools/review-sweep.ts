@@ -1,10 +1,10 @@
-// review-sweep.ts — the deterministic half of the review layer (docs/attic/plan-review-layer-2026-08-16.md
+// tools/review-sweep.ts — the deterministic half of the review layer (docs/attic/plan-review-layer-2026-08-16.md
 // WP3/WP3′). Four checks over a git working tree, no model call, seconds. It is a SENSOR: it never
 // gates, never fixes, never writes into the tree it measures.
 //
-//   bun review-sweep.ts                          # JSON lines on stdout, exit 0
-//   bun review-sweep.ts --root /path/to/repo      # any git repo, not just this one
-//   bun review-sweep.ts --queue --api http://host:port --token …   # mint a notiz per NEW finding
+//   bun tools/review-sweep.ts                          # JSON lines on stdout, exit 0
+//   bun tools/review-sweep.ts --root /path/to/repo      # any git repo, not just this one
+//   bun tools/review-sweep.ts --queue --api http://host:port --token …   # mint a notiz per NEW finding
 //
 // PORTABILITY IS A CONTRACT HERE, not a nicety (WP3′): no Fleet path, host, port or credential is
 // hard-coded, and every check family is a language-wide property. A run in a repo that has none of
@@ -305,7 +305,7 @@ const markerFor = (fp: string): string => `[${SWEEP_MARK} ${fp}]`;
 const noteTextFor = (f: Finding): string =>
   `${markerFor(f.fingerprint)} ${f.check}: ${f.file}${f.key ? ` — ${f.key}` : ""}${f.line ? ` (line ${f.line})` : ""}\n`
   + `${f.detail}\n`
-  + `Deterministic sweep finding (review-sweep.ts). Sensor output, not a work brief: convert it with the kind route if it should become work.`;
+  + `Deterministic sweep finding (tools/review-sweep.ts). Sensor output, not a work brief: convert it with the kind route if it should become work.`;
 
 interface TaskRow { id: string; text?: string; status?: string; kind?: string }
 

@@ -12,7 +12,7 @@ import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, dec
   buildNeighborIndex, renderNeighborLines, NEIGHBOR_MAX_PER_SIDE } from "../card-extract";
 import { renderWaveBrief, renderCardHead, renderRowComments, withCardHead, CARD_HEAD_MARK, CARD_HEAD_MAX_BYTES, ROW_COMMENTS_MAX_BYTES } from "../wave-brief";
 import { LOCAL_PROOF_STEPS } from "../verify-proportion";
-import { classify as laneModelClass } from "../lane-context-cost";
+import { classify as laneModelClass } from "../tools/lane-context-cost";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations, symbolGraphStamp,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { surfaceSha, clusterForFiles } from "../task-metadata";

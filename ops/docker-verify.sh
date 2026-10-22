@@ -13,7 +13,7 @@
 # NOT a gate. It needs a container runtime, which no lane has; it belongs in nobody's
 # VERIFY_CMD and is not in watchdog.sh.
 set -u
-FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
+FLEET_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${FLEET_IMAGE:-claude-fleet:verify}"
 
 # --- machine-wide suite mutex: the SAME /tmp/fleet-e2e.lock e2e-stage.sh takes, with the same
@@ -47,7 +47,7 @@ echo "=== build $IMAGE ==="
 # The REAL image, agent and all. Building the proof against a stripped one (INSTALL_CLAUDE=0)
 # would prove an image nobody ships — and the CLI install is itself a platform claim worth
 # failing loudly here rather than on a guest's first login.
-docker build -t "$IMAGE" "$FLEET_DIR" || exit 1
+docker build -t "$IMAGE" -f "$FLEET_DIR/ops/Dockerfile" "$FLEET_DIR" || exit 1
 
 echo
 echo "=== ./e2e-isolated.sh inside $IMAGE ==="

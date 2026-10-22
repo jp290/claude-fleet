@@ -55,26 +55,27 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # the gate's verdict depends on whether that lane's agent happened to install: it dies in ~2s on
 # "error TS2688: Cannot find type definition file for 'bun'" and never reaches the behavior tier, so a
 # sound rebase is downgraded to stop-for-human and `verified:false` pollutes the outcome ledger.
-# Proven-dead alternatives (do not re-propose): dropping --types bun (the code genuinely uses Bun/
-# process/import.meta.dir — 20+ errors), and a checked-in tsconfig with "types": ["bun"] (identical
-# TS2688 — the types field NAMES a package, it cannot substitute for one). Costs ~30ms from bun's
-# global cache; --frozen-lockfile keeps it read-only w.r.t. bun.lock, and a failure exits non-zero
-# with a named reason instead of masquerading as a type error.
+# Proven-dead alternative (do not re-propose): dropping "types": ["bun"] from tsconfig.json (the code
+# genuinely uses Bun/process/import.meta.dir — 20+ errors). The types field NAMES a package and cannot
+# substitute for one, so tsconfig.json gives the same TS2688 as the old flag list did without this
+# prelude, and the prelude fixes both. Costs ~30ms from bun's global cache; --frozen-lockfile keeps
+# it read-only w.r.t. bun.lock, and a failure exits non-zero with a named reason instead of
+# masquerading as a type error.
 # `bun e2e/pins.ts` runs FIRST and costs milliseconds: it reads files and compares them, checking
 # the must-agree pairs whose other side is not TypeScript and that therefore no compiler can see —
-# among them THIS line's own consistency (every entry file type-checked, every named suite present
-# and executable, the comment below honest about what runs, the port bands disjoint, the skip
-# contract's exit code equal to server.ts's VERIFY_SKIP_EXIT). It is cheapest-first for the same
-# reason the rest of the chain is, and it is the only step that can fail before anything is spawned.
-# tsc covers every entry file in the tree (verify-tiering.md §4, §8 Step 1): the single-file
-# harnesses were unimported by anything the checker saw, so the type checker had a blind spot
-# exactly where the suites that guard the land path live. Measured 2026-07-26: 1.62 s, no new
-# errors. fleet-e2e-postland-audit.ts was still missing from the list on 2026-07-28 — the harness
-# guarding the whole tier-2 path was the one with no type coverage — which is why the pins step
-# above now derives the list's completeness from the files on disk instead of trusting this line.
-# That derivation was itself a hand-kept entry list until 2026-09-14 (Astra finding 4): src/hub.ts
-# and six tool scripts reached no compiler. The pin now walks imports from this list over every .ts
-# git knows of; a file it does not reach must be listed here or exempted by name in the pin.
+# among them THIS line's own consistency (every named suite present and executable, the comment
+# below honest about what runs, the port bands disjoint, the skip contract's exit code equal to
+# server.ts's VERIFY_SKIP_EXIT). It is cheapest-first for the same reason the rest of the chain is,
+# and it is the only step that can fail before anything is spawned.
+# tsc covers every .ts in the tree (verify-tiering.md §4, §8 Step 1): the tsc step below is what
+# `bun run typecheck` runs, and tsconfig.json includes every .ts outside docs/, attic/ and the
+# gitignored state dirs. It stays spelled as bunx-then-tsc because ci/merge-check-run.sh up to
+# 2026-10-22 takes the FIRST grep match of those two words plus a space from this file, and
+# merge-check.ts sends the runner of the checkout it runs in, so a branch cut before then still
+# asks for it. Never write those two words with a space in a comment above the VERIFY_CMD line: the
+# old runner would run the comment. Until 2026-10-22 this line carried a hand-kept list of ~70
+# entry files, and a file nothing in that list imported reached no compiler
+# (fleet-e2e-postland-audit.ts on 2026-07-28, src/hub.ts and six tool scripts on 2026-09-14). A glob has no such gap: a new file is checked from its first commit.
 # ./e2e-clean-review.sh is the gate's FIRST land-path coverage ever (§8 Step 2) — it
 # drives tryScriptRebase → runVerify → advanceIntegration → recordLand → landLane end to end and
 # is the only suite exercising runCleanReview, which this fleet runs with FLEET_CLEAN_REVIEW=off (the
@@ -97,7 +98,7 @@ PATH_Q=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
 # fails the gate. Keep it last, and keep it to suite names.
 # NOT here: ./e2e-isolated.sh (§5 — measurably non-deterministic under load, which is why it is
 # tier 2 AFTER the land, not a gate).
-VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc --noEmit --strict --target esnext --module esnext --moduleResolution bundler --types bun e2e/pins.ts src/client.ts src/share.ts src/helper.ts src/hub.ts src/k15-entwurf.ts server.ts fleet-e2e.ts fleet-e2e-claude-gate.ts fleet-e2e-clean-review.ts fleet-e2e-security.ts fleet-e2e-postland-audit.ts fleet-e2e-harness.ts merge-prompt.ts acceptance-probe.ts graph-coverage.ts land-collision-stats.ts land-quality.ts lane-context-cost.ts drills/drill-3-clean-review.ts ci/merge-check.ts ci/merge-check.test.ts server/load.test.ts server/branches.test.ts server/branches-routes.test.ts server/branches-charge.test.ts server/branch-land.test.ts server/branch-ende.test.ts server/branches-ende.test.ts server/branches.drive.ts server/succession.test.ts server/succession-rearm.test.ts server/state-dir.test.ts server/persist.test.ts server/live-state.test.ts server/recall.test.ts server/transcript-push.test.ts server/postfach-zustellen.ts server/postfach-zustellen.test.ts server/postfach-fehler.ts server/postfach-fehler.test.ts server/postfach-versuche.ts server/postfach-neustart.test.ts server/zustellung.ts server/zustellung.test.ts server/model-switch.test.ts server/pruefpraxis-pack.test.ts server/fieldperf.test.ts src/k15-import.test.ts src/k15-kontextpack.test.ts src/k15-wortlaut.test.ts src/k15-speicher.test.ts src/k15-wer.test.ts server/claude-code-anatomie.test.ts src/k15-anatomie.test.ts src/k15-anbindung.test.ts src/k15-startzahl.test.ts src/k15-agent.test.ts server/harnesses-off.test.ts server/paste.test.ts server/usage.test.ts server/session-start.test.ts server/handover-now.test.ts server/ohne-owner-token.test.ts server/lane-permission-hook.test.ts server/konstellation.test.ts server/drops.test.ts server/disk-space.test.ts server/rechte.test.ts server/opener.test.ts server/warte-hinweis.test.ts server/warte-hinweis-route.test.ts server/rueckfrage-zustellung.test.ts session-blocks.test.ts src/sitzung-modell.test.ts server/fassung.ts server/orchestrator-start.ts server/fassung.test.ts server/rollenkarten.ts && bun run build && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
+VERIFY_CMD='[ -f fleet-e2e.ts ] || { echo "verify skipped: not the fleet repo"; exit 42; }; bun install --frozen-lockfile || { echo "verify failed: bun install could not establish node_modules"; exit 1; }; bun e2e/pins.ts && bunx tsc -p . && bun run build && ./e2e-clean-review.sh && ./e2e-security.sh && ./e2e-claude-gate.sh'
 VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 
 # --- VERIFICATION TIER 2: the post-land audit (server.ts, grep POSTLAND_AUDIT_CMD) --------------

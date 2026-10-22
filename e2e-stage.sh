@@ -186,7 +186,7 @@ FLEET_SUITE_LOCK="${FLEET_SUITE_LOCK:-/tmp/fleet-e2e.lock}"
 #     not wait — it already has the machine. Enqueueing it would deadlock it behind itself.
 #   · It FAILS OPEN: a contender that cannot take a ticket races exactly as before. The mutex is the
 #     SAFETY and the ticket only the FAIRNESS, and a fairness device that can kill a land gate is
-#     worse than the unfairness it removes. docker-verify.sh's duplicated loop is such a contender.
+#     worse than the unfairness it removes. ops/docker-verify.sh's duplicated loop is such a contender.
 #
 # NOT built here: a wait budget for the wrapper. The loop stays endless on purpose — runVerify
 # already kills a still-queued gate after FLEET_VERIFY_WAIT_MS and names it `waitedOut`, never

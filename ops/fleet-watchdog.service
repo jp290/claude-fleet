@@ -20,7 +20,7 @@
 #
 # Install (an owner act on the machine):
 #   mkdir -p ~/.config/systemd/user
-#   cp fleet-watchdog.service ~/.config/systemd/user/    # after replacing FLEET-DIR below
+#   cp ops/fleet-watchdog.service ~/.config/systemd/user/    # after replacing FLEET-DIR below
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now fleet-watchdog.service
 #   sudo loginctl enable-linger USER    # the KeepAlive half: survive logout and reboot
@@ -54,8 +54,8 @@ ExecStart=/bin/sh FLEET-DIR/watchdog.sh
 # `%h` is systemd's specifier for this user's home, expanded by systemd and not by a shell — which
 # is exactly why $HOME would NOT work in this line.
 #
-# What this PATH has to be able to run is the gate chain, in watchdog.sh's own order (held against
-# VERIFY_CMD by e2e/pins.ts, so this list cannot drift away from the gate it describes):
+# What this PATH has to be able to run is the gate chain, in watchdog.sh's own order (nothing holds
+# this list against VERIFY_CMD; keep it in step by hand):
 #   bun install · bun e2e/pins.ts · bunx tsc · bun run build ·
 #   ./e2e-clean-review.sh · ./e2e-security.sh · ./e2e-claude-gate.sh
 # and, after every land that moves main, tier 2: ./e2e-isolated.sh (AUDIT_CMD). Every one of them

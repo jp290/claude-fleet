@@ -1,8 +1,8 @@
-// repo-map.ts — the executable map of this repo's top level: every directory, every entry file.
+// tools/repo-map.ts — the executable map of this repo's top level: every directory, every entry file.
 //
-// Run `bun repo-map.ts` to render docs/repo-map.generated.md. Same shape as capability-map.ts: the
-// render function is pure over gathered facts, only this executable edge writes, and e2e/pins.ts
-// calls the same two functions to hold the checked-in document byte-for-byte against this source.
+// Run `bun tools/repo-map.ts` to render docs/repo-map.generated.md. Same shape as tools/capability-map.ts: the
+// render function is pure over gathered facts and only this executable edge writes. Nothing checks
+// the checked-in document against this source: re-render it after adding a top-level file or directory.
 //
 // WHY. An agent finds by `rg` only what it can already name. Nothing in this repo named all of its
 // top-level directories in one place, so `lerntisch/` and `studio-kit/` appeared in no start-context
@@ -24,24 +24,27 @@ export type RepoMapFacts = {
 export type RepoMapProbe = { readonly ok: true; readonly facts: RepoMapFacts } | { readonly ok: false; readonly detail: string };
 
 // A directory has no header comment to read, so its sentence is maintained HERE. That is the whole
-// reason the marker below exists: a table a human keeps is a table a human forgets, and the pin has
-// to be able to say so. Keys are directory names without the trailing slash.
+// reason the marker below exists: a table a human keeps is a table a human forgets, and the rendered
+// map has to be able to say so. Keys are directory names without the trailing slash.
 export const DIRECTORY_NOTES: Readonly<Record<string, string>> = {
   ".claude": "Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.",
   ".codex": "Repo-local Codex agent roles only (`agents/`, e.g. `erdung.toml`), loaded when the project is trusted; the machine-local `hooks.json` beside them stays gitignored.",
   ".fleet": "This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.",
   "attic": "Retired material kept tracked rather than deleted: briefs whose lane is long gone, the working-circle atlas, the learning bench, the studio kit, the portable prompt-compiler commands, and the scripts nothing runs any more (`attic/atlas.sh`, `attic/steward-arena.sh`, `attic/worker-deepseek.py`, `attic/find-conv.py`).",
   "briefs": "Founding and task briefs handed to lanes, kept as tracked prose so a dispatched instruction stays readable after its pane is gone.",
+  "ci": "The merge check: `bun ci/merge-check.ts <branch>` rebuilds the tree main would have after the merge and runs pins, typecheck, build, the unit tests of `ci/` and `server/` and the gate suites on the helper machine (`merge-check-run.sh`), plus `band-run.sh` for hand runs on a reserved port band there.",
   "docs": "The knowledge shelf: how to brief a session, what a green gate attests, which failures are the machine's — including `docs/messungen/` for tracked measurement notes.",
   "drills": "Fire drills — seeded-defect runs that point a real model at a real path, deliberately outside the deterministic suites.",
   "e2e": "The check modules `fleet-e2e.ts` boots in order, plus `pins.ts`: the must-agree pairs whose other side is not TypeScript.",
   "helper-daemon": "The other machine's half of the remote helper portal: a Bun daemon that claims a job, clones its bundle, runs the suite and reports back — plus its config format and a placeholder systemd unit.",
   "server": "The server's own modules, cut out of `server.ts` by the Generalsanierung (P4): `types.ts` holds the persisted domain model and its `*From`/`load*` parsers, `errors.ts` the in-memory error channel (`logError`/`errorsView`), `persist.ts` the append-only JSONL event log and its rotation-aware ledger readers, `tmux.ts` the tmux socket and process wrappers, `transport.ts` the gzip/byte-ledger wrappers and the static-asset table (anchored on `PUB`, one level up from this directory), `dir-explorer.ts` the folder picker's caps, its slow-folder memory and the file readability and write-deny rules, `audit-log.ts` the security event trail — the `AuditEvent` vocabulary, `audit()` and `AUDIT_FILE` (anchored on `PUB` like `transport.ts`, so the ledger stays at the repo root), `http.ts` the leaf every other module may import — the `json()` response helper plus `HOST`/`PORT`, binding nothing from the core, `auth.ts` the token and share-credential surface (`tokenFrom`, `secretEq`, the share cookie gates, `ALLOWED_HOSTS` and the `guard` that answers the DNS-rebinding and cross-origin checks); `server.ts` stays the entry and keeps the state holders — including `transportReport` and `listDirs`/`findDirs`/`dirInfo`, which read core state the modules may not import.",
+  "ops": "Running Fleet outside this Mac: the container (`Dockerfile`, its entrypoint and egress firewall, `docker-verify.sh` that runs the isolated suite inside it) and the boot templates for systemd (`fleet-watchdog.service`, `fleet-sync.service`/`.timer`) and launchd (`launchd-example.plist`).",
   "public": "Static assets `server.ts` serves: the dashboard, share and landing pages, icons and manifest. The client bundles beside them are gitignored build output.",
+  "tools": "Command-line tools run by hand with `bun tools/<name>.ts`, none of which the server imports: ledger and land reports (`land-log`, `land-quality`, `lane-context-cost`, `briefstats`), the tree sensors (`review-sweep`, `repo-map`, `capability-map`, `graph-coverage`), `handoff-rotate` and the browser `perf-probe`.",
   "src": "Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.",
 };
 
-const DIRECTORY_MARKER = "**no sentence** — this directory has no entry in `repo-map.ts#DIRECTORY_NOTES`; add one.";
+const DIRECTORY_MARKER = "**no sentence** — this directory has no entry in `tools/repo-map.ts#DIRECTORY_NOTES`; add one.";
 const FILE_MARKER = "**no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.";
 
 // The sentence of a FILE is the file's own first comment line, so it cannot drift from the file.
@@ -89,7 +92,7 @@ export function renderRepoMap(facts: RepoMapFacts): string {
   const out = [
     "# Fleet repo map — top level",
     "",
-    "<!-- Generated by `bun repo-map.ts`; do not edit by hand. -->",
+    "<!-- Generated by `bun tools/repo-map.ts`; do not edit by hand. -->",
     "",
     "The name list an `rg` cannot give you: `rg` finds only what you can already spell. Every top-level",
     "directory this repo carries, and every top-level `.ts`/`.sh` file, with one sentence each.",
@@ -99,12 +102,11 @@ export function renderRepoMap(facts: RepoMapFacts): string {
     "- Entries come from `git ls-files --cached` — the TRACKED tree only, so gitignored trees",
     "  (`node_modules/`, `graphify-out/`, `streams/`, `drops/`) never appear, and a new top-level file",
     "  counts from its `git add`, not from being written to disk.",
-    "- A directory's sentence is maintained in `repo-map.ts#DIRECTORY_NOTES`.",
+    "- A directory's sentence is maintained in `tools/repo-map.ts#DIRECTORY_NOTES`.",
     "- A file's sentence is that file's own first comment line, read from the file.",
     "- Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,",
-    "  `SYSTEM.md`, `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `Dockerfile`, `package.json`,",
-    "  `bun.lock`, `launchd-example.plist`, `fleet-watchdog.service`, `fleet-sync.service`,",
-    "  `fleet-sync.timer`, `LICENSE`.",
+    "  `SYSTEM.md`, `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `package.json`, `bun.lock`,",
+    "  `tsconfig.json`, `LICENSE`.",
     "- A row with no sentence available says so in the row. It is never dropped.",
     "",
     `## Directories (${facts.directories.length})`,
@@ -120,8 +122,8 @@ export function renderRepoMap(facts: RepoMapFacts): string {
 }
 
 if (import.meta.main) {
-  const probe = collectRepoMap(import.meta.dir);
+  const probe = collectRepoMap(resolve(import.meta.dir, ".."));
   if (!probe.ok) { console.error(`repo-map: could not gather facts — ${probe.detail}`); process.exit(1); }
-  writeFileSync(resolve(import.meta.dir, "docs/repo-map.generated.md"), renderRepoMap(probe.facts));
+  writeFileSync(resolve(import.meta.dir, "../docs/repo-map.generated.md"), renderRepoMap(probe.facts));
   console.log(`repo-map: ${probe.facts.directories.length} directories, ${probe.facts.files.length} files -> docs/repo-map.generated.md`);
 }

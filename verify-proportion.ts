@@ -76,8 +76,8 @@ function ruleFor(path: string): Rule {
   // repo (plan-2026-08-31 §Randbedingung 2) — the prefix lives here BEFORE the first module moves,
   // because an unlisted one would silently fall to DEFAULT_RULE and shift the gate's burden of
   // proof without anything saying so. The docs block above still wins for a future `server/*.md`.
-  if (path === "server.ts" || path.startsWith("server/") || path === "watchdog.sh" || path === "Dockerfile"
-    || /^docker-.*\.sh$/.test(path) || path === "container-firewall.sh"
+  if (path === "server.ts" || path.startsWith("server/") || path === "watchdog.sh" || path === "ops/Dockerfile"
+    || /^ops\/docker-.*\.sh$/.test(path) || path === "ops/container-firewall.sh"
     || path === "state.sh" || path === "register.sh") return SERVER_RULE;
 
   return DEFAULT_RULE;

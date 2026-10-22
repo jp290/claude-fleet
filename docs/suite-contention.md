@@ -274,7 +274,7 @@ say *"held by the fleet server itself — never kill this pid"*. Cause: a lane r
 two files, or its `rmdir` fails on a non-empty dir. Residue: a reaper that does not know the marker (a
 lane worktree forked before this change) facing a server that died holding (SIGKILL, crash — the
 signal handler releases on TERM/INT/HUP) leaves a marker-only dir, which reads `parked` until a human
-removes it. `docker-verify.sh` removes neither `birth` nor the marker and was already unable to
+removes it. `ops/docker-verify.sh` removes neither `birth` nor the marker and was already unable to
 reap a birth-carrying lock.
 
 *Why the §7 bullet was right and is now wrong.* It was written when a stale holder cost one lost
@@ -535,7 +535,7 @@ ticket attempts the lock; everyone else names its position and sleeps.
 - It **fails open**: a contender that cannot take a ticket races exactly as before
   (`[suite-lock-unqueued]`, deliberately not the `[suite-lock] ` wire format runVerify parses). The
   mutex is the SAFETY, the ticket only the FAIRNESS — and a fairness device that can kill a land
-  gate is worse than the unfairness it removes. `docker-verify.sh`'s duplicated loop (§ its own
+  gate is worse than the unfairness it removes. `ops/docker-verify.sh`'s duplicated loop (§ its own
   comment) is such a contender by construction and keeps working untouched.
 
 **Where this meets the INHERITED HOLD (§2's fourth bullet, landed the same night).** The ff retry

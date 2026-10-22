@@ -1,6 +1,6 @@
 // Land-Chronik — one line per land, read off the fleet/land notes that already exist.
 //
-//   bun land-log.ts [--since 7d] [--repo <checkout>] [--audits <post-land-audits.jsonl>]
+//   bun tools/land-log.ts [--since 7d] [--repo <checkout>] [--audits <post-land-audits.jsonl>]
 //
 // WHY: 861 commits in 14 days do not read as ~200 lands. Rewriting history to make them read that
 // way was ruled out (notes, lane-outcomes.jsonl, post-land-audits.jsonl and docs all hang on shas),
@@ -22,7 +22,7 @@
 //   A land whose mainAfter is not on main (history rewritten under it) prints "?" for count/subject.
 
 import { existsSync, realpathSync } from "node:fs";
-import { readLedger } from "./server/persist";
+import { readLedger } from "../server/persist";
 
 const DAY = 86_400_000;
 const SUBJECT_WIDTH = 60;

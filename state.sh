@@ -546,12 +546,12 @@ else:
     print(line)
 
 # did the lands HOLD — line rework and audit red per land (docs/verify-tiering.md §6.3). Read off the
-# written ledger, never recomputed here: the blame pass is `bun land-quality.ts --since 14d`'s job.
+# written ledger, never recomputed here: the blame pass is `bun tools/land-quality.ts --since 14d`'s job.
 try:
-    p = subprocess.run(['bun', 'land-quality.ts', '--summary', '--since', '14d', '--root', MAIN],
+    p = subprocess.run(['bun', 'tools/land-quality.ts', '--summary', '--since', '14d', '--root', MAIN],
                        capture_output=True, text=True, timeout=60)
     print(p.stdout.rstrip() if p.returncode == 0 else
-          f"  land-quality UNKNOWN — {p.stderr.strip()[:140]} (run: bun land-quality.ts --since 14d)")
+          f"  land-quality UNKNOWN — {p.stderr.strip()[:140]} (run: bun tools/land-quality.ts --since 14d)")
 except (OSError, subprocess.TimeoutExpired) as e:
     print(f"  land-quality UNKNOWN — {type(e).__name__}")
 
@@ -798,10 +798,10 @@ else
   echo "  TMPDIR e2e scratch: 0 dirs"
 fi
 echo "  suites running now: $(ps -eo command | grep -c '^/bin/sh ./e2e-isolated.sh')"
-# silent at or below the threshold; handoff-rotate.ts#HANDOFF_WARN_KB is the same number (e2e/pins.ts)
+# silent at or below the threshold; tools/handoff-rotate.ts#HANDOFF_WARN_KB is the same number (e2e/pins.ts)
 if [ -f "$MAIN_CHECKOUT/HANDOFF.md" ]; then
   handoff_bytes=$(wc -c < "$MAIN_CHECKOUT/HANDOFF.md" | tr -d ' ')
-  [ "$handoff_bytes" -gt $((64 * 1024)) ] && echo "  HANDOFF.md $((handoff_bytes / 1024)) KB — rotieren (bun handoff-rotate.ts --dry-run)"
+  [ "$handoff_bytes" -gt $((64 * 1024)) ] && echo "  HANDOFF.md $((handoff_bytes / 1024)) KB — rotieren (bun tools/handoff-rotate.ts --dry-run)"
 else
   echo "  HANDOFF.md UNKNOWN — not found in $MAIN_CHECKOUT"
 fi

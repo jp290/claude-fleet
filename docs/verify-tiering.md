@@ -783,7 +783,7 @@ Deckel 1 senkt die HAEUFIGKEIT, er schliesst den Fall nicht aus.
 ### 6.3 land-quality — was weder Gate noch Audit sagt: hat der Land gehalten? (2026-09-14)
 
 Gate und Audit beweisen einen BAUM, nie eine Lane: gruen heisst „uebersetzt, Suite gruen", nicht
-„die eingefuegten Zeilen blieben stehen". `bun land-quality.ts [--since 14d] [--json]` liest
+„die eingefuegten Zeilen blieben stehen". `bun tools/land-quality.ts [--since 14d] [--json]` liest
 `lane-outcomes.jsonl`, `post-land-audits.jsonl`, `audit-adjudications.jsonl`, `fleet.json` und git
 (read-only) und schreibt je gelandeter Lane eine Zeile nach `land-quality.jsonl` (gitignored, bei
 jedem Lauf ganz neu geschrieben): `insertedLines`, `reworkLines3d`/`7d` (vom Land eingefuegte Zeilen,

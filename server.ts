@@ -38786,7 +38786,7 @@ const SUITE_LOCK_POLL_MS = 5_000;
 // its own pid; e2e-stage.sh#_st_srv reads it and every wait line it prints over such a hold says
 // "held by the fleet server itself — never kill this pid". Written LAST (after pid and birth) so a
 // death between the writes still leaves a shape the reapers already know; removed FIRST on release.
-// Every reaper of this lock (e2e-stage.sh, ctl.sh lock --reap, docker-verify.sh, suiteLockReapStale)
+// Every reaper of this lock (e2e-stage.sh, ctl.sh lock --reap, ops/docker-verify.sh, suiteLockReapStale)
 // removes it with the other two files, or its `rmdir` would fail on a non-empty dir.
 const SUITE_LOCK_SERVER_MARKER = "held-by-fleet-server";
 function suiteLockTryTake(owner: symbol | null = null): boolean {
@@ -47023,7 +47023,7 @@ function harnessDefaultModel(h: Harness): string | null {
 // ONE resolution for BOTH stamps — the context receipt and the lane-outcome ledger — because they
 // ask the same question of the same slot, and a second copy drifts: the ledger wrote `s.model ??
 // null` until 2026-09-17 and put 48 of the 304 lands in 2026-09-03..2026-09-17 (16 %, 39 of them
-// code lands) into land-quality.ts's `claude/?` group, a rework rate with no addressee. Those rows
+// code lands) into tools/land-quality.ts's `claude/?` group, a rework rate with no addressee. Those rows
 // are not repairable afterwards, for exactly the reason in the first line above. e2e/pins.ts holds
 // the two call sites on this one function so they cannot come apart again.
 function resolvedModel(s: Slot): { model: string | null; modelOrigin: ModelOrigin } {

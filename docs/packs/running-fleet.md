@@ -9,10 +9,18 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
 ## Landing
 
 - **The merge check runs against the entry's base.** The land door compares your check with the board entry's
-  `chargeBase` (the tip of the last land, else the entry's base, else main). A check against a resolved `main` SHA
-  counts as stale and the land answers 409. Read the field with `./ctl.sh get /api/branches` and pass exactly that
-  value as `--base`, or let the board door `POST /api/branches/check` do it. A branch session has no self door
-  there; the orchestrator starts that check.
+  `chargeBase` (the tip of the last land, else the entry's base, else main), as text. A check against a resolved
+  `main` SHA counts as stale and the land answers 409, and so does one run with a short SHA of the right commit.
+  Read the field with `./ctl.sh get /api/branches` and pass exactly that value as `--base`, or let the board door
+  `POST /api/branches/check {repo, branch}` do it: it computes the base itself, answers 202, and the verdict
+  comes as a line in `<git-common-dir>/merge-checks.jsonl`, which the land door reads, and as a git note under
+  `refs/notes/merge-check`. `repo` in the land and check bodies is the checkout's path;
+  a bare repo name answers 400 `not a directory`. A branch session has no self door there; the orchestrator
+  starts that check.
+- **After a land, the branch grows from the landed tip.** `chargeBase` becomes the tip that landed. A branch reset
+  or rebased onto main since no longer holds that tip, and land and check answer 409 "Branch seit der letzten
+  Charge umgeschrieben" (`server/branch-land.ts#chargeRewritten`); no door resets the base. Merge main in or
+  commit on top.
 - **A weight in the shard table reshuffles the whole plan.** `e2e/ctx.ts#SHARD_UNITS` is split greedily by
   `seconds`, so one changed weight can move a dozen units to another shard and run modules in a new order in the
   same instance. Before you commit a weight, diff `shardPlan` old against new and name the modules that now run
@@ -94,6 +102,27 @@ reads as his.
 - **Write to a seat through the mailbox, as its counterpart.** To a branch session you opened, write freely; the
   opener is matched by slot and folder, so your successor on the same slot keeps the pair. To any other session the
   orchestrator writes only a reply, with `replyTo` on a message from its current occupant; anything else is a 409.
+  After the target seat hands over, the door decides. As its branch counterpart, address the new `openedAt` or
+  leave it out (that names the session in the slot now); the old one answers a 409 about unbound sessions, which
+  points the wrong way. As the orchestrator replying with `replyTo`, keep the `openedAt` the parent came from: the
+  successor holds its predecessor's address, and the new one answers 409 "replyTo names no message addressed to
+  this sender".
+- **Acknowledge a message once you have acted on it.** `POST /api/self/messages/<id>/read` marks it. The unread
+  list is what you and your successor read as open work (`./state.sh --brief`, line `own-messages`), and dozens
+  of unacknowledged messages hide the one that matters. An unacknowledged message also comes back: the postfach
+  types every unread message again into the pane of a new session in the slot, your successor or you after
+  `/clear`.
+- **A seat in auto mode can stall on a question.** After three classifier denials in a row, or twenty in a
+  session, Claude Code pauses auto mode and asks a human (code.claude.com/docs/en/permission-modes, "When auto
+  mode falls back"); Fleet shows only a `lastOutput` that keeps aging. Before you call a quiet seat dead, read
+  the bottom of its pane (`capture-pane -p` on tmux session `s<slot>`, on Fleet's tmux socket). A test that
+  needs a permission prompt runs in manual mode (`--permission-mode default`): there the prompt is the mode's,
+  not a classifier's call.
+- **Set a test instance's TTL at `up`.** `./testinstanz.sh up --ttl <min>` is the only place the expiry is set;
+  `refresh` and `fixtures` leave it and nothing extends it. A re-up builds a new instance with new fixtures and a
+  new token (unless `FLEET_TI_TOKEN` carries the old one), and `./testinstanz.sh fixtures` replants only the standard
+  fixtures; what was set by hand, only the session that did it knows. A branch that waits for the owner's look the next morning needs a TTL that covers the
+  wait.
 - **Stop a test instance through its door.** `./testinstanz.sh down` refuses while a connection is open, because
   an open connection is somebody looking, most likely the owner's tab. Never kill one by tmux socket or PID. Age and
   „[Zitat entfernt]“ don't prove nobody looks.

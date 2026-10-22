@@ -7,6 +7,7 @@ import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
+import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
 import { hubHostOf, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek } from "./server/session-start";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
@@ -362,6 +363,11 @@ const SHELL = process.env.SHELL ?? "/bin/sh";
 // Bake our PATH into the command so `claude` resolves no matter who started tmux.
 const PATH_EXPORT = process.env.PATH ? `export PATH='${process.env.PATH.replaceAll("'", "'\\''")}'; ` : "";
 const BASE_CMD = process.env.FLEET_CMD ?? "claude";
+// NO ROLE IN BYPASS (owner 22.10.: „[Zitat entfernt]“
+// ): testinstanz.sh up --real-seats sets it, and the Orchestratorin's bypass becomes auto (startAspects)
+const NO_BYPASS = ["1", "true", "on", "yes"].includes(process.env.FLEET_NO_BYPASS?.trim().toLowerCase() ?? "");
+// …and the door says when the machine already holds its real seats (server/echte-sitze.ts), null on every other server
+const REAL_SEAT_GATE = realSeatGateFrom(process.env);
 const shellSingleQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const HABITS_PROMPT_VALUE = process.env.FLEET_HABITS_PROMPT?.trim().toLowerCase();
 const HABITS_PROMPT_ENABLED = ["1", "true", "on", "yes"].includes(HABITS_PROMPT_VALUE ?? "");
@@ -506,7 +512,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
   const aspects = claude && listRole ? startAspects({ role: listRole, handoverOn, fleetUrl: `http://${HOST}:${PORT}`,
-    tmuxSocket: SOCK, hub: hubFacts() }) : null;
+    tmuxSocket: SOCK, hub: hubFacts(), noBypass: NO_BYPASS }) : null;
   const base = aspects ? withoutSkipPermissions(BASE_CMD) : BASE_CMD;
   let cmd = sessionId && claude
     ? `${base} ${resume ? "--resume" : "--session-id"} ${sessionId}`
@@ -562,7 +568,10 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // --settings, never settings.local.json — the lane scaffold copies that file, and a switch there would
     // reach every session in the checkout.
     const cutSettings = { ...(cut ? { skillOverrides: cut.skillOverrides } : {}),
-      ...(notizbuch ? notizbuchSettings(notizbuch) : {}), ...aspects?.settings, ...rechteSettings(rechte) };
+      ...(notizbuch ? notizbuchSettings(notizbuch) : {}), ...aspects?.settings, ...rechteSettings(rechte),
+      // a real seat's deny rules (session-start.ts#REAL_SEAT_DENY) stand beside the session's own rights, never instead
+      ...(aspects?.settings.permissions ? { permissions: { allow: rechteSettings(rechte).permissions?.allow ?? [],
+        deny: [...(rechteSettings(rechte).permissions?.deny ?? []), ...aspects.settings.permissions.deny] } } : {}) };
     // DIE ORCHESTRATORIN LÄDT KEINEN ROLLEN-RENDER MEHR (TASK.md, Runde 1): ihre Rolle und ihr Start
     // stehen im Prompt (server/orchestrator-start.ts). Der Projekt-Monolith und die AGENTS.md-Fälle
     // bleiben trotzdem ausgeschlossen — sonst läse sie 80 kB Regeln, die ihr Start nicht nennt.
@@ -10313,6 +10322,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   if (!po.ok) throw new Error(po.error);
   const cwd = resolve(expandCwd(cwdRaw));
   if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`not a directory: ${cwd}`);
+  if (REAL_SEAT_GATE && h.id === "claude") {
+    const refused = await realSeatRefusal(REAL_SEAT_GATE);
+    if (refused) throw new Error(refused);
+  }
   let expected = { cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken };
   const pendingTeardown = slotTeardownInflight.get(s.id);
   const openOccupantCurrent = (): boolean => s.cwd === expected.cwd && s.openedAt === expected.openedAt
@@ -42334,7 +42347,7 @@ function claudeCodeStart(rolle: SessionRole, harness: string, ziel: { repo: stri
 function claudeCodeAnatomie(spawn: ClaudeCodeRolle, repoRoot: string, modell: string): CcAnatomie {
   const listRole: SessionListRole = spawn === "generic" ? "main" : spawn;
   const cut = sessionListCut(listRole);
-  const brief = startAspects({ role: spawn, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null }).briefLine;
+  const brief = startAspects({ role: spawn, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS }).briefLine;
   const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
   const live = new Map<string, { slot: number; rolle: string; cwd: string }>();
   for (const s of slots) {

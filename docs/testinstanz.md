@@ -7,6 +7,7 @@ fremden Lane). Sie läuft von selbst ab (TTL). Der Modus `snapshot` zeigt dem Ow
 eine bereinigte Kopie echter Daten: „[Zitat entfernt]“.
 
     ./testinstanz.sh up [mixed|full|snapshot] [--ttl <min>]   aufstellen, bauen, starten, Daten pflanzen
+    ./testinstanz.sh up mixed --real-seats           dasselbe, und jeder danach geöffnete Sitz ist ein echter claude in auto (unten, „Echte Sitze“)
     ./testinstanz.sh refresh                         aktuellen Stand des Worktrees übernehmen; Port, Token, Fixtures bleiben
     ./testinstanz.sh fixtures [mixed|full]           neu pflanzen, ohne Neustart
     ./testinstanz.sh states                          was die Leiste JETZT malt, je Zustand
@@ -189,6 +190,84 @@ Eine Anfrage an die Instanz DIESES Worktrees, mit ihrem eigenen Ausweis: `owner`
 (`.testinstanz.token`), `self:<slot>` der Self-Token dieses Slots aus ihrem `fleet.json`, `none` kein
 Ausweis. Gelesen wird beides in bun, nie in einer Kommandozeile, und gedruckt werden nur `HTTP <status>`
 und der Body. Ohne eigene laufende Instanz endet `probe` mit exit 2; den Live-Server erreicht es nie.
+
+## Echte Sitze — `up --real-seats`
+
+Owner 22.10.: „[Zitat entfernt]“
+ Ohne den Schalter startet eine Testinstanz nie ein Modell: `FLEET_CMD=true`, und
+unter ihrem eigenen HOME ist `claude` nirgends angemeldet. Mit dem Schalter:
+
+    FLEET_TI_MODEL=claude-haiku-5-5 ./testinstanz.sh up mixed --real-seats [--ttl <min>]
+
+- **Was echt wird.** Jeder Sitz, der nach `up` geöffnet wird, im Fenster, über die Owner-Tür oder über
+  die Self-Tür einer Session der Instanz. Seine Pane fährt die claude-Zeile, die der Server der Instanz
+  baut (`server.ts#agentCmd`), und davor steht `$DIR/bin/claude` (`testinstanz-claude.sh`). Der
+  startet den echten `claude` mit genau dieser Zeile, aber unter dem HOME des Owners, wo er angemeldet
+  ist. Das Transkript wird in das HOME der Instanz verlinkt, damit das Board Kontext und
+  Permission-Mode liest wie live. Die Fixture-Sitze der Demo bleiben Stand-ins: `up` hält ihre
+  Self-Tokens fest (`bin/.stand-ins`, sha256), bevor es scharf schaltet (`bin/.real-armed`).
+- **Nie Bypass.** Der Server läuft mit `FLEET_NO_BYPASS=1`, damit startet jede Rolle in auto, auch die
+  Orchestratorin (`server/session-start.ts#startAspects`). `testinstanz-claude.sh` verweigert außerdem
+  jede Zeile ohne `--permission-mode auto` und jede mit einem Bypass-Flag. Ebenso verweigert er jeden
+  Worker-Aufruf (`claude -p`: Zusammenfassungen, Merge-Resolver).
+- **Kein weiterer claude aus dem Sitz.** Unter dem HOME des Owners legt dessen Shell den echten `claude`
+  vorn in den PATH, die Bash eines Sitzes käme also am Wrapper vorbei. Deshalb tragen die `--settings` jedes
+  Sitzes drei Deny-Regeln (`session-start.ts#REAL_SEAT_DENY`): `Bash(claude:*)`, `Bash(*/claude *)` und
+  `Bash(*/claude)`. Sie stehen neben den Rechten des Sitzes, nicht an deren Stelle. Was sie nicht treffen,
+  etwa ein `sh -c` um den Aufruf, hält nur noch der Klassifizierer auf.
+- **Höchstens zwei auf dem ganzen Rechner.** Jeder echte Sitz jeder Instanz trägt seine pid in
+  `/tmp/fleet-echte-sitze/<pid>.seat` ein, unter einer Sperre. Das Register ist eines je Rechner, egal unter
+  welchem `FLEET_TI_ROOT` eine Instanz liegt (`FLEET_TI_SEAT_REGISTRY` gibt es nur für Tests). Die Sperre
+  nennt ihre Halterin und wird nur einer toten Halterin abgenommen. Ein dritter Sitz wird an der Tür
+  abgelehnt, an jeder Tür, die einen Slot öffnet (`server/echte-sitze.ts`, aus `openSlot`): HTTP 400
+  mit dem Satz, wie viele laufen, wie viele erlaubt sind und in welchen Slots. Der Slot bleibt leer.
+  Öffnen zwei Türen gleichzeitig, lehnt der Wrapper den zweiten unter seiner Sperre in der Pane ab.
+  Ein gerade geschlossener Sitz zählt, bis sein claude beendet ist (gemessen: wenige Sekunden). Deshalb
+  wartet die Tür an der Grenze bis zu 15 s auf einen freien Platz, bevor sie ablehnt. So verliert eine
+  Nachfolge (`POST /api/self/succeed`, auch die von `FLEET_MIGRATE_PCT` angestoßene) ihren Sitz nicht,
+  und ein echter dritter Sitz hört den Satz nach diesen 15 s.
+  `./testinstanz.sh status` zählt die Sitze.
+- **Nichts läuft weiter.** `down` und `reap` beenden jeden eingetragenen Sitz der Instanz über pid
+  und Startzeit, samt allem, was er gestartet hat (MCP-Server, Werkzeugbefehle, egal mit welchem cwd).
+  Dann folgen tmux und alles, was noch mit seinem cwd in der Instanz läuft. Ein echter Sitz endet
+  außerdem von selbst zur `expiresAt` der Instanz, denn der Reap-Takt läuft nur beim Start einer e2e. Die
+  TTL ist mit dem Schalter 60 statt 240 Minuten und höchstens 240.
+- **Transkripte liegen beim Owner.** Ein echter Sitz schreibt nach `~/.claude/projects/<cwd>/` des Owners,
+  wie jeder Live-Sitz. Die Instanz verlinkt sie nur. Liefe ein Sitz der Instanz in einem Live-Worktree,
+  würde sein Gespräch dort zum Kandidaten für „Fortsetzen“ (`server.ts#lastConversationIn`). Deshalb
+  arbeiten echte Sitze im Verzeichnis der Instanz oder in ihren eigenen Repos.
+- **Was es kostet.** Das Standardmodell der Instanz ist `claude-sonnet-5-5` (`FLEET_TI_MODEL` wählt
+  ein anderes, ein Sitz kann sein eigenes setzen), nicht das 1M-Opus des Live-Fleet. Ein Sitz kostet
+  nur, wenn er arbeitet: Der Start allein schickt keine Anfrage. Er läuft über das Claude-Max-Abo des
+  Owners (die Pane zeigt „[Zitat entfernt]“), zählt also gegen dessen Kontingent und nicht gegen ein
+  API-Konto. Gemessen am 22.10. mit Haiku 5.5, effort low, aus den Transkripten:
+  - Sitz ohne Rolle, zwei Ein-Zeilen-Aufgaben (eine davon mit einem curl): 3 Aufrufe, 141 k Eingabe
+    (davon 112 k aus dem Cache), 677 Ausgabe-Tokens.
+  - Orchestratorin, nur ihre Rollenkarte: 2 Aufrufe, 94 k Eingabe, 1 127 Ausgabe-Tokens. Die
+    Rollenkarte allein startet Arbeit; eine Orchestratorin kostet also schon beim Öffnen.
+
+  Ein geöffneter Sitz ohne Aufgabe macht keinen Aufruf (kein Transkript). Jeder Sitz belegt außerdem
+  RAM: gemessen 297 MB für claude und 117 MB für seine Kindprozesse (MCP), auf einem Mac mit 8 GB.
+- **Was anders ist als live.** Der Sitz liest die Einstellungen, Hooks, Plugins und `~/.claude/CLAUDE.md`
+  des Owners, wie jeder Live-Sitz. Die `claudeMdExcludes` der Zeile nennen aber das HOME der Instanz,
+  `~/AGENTS.md` des Owners wird also nicht ausgeschlossen.
+- **Postfach.** Nachrichten an eine Session oder an die Orchestratorin kommen wie live nach dem
+  Postfach-Fenster von 60 s in die Pane (`server/zustellung.ts`, „direkt“). Gemessen am 22.10.: 69 s,
+  die echte Orchestratorin antwortete darauf.
+- **Offen: ein Sitz in einem Git-Repo.** Im Verzeichnis der Instanz startet ein Sitz ohne Rückfrage,
+  denn `/private/tmp` ist in `~/.claude.json` des Owners vertraut. Ein Sitz in einem eigenen Repo der
+  Instanz (`fixture-repo/`) bleibt dagegen an Claudes Vertrauensfrage stehen, mit „[Zitat entfernt]“ vorgewählt.
+  Claude fragt je Repo-Wurzel, und Fleet beantwortet die Frage nie (`server.ts#CLAUDE_TRUST_DIALOG`).
+  Ohne Repo hat ein Sitz keine Projektbindung, die Orchestratorin bekommt dann ihre Owner-Korrekturen
+  nicht („[Zitat entfernt]“). Gemessen am 22.10. mit claude
+  2.1.308, ohne Anfrage ans Modell:
+  - Ein `git worktree` eines vertrauten Haupt-Repos startet ohne Rückfrage, auch unter `/private/tmp`.
+    So starten die Lanes des Live-Fleet: Ihre Worktrees haben keinen eigenen Eintrag, nur
+    `~/claude-fleet`. Ein Repo, das die Instanz als Worktree eines einmal vertrauten Haupt-Repos
+    anlegt, braucht also keine Rückfrage, und zwar für jede Instanz.
+  - Ein eigener Config-Ordner je Instanz (`CLAUDE_CONFIG_DIR`) ist nirgends angemeldet. Er trägt nur
+    mit kopierten Zugangsdaten (deren Refresh-Token sich beim Erneuern ändern kann, dann wäre live
+    abgemeldet) oder mit einem eigenen Login. Und er verlöre Einstellungen und Plugins des Owners.
 
 ## Die Ableitung — eine Instanz je Worktree
 

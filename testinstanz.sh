@@ -13,10 +13,13 @@
 # copy is what gives it its own state), and FLEET_CMD=true so no agent is ever spawned. The three
 # live values are refused by name below rather than merely avoided.
 #
-#   ./testinstanz.sh up [mixed|snapshot] [--ttl <min>]   stage, build, start, plant EVERYTHING (fixtures,
+#   ./testinstanz.sh up [mixed|snapshot] [--ttl <min>] [--real-seats]
+#                                           stage, build, start, plant EVERYTHING (fixtures,
 #                                           succession, ctx, codex states, painters), print the URL
 #                                           — the whole demo; FLEET_TI_TOKEN=<old> keeps the link the
-#                                           owner holds; default ttl 240 min
+#                                           owner holds; default ttl 240 min. --real-seats (mixed only,
+#                                           default ttl 60 min): a seat opened AFTER `up` is a real
+#                                           claude in auto — see REAL SEATS below and docs/testinstanz.md
 #   ./testinstanz.sh refresh                bring the worktree's CURRENT stand into the standing instance:
 #                                           stage + build beside it, restart only the server; port,
 #                                           token (the owner's link), tmux and fixtures stay
@@ -76,6 +79,13 @@ ti_owned() {
   [ -n "$TI_BIRTH" ] && [ "$TI_BIRTH" = "$(LC_ALL=C ps -p "$TI_PID" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" ] || return 1
   [ "$(lsof -nP -a -p "$TI_PID" -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null)" = "$TI_PID" ]
 }
+# REAL SEATS (owner 22.10.: „[Zitat entfernt]“
+# ). `up --real-seats` records realSeats=1; the server then runs FLEET_CMD=claude with
+# FLEET_NO_BYPASS=1 (no role in bypass, server/session-start.ts#startAspects), and $DIR/bin/claude is ti_real_wrapper's
+# script: the fixture seats `up` planted stay idle stand-ins, a seat opened after `up` execs the real claude under the
+# owner's HOME (the instance's own HOME is logged in nowhere — that is why no model ever starts without the switch).
+# THE CAP IS THE MACHINE'S: every real seat of every instance registers its pid in $TI_SEATS (one <pid>.seat file,
+# under a mkdir lock); a third start while two live is refused in the pane with a sentence naming the two.
 ti_source_match() {
   TI_EXPECTED="${TI_SOURCE_ID:-$(sed -n 's/^sourceIdentity=//p' "$STATE" 2>/dev/null)}"
   [ -n "$TI_EXPECTED" ] || return 1
@@ -280,6 +290,7 @@ ti_retire() {
   else
     TI_NOLSOF=" (no lsof on this host — identity unprovable)"
   fi
+  TI_ENDED=$(ti_end_seats "$TI_RD")
   if [ "$TI_HOLDS" = 1 ]; then
     kill "$TI_RPID" 2>/dev/null || true
     TI_WHY="pid $TI_RPID killed (held port $TI_RPORT)"
@@ -302,6 +313,7 @@ ti_retire() {
     kill -KILL $TI_ORPH 2>/dev/null || true
     TI_WHY="$TI_WHY, $(echo $TI_ORPH | wc -w | tr -d ' ') process(es) inside the dir ended"
   fi
+  [ -n "$TI_ENDED" ] && TI_WHY="$TI_WHY, $TI_ENDED"
   # tmux leaves its -L socket file behind when the server dies (e2e-stage.sh's dead-socket reap)
   TI_SOCKF="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$TI_RSOCK"
   if [ -S "$TI_SOCKF" ] && ! tmux -L "$TI_RSOCK" list-sessions >/dev/null 2>&1; then rm -f "$TI_SOCKF"; fi
@@ -324,41 +336,28 @@ ti_plant() {
 # (server.ts#projDir), and the demo plants those transcripts. With the real HOME they would have to
 # go into the owner's ~/.claude — outside this checkout, which a lane does not touch.
 #
-# AND THE HARNESS BINARIES ARE STAND-INS. FLEET_CMD=true only replaces the CLAUDE command; a slot
-# opened with harness codex or pi still starts the REAL `codex` / `pi` from PATH (measured
-# 2026-09-21: slot 5 ran `node ~/.local/bin/codex`, slot 4 a live `pi`). Under the owner's HOME
-# those are logged in, and anything typed into their panes is a prompt to a real model. So the
-# instance puts $DIR/bin first on PATH (server.ts#PATH_EXPORT hands the server's PATH to every pane),
-# where `codex` and `pi` exec an idle bun under a SYMLINK named codex-agent / pi-agent: the pane
-# has a process whose name the liveness probe accepts (comms `codex` / `pi`, a prefix match on the
-# basename, server.ts#paneAgentAt), and nothing behind it can reach a network or a model. A symlink,
-# not a copy: a copied /bin/sleep is killed by macOS on launch (measured, exit 137), a symlink's
-# name is what `ps -o comm=` reports.
-ti_shims() {
-  mkdir -p "$DIR/bin"
-  for h in codex pi; do
-    ln -sf "$(command -v bun)" "$DIR/bin/$h-agent"
-    printf '#!/bin/sh\n# test-instance stand-in for the %s CLI (testinstanz.sh#ti_shims)\nexec "$(dirname "$0")/%s-agent" -e "setInterval(() => {}, 1 << 30)"\n' "$h" "$h" > "$DIR/bin/$h"
-    chmod +x "$DIR/bin/$h"
-  done
-  # FLEET_TI_CLAUDE_LINE=1 (K16 Teil 2): the panes start the CLAUDE line itself — model, --settings, permission mode,
-  # as server.ts#agentCmd builds it for the live fleet — against a `claude` here that idles like the two above, so the
-  # liveness probe sees its agent and nothing reaches a model. What the server records about that line (e.g.
-  # succession.autoCompact) then shows in the instance. Without the flag the stand-in is removed.
-  if [ "${FLEET_TI_CLAUDE_LINE:-}" = 1 ]; then
-    ln -sf "$(command -v bun)" "$DIR/bin/claude-agent"
-    printf '#!/bin/sh\n# test-instance stand-in for the claude CLI (testinstanz.sh#ti_shims, FLEET_TI_CLAUDE_LINE=1)\nexec "$(dirname "$0")/claude-agent" -e "setInterval(() => {}, 1 << 30)"\n' > "$DIR/bin/claude"
-    chmod +x "$DIR/bin/claude"
-  else
-    rm -f "$DIR/bin/claude" "$DIR/bin/claude-agent"
-  fi
+# WHAT RUNS IN A PANE (the stand-ins, and the real claude of `up --real-seats`) lives in testinstanz-agent.sh, so a test
+# can ask it without a server: ti_agent_setup writes $DIR/bin, ti_agent_cmd names the FLEET_CMD
+. "$SRC/testinstanz-agent.sh"
+# ARM: from now on a NEW seat is real. Every self token the instance holds at this moment is a fixture's, recorded as
+# its sha256 — a fixture pane that is healed later stays a stand-in, a seat opened later by anyone is real.
+ti_arm() {
+  TI_ARM_DIR="$DIR" bun -e '
+const d=process.env.TI_ARM_DIR,state=await Bun.file(d+"/fleet.json").json(),out=[];
+const walk=(v)=>{if(Array.isArray(v))v.forEach(walk);else if(v&&typeof v==="object")for(const [k,x] of Object.entries(v)){if(k==="selfToken"&&typeof x==="string"&&x)out.push(new Bun.CryptoHasher("sha256").update(x).digest("hex"));else walk(x);}};
+walk(state.slots);
+await Bun.write(d+"/bin/.stand-ins",out.map((h)=>h+String.fromCharCode(10)).join(""));
+console.log(out.length);' > "$DIR/bin/.stand-ins.count"
+  : > "$DIR/bin/.real-armed"
+  echo "real seats armed: $(cat "$DIR/bin/.stand-ins.count") fixture seat(s) stay stand-ins"
+  rm -f "$DIR/bin/.stand-ins.count"
 }
 ti_serve() {
   ti_source_match || { echo 'refused: source removed or replaced; no server started' >&2; return 2; }
   # the harness start lines write their trust entries under $HOME (codex: $HOME/.codex/config.toml)
   # and die on a missing directory — before they ever reach the stand-in
   mkdir -p "$DIR/home/.codex" "$DIR/home/.pi"
-  ti_shims
+  ti_agent_setup
   # THE ENV PROOF, WRITTEN BEFORE THE START: the NAMES — never values — of every FLEET_* variable
   # the instance server will receive. The launch below is an `env -i` whitelist, so the calling
   # environment cannot leak in: no FLEET_HUB_REMOTE, no FLEET_HELPER_*, no FLEET_SHARE_*, and no
@@ -390,6 +389,11 @@ ti_serve() {
     set -- "$@" "FLEET_HARNESSES_OFF=$FLEET_HARNESSES_OFF"
     echo FLEET_HARNESSES_OFF >> "$DIR/env-names"
   fi
+  # REAL SEATS: no role in bypass, a default model that is not the 1M Opus (FLEET_TI_MODEL chooses another), and the
+  # registry the open door counts (server/echte-sitze.ts)
+  if [ "${TI_REAL:-}" = 1 ]; then
+    for TI_V in $(ti_real_env); do set -- "$@" "$TI_V"; echo "${TI_V%%=*}" >> "$DIR/env-names"; done
+  fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT FLEET_MIGRATE_PCT; do
     echo "$TI_V" >> "$DIR/env-names"
@@ -407,14 +411,12 @@ ti_serve() {
   # mixed keeps `true`: its painters type shell loops, which a shell must run.
   if [ "${TI_KIND:-}" = snapshot ]; then
     TI_TWO=""
-    TI_AGENT_CMD='cat'
     TI_MIRROR=1
   else
     TI_TWO='[{"name":"mac","url":"http://'"$(ti_addr):$PORT"'"},{"name":"workhorse","url":"'"$(ti_workhorse_url)"'"}]'
-    TI_AGENT_CMD='true'
     TI_MIRROR=0
   fi
-  [ "${FLEET_TI_CLAUDE_LINE:-}" = 1 ] && TI_AGENT_CMD='claude'
+  TI_AGENT_CMD=$(ti_agent_cmd)
   TI_INST="${FLEET_TI_INSTANCES-$TI_TWO}"
   TI_NAME="${FLEET_TI_INSTANCE-mac}"
   [ -z "$TI_INST" ] && TI_NAME="${FLEET_TI_INSTANCE-}"
@@ -495,19 +497,24 @@ ti_paint() {
 
 case "${1:-}" in
 up)
-  TI_KIND=mixed; TI_TTL=240
+  TI_KIND=mixed; TI_TTL=""; TI_REAL=0
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --ttl) [ $# -ge 2 ] || { echo "up: --ttl needs a number of minutes" >&2; exit 2; }
              TI_TTL=$2; shift 2 ;;
       --ttl=*) TI_TTL="${1#--ttl=}"; shift ;;
+      --real-seats) TI_REAL=1; shift ;;
       mixed|full|snapshot) TI_KIND=$1; shift ;;
-      *) echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <minutes>]" >&2; exit 2 ;;
+      *) echo "usage: ./testinstanz.sh up [mixed|snapshot] [--ttl <minutes>] [--real-seats]" >&2; exit 2 ;;
     esac
   done
+  # a real seat bills while it stands: its instance lives an hour unless --ttl says otherwise
+  [ -n "$TI_TTL" ] || { [ "$TI_REAL" = 1 ] && TI_TTL=60 || TI_TTL=240; }
+  [ "$TI_REAL" = 1 ] && [ "$TI_KIND" != mixed ] && { echo "up: --real-seats only with mixed — a snapshot mirrors the live fleet's seats" >&2; exit 2; }
   case "$TI_TTL" in ''|*[!0-9]*) echo "up: --ttl wants whole minutes" >&2; exit 2 ;; esac
   [ "$TI_TTL" -ge 1 ] && [ "$TI_TTL" -le 1440 ] || { echo "up: --ttl wants 1 to 1440 minutes" >&2; exit 2; }
+  [ "$TI_REAL" = 1 ] && [ "$TI_TTL" -gt 240 ] && { echo "up: --real-seats lives at most 240 minutes — a real seat bills while it stands" >&2; exit 2; }
   case "$TI_KIND" in mixed|snapshot) : ;; *) echo 'refused: unavailable mode' >&2; exit 2 ;; esac
   [ -f "$SRC/testinstanz-fixtures.js" ] && [ -f "$SRC/testinstanz-snapshot.js" ] || { echo 'refused: mode implementation missing' >&2; exit 2; }
   if ti_alive; then
@@ -590,6 +597,7 @@ JS
     echo "ttlMin=$TI_TTL"
     echo "expiresAt=$((TI_NOW + TI_TTL * 60))"
     echo "mode=$TI_KIND"
+    [ "$TI_REAL" = 1 ] && echo "realSeats=1"
     echo "sourceBefore=$TI_SOURCE_BEFORE"
     echo "sourceAfter=$TI_SOURCE_AFTER"
     echo "copyStartedAt=$TI_COPY_STARTED"
@@ -612,9 +620,14 @@ JS
   ti_patch || exit 1
   ti_paint
   ti_plant states
+  [ "$TI_REAL" = 1 ] && ti_arm
   echo
   echo "TESTINSTANZ UP   http://$ADDR:$PORT/?token=$TOK"
-  echo "  log $DIR/server.log · socket $SOCK · port $PORT · ttl ${TI_TTL}min · FLEET_CMD=true (no agent is ever spawned)"
+  if [ "$TI_REAL" = 1 ]; then
+    echo "  log $DIR/server.log · socket $SOCK · port $PORT · ttl ${TI_TTL}min · REAL SEATS: a seat opened now is a real claude in auto, at most $TI_SEAT_CAP on this machine, default model ${FLEET_TI_MODEL:-claude-sonnet-5-5}"
+  else
+    echo "  log $DIR/server.log · socket $SOCK · port $PORT · ttl ${TI_TTL}min · FLEET_CMD=true (no agent is ever spawned)"
+  fi
   echo "  down: $SRC/testinstanz.sh down"
   ;;
 refresh)
@@ -825,6 +838,10 @@ JS
   else
     echo "connections: $(printf '%s\n' "$TI_CONNS" | grep -c .) ESTABLISHED on port $PORT from $(printf '%s\n' "$TI_CONNS" | ti_peers) — down and reap refuse without --force"
   fi
+  if [ "$(sed -n 's/^realSeats=//p' "$STATE" 2>/dev/null | head -1)" = 1 ]; then
+    TI_SL=$(ti_seats_live)
+    echo "real seats: $(printf '%s\n' "$TI_SL" | grep -c " $DIR ") of this instance, $(printf '%s\n' "$TI_SL" | grep -c .) on this machine (cap $TI_SEAT_CAP)$( [ -f "$DIR/bin/.real-armed" ] && echo '' || echo ' — not armed yet')"
+  fi
   echo "--- ./ctl.sh lock (this instance must NEVER appear as the holder)"
   ( cd "$SRC" && ./ctl.sh lock )
   ;;
@@ -873,10 +890,24 @@ down)
       exit 3
     fi
   fi
+  # REAL SEATS FIRST, by their registered pid (ti_end_seats); then, once tmux is gone, whatever still runs with its cwd
+  # inside the directory — a seat's tool commands and its TTL watchdog — the sweep ti_retire does for the reap
+  TI_DOWN_REAL=$(sed -n 's/^realSeats=//p' "$STATE" 2>/dev/null | head -1)
+  TI_ENDED=$(ti_end_seats "$DIR")
   ti_alive && kill "$(cat "$PIDF")" 2>/dev/null || true
   # By SOCKET NAME, never a name pattern: `pkill -f` on this machine reaches the live server and
   # the post-land audit (AGENTS.md §Verify).
   tmux -L "$SOCK" kill-server 2>/dev/null || true
+  if [ "$TI_DOWN_REAL" = 1 ]; then
+    TI_REAL_DIR=$(cd "$DIR" 2>/dev/null && pwd -P) || TI_REAL_DIR=""
+    case "$TI_REAL_DIR" in */fleet-testinstanz-?*) : ;; *) TI_REAL_DIR="" ;; esac
+    TI_ORPH=""
+    if [ -n "$TI_REAL_DIR" ]; then
+      for TI_OP in $(ti_cwd_pids "$TI_REAL_DIR"); do case "$TI_OP" in "$$"|1) continue ;; esac; TI_ORPH="$TI_ORPH $TI_OP"; done
+    fi
+    if [ -n "$TI_ORPH" ]; then kill -TERM $TI_ORPH 2>/dev/null || true; sleep 1; kill -KILL $TI_ORPH 2>/dev/null || true; fi
+    TI_ENDED="${TI_ENDED:-real seats ended: 0}, $(echo $TI_ORPH | wc -w | tr -d ' ') process(es) inside the dir ended"
+  fi
   # …and the socket FILE, which tmux leaves behind (e2e-stage.sh's dead-socket reap)
   TI_SOCKF="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK"
   if [ -S "$TI_SOCKF" ] && ! tmux -L "$SOCK" list-sessions >/dev/null 2>&1; then rm -f "$TI_SOCKF"; fi
@@ -891,7 +922,7 @@ down)
     lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2
     exit 1
   fi
-  echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed"
+  echo "down: server stopped, port $PORT free, tmux -L $SOCK killed, $DIR removed${TI_ENDED:+ · $TI_ENDED}"
   ;;
 reap)
   # THE TTL TICK'S HAND. Every instance of this machine, read from its state file under the SAME

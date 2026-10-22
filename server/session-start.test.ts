@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  AUTO_MODE_BRIEF, PERMISSION_MODE, fillEnvironment, hubHostOf, slotSpawnFrom, spawnListRole, startAspects,
+  AUTO_MODE_BRIEF, PERMISSION_MODE, REAL_SEAT_DENY, fillEnvironment, hubHostOf, slotSpawnFrom, spawnListRole, startAspects,
   withoutSkipPermissions, type ClaudeStartRole, type StartFacts,
 } from "./session-start";
 import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
@@ -23,6 +23,20 @@ describe("Owner 15.10.: „[Zitat entfernt]“", () => {
     expect(withoutSkipPermissions("claude")).toBe("claude");
     // a look-alike flag is not the bypass flag
     expect(withoutSkipPermissions("claude --allow-dangerously-skip-permissions")).toBe("claude --allow-dangerously-skip-permissions");
+  });
+
+  test("owner 22.10. „[Zitat entfernt]“ on a test instance: with noBypass no role starts in bypass, the Orchestratorin included", () => {
+    for (const role of ROLES) {
+      expect(startAspects(facts({ role, noBypass: true })).mode).toBe("auto");
+      expect(startAspects(facts({ role, noBypass: true })).briefLine).toBe(AUTO_MODE_BRIEF);
+    }
+    expect(startAspects(facts({ role: "orchestrator", noBypass: false })).mode).toBe("bypassPermissions");
+  });
+
+  test("a real seat (noBypass) denies starting another claude by name and by path; a live seat has no such rule", () => {
+    for (const role of ROLES) expect(startAspects(facts({ role, noBypass: true })).settings.permissions?.deny).toEqual([...REAL_SEAT_DENY]);
+    expect(REAL_SEAT_DENY).toEqual(["Bash(claude:*)", "Bash(*/claude *)", "Bash(*/claude)"]);
+    expect(startAspects(facts({ role: "lane" })).settings.permissions).toBeUndefined();
   });
 
   test("every auto session reads the auto-mode brief line at its start, a bypass session none", () => {

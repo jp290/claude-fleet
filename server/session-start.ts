@@ -40,11 +40,14 @@ export interface StartFacts {
   tmuxSocket: string;
   // the internal hub remote, null when this server has none; never written into a tracked file
   hub: { remote: string; url: string; host: string } | null;
+  // FLEET_NO_BYPASS (a test instance with real seats, testinstanz.sh up --real-seats): no role starts in bypass,
+  // the Orchestratorin included — she gets auto and its brief line like every other role
+  noBypass?: boolean;
 }
 
 export interface StartAspects {
   mode: ClaudePermissionMode;
-  settings: { autoMode: { environment: string[] }; autoCompactEnabled?: false };
+  settings: { autoMode: { environment: string[] }; autoCompactEnabled?: false; permissions?: { deny: string[] } };
   // the auto-mode sentence, null for a session that runs without the classifier
   briefLine: string | null;
 }
@@ -61,12 +64,19 @@ export function fillEnvironment(template: readonly string[], f: StartFacts): str
     .map((e) => e.replace(PLACEHOLDER, (_, k: string) => values[k] ?? ""));
 }
 
+// A REAL SEAT STARTS NO FURTHER CLAUDE (acceptance 22.10.): it runs under the owner's HOME, whose shell puts the real claude
+// first on PATH, so its Bash would reach it past the test instance's wrapper — uncounted, and `--dangerously-skip-permissions`
+// there asks nothing. The rules deny the command by name and by path; the classifier still stands in front of anything else.
+export const REAL_SEAT_DENY: readonly string[] = ["Bash(claude:*)", "Bash(*/claude *)", "Bash(*/claude)"];
+
 export function startAspects(f: StartFacts, template: readonly string[] = AUTOMODE_ENVIRONMENT): StartAspects {
+  const mode: ClaudePermissionMode = f.noBypass ? "auto" : PERMISSION_MODE[f.role];
   return {
-    mode: PERMISSION_MODE[f.role],
+    mode,
     settings: { autoMode: { environment: fillEnvironment(template, f) },
-      ...(f.handoverOn ? { autoCompactEnabled: false as const } : {}) },
-    briefLine: PERMISSION_MODE[f.role] === "auto" ? AUTO_MODE_BRIEF : null,
+      ...(f.handoverOn ? { autoCompactEnabled: false as const } : {}),
+      ...(f.noBypass ? { permissions: { deny: [...REAL_SEAT_DENY] } } : {}) },
+    briefLine: mode === "auto" ? AUTO_MODE_BRIEF : null,
   };
 }
 

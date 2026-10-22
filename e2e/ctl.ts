@@ -834,7 +834,7 @@ await import(pathToFileURL(process.argv[2]).href);
   const sendFile = `${ROOT}/ctl-lane-message.txt`;
   const payload = { text: "ctl valid card fixture", kind: "auftrag", card: {
     ziel: "Exercise filing", surface: { files: ["code.txt"], symbols: [] },
-    rolle: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
+    rolle: { harness: "claude", model: "claude-sonnet-5-5", effort: "high" },
     done: "A row exists", verify: "bun e2e/pins.ts", verboten: ["No dispatch"],
   } };
   writeFileSync(cardFile, JSON.stringify(payload));
@@ -851,7 +851,7 @@ await import(pathToFileURL(process.argv[2]).href);
       && filedRow.source === "main" && filedRow.programId === programId,
     `exit=${filedCard.code} id=${filedId} status=${filedRow?.status} error=${filedCard.err}`);
   check("ctl file: author role and array values survive the real filing unchanged",
-    filedRow?.card?.rolle.harness === "codex" && filedRow.card.rolle.model === "gpt-6.1-sol"
+    filedRow?.card?.rolle.harness === "claude" && filedRow.card.rolle.model === "claude-sonnet-5-5"
       && filedRow.card.rolle.effort === "high" && filedRow.card.surface.files.join() === "code.txt"
       && filedRow.card.surface.symbols.length === 0 && filedRow.card.verboten.join() === "No dispatch",
     `role=${JSON.stringify(filedRow?.card?.rolle)} files=${JSON.stringify(filedRow?.card?.surface.files)}`);

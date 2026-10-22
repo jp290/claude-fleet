@@ -293,6 +293,86 @@ describe("Schnitt 6 · POST /api/self/branches und /api/self/branches/open", () 
     expect(entries.map((e) => [e.id, e.from])).toEqual([[(first?.body as SelfMessage).message?.id, { kind: "role", role: "orchestrator" }]]);
   }, LIFE_DEADLINE_MS * 3);
 
+  // Befund F4 (server/kind-weite.ts): eine Session unter dem Klassifizierer öffnete Codex ohne Sandbox und ohne Freigabe
+  test("eine freie Session öffnet kein Kind, das weiter ist als sie; die Orchestratorin öffnet es wie bisher", async () => {
+    const c = await cast();
+    const weit = { harness: "codex", permissions: { sandbox: "danger-full-access", approval: "never" } };
+    const [frei, orch] = await life(c.f, [
+      as(c.token(FREE), post("/api/self/branches", { name: "Weit" })),
+      as(c.token(ORCH), post("/api/self/branches", { name: "Orch Weit" }))]);
+    expect([frei?.status, orch?.status]).toEqual([201, 201]);
+    const [nein, still, ja] = await life(c.f, [
+      as(c.token(FREE), post("/api/self/branches/open", { branch: "branch/weit", goal: "x", ...weit })),
+      as(c.token(FREE), post("/api/self/branches/open", { branch: "branch/weit", goal: "x", harness: "codex" })),
+      as(c.token(ORCH), post("/api/self/branches/open", { branch: "branch/orch-weit", goal: "x", ...weit }))],
+    { FLEET_HARNESS_RESUME: "codex" }); // wie in der Testinstanz: die Codex-Pause aufgehoben, damit nur die Regel ablehnt
+    expect([nein?.status, still?.status]).toEqual([409, 409]);
+    expect(String(nein?.body.error)).toContain("no seat wider than itself");
+    expect(Object.values(seats(c.f)).some((s) => s.label === "Weit")).toBe(false);
+    expect([ja?.status, ja?.body.error]).toEqual([200, undefined]);
+    const kind = seats(c.f)[String(ja?.body.slot)] as Seat & { harness: string; permissions: unknown };
+    expect([kind.harness, kind.permissions]).toEqual(["codex", weit.permissions]);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // die Öffnerin wird an IHREM Slot gelesen (server.ts#oeffnerinOf): eine Codex-Session in read-only ist keine Claude-Session
+  test("eine Codex-Öffnerin in read-only öffnet kein Claude-Kind; ohne Angabe erbt ihr Kind Codex und ihre Sandbox", async () => {
+    const c = await cast();
+    const CODEX_SLOT = 12, eng = { sandbox: "read-only", approval: "on-request" };
+    const resume = { FLEET_HARNESS_RESUME: "codex" };
+    const [auf, a, b] = await life(c.f, [
+      post(`/api/slots/${CODEX_SLOT}/open`, { cwd: c.f.repo, label: "Codex eng", harness: "codex", permissions: eng }),
+      post("/api/branches", { repo: c.f.repo, name: "Claude Kind" }), post("/api/branches", { repo: c.f.repo, name: "Codex Kind" })], resume);
+    expect([auf?.status, a?.status, b?.status]).toEqual([200, 201, 201]);
+    const [claude, codex] = await life(c.f, [
+      as(c.token(CODEX_SLOT), post("/api/self/branches/open", { branch: "branch/claude-kind", goal: "x", harness: "claude" })),
+      as(c.token(CODEX_SLOT), post("/api/self/branches/open", { branch: "branch/codex-kind", goal: "x" }))], resume);
+    expect([claude?.status, String(claude?.body.error)]).toEqual([409, expect.stringContaining("harness claude is not yours (codex)")]);
+    expect([codex?.status, codex?.body.error]).toEqual([200, undefined]);
+    const kind = seats(c.f)[String(codex?.body.slot)] as Seat & { harness: string; permissions: unknown };
+    expect([kind.harness, kind.permissions]).toEqual(["codex", eng]);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // dieselbe Regel an den Aufgaben-Türen einer Program-MAIN (unter dem Klassifizierer): sie merkt keine Lane vor, die weiter ist
+  test("eine MAIN merkt keine Lane vor, die weiter ist als sie: Body, Varianten, Karten-Rolle und /spawn → 409", async () => {
+    const c = await cast();
+    const resume = { FLEET_HARNESS_RESUME: "codex" };
+    const ohne = { sandbox: "danger-full-access", approval: "never" };
+    const task = (body: Record<string, unknown>) => as(c.token(MAIN), post("/api/self/tasks", { text: "README ändern", kind: "auftrag", ...body }));
+    const card = (harness: string) => ({ ziel: "README ändern", rolle: { harness, model: harness === "codex" ? "gpt-6-astra" : "claude-opus-5", effort: "high" },
+      surface: { files: ["README"], symbols: [] }, done: "Zeile steht", verify: "bun test", verboten: [] });
+    const [body, bodyDefault, variants, rolle, eigen, eigeneRolle] = await life(c.f, [
+      task({ harness: "codex", permissions: ohne }), task({ harness: "codex" }),
+      task({ variants: [{ harness: "claude" }, { harness: "codex" }] }), task({ card: card("codex") }),
+      task({}), task({ card: card("claude") })], resume);
+    expect([body, bodyDefault, variants, rolle].map((a) => [a?.status, String(a?.body.error).includes("no seat wider than itself")]))
+      .toEqual([[409, true], [409, true], [409, true], [409, true]]);
+    expect([eigen?.status, eigeneRolle?.status, eigeneRolle?.body.error]).toEqual([200, 200, undefined]);
+    const id = String((eigen?.body.task as { id: string }).id);
+    const [spawn, owner] = await life(c.f, [as(c.token(MAIN), post(`/api/self/tasks/${id}/spawn`, { harness: "codex" })),
+      post(`/api/tasks/${id}/spawn`, { harness: "codex", permissions: ohne })], resume);
+    expect([spawn?.status, String(spawn?.body.error).includes("no seat wider than itself")]).toEqual([409, true]);
+    expect([owner?.status, (owner?.body.task as { spawn?: { harness: string } }).spawn?.harness]).toEqual([200, "codex"]);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // ohne Angabe erbt die Zeile einer Codex-MAIN ihre Schranken, nicht Codex' Standard danger-full-access/never
+  test("die Zeile einer Codex-MAIN in read-only erbt ohne Angabe Codex und read-only/on-request", async () => {
+    const c = await cast();
+    const CODEX_MAIN = 12, eng = { sandbox: "read-only", approval: "on-request" };
+    const resume = { FLEET_HARNESS_RESUME: "codex" };
+    const [auf, prog] = await life(c.f, [
+      post(`/api/slots/${CODEX_MAIN}/open`, { cwd: c.f.repo, label: "Codex MAIN", harness: "codex", permissions: eng }),
+      post("/api/programs", { ...PROGRAM, title: "Codex" })], resume);
+    expect([auf?.status, prog?.status]).toEqual([200, 200]);
+    const id = String((prog?.body.program as { id: string }).id), now = Date.now();
+    const state = persisted(c.f);
+    state.programs = (state.programs as { id: string }[]).map((p) => p.id === id ? { ...p, status: "active", confirmedAt: now, activatedAt: now,
+      main: { slot: CODEX_MAIN, openedAt: seat(c.f, CODEX_MAIN).openedAt, sessionId: null, boundAt: now } } : p);
+    writeFileSync(join(c.f.state, "fleet.json"), JSON.stringify(state, null, 2));
+    const [filed] = await life(c.f, [as(c.token(CODEX_MAIN), post("/api/self/tasks", { text: "README ändern", kind: "auftrag" }))], resume);
+    expect([filed?.status, filed?.body.error]).toEqual([200, undefined]);
+    expect((filed?.body.task as { spawn?: unknown }).spawn).toEqual({ harness: "codex", model: null, effort: null, permissions: eng });
+  }, LIFE_DEADLINE_MS * 3);
+
   test("Lane und Steward bekommen 409, ein fremdes Repo und ein Rollen-Name auch", async () => {
     const c = await cast();
     const make = (slot: number, body: Record<string, unknown>) => as(c.token(slot), post("/api/self/branches", body));

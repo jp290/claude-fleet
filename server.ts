@@ -7,7 +7,8 @@ import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
-import { hubHostOf, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek } from "./server/session-start";
+import { hubHostOf, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek } from "./server/session-start";
+import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
 import { notizbuchFuer, notizbuchSettings, type Notizbuch } from "./server/notizbuch";
@@ -8592,6 +8593,27 @@ async function selfBranchRequest(s: Slot, body: Record<string, unknown> | null):
   if (mine === null || mine !== theirs)
     return { ok: false, response: json({ error: "a session opens branches in its own repo only" }, 409) };
   return { ok: true, body: { ...body, repo: ro.repo } };
+}
+// what the opener has, read off her slot: the mode of her last claude spawn (or the one her position would get now)
+function oeffnerinOf(s: Slot): Oeffnerin {
+  const harness = harnessOf(s.harness).id;
+  const role = s.spawn?.openedAt === s.openedAt ? s.spawn.role : spawnListRole({ claude: true, lane: !!s.worktree,
+    orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
+  const pe = slotPermissionsOf(s);
+  return { harness, modus: harness === CLAUDE_HARNESS.id && role ? PERMISSION_MODE[role] : null,
+    permissions: pe.ok ? pe.permissions : null, rechte: s.rechte };
+}
+// a self filing's spawn choice, capped by its filer: the row-level pair, or each variant's (a group names none at row level)
+function selfSpawnCapped(o: Oeffnerin, body: Record<string, unknown>):
+  { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
+  if (!Array.isArray(body.variants)) return spawnNieWeiter(o, body);
+  const variants: unknown[] = [];
+  for (const [i, v] of body.variants.entries()) {
+    const c = v && typeof v === "object" && !Array.isArray(v) ? spawnNieWeiter(o, Object.fromEntries(Object.entries(v))) : null;
+    if (c && !c.ok) return { ok: false, error: `variant ${i + 1}: ${c.error}` };
+    variants.push(c ? c.body : v);
+  }
+  return { ok: true, body: { ...body, variants } };
 }
 const roleLabelOf = (name: string): boolean => isOrchestratorLabel(name) || name.trim() === STEWARD_LABEL;
 // NEUAUFBAU K5 · open a branch on the board (POST /api/branches, and its self door POST /api/self/branches): a NEW one (no
@@ -19152,15 +19174,20 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
   if (body.kind !== undefined && !isTaskKind(body.kind))
     return json({ error: `kind must be one of: ${TASK_KINDS.join(", ")}` }, 400);
   const kind: TaskKind = isTaskKind(body.kind) ? body.kind : "notiz";
+  // (3a) NEVER WIDER THAN THE FILER (server/kind-weite.ts, Befund F4): the row's harness and Codex limits, and each
+  // variant's, are at most the filing session's own; what the body leaves out is hers, not the harness default
+  const oeffnerin = oeffnerinOf(s);
+  const capped = selfSpawnCapped(oeffnerin, body);
+  if (!capped.ok) return json({ error: capped.error }, 409);
   // (3b) THE SPAWN TRIPLE, validated at SET time by the same three adapter validators the attended
   // dispatch runs — harness first, then model and effort against THAT adapter. An invalid
   // combination is a 400 here, at the filing, never a stored choice that fails at release or,
   // worse, silently runs the default adapter instead of the one the MAIN named.
-  const spawnChoice = taskSpawnFromBody(body);
+  const spawnChoice = taskSpawnFromBody(capped.body);
   if (!spawnChoice.ok) return json({ error: spawnChoice.error }, 400);
   // (3c) A VARIANT GROUP, through the one validator the owner door uses — and only for a row the MAIN
   // names an auftrag: the door's default kind is notiz, and a group of observations runs nothing.
-  const variantChoice = taskVariantsFromBody(body);
+  const variantChoice = taskVariantsFromBody(capped.body);
   if (!variantChoice.ok) return json({ error: variantChoice.error }, 400);
   if (variantChoice.variants && kind !== "auftrag")
     return json({ error: `variants need kind "auftrag" — a ${kind} is advisory and runs in no lane` }, 400);
@@ -19296,6 +19323,11 @@ async function createTaskForMain(s: Slot, occupant: SlotStreamOccupant,
     status: "pending", created: Date.now(), slot: null, note: null,
     ...(variantChoice.variants ? { variants: variantChoice.variants } : {}),
   };
+  // …and the author card's ROLLE, which fills an absent spawn just below, is held to the same rule (Befund F4)
+  const role = t.spawn ? null : cardRoleSpawn(t);
+  const roleCapped = role?.ok ? spawnNieWeiter(oeffnerin, { harness: role.spawn.harness ?? CLAUDE_HARNESS.id,
+    ...(role.spawn.permissions ? { permissions: role.spawn.permissions } : {}) }) : null;
+  if (roleCapped && !roleCapped.ok) return json({ error: `the card's ROLLE: ${roleCapped.error}` }, 409);
   // the author card's ROLLE fills an absent spawn here, at its birth (adoptSpawnFromCard) — a body
   // triple above already won, and a variant group keeps its `variants`
   adoptSpawnFromCard(t);
@@ -20125,7 +20157,10 @@ async function setTaskSpawn(id: string, req: Request, actor?: { slot: number; op
   if (!body || Array.isArray(body)) return json({ error: "invalid json" }, 400);
   const extra = Object.keys(body).filter((k) => k !== "harness" && k !== "model" && k !== "effort" && k !== "permissions");
   if (extra.length) return json({ error: `this door reads harness, model, effort and permissions only — [${extra.join(", ")}] is not read` }, 400);
-  const choice = taskSpawnFromBody(body);
+  // a MAIN's worker is never wider than the MAIN (server/kind-weite.ts, Befund F4); the owner's choice stays hers
+  const capped = actorSlot ? spawnNieWeiter(oeffnerinOf(actorSlot), body) : { ok: true as const, body };
+  if (!capped.ok) return json({ error: capped.error }, 409);
+  const choice = taskSpawnFromBody(capped.body);
   if (!choice.ok) return json({ error: choice.error }, 400);
   const choicePaused = harnessPausedError(harnessOf(choice.spawn?.harness));
   if (choicePaused) return json({ error: choicePaused }, 409);
@@ -50640,7 +50675,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const record = typeof asked.body.branch === "string" ? findBranch(branchBook, String(asked.body.repo), asked.body.branch) : undefined;
       if (record?.name && roleLabelOf(record.name))
         return json({ error: "this branch's Board-Name is a role label — the owner opens it" }, 409);
-      return await openBoardBranch(asked.body, s, "self");
+      // the child is never wider than its opener (server/kind-weite.ts, Befund F4)
+      const kind = kindNieWeiter(oeffnerinOf(s), asked.body);
+      if (!kind.ok) return json({ error: kind.error }, 409);
+      return await openBoardBranch(kind.body, s, "self");
     }
     // THE ORCHESTRATORIN JUDGES A RED AUDIT WITHOUT THE OWNER TOKEN (bau/ohne-owner-token Schnitt 3): the owner door's writer,
     // with her occupation as `by`. A Program-MAIN raises attention instead (auditRedSubject's door), every other session 409.

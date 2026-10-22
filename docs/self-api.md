@@ -1032,6 +1032,27 @@ curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $F
 - Das Ziel kommt als erste Nachricht. Es beginnt mit „geöffnet von der Session in Slot N über ihren Self-Token“, der
   Kopf lautet „Ziel eines Branches (vom Öffner, …)“.
 - Ein Board-Name, der ein Rollen-Label ist (Orchestrator, `⚙ steward`), gibt 409. Er würde das Label der neuen Session.
+- **Ein Kind ist nie weiter als seine Öffnerin** (seit 2026-10-22, Befund F4 der Sicherheitsprüfung,
+  `server/kind-weite.ts`). Was die Öffnerin hat, liest der Server an ihrem Slot ab, nie aus dem Body:
+  - **Ohne Schranke** ist nur Claude Code in `bypassPermissions` (die Orchestratorin) oder Codex mit
+    `danger-full-access` und `approval: never`. Eine solche Öffnerin öffnet wie die Owner-Tür, der Body bleibt
+    unverändert.
+  - **Jede andere Öffnerin** öffnet nur ihren eigenen Harness. Fehlt `harness`, ist es ihrer. Ein anderer Harness
+    gibt 409, auch ein engerer: Klassifizierer, Sandbox und Freigabe lassen sich nicht gegeneinander aufrechnen.
+  - **Codex unter Codex:** Sandbox (`read-only` < `workspace-write` < `danger-full-access`) und Freigabe
+    (`on-request` < `never`) sind je höchstens die der Öffnerin. Ohne `permissions` erbt das Kind ihre statt
+    Codex' Standard `danger-full-access`/`never`. Sind ihre nicht lesbar, gilt die engste.
+  - **Claude Code unter Claude Code:** Das Kind startet ohne Rolle, also in `auto`. Seine `rechte` geben keinen
+    Befehl freier als ihre. Je Befehl gilt: gesperrt < der Klassifizierer entscheidet (keine Regel; so steht
+    jeder Befehl ohne `rechte`) < ohne Rückfrage (Allow-Regel). Ohne `rechte` erbt das Kind ihre.
+  - Die Ablehnung ist 409 und nennt, was weiter wäre („… — a session opens no seat wider than itself“).
+  - `model`, `effort` und `profil` sind keine Rechte und gehen weiter wie bisher.
+  - **Dieselbe Regel an den Aufgaben-Türen** einer Program-MAIN (seit 2026-10-22, `server.ts#selfSpawnCapped`,
+    `server/kind-weite.ts#spawnNieWeiter`): `POST /api/self/tasks` (Harness und `permissions` der Zeile, jede Variante,
+    die ROLLE einer Autorenkarte, die einen fehlenden Spawn füllt) und `POST /api/self/tasks/:id/spawn` merken keine Lane
+    vor, die weiter ist als die MAIN; Ablehnung 409, Fehlendes erbt die Zeile von ihr. Eine Lane trägt keine `rechte`,
+    darum zählen dort nur Harness und Codex-Schranken. Die Owner-Türen bleiben, wie sie sind. Offen (Mangel 108): der
+    Karten-Sweep füllt einen fehlenden Spawn später aus einer ROLLE-Zeile, ohne die Einreicherin zu kennen.
 
 ## Bindung — eine MAIN, n Programs (seit 2026-10-06)
 

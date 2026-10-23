@@ -34,25 +34,20 @@ async function gedaechtnis(f: Fixture, slot: number): Promise<Gedaechtnis> {
 }
 
 describe("jedes Setup startet mit seinem Notizbuch", () => {
-  test("eine Session auf einem Board-Branch: das Notizbuch ihres Branches auf der Zeile und in der Fassung, mit Größe", async () => {
+  // DAS EIGENE SETUP (owner 23.10. ~22:00, server/eigenes-setup.ts): ein Board-Branch eines fremden Repos ist das Repo seines Nutzers, und
+  // seine Session behält Claudes eigenes Gedächtnis; das Notizbuch des Branches gibt es nur in Fleets Repo (notizbuch.test.ts, notizbuchFuer)
+  test("eine Session auf einem Board-Branch eines fremden Repos: kein Branch-Notizbuch, Claudes eigenes Gedächtnis", async () => {
     const f = fixture();
-    // das Notizbuch steht vor dem Start da: `anlass=laufend` zeigt, womit die Session gestartet wurde (server/start-fassung.ts), nicht den Stand von jetzt
     const ordner = `${projekt(f.repo)}/notizbuecher/branch-branch%2Fnotiz-a`;
     mkdirSync(ordner, { recursive: true });
-    const index = "- [Falle](falle.md) — der Port\n";
-    writeFileSync(join(ordner, "MEMORY.md"), index);
+    writeFileSync(join(ordner, "MEMORY.md"), "- [Falle](falle.md) — der Port\n");
     const [made, opened] = await life(f, [post("/api/branches", { repo: f.repo, name: "Notiz A" }),
       post("/api/branches/open", { repo: f.repo, branch: "branch/notiz-a" })]);
     const slot = offen(opened);
     const zeile = startzeile(f, String(made?.body.path));
-    expect(zeile).toContain(`"autoMemoryDirectory":"${ordner}"`);
+    expect(zeile).not.toContain("autoMemoryDirectory");
     expect(zeile).not.toContain("autoMemoryEnabled");
-    const bytes = Buffer.byteLength(index);
-    const erwartet = { bytes, text: index, notizbuch: { art: "eigen", pfad: ordner }, dateien: [{ pfad: `${ordner}/MEMORY.md`, bytes }] };
-    expect(await gedaechtnis(f, slot)).toMatchObject(erwartet);
-    // was die Session später dazuschreibt, ändert nicht, was sie beim Start las
-    writeFileSync(join(ordner, "MEMORY.md"), `${index}- [Neu](neu.md) — nach dem Start\n`);
-    expect(await gedaechtnis(f, slot)).toMatchObject(erwartet);
+    expect((await gedaechtnis(f, slot)).notizbuch?.art).toBe("geteilt");
   }, LIFE_DEADLINE_MS * 4);
 
   test("ein Profil hat sein eigenes, auch auf einem Branch", async () => {
@@ -109,4 +104,47 @@ describe("jedes Setup startet mit seinem Notizbuch", () => {
     expect(startzeile(f, f.repo)).not.toContain("autoMemoryDirectory");
     expect((await gedaechtnis(f, 1)).notizbuch).toMatchObject({ art: "geteilt", pfad: `${projekt(f.repo)}/memory` });
   }, LIFE_DEADLINE_MS * 3);
+});
+
+// DIE WAHL AN DER TÜR (Owner 23.10. ~22:30: im eigenen Setup gibt Fleet nur mit, was gewählt ist): das Feld `notizbuch` kommt bis auf die
+// Startzeile, und die Fassung nennt es unter „[Zitat entfernt]“. Die Fixture ist ein fremdes Repo, also eigenes Setup.
+async function mitgegeben(f: Fixture, slot: number): Promise<string | null> {
+  const [antwort] = await life(f, [get(`/api/slots/${slot}/fassung?anlass=laufend`)]);
+  const teile = (antwort?.body as { teile?: { id: string; abschnitte: { id: string; text: string | null }[] }[] }).teile ?? [];
+  return teile.find((t) => t.id === "darf")?.abschnitte.find((a) => a.id === "mitgegeben")?.text ?? null;
+}
+describe("das Notizbuch ist eine Wahl an der Tür", () => {
+  test("ohne Wahl: Claudes eigenes Gedächtnis und „mitgegeben“ ist nichts; der Plan nennt den Modus", async () => {
+    const f = fixture();
+    const [plan, lane, opened] = await life(f, [get(`/api/founding-plan?repo=${encodeURIComponent(f.repo)}&role=nur-ordner`),
+      get(`/api/founding-plan?repo=${encodeURIComponent(f.repo)}&role=lane`), post("/api/slots/1/open", { cwd: f.repo })]);
+    expect(plan?.body.modus).toBe("eigenes-setup");
+    expect(lane?.body.modus).toBe("fleet-sitz");
+    offen(opened);
+    expect(startzeile(f, f.repo)).not.toContain("autoMemory");
+    expect(await mitgegeben(f, 1)).toBe("nichts");
+  }, LIFE_DEADLINE_MS * 3);
+
+  test("„aus“ schaltet Claudes Gedächtnis ab und steht als Zeile da", async () => {
+    const f = fixture();
+    const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, notizbuch: "aus" })]);
+    offen(opened);
+    expect(startzeile(f, f.repo)).toContain('"autoMemoryEnabled":false');
+    expect((await gedaechtnis(f, 1)).notizbuch?.art).toBe("aus");
+    expect(await mitgegeben(f, 1)).toBe("notizbuch: aus");
+  }, LIFE_DEADLINE_MS * 3);
+
+  test("„branch“ gibt einer Branch-Session im fremden Repo das Notizbuch ihres Branches; ohne Board-Branch lehnt die Tür ab", async () => {
+    const f = fixture();
+    const [made, opened, ohneBranch, falsch] = await life(f, [post("/api/branches", { repo: f.repo, name: "Notiz W" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/notiz-w", notizbuch: "branch" }),
+      post("/api/slots/2/open", { cwd: f.repo, notizbuch: "branch" }), post("/api/slots/2/open", { cwd: f.repo, notizbuch: "an" })]);
+    const slot = offen(opened);
+    const ordner = `${projekt(f.repo)}/notizbuecher/branch-branch%2Fnotiz-w`;
+    expect(startzeile(f, String(made?.body.path))).toContain(`"autoMemoryDirectory":"${ordner}"`);
+    expect(await mitgegeben(f, slot)).toBe("notizbuch: branch");
+    expect(ohneBranch?.status).toBe(400);
+    expect(String(ohneBranch?.body.error)).toContain("board branch");
+    expect(falsch?.status).toBe(400);
+  }, LIFE_DEADLINE_MS * 4);
 });

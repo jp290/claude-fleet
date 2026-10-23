@@ -6,6 +6,9 @@
 #   ./e2e-isolated.sh
 set -u
 export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_HOST_LOAD_MAX=off FLEET_HOST_SWAP_MAX_PCT=off
+# THE LIST CUT IS THE LOCAL BINDING (server/eigenes-setup.ts#readListCut): the suite brings its own, so a host without the
+# owner's ~/.config/claude-fleet/listenschnitt.json (the helper) checks the same entries as this Mac
+export FLEET_LIST_CUT_FILE="$(cd "$(dirname "$0")" && pwd)/e2e/listenschnitt.fixture.json"
 # Hermetic isolation: this suite is often launched from INSIDE a Fleet worktree lane (the
 # land-verify gate runs there), whose pane env carries the scoped FLEET_SELF_TOKEN /
 # FLEET_SELF_SLOT (and, for a steward pane, FLEET_STEWARD_TOKEN). The throwaway tmux server

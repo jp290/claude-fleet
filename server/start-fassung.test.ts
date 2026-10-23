@@ -133,7 +133,16 @@ describe("was Fleet selbst in den Start legt, zählt im Hash", () => {
 
 // tmux liegt je nach Maschine nicht im Standard-PATH: sein Ordner geht mit, sonst gäbe es keine Pane
 const TMUX_DIR = dirname(Bun.which("tmux") ?? "/usr/bin/tmux");
+// DIE LOKALE BINDUNG DES TESTS (server/eigenes-setup.ts#readListCut): ein Listenschnitt mit jeder Herkunft und jedem `keep`, unter dem HOME
+// des Kindprozesses dort, wo der Server ihn sucht (~/.config/claude-fleet/listenschnitt.json)
+const LISTENSCHNITT = [
+  { name: "audit", from: "user-command" }, { name: "handoff", from: "user-command", keep: ["main", "orchestrator"] },
+  { name: "steward", from: "fleet-command", keep: ["main", "orchestrator"] }, { name: "anthropic-skills:docx", from: "synced-skill" },
+  { name: "init", from: "bundled" }, { name: "e2e-runner", from: "user-agent" },
+];
 const runServer = async (script: string, dir: string, env: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> => {
+  mkdirSync(join(dir, "home", ".config", "claude-fleet"), { recursive: true });
+  writeFileSync(join(dir, "home", ".config", "claude-fleet", "listenschnitt.json"), JSON.stringify(LISTENSCHNITT));
   const proc = Bun.spawn([process.execPath, "--no-env-file", "-e", script], { cwd: ROOT, stdout: "pipe", stderr: "pipe",
     env: { PATH: `${TMUX_DIR}:/usr/local/bin:/usr/bin:/bin`, HOME: join(dir, "home"), SHELL: "/bin/sh", FLEET_HOST: "127.0.0.1", FLEET_PORT: "8793",
       FLEET_SOCK: `startfassung${process.pid}`, FLEET_STATE_DIR: join(dir, "state"), FLEET_CMD: "claude",
@@ -169,15 +178,17 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
         const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
         const repoRoot = process.env.FIX_REPO;
         const neu = (rolle, harness) => S.fassungFuerNeuenPlan({ rolle, harness, modell: null, effort: null, repoRoot });
-        const fassungen = { lane: await neu("lane", "claude"), orch: await neu("orchestrator", "claude"), frei: await neu("nur-ordner", "claude"),
-          codex: await neu("lane", "codex") };
+        // frei: ein Sitz ohne Rolle in Fleets eigenem Repo; eigen: derselbe im fremden Repo der Fixture, also im eigenen Setup
+        const fassungen = { lane: await neu("lane", "claude"), orch: await neu("orchestrator", "claude"),
+          frei: await S.fassungFuerNeuenPlan({ rolle: "nur-ordner", harness: "claude", modell: null, effort: null, repoRoot: ${JSON.stringify(ROOT)} }),
+          eigen: await neu("nur-ordner", "claude"), codex: await neu("lane", "codex") };
         await Bun.write(${JSON.stringify(out)}, JSON.stringify({ fassungen }));
         process.exit(0);
       `;
       const r = await runServer(script, dir);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      const got = JSON.parse(readFileSync(out, "utf8")) as { fassungen: Record<"lane" | "orch" | "frei" | "codex", Antwort> };
-      const { lane, orch, frei, codex } = got.fassungen;
+      const got = JSON.parse(readFileSync(out, "utf8")) as { fassungen: Record<"lane" | "orch" | "frei" | "eigen" | "codex", Antwort> };
+      const { lane, orch, frei, eigen, codex } = got.fassungen;
       for (const f of [lane, orch, frei]) {
         expect(abschnitt(f, "darf", "modus")?.text ?? "").not.toBe("");
         expect(abschnitt(f, "darf", "werkzeuge")?.text).toContain("--disallowedTools");
@@ -188,7 +199,19 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
       expect(abschnitt(lane, "darf", "mcp")?.text).toContain("--strict-mcp-config ja");
       expect(abschnitt(frei, "darf", "mcp")?.text).toContain("--strict-mcp-config nein");
       expect(abschnitt(lane, "darf", "werkzeuge")?.text).not.toBe(abschnitt(orch, "darf", "werkzeuge")?.text);
-      expect(new Set([lane.hash, orch.hash, frei.hash]).size).toBe(3);
+      expect(new Set([lane.hash, orch.hash, frei.hash, eigen.hash]).size).toBe(4);
+      // DAS EIGENE SETUP: kein Modus, kein Schnitt, kein Text von Fleet am Systemprompt, kein Modell von Fleet; die Ansicht nennt, was Fleet dazulegt
+      expect(abschnitt(eigen, "darf", "modus")?.text).toStartWith("eigenes Setup");
+      expect(abschnitt(eigen, "darf", "werkzeuge")?.text).toBe("--tools alle eingebauten\n--disallowedTools keine");
+      expect(abschnitt(eigen, "darf", "einstellungen")?.text).toBe("{}");
+      expect(abschnitt(eigen, "liest", "systemzusatz")?.text).toBe("");
+      expect(abschnitt(eigen, "wer", "modell")?.text).toContain("deins aus den Claude-Code-Einstellungen");
+      const minimum = abschnitt(eigen, "darf", "eigenes-setup")?.text ?? "";
+      for (const teil of ["--session-id", "FLEET_SELF_TOKEN", "PATH"]) expect(minimum).toContain(teil);
+      expect(abschnitt(frei, "darf", "eigenes-setup")).toBeUndefined();
+      // ohne Wahl gibt Fleet nichts mit, und das steht als eigener Zustand da (Owner 23.10. ~22:30)
+      expect(abschnitt(eigen, "darf", "mitgegeben")?.text).toBe("nichts");
+      expect(abschnitt(frei, "darf", "mitgegeben")).toBeUndefined();
       expect(abschnitt(codex, "darf", "modus")).toBeUndefined();
       expect(abschnitt(codex, "liest", "systemzusatz")?.text).toBeNull();
     } finally {
@@ -257,22 +280,29 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const tokens = zerlege(f.zeile);
         const flag = (name: string): string | null => { const i = tokens.indexOf(name); return i < 0 ? null : tokens[i + 1] ?? ""; };
         const darf = (id: string): string => f.fleet.darf.find((a) => a.id === id)?.text ?? `(Abschnitt ${id} fehlt)`;
-        gleich(darf("modus"), flag("--permission-mode"));
-        if ("FLEET_NO_BYPASS" in env) gleich(darf("modus"), "auto");
-        else if (f.listRole === "orchestrator") gleich(darf("modus"), "bypassPermissions");
+        // ein Sitz ohne Rolle außerhalb von Fleets Repo startet im eigenen Setup (server/eigenes-setup.ts): keinen Modus auf der Zeile
+        const eigen = f.listRole === "generic" && !f.fleetRepo;
+        // ...außer auf einer Instanz mit echten Sitzen: dort läuft jeder echte Sitz in auto (testinstanz-claude.sh)
+        if (eigen) { gleich(flag("--permission-mode"), "FLEET_NO_BYPASS" in env ? "auto" : null); gleich(darf("modus").startsWith("eigenes Setup"), true); }
+        else {
+          gleich(darf("modus"), flag("--permission-mode"));
+          if ("FLEET_NO_BYPASS" in env) gleich(darf("modus"), "auto");
+          else if (f.listRole === "orchestrator") gleich(darf("modus"), "bypassPermissions");
+        }
         gleich(darf("werkzeuge"), `--tools ${flag("--tools") ?? "alle eingebauten"}\n--disallowedTools ${flag("--disallowedTools") ?? "keine"}`);
         // --settings: skillOverrides und Rechte wörtlich; die Auto-Mode-Umgebung als Vorlage ohne Adressen (`{fleetUrl}` …), also jede Zeile der Zeile
         // passt der Reihe nach auf eine Vorlagenzeile, und was die Zeile weglässt, sind nur die Hub-Zeilen (ohne Hub gibt es sie dort nicht)
         const zeileSet = JSON.parse(flag("--settings") ?? "{}") as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment?: string[] } };
-        const fassungSet = JSON.parse(darf("einstellungen")) as { claudeMdExcludes?: string[]; skillOverrides: unknown; permissions?: unknown; autoMode: { environment: string[] } };
-        gleich(fassungSet.skillOverrides, zeileSet.skillOverrides ?? {});
+        const fassungSet = JSON.parse(darf("einstellungen")) as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment: string[] } };
+        gleich(fassungSet.skillOverrides ?? {}, zeileSet.skillOverrides ?? {});
+        gleich(eigen ? [zeileSet.skillOverrides, zeileSet.autoMode, f.zeile.includes("FLEET-LISTENSCHNITT")] : null, eigen ? [undefined, undefined, false] : null);
         // die Orchestratorin zeigt ihre Excludes unter „Liest“ (fassungProjektregelnAus), eine Session ohne Rolle hier
         if (f.listRole === "generic")
           gleich(fassungSet.claudeMdExcludes ?? null, zeileSet.claudeMdExcludes?.map((pfad) => pfad.replace(f.home, "~")) ?? null);
         gleich(fassungSet.permissions ?? null, zeileSet.permissions ?? null);
         const deny = (zeileSet.permissions as { deny?: string[] } | undefined)?.deny ?? [];
         gleich("FLEET_NO_BYPASS" in env ? deny.slice(-REAL_SEAT_DENY.length) : null, "FLEET_NO_BYPASS" in env ? [...REAL_SEAT_DENY] : null);
-        const vorlage = fassungSet.autoMode.environment.map(alsMuster);
+        const vorlage = (fassungSet.autoMode?.environment ?? []).map(alsMuster);
         let at = 0;
         for (const eintrag of zeileSet.autoMode?.environment ?? []) {
           while (at < vorlage.length && !vorlage[at]!.test(eintrag)) at++;
@@ -304,7 +334,8 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
       const script = `
         const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
         const zeile = (browserMcp, bau, fleetRepo = false, rolle = "generic", checkout = false) => S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, null, null, browserMcp, checkout, [], rolle, false, null, null, null, null, null, bau, null, fleetRepo);
-        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ bau: zeile(true, true), frei: zeile(true, false), home: process.env.HOME,
+        // beide in Fleets Repo: außerhalb startet ein Sitz ohne Rolle im eigenen Setup (der Fall darunter)
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ bau: zeile(true, true, true), frei: zeile(true, false, true), home: process.env.HOME,
           // in Fleets Repo: der Bau-Sitz, die freie Session, die Session im Checkout und die Orchestratorin
           fleet: [zeile(true, true, true), zeile(true, false, true), zeile(true, false, true, "main", true), zeile(true, false, true, "orchestrator")] }));
         process.exit(0);
@@ -318,16 +349,57 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
       expect(tools).toEqual((JSON.parse(readFileSync(join(ROOT, ".fleet/sitz-werkzeuge.json"), "utf8")) as { bau: string[] }).bau);
       for (const weg of ["Artifact", "Workflow", "AskUserQuestion", "SendFeedback", "ReportFindings", "ListAgents"]) expect(tools).not.toContain(weg);
       for (const bleibt of ["Bash", "Read", "Edit", "Write", "Agent", "Skill", "ToolSearch", "Monitor"]) expect(tools).toContain(bleibt);
-      expect((JSON.parse(flag(z.bau, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).toEqual([`${z.home}/AGENTS.md`]);
+      expect((JSON.parse(flag(z.bau, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).toContain(`${z.home}/AGENTS.md`);
       expect(zerlege(z.bau)).not.toContain("--strict-mcp-config");
       expect(flag(z.frei, "--tools")).toBeNull();
-      expect(z.frei).not.toContain("claudeMdExcludes");
+      expect((JSON.parse(flag(z.frei, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).not.toContain(`${z.home}/AGENTS.md`);
       expect(zerlege(z.frei)).not.toContain("--strict-mcp-config");
-      // EIN SITZ IN FLEETS REPO lässt die eigenen Regeln des Owners aus, jede Rolle; außerhalb nennt die Zeile sie nicht
+      // EIN SITZ IN FLEETS REPO lässt die eigenen Regeln des Owners aus, jede Rolle
       for (const zeile of z.fleet)
         expect((JSON.parse(flag(zeile, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes)
           .toEqual(expect.arrayContaining([`${z.home}/.claude/CLAUDE.md`, `${z.home}/.claude/rules/**`]));
-      expect(z.bau).not.toContain("/.claude/CLAUDE.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+// EIN SITZ IM EIGENEN SETUP (Owner 23.10. ~22:00, server/eigenes-setup.ts): wer sein eigenes Repo in Fleet öffnet, bekommt die Zeile eines
+// `claude` von Hand plus Fleets Minimum — keinen Listenschnitt, keinen Modus, keine Werkzeugliste, keinen Text von Fleet, kein Modell von Fleet.
+// Ob der Sitz baut (ein Branch-Worktree), ändert daran nichts. In Fleets Repo trägt dieselbe Rolle weiter den Schnitt der Bindung.
+describe("ein Sitz im eigenen Setup", () => {
+  test("die Zeile ist die eines claude von Hand plus Session-ID; eine Wahl am Sitz kommt dazu; in Fleets Repo bleibt der Schnitt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "start-fassung-eigen-"));
+    try {
+      mkdirSync(join(dir, "state"), { recursive: true });
+      mkdirSync(join(dir, "home"), { recursive: true });
+      const out = join(dir, "out.json");
+      const script = `
+        const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+        const zeile = (model, effort, bau, fleetRepo, rechte = null, mode = null) => S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, model, effort, true, false, [], "generic", false, null, rechte, null, null, null, bau, null, fleetRepo, mode);
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ path: process.env.PATH,
+          nackt: zeile(null, null, false, false), baut: zeile(null, null, true, false), gewaehlt: zeile("claude-haiku-5-5", "low", false, false),
+          rechte: zeile(null, null, false, false, { stufe: "lesen", an: [], aus: [] }), fleet: zeile(null, null, false, true),
+          modus: zeile(null, null, false, false, null, "auto"), fleetModus: zeile(null, null, false, true, null, "plan") }));
+        process.exit(0);
+      `;
+      const r = await runServer(script, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
+      const z = JSON.parse(readFileSync(out, "utf8")) as Record<"path" | "nackt" | "baut" | "gewaehlt" | "rechte" | "fleet" | "modus" | "fleetModus", string>;
+      expect(z.nackt).toBe(`export PATH='${z.path}'; claude --session-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa; exec /bin/sh`);
+      expect(z.baut).toBe(z.nackt);
+      expect(z.gewaehlt).toBe(z.nackt.replace("; exec", " --model 'claude-haiku-5-5' --effort 'low'; exec"));
+      expect(z.fleet).toContain("--prompt-suggestions false");
+      // ein gewählter Modus kommt allein dazu; in Fleets Repo ersetzt er den der Rolle
+      expect(z.modus).toBe(z.nackt.replace("; exec", " --permission-mode 'auto'; exec"));
+      expect(z.fleetModus).toContain("--permission-mode 'plan'");
+      expect(z.fleetModus).not.toContain("--permission-mode 'auto'");
+      // eine Wahl am Sitz bringt ihre Regeln und ihren Satz, nie den Schnitt oder den Modus
+      for (const da of ["--settings", "--append-system-prompt", "FLEET-RECHTE"]) expect(z.rechte).toContain(da);
+      for (const weg of ["FLEET-LISTENSCHNITT", "skillOverrides", "--permission-mode", "--disallowedTools", "AUTO-MODE", "autoMode"]) expect(z.rechte).not.toContain(weg);
+      // in Fleets Repo: der Schnitt der Bindung, der Modus und Fleets Modell wie bisher
+      for (const da of ["FLEET-LISTENSCHNITT (main,", '"anthropic-skills:docx":"off"', "--disallowedTools 'Agent(e2e-runner)'", "--permission-mode 'auto'", "--model '"])
+        expect(z.fleet).toContain(da);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -411,7 +483,8 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       await fahre("rechte", 4, { rechte: { stufe: "bauen", an: [], aus: [] } });
       await fahre("rechte-lesen", 5, { rechte: { stufe: "lesen", an: [], aus: [] } });
       await fahre("profil", 6, { profil: "planer" });
-      await fahre("bibliothek-aus", 7, { bibliothek: false });
+      // die Fixture ist ein fremdes Repo, also eigenes Setup: dort ist die Bibliothek ohne Wahl aus, die Wahl ist „an“
+      await fahre("bibliothek-an", 7, { bibliothek: true });
       await fahre("unterordner", 8, { cwd: repo + "/unter" });
       await fahre("alles", 9, { rechte: { stufe: "bauen", an: [], aus: [] }, profil: "planer", bibliothek: false, cwd: repo + "/unter/ordner" });
       // ein Sitz aus einer Datei: Lesestoff und gedeckeltes Darf aus dem Sitz-Block; mit Profil auch das gesäte Notizbuch (nur in ein eigenes, noch leeres)
@@ -481,7 +554,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(abbruch).toBe("");
   });
 
-  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil", "schwelle"]) {
+  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-an", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil", "schwelle"]) {
     test(`${schritt}: open mit dem gezeigten Hash gibt 200, und laufend ist der gezeigte, festgehaltene`, () => {
       const l = laeufe[schritt];
       expect(l?.open).toBe(200);
@@ -543,7 +616,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
   });
 
   test("Rechte, Profil, Bibliothek und Unterordner ändern den gezeigten Hash (die Vorschau rechnet sie mit)", () => {
-    const namen = ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles"];
+    const namen = ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-an", "unterordner", "alles"];
     const hashes = namen.map((k) => laeufe[k]?.vorschau);
     expect(hashes.every((h) => typeof h === "string")).toBe(true);
     expect(namen.filter((k, i) => hashes.indexOf(laeufe[k]?.vorschau) !== i)).toEqual([]);

@@ -21,6 +21,30 @@ const titel = (a: UmfeldAbschnitt): string => [a.text ?? a.grund ?? "", a.quelle
 export function umfeldZeilen(teile: readonly UmfeldTeil[]): UmfeldZeile[] {
   const alle = new Map(teile.flatMap((t) => t.abschnitte.map((a) => [a.id, a] as const)));
   const zeilen: UmfeldZeile[] = [];
+  // DAS EIGENE SETUP (server/eigenes-setup.ts) zuerst: der Modus in Worten, darunter je Zeile, was Fleet dazulegt, und im Tooltip warum
+  const eigenesSetup = alle.get("eigenes-setup");
+  if (eigenesSetup?.text) {
+    const [satz = "", ...dazu] = eigenesSetup.text.split("\n");
+    zeilen.push({ label: "Modus", wert: "eigenes Setup — dein Claude Code, wie du es selbst startest", titel: satz, eigen: false });
+    dazu.filter((z) => z.startsWith("- ")).forEach((z, i) => {
+      const [was = "", ...warum] = z.slice(2).split(": ");
+      zeilen.push({ label: i === 0 ? "Fleet legt dazu" : "", wert: was, titel: warum.join(": "), eigen: false });
+    });
+    // was beim Öffnen gewählt ist, je Zugabe eine Zeile „<feld>: <wert>“; ohne Wahl genau „nichts“
+    const mitgegeben = alle.get("mitgegeben");
+    if (mitgegeben?.text) mitgegeben.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Mitgegeben" : "", wert: z,
+      titel: "Beim Öffnen dieser Sitzung gewählt. Ohne Wahl gibt Fleet nichts mit.", eigen: false }));
+    // was die Schemas der eingebauten Werkzeuge am Start kosten, je Werkzeug; Messung und Zeile im Tooltip
+    const werkzeuge = alle.get("werkzeuge");
+    if (werkzeuge?.grund) {
+      const [kosten = "", ...herkunft] = werkzeuge.grund.split(" · ");
+      zeilen.push({ label: "Werkzeuge", wert: kosten, titel: [herkunft.join("\n"), titel(werkzeuge)].filter(Boolean).join("\n\n"), eigen: false });
+    }
+  }
+  // was aus ~/.claude für diesen Sitz wegbleibt, je Teil eine Zeile; ohne Wahl genau „nichts“ (nur im eigenen Setup)
+  const weggelassen = alle.get("weggelassen");
+  if (weggelassen?.text) weggelassen.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Weggelassen" : "", wert: z,
+    titel: "Aus deinem ~/.claude für diesen Sitz weggelassen, nur auf seiner Zeile. Deine Dateien bleiben, wie sie sind.", eigen: false }));
   const schwelle = alle.get("schwelle"), warm = alle.get("warmhalten");
   if (schwelle) zeilen.push({ label: "Übergabe", wert: schwelle.text ?? schwelle.grund ?? "unbekannt", titel: titel(schwelle), eigen: false });
   if (warm) zeilen.push({ label: "Warmhalten", wert: (warm.text ?? warm.grund ?? "unbekannt").split("\n")[0]!.replace(/^Cache warmhalten /, ""),

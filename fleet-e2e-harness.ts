@@ -617,6 +617,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedZustellung: null,
           // ...and its choice of Fleet's library (server.ts#seatLibraryOn), claude only — a codex fixture carries none
           carriedBibliothek: null,
+          // ...and the door's choices of the own setup (server/eigenes-setup.ts, server/weglassen.ts), claude only — a codex fixture carries none
+          carriedNotizbuch: null, carriedPermissionMode: null, carriedWeglassen: null, carriedUmgebung: null, carriedTools: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });

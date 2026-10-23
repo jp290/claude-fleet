@@ -1,0 +1,24 @@
+{
+  "gemessen": "2026-10-23",
+  "claude": "2.1.309",
+  "modell": "claude-haiku-5-5",
+  "wie": "interaktives claude ohne Fleet-Flags im leeren Prüfordner, erste Anfrage an einen lokalen Mitschnitt (ANTHROPIC_BASE_URL); je Eintrag im tools-Feld die Bytes seiner JSON-Definition. Kein Modellaufruf.",
+  "aufgeschoben": "Werkzeuge, die hier fehlen (TaskStop, WebFetch, WebSearch, Monitor, … und MCP-Werkzeuge), stehen am Start nur mit ihrem Namen da; ihr Schema lädt ToolSearch beim Abruf.",
+  "platzhalter": 204,
+  "bytes": {
+    "Artifact": 36119,
+    "SendFeedback": 5508,
+    "Workflow": 5383,
+    "AskUserQuestion": 4901,
+    "Agent": 4747,
+    "ScheduleWakeup": 4663,
+    "Bash": 3368,
+    "ReportFindings": 2181,
+    "Read": 1923,
+    "Skill": 1811,
+    "ToolSearch": 1450,
+    "ListAgents": 1159,
+    "Edit": 966,
+    "Write": 639
+  }
+}

@@ -1,0 +1,10 @@
+[
+  { "name": "audit", "from": "user-command" },
+  { "name": "handoff", "from": "user-command", "keep": ["main", "orchestrator"] },
+  { "name": "rundgang", "from": "fleet-command", "keep": ["main", "orchestrator"] },
+  { "name": "anthropic-skills:docx", "from": "synced-skill" },
+  { "name": "dataviz", "from": "bundled" },
+  { "name": "example-reviewer", "from": "user-agent" },
+  { "name": "database-reviewer", "from": "user-agent" },
+  { "name": "e2e-runner", "from": "user-agent" }
+]

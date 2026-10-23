@@ -13,6 +13,8 @@ import { type Answer, branchTestkit, get, persisted, post } from "./branches-tes
 const { TMP, BIN, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
 const ARGV = join(TMP, "argv");
+// der Checkout, aus dem der Server dieses Tests läuft: Fleets eigenes Repo (server.ts#fleetBaumVon)
+const FLEET_REPO = join(import.meta.dir, "..");
 mkdirSync(ARGV);
 writeFileSync(join(BIN, "claude"), `#!/bin/sh\nf="${ARGV}/slot-$FLEET_SELF_SLOT"\n`
   + `for a in "$@"; do printf '%s\\0' "$a" >> "$f.tmp"; done\nmv "$f.tmp" "$f"\nexec sleep 600\n`, { mode: 0o755 });
@@ -46,7 +48,9 @@ describe("Lauf 3 F3: ein importierter Sitz startet über die Owner-Tür nie als 
 });
 
 // Die Fixes schränken die echten Rollen nicht ein (Orchestratorin 23.10., Frage des Owners): die Orchestratorin startet und folgt sich nach in
-// bypassPermissions, und was sie oder das Fenster ohne Sitz aus einer Datei öffnet, startet wie vorher. Derselbe Test ist auf main grün
+// bypassPermissions, und was sie oder das Fenster ohne Sitz aus einer Datei öffnet, startet wie vorher. Das Fixture-Repo ist für den Server
+// ein fremdes Repo: ein Sitz ohne Rolle dort startet im eigenen Setup (server/eigenes-setup.ts#eigenesSetup, Owner 23.10.) ohne Modus, wie
+// `claude` von Hand. Derselbe Sitz in Fleets eigenem Repo startet wie vorher in auto.
 describe("die echten Rollen starten wie heute", () => {
   const modus = (args: string[]): string | undefined => args[args.indexOf("--permission-mode") + 1];
   test("Orchestratorin: Start und Nachfolge in bypass; ihr Branch-Sitz und ein Sitz des Fensters ohne Datei wie bisher", async () => {
@@ -58,9 +62,10 @@ describe("die echten Rollen starten wie heute", () => {
     const kind = await life(f, [
       { ...post("/api/self/branches", { name: "Bauer" }), token: null, self },
       { ...post("/api/self/branches/open", { branch: "$0.branch" }), token: null, self },
-      post("/api/slots/7/open", { cwd: f.repo }), "save"]);
-    expect([kind[0]?.status, kind[1]?.status, kind[2]?.status]).toEqual([201, 200, 200]);
-    expect([modus(await argsOf(Number(kind[1]?.body.slot))), modus(await argsOf(7))]).toEqual(["auto", "auto"]);
+      post("/api/slots/7/open", { cwd: f.repo }), post("/api/slots/8/open", { cwd: FLEET_REPO }), "save"]);
+    expect([kind[0]?.status, kind[1]?.status, kind[2]?.status, kind[3]?.status]).toEqual([201, 200, 200, 200]);
+    expect([await argsOf(Number(kind[1]?.body.slot)), await argsOf(7)].map((a) => a.includes("--permission-mode"))).toEqual([false, false]);
+    expect(modus(await argsOf(8))).toBe("auto");
     // die Nachfolge startet dieselbe Rolle neu; der Ersatz-claude nimmt den Brief nicht an, also endet succeed als Schuld, der Start steht
     rmSync(join(ARGV, "slot-3"));
     await life(f, [{ ...post("/api/self/succeed", {}), token: null, self }], { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" });

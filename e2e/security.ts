@@ -346,6 +346,9 @@ const PRE_AUTH_ROUTES = [
   // acts on it, and that door sits behind the owner gate. Game-maker/steward 409. A LANE writes its
   // stand here since 2026-10-08 (intent only, row 14dd9154): read by its own MAIN in
   // program-execution, no door acts on it — the owner door still refuses a lane.
+  '= /api/self/weglassen', // added 2026-10-24 (branch/eigenes-setup): what the caller's OWN next start leaves out of the
+  // user's ~/.claude (server/weglassen.ts), on its own slot row, bound to its occupation (409 for another occupant).
+  // It can only take away from its own start line, never add a right, names no other slot and acts on no pane now.
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)

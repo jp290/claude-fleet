@@ -1526,19 +1526,28 @@ export default function (pi) {
   // ~/.claude in a temp home (server/fassung-umfeld.test.ts#welt), so *.test.ts is outside this rule.
   const SETTINGS_READER = "server/fassung-umfeld.ts";
   const FS_READERS = new Set(["readFileSync", "readdirSync", "statSync", "existsSync", "lstatSync", "realpathSync"]);
-  const runtimeNaming = serverU.files.filter((f) => !f.file.endsWith(".test.ts") && f.file !== SETTINGS_READER)
+  // ...and the module that builds a start's --settings (server/weglassen.ts, a door's choice to leave plugins out) names enabledPlugins for
+  // that flag only: it imports nothing from node:fs and calls no write or spawn, so the key reaches a command line and never a file.
+  const LINE_BUILDER = "server/weglassen.ts";
+  const runtimeNaming = serverU.files.filter((f) => !f.file.endsWith(".test.ts") && f.file !== SETTINGS_READER && f.file !== LINE_BUILDER)
     .flatMap((f) => f.text.split("\n").filter((l) => !l.trim().startsWith("//") && /settings\.json|enabledPlugins/.test(l))
       .map((l) => `${f.file}: ${l.trim().slice(0, 80)}`));
   const reader = serverU.module(SETTINGS_READER);
   const readerFs = [...reader.matchAll(/^import \{([^}]*)\} from "node:fs(?:\/promises)?";/gm)]
     .flatMap((m) => m[1]!.split(",").map((n) => n.trim()).filter(Boolean));
-  const readerWrites = reader.split("\n").filter((l) => !l.trim().startsWith("//")
-    && /\b(write\w*|append\w*|rename\w*|copyFile\w*|unlink\w*|rm\w*|mkdir\w*|truncate\w*|symlink\w*|createWriteStream|Bun\.write|spawn\w*|child_process)\b/.test(l));
+  const WRITE_CALL = /\b(write\w*|append\w*|rename\w*|copyFile\w*|unlink\w*|rm\w*|mkdir\w*|truncate\w*|symlink\w*|createWriteStream|Bun\.write|spawn\w*|child_process)\b/;
+  const readerWrites = reader.split("\n").filter((l) => !l.trim().startsWith("//") && WRITE_CALL.test(l));
+  const builder = serverU.module(LINE_BUILDER);
+  const builderFs = builder.split("\n").filter((l) => /from "(node:)?fs(\/promises)?"|require\(|import\(/.test(l));
+  const builderWrites = builder.split("\n").filter((l) => !l.trim().startsWith("//") && WRITE_CALL.test(l));
   pin("Fleet writes no global plugin settings: only the read-only Fassung reader names settings.json or enabledPlugins",
     runtimeNaming.length === 0, runtimeNaming.join(" | ") || "no other runtime line");
   pin("Fleet writes no global plugin settings: the Fassung reader imports only fs readers and calls no write",
     reader !== "" && readerFs.every((n) => FS_READERS.has(n)) && readerWrites.length === 0,
     JSON.stringify({ fs: readerFs, writes: readerWrites.map((l) => l.trim().slice(0, 80)) }));
+  pin("Fleet writes no global plugin settings: the start-line builder imports no fs and calls no write",
+    builder !== "" && builderFs.length === 0 && builderWrites.length === 0,
+    JSON.stringify({ fs: builderFs.map((l) => l.trim().slice(0, 80)), writes: builderWrites.map((l) => l.trim().slice(0, 80)) }));
   pin("Fleet writes no global Codex configuration: no code line names config.toml",
     configToml.length === 0, configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
 }

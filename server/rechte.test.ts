@@ -69,7 +69,8 @@ describe("Rechte kommen bei der gestarteten Session an", () => {
     const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo })]);
     offen(opened);
     const zeile = startzeile(f, f.repo);
-    expect(settings(zeile).permissions).toBeUndefined();
+    // ein fremdes Repo, also eigenes Setup (server/eigenes-setup.ts): ohne Rechte trägt die Zeile gar kein --settings
+    expect(zeile).not.toContain("--settings");
     expect(zeile).not.toContain("FLEET-RECHTE");
     expect(opened?.body.rechte).toBeUndefined();
     expect(gespeichert(f, 1)).toBeUndefined();

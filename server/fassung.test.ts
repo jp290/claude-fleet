@@ -134,7 +134,8 @@ describe("das Notizbuch unter Liest", () => {
 
 // DIE STARTBYTES BLEIBEN (Fertig-kriterium 5): die Fixture wurde VOR dem Herausziehen der
 // Rollenkarten aus dem damaligen server.ts aufgenommen. Der Test lädt server.ts in einem eigenen
-// Prozess (wie server/load.test.ts) und vergleicht Startbrief und Startzeile der drei Slots.
+// Prozess (wie server/load.test.ts) und vergleicht Startbrief und Startzeile der drei Slots. Die freie Session steht in keinem Repo
+// von Fleet und startet seit eigenes-setup (server/eigenes-setup.ts) mit der Zeile eines claude von Hand: nur ihre Zeile ist neu.
 describe("die Startbytes der übrigen Rollen bleiben", () => {
   test("MAIN, Lane, freie Session und Steward: Startbrief und Startzeile sind byte-gleich", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fassung-spawn-"));
@@ -172,7 +173,9 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
     const state = join(dir, "state");
     const proc = Bun.spawn([process.execPath, "--no-env-file", "-e", script], { cwd: ROOT, stdout: "pipe", stderr: "pipe",
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: home, SHELL: "/bin/sh", FLEET_HOST: "127.0.0.1",
-        FLEET_PORT: "8790", FLEET_SOCK: "fleetfixture", FLEET_STATE_DIR: state, FLEET_CMD: "claude", FASSUNG_OUT: out } });
+        FLEET_PORT: "8790", FLEET_SOCK: "fleetfixture", FLEET_STATE_DIR: state, FLEET_CMD: "claude", FASSUNG_OUT: out,
+        // der Listenschnitt liegt seit eigenes-setup in der lokalen Bindung: hier die Liste, die server.ts bis dahin selbst trug
+        FLEET_LIST_CUT_FILE: join(import.meta.dir, "listenschnitt-bisher.fixture.json") } });
     const exitCode = await Promise.race([proc.exited, Bun.sleep(60_000).then(() => { proc.kill("SIGKILL"); return -1; })]);
     const stderr = await new Response(proc.stderr).text();
     try {

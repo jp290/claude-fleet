@@ -7,6 +7,9 @@
 #   ./e2e-claude-gate.sh
 set -u
 export FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_HOST_LOAD_MAX=off FLEET_HOST_SWAP_MAX_PCT=off
+# THE LIST CUT IS THE LOCAL BINDING (server/eigenes-setup.ts#readListCut): the suite brings its own, so a host without the
+# owner's ~/.config/claude-fleet/listenschnitt.json (the helper) checks the same entries as this Mac
+export FLEET_LIST_CUT_FILE="$(cd "$(dirname "$0")" && pwd)/e2e/listenschnitt.fixture.json"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 # SOCK/PORT/DIR derived from $$ so concurrent runs never share a socket/port —
 # one run's kill-server can't hit another's server (same scheme as e2e-isolated.sh).
@@ -216,7 +219,7 @@ AUTOS_TICK=250
 DISP_TICK=250
 stage_await_server_gone "$SOCK" "$PORT"   # §11.2i: the kill-server above may still be dying
 tmux -L "$SOCK" new-session -d -s srv \
-  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
+  "cd '$DIR' && PATH='$FAKEBIN:$PATH' FLEET_HOST=127.0.0.1 FLEET_PORT=$PORT FLEET_SOCK=$SOCK FLEET_DISK_MIN_FREE_GIB=0.001 FLEET_DISK_WRITER_GIB=0.001 FLEET_MODEL= FLEET_AUTO_REVIEW_MS=0 FLEET_DELIVERY_BUNDLE_SEC=0 FLEET_CARD_MS=0 FLEET_AUTOS_TICK_MS=$AUTOS_TICK FLEET_DISPATCH_TICK_MS=$DISP_TICK FLEET_CMD=claude FLEET_LIST_CUT_FILE='$FLEET_LIST_CUT_FILE' FLEET_ACCEPT_WAIT_MS=300 FLEET_DISPATCH_REPO='$DISPATCH_REPO' FLEET_ENHANCE_CMD='$DIR/fakeenh' exec bun server.ts >> server.log 2>&1"
 # wait for the server to actually bind (a loaded dev box can take >2s) instead of a fixed sleep —
 # this suite runs in the pre-land gate, where a slow boot would read as a red gate.
 # ANY HTTP status means it's listening (401 without a token still proves the port is up).

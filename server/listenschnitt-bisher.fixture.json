@@ -1,0 +1,230 @@
+[
+ {
+  "name": "audit",
+  "from": "user-command"
+ },
+ {
+  "name": "fix-issue",
+  "from": "user-command"
+ },
+ {
+  "name": "review-pr",
+  "from": "user-command"
+ },
+ {
+  "name": "video-tools",
+  "from": "user-command"
+ },
+ {
+  "name": "sharpen1",
+  "from": "user-command"
+ },
+ {
+  "name": "sharpen2",
+  "from": "user-command"
+ },
+ {
+  "name": "gosharp1",
+  "from": "user-command"
+ },
+ {
+  "name": "gosharp2",
+  "from": "user-command"
+ },
+ {
+  "name": "formal",
+  "from": "user-command"
+ },
+ {
+  "name": "spec",
+  "from": "user-command"
+ },
+ {
+  "name": "handoff",
+  "from": "user-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "techdebt",
+  "from": "user-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "explore",
+  "from": "user-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "foreman",
+  "from": "fleet-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "inspektion",
+  "from": "fleet-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "projekt-blick",
+  "from": "fleet-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "rundgang",
+  "from": "fleet-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "steward",
+  "from": "fleet-command",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "anthropic-skills:docx",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:pptx",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:xlsx",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:pdf",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:docs",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:google-workspace",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:built-in-browser",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:chrome-browser",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:computer-use",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:morning",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:import-memory",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:skill-creator",
+  "from": "synced-skill"
+ },
+ {
+  "name": "anthropic-skills:deep-research",
+  "from": "synced-skill",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "keybindings-help",
+  "from": "bundled"
+ },
+ {
+  "name": "update-config",
+  "from": "bundled"
+ },
+ {
+  "name": "fewer-permission-prompts",
+  "from": "bundled"
+ },
+ {
+  "name": "plugin-authoring",
+  "from": "bundled"
+ },
+ {
+  "name": "schedule",
+  "from": "bundled"
+ },
+ {
+  "name": "init",
+  "from": "bundled"
+ },
+ {
+  "name": "dataviz",
+  "from": "bundled"
+ },
+ {
+  "name": "artifact-design",
+  "from": "bundled"
+ },
+ {
+  "name": "artifact-diagramming",
+  "from": "bundled"
+ },
+ {
+  "name": "artifact-capabilities",
+  "from": "bundled"
+ },
+ {
+  "name": "claude-api",
+  "from": "bundled",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "workflow-authoring",
+  "from": "bundled",
+  "keep": [
+   "main",
+   "orchestrator"
+  ]
+ },
+ {
+  "name": "example-reviewer",
+  "from": "user-agent"
+ },
+ {
+  "name": "database-reviewer",
+  "from": "user-agent"
+ },
+ {
+  "name": "e2e-runner",
+  "from": "user-agent"
+ }
+]

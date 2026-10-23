@@ -5166,7 +5166,8 @@ async function runSessionToolsBound(cwd: string): Promise<void> {
   const startLine = async (slot: number): Promise<string> => {
     for (let i = 0; i < 60; i++) {
       const line = (await tmuxOut("display-message", "-t", `=s${slot}:`, "-p", "#{pane_start_command}")).out;
-      if (line.includes("--prompt-suggestions")) return line;
+      // the claude line (FLEET_CMD=true renders no session flag); a seat in its own setup carries no --prompt-suggestions
+      if (line.includes("--session-id") || line.includes("--resume")) return line;
       await Bun.sleep(150);
     }
     return "";
@@ -5180,8 +5181,9 @@ async function runSessionToolsBound(cwd: string): Promise<void> {
     check("session tools: a MAIN bound at its spawn starts with the MAIN allowlist on --tools",
       bound.includes("--tools ") && bound.includes("Bash,Read,Write,Edit,Artifact,ToolSearch,TaskStop,Agent,WebFetch,WebSearch,SendMessage,SendFeedback,Skill,Monitor,PushNotification"),
       bound.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
-    check("session tools: a session bound to nothing keeps every tool — the MAIN's list cut and no --tools",
-      plain.includes("FLEET-LISTENSCHNITT (main,") && !plain.includes("--tools"),
+    // in a repo of its own (slotCwd), so in its own setup (server/eigenes-setup.ts): no list cut either
+    check("session tools: a session bound to nothing keeps every tool — no list cut and no --tools in its own repo",
+      !!plain && !plain.includes("FLEET-LISTENSCHNITT") && !plain.includes("--tools"),
       plain.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
   } finally {
     // the server first, while the opened slots keep the tmux server alive: killed first, srv is the last
@@ -14091,16 +14093,17 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
       !!mo?.ok && mainArgv.includes(flag) && !mainArgv.includes("--strict-mcp-config")
         && JSON.stringify(rowOf(free)?.packMcp) === JSON.stringify([server]),
       `slot=${free} ${mo?.status ?? "-"} ${mainArgv.slice(-260) || "no claude argv"} row=${JSON.stringify(rowOf(free)?.packMcp)}`);
-    check("session list cut: a MAIN keeps its role's entries (handoff, the steward pulses) and still drops the foreign ones",
-      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && mainArgv.includes('"anthropic-skills:docx":"off"')
-        && !mainArgv.includes('"handoff":') && !mainArgv.includes('"rundgang":') && mainArgv.includes("Agent(example-reviewer)"),
+    // an /open session is bound to no Program at its spawn: "generic" — and withMcp is a repo of its own, not Fleet's, so it starts
+    // in its own setup (server/eigenes-setup.ts): no list cut, no --tools, Claude's own auto-memory; Fleet's repo keeps the cut
+    // (server/start-fassung.test.ts)
+    check("session list cut: a session without a role in a foreign repo starts in its own setup — no list cut on its line",
+      !!mainArgv && !mainArgv.includes("FLEET-LISTENSCHNITT") && !mainArgv.includes("skillOverrides") && !mainArgv.includes("--disallowedTools"),
       mainArgv.slice(-400) || "no claude argv");
-    // an /open session is bound to no Program at its spawn: "generic", the MAIN's list cut and no --tools
     check("session tools: a session /open founds without a Program binding keeps every tool — no --tools on its line",
-      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && !mainArgv.includes("--tools"),
+      !!mainArgv && !mainArgv.includes("--tools"),
       mainArgv.slice(-400) || "no claude argv");
     check("auto-memory: a MAIN's claude keeps its auto-memory — no autoMemoryEnabled on its line",
-      mainArgv.includes("FLEET-LISTENSCHNITT (main,") && !mainArgv.includes("autoMemoryEnabled"),
+      !!mainArgv && !mainArgv.includes("autoMemoryEnabled"),
       mainArgv.slice(-400) || "no claude argv");
     // the pin is read off the live argv (fleet.json is written on a debounce); sleep wants its
     // transcript on disk, and the fake claude writes none

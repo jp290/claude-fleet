@@ -2,7 +2,7 @@
 // jedes Setup, das Fleet startet, bekommt sein eigenes Notizbuch oder keins — den geteilten Projektordner
 // nur, wo Fleet kein Setup über den Ordner hinaus kennt.
 import { describe, expect, test } from "bun:test";
-import { notizbuchFuer, notizbuchSettings } from "./notizbuch";
+import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings } from "./notizbuch";
 
 const PROJ = "/home/u/.claude/projects/-repo";
 const wahl = (over: Partial<Parameters<typeof notizbuchFuer>[0]> = {}) =>
@@ -38,6 +38,21 @@ describe("wem ein Notizbuch gehört", () => {
 
   test("ein Start, dessen Rolle Fleet nicht kennt, setzt nichts und liest den Projektordner", () => {
     expect(wahl({ rolle: null, profil: "p", branch: "b" })).toMatchObject({ art: "geteilt", pfad: `${PROJ}/memory` });
+  });
+
+  // DIE WAHL AN DER TÜR (Owner 23.10. ~22:30): eine ausdrückliche Wahl geht vor dem, was Profil und Branch sonst geben
+  test("die Wahl „aus“ schaltet ab, auch mit Profil oder Branch; die Wahl „branch“ geht vor dem Profil", () => {
+    expect(wahl({ wahl: "aus", profil: "p", branch: "b" })).toEqual({ art: "aus", pfad: null, wem: "niemandem: beim Öffnen abgeschaltet" });
+    expect(wahl({ wahl: "branch", profil: "p", branch: "b" }).pfad).toBe(`${PROJ}/notizbuecher/branch-b`);
+    expect(wahl({ wahl: "branch" }).art).toBe("geteilt");
+    expect(notizbuchSettings(wahl({ wahl: "aus" }))).toEqual({ autoMemoryEnabled: false });
+  });
+
+  test("die Tür nimmt nur „aus“ und „branch“; ohne Feld keine Wahl", () => {
+    expect(notizbuchDerTuer(undefined)).toEqual({ ok: true, wahl: null });
+    expect(notizbuchDerTuer("aus")).toEqual({ ok: true, wahl: "aus" });
+    expect(notizbuchDerTuer("branch")).toEqual({ ok: true, wahl: "branch" });
+    for (const falsch of ["an", true, "profil"]) expect(notizbuchDerTuer(falsch).ok).toBe(false);
   });
 
   test("zwei verschiedene Namen landen nie im selben Ordner", () => {

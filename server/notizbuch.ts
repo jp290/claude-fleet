@@ -9,7 +9,8 @@
 // Bericht. Eine freie Session oder MAIN ohne Profil und Branch behält den Projektordner und sieht ihn als geteilt:
 // Fleet kennt dort kein Setup über den Ordner hinaus, und sie bekäme sonst nicht mehr, was dort schon steht.
 //
-// Das Notizbuch bleibt auf diesem Rechner, unter Claudes Projektordner; ein Export trägt es nie. Rein: dieses Modul
+// Das Notizbuch bleibt auf diesem Rechner, unter Claudes Projektordner; ein Export trägt nur seine Notizen der Arten
+// project und reference mit, die über den Owner bleiben daheim (src/sitz.ts#NOTIZ_TEILBAR). Rein: dieses Modul
 // liest und schreibt nichts. Claude Code nimmt `autoMemoryDirectory` aus jeder Settings-Ebene einschließlich
 // `--settings` und `autoMemoryEnabled: false` schaltet ab (code.claude.com/docs/en/memory).
 import type { ClaudeStartRole } from "./session-start";
@@ -31,6 +32,17 @@ export interface NotizbuchFakten {
   readonly branch: string | null;
   /** Claudes Ordner für dieses Repo: ~/.claude/projects/<Namensraum des Haupt-Checkouts> */
   readonly projektOrdner: string;
+  /** die Wahl an der Tür (notizbuchDerTuer); null/fehlt = keine */
+  readonly wahl?: NotizbuchWahl | null;
+}
+
+// DIE WAHL AN DER TÜR (Feld `notizbuch`, Owner 23.10. ~22:30: im eigenen Setup gibt Fleet nur mit, was gewählt ist): „[Zitat entfernt]“ schaltet Claudes
+// Gedächtnis ab, „[Zitat entfernt]“ gibt das Notizbuch des Board-Branches, auf dem die Session sitzt. Ohne Feld behält ein Sitz im eigenen Setup
+// Claudes eigenes Gedächtnis (server.ts#notizbuchFuerStart).
+export type NotizbuchWahl = "aus" | "branch";
+export function notizbuchDerTuer(v: unknown): { ok: true; wahl: NotizbuchWahl | null } | { ok: false; error: string } {
+  if (v === undefined || v === null) return { ok: true, wahl: null };
+  return v === "aus" || v === "branch" ? { ok: true, wahl: v } : { ok: false, error: 'notizbuch must be "aus" or "branch"' };
 }
 
 // ein Name wird ein Ordnername, umkehrbar: kein `/`, kein `..` als eigener Pfadteil, zwei Namen nie derselbe Ordner
@@ -38,7 +50,9 @@ const ordnerName = (name: string): string => encodeURIComponent(name);
 
 export function notizbuchFuer(f: NotizbuchFakten): Notizbuch {
   if (f.rolle === "lane") return { art: "aus", pfad: null, wem: "niemandem: eine Lane schreibt, was sie lernt, in ihren Bericht" };
+  if (f.wahl === "aus") return { art: "aus", pfad: null, wem: "niemandem: beim Öffnen abgeschaltet" };
   const eigen = (name: string, wem: string): Notizbuch => ({ art: "eigen", pfad: `${f.projektOrdner}/notizbuecher/${name}`, wem });
+  if (f.rolle && f.wahl === "branch" && f.branch) return eigen(`branch-${ordnerName(f.branch)}`, `dem Branch ${f.branch}`);
   if (f.rolle && f.profil) return eigen(`profil-${ordnerName(f.profil)}`, `dem Profil „${f.profil}“`);
   if (f.rolle === "orchestrator") return eigen("orchestratorin", "dem Sitz der Orchestratorin");
   if (f.rolle && f.branch) return eigen(`branch-${ordnerName(f.branch)}`, `dem Branch ${f.branch}`);

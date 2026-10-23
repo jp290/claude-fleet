@@ -222,16 +222,20 @@ check("silent-alive fixture: Fleet's own probe agrees the agent is alive",
   silentSeen?.agent === "alive", JSON.stringify(silentSeen));
 
 const claudeArgv = await paneArgv("s9", "claude");
-check("the live claude stand-in receives --prompt-suggestions false in its argv",
-  claudeArgv.some((argv) => /(?:^|\s)--prompt-suggestions\s+false(?:\s|$)/.test(argv)),
+// slot 9 is a seat in its own setup (HOME, no role: server/eigenes-setup.ts) — it keeps Claude Code's prompt suggestions; Fleet's own
+// seats keep the flag (server/start-fassung.test.ts)
+check("the live claude stand-in in a foreign folder keeps its prompt suggestions — no --prompt-suggestions on its argv",
+  claudeArgv.length > 0 && claudeArgv.every((argv) => !argv.includes("--prompt-suggestions")),
   claudeArgv.join(" | ") || "no claude argv observed");
 // K16 E6 + E10a (server/session-start.ts), owner 15.10.: „[Zitat entfernt]“
 //  and „[Zitat entfernt]“ — read off the
 // argv the resident stand-in received, not off the line Fleet rendered.
-check("the live claude stand-in starts in auto mode, with Fleet's classifier environment and the auto-mode brief line",
-  claudeArgv.some((argv) => /(?:^|\s)--permission-mode\s+auto(?:\s|$)/.test(argv)
-    && argv.includes('"autoMode":{"environment":["$defaults"') && argv.includes(`${BASE}/api/deploy`)
-    && argv.includes("AUTO-MODE: Du läufst im Auto-Mode.") && !argv.includes("--dangerously-skip-permissions")),
+// EIGENES SETUP (owner 23.10. ~22:00, server/eigenes-setup.ts): slot 9 sits in HOME, outside Fleet's repo, with no role — it
+// starts like a hand-started claude, so Fleet sets no mode, no classifier environment and no brief line, and still strips the
+// bypass of FLEET_CMD. Fleet's own seats keep auto: server/start-fassung.test.ts holds the line of every role in Fleet's repo.
+check("the live claude stand-in in a foreign folder starts in its own setup: no permission mode, no classifier environment, no brief line",
+  claudeArgv.length > 0 && claudeArgv.every((argv) => !argv.includes("--permission-mode") && !argv.includes('"autoMode"')
+    && !argv.includes("AUTO-MODE:") && !argv.includes("FLEET-LISTENSCHNITT") && !argv.includes("--dangerously-skip-permissions")),
   claudeArgv.join(" | ") || "no claude argv observed");
 // …and the other half: this instance leaves FLEET_MIGRATE_PCT unset, which reads as 0 (server.ts#MIGRATE_PCT),
 // so a non-lane session has its handover OFF — Claude Code's compaction stays the last hold (owner 10:4x

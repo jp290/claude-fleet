@@ -129,16 +129,17 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     sh(other, "add", "README");
     sh(other, "commit", "-q", "-m", "start");
 
-    // in jedes Repo, als Voreinstellung an (Owner 22.10.: „[Zitat entfernt]“; runde4 §3); abschalten geht beim Öffnen
+    // in Fleets Repo als Voreinstellung an (Owner 22.10.: „[Zitat entfernt]“; runde4 §3); in einem fremden Repo startet ein Sitz ohne Rolle im eigenen
+    // Setup (Owner 23.10. ~22:00, server/eigenes-setup.ts): dort kommt sie nur, wenn sie beim Öffnen gewählt ist
     const plan = (repo: string, harness = "claude", bausteine = "") => get(`/api/founding-plan?repo=${encodeURIComponent(repo)}&role=nur-ordner`
       + `&harness=${harness}${bausteine ? `&bausteine=${bausteine}` : ""}`);
     // je Leben eine Frist (LIFE_DEADLINE_MS): Öffnen und Planen getrennt, ein frischer Klon übersetzt server.ts erst
     const [made, branch, frei, fleet, ohne, falsch] = await life(f, [
       post("/api/branches", { repo: f.repo, name: "Wissen Probe" }),
-      post("/api/branches/open", { repo: f.repo, branch: "branch/wissen-probe" }),
-      post("/api/slots/12/open", { cwd: other, label: "Frei" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/wissen-probe", bibliothek: true }),
+      post("/api/slots/12/open", { cwd: other, label: "Frei angeschaltet", bibliothek: true }),
       post("/api/slots/13/open", { cwd: FLEET_WT, label: "Frei im Fleet" }),
-      post("/api/slots/14/open", { cwd: other, label: "Frei angeschaltet", bibliothek: true }),
+      post("/api/slots/14/open", { cwd: other, label: "Frei ohne Wahl" }),
       post("/api/slots/15/open", { cwd: other, label: "Falsch", bibliothek: "ja" }),
       "save"]);
     const [planVor, planAus] = await life(f, [plan(other), plan(other, "claude", "bibliothek=aus")]);
@@ -149,11 +150,14 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
 
     // DER START: was jeder Sitz immer braucht, wörtlich; der Rest als Skills aus dem Ordner, den --add-dir nennt —
     // mit der useWhen-Zeile als Beschreibung und dem Text am HEAD als Inhalt
-    const starts = [[await startOf(b), false, b], [await startOf(12), false, 12], [await startOf(13), true, 13], [await startOf(14), false, 14]] as const;
+    const starts = [[await startOf(b), false, b], [await startOf(12), false, 12], [await startOf(13), true, 13]] as const;
+    // im fremden Repo ohne Wahl: kein Start-Block, kein Ordner
+    const ohneWahl = await startOf(14);
+    expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([false, [], false]);
     // ...und das Fenster zeigt den Schalter an, ausgeschaltet beide aus
     type PlanZeile = { id: string; zustand: string; schaltbar: { ja: boolean } };
     const zeileIn = (a: Answer | undefined, id: string) => (a?.body.plan as { bausteine: PlanZeile[] } | undefined)?.bausteine.find((z) => z.id === id);
-    expect(zeileIn(planVor, "bibliothek")).toMatchObject({ zustand: "an", schaltbar: { ja: true } });
+    expect(zeileIn(planVor, "bibliothek")).toMatchObject({ zustand: "aus", schaltbar: { ja: true } });
     // im anderen Repo bleibt seit runde4 §6 keine Skill: die Zeile ist aus, weil nichts für sie da ist
     expect(zeileIn(planVor, "bibliothek-skills")).toMatchObject({ zustand: skills(false).length ? "an" : "aus", schaltbar: { ja: false } });
     expect(zeileIn(planAus, "bibliothek")).toMatchObject({ zustand: "aus" });
@@ -213,7 +217,8 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     expect([ausStart.appended.includes(SEAT_START_HEAD), ausStart.addDirs, existsSync(ordnerOf(f, 16))]).toEqual([false, [], false]);
 
     // DIE SELBST-TÜR (Abnahme 22.10. 2/2): eine Session öffnet Branches in ihrem Repo; `bibliothek: true` gibt nichts über die
-    // Voreinstellung hinaus — der Slot hält keine Wahl —, `false` schaltet ab
+    // Voreinstellung hinaus — der Slot hält keine Wahl —, `false` schaltet ab. Im fremden Repo ist die Voreinstellung aus: keine Session
+    // drängt einem Sitz im eigenen Setup Fleets Bibliothek auf
     const [zwei, drei] = await life(f, [
       post("/api/branches", { repo: f.repo, name: "Selbst an" }),
       post("/api/branches", { repo: f.repo, name: "Selbst aus" })]);
@@ -228,7 +233,7 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     expect(existsSync(ordnerOf(f, 15))).toBe(true);
     const [sa, sx] = [Number(selbstAn?.body.slot), Number(selbstAus?.body.slot)];
     expect(["bibliothek" in recordOf(f, sa), recordOf(f, sx).bibliothek]).toEqual([false, false]);
-    expect([(await startOf(sa)).appended.includes(SEAT_START_HEAD), (await startOf(sx)).appended.includes(SEAT_START_HEAD)]).toEqual([true, false]);
+    expect([(await startOf(sa)).appended.includes(SEAT_START_HEAD), (await startOf(sx)).appended.includes(SEAT_START_HEAD)]).toEqual([false, false]);
 
     // zwei Leben statt einem: jedes hat seine Frist (LIFE_DEADLINE_MS), und im vollen Lauf ist die Maschine voll
     const [fassungB, fassung12, fassung15, leiheB, verwehrtB, leihe12, leihe15] = await life(f, [
@@ -240,7 +245,7 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
       borrow(tokenOf(f, 12), "who-it-is-for"),
       borrow(tokenOf(f, 15), "system-concept")]);
     const [planB, plan12, plan15, planCodex, fassung16] = await life(f, [
-      plan(f.repo), plan(other), plan(FLEET_WT), plan(FLEET_WT, "codex"),
+      plan(f.repo, "claude", "bibliothek=an"), plan(other, "claude", "bibliothek=an"), plan(FLEET_WT), plan(FLEET_WT, "codex"),
       get("/api/slots/16/fassung?anlass=laufend")]);
     // die Fassung sagt, dass sie aus ist
     expect(wissenOf(fassung16)).toEqual([expect.objectContaining({ text: null,

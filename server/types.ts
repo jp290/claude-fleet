@@ -2125,6 +2125,22 @@ interface Slot {
   // Fleets Bibliothek for this session (server.ts#seatLibraryOn), chosen at its opening: null = no choice, the place decides
   // (on in Fleet's own repo, off elsewhere). claude only; carried by a generic succession; persisted; cleared on open/kill.
   bibliothek: boolean | null;
+  // the notebook chosen at its opening (door field `notizbuch`, server/notizbuch.ts#notizbuchDerTuer): null = no choice. claude only;
+  // carried by a generic succession; persisted; cleared on open/kill.
+  notizbuchWahl: import("./notizbuch").NotizbuchWahl | null;
+  // the permission mode chosen at its opening (door field `permissionMode`, server/eigenes-setup.ts#permissionModeDerTuer): null = no
+  // choice, the role's mode in Fleet's repo and the user's own default in its own setup. claude only; carried by a generic succession;
+  // persisted; cleared on open/kill.
+  permissionMode: import("./eigenes-setup").PermissionModeWahl | null;
+  // what of the user's ~/.claude this start leaves out (door field `weglassen`, server/eigenes-setup.ts#weglassenDerTuer; the seat's own
+  // POST /api/self/weglassen): null = nothing. claude only; carried by a generic succession; persisted; cleared on open/kill.
+  weglassen: import("./weglassen").Weglassen | null;
+  // Fleet's environment for the auto-mode classifier (door field `autoModeEnvironment`): null = no choice, on in Fleet's repo, off in its own
+  // setup. claude only; carried by a generic succession; persisted; cleared on open/kill.
+  autoModeEnvironment: boolean | null;
+  // the built-in tools chosen at its opening (door field `tools`, server/eigenes-setup.ts#toolsDerTuer), on the line as --tools: null = no
+  // choice (the role's list in Fleet's repo, every tool in its own setup). claude only; carried by a generic succession; persisted; cleared on open/kill.
+  tools: readonly string[] | null;
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
   // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.

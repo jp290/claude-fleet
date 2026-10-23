@@ -203,3 +203,38 @@ describe("Schwelle und Warmhalten nach dem Start", () => {
     expect(nach.fassung).toBe(alt);
   });
 });
+
+// DAS EIGENE SETUP IM BOARD (server/eigenes-setup.ts): der Modus in Worten zuerst, darunter je Zeile, was Fleet dazulegt, mit dem Grund im Tooltip
+describe("ein Sitz im eigenen Setup", () => {
+  test("das Board nennt den Modus und genau das, was Fleet dazulegt", () => {
+    const teile = [{ id: "darf", abschnitte: [{ id: "eigenes-setup", quelle: null, bytes: 0 as const,
+      text: "Eigenes Setup: so wie von Hand.\n- --session-id bzw. --resume: damit Fleet das Gespräch findet\n- FLEET_SELF_TOKEN: der Ausweis" },
+      { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "model: claude-haiku-5-5\nnotizbuch: aus" }] }];
+    const gewaehlt = "Beim Öffnen dieser Sitzung gewählt. Ohne Wahl gibt Fleet nichts mit.";
+    expect(umfeldZeilen(teile).map((z) => [z.label, z.wert, z.titel])).toEqual([
+      ["Modus", "eigenes Setup — dein Claude Code, wie du es selbst startest", "Eigenes Setup: so wie von Hand."],
+      ["Fleet legt dazu", "--session-id bzw. --resume", "damit Fleet das Gespräch findet"],
+      ["", "FLEET_SELF_TOKEN", "der Ausweis"],
+      ["Mitgegeben", "model: claude-haiku-5-5", gewaehlt],
+      ["", "notizbuch: aus", gewaehlt],
+    ]);
+    const ohne = [{ id: "darf", abschnitte: [teile[0]!.abschnitte[0]!, { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "nichts" }] }];
+    expect(umfeldZeilen(ohne).filter((z) => z.label === "Mitgegeben").map((z) => z.wert)).toEqual(["nichts"]);
+    // was aus ~/.claude wegbleibt, je Teil eine Zeile unter „Weggelassen“
+    const weg = [{ id: "darf", abschnitte: [...ohne[0]!.abschnitte, { id: "weggelassen", quelle: null, bytes: 0 as const,
+      text: "claudeMd: ~/.claude/CLAUDE.md\nhooks: alle (auch Statuszeile und @-Vorschlag)" }] }];
+    expect(umfeldZeilen(weg).filter((z) => z.label === "Weggelassen" || z.wert.startsWith("hooks:")).map((z) => [z.label, z.wert]))
+      .toEqual([["Weggelassen", "claudeMd: ~/.claude/CLAUDE.md"], ["", "hooks: alle (auch Statuszeile und @-Vorschlag)"]]);
+    expect(umfeldZeilen([]).find((z) => z.label === "Modus")).toBeUndefined();
+  });
+  test("das Board zeigt, was die Schemas der Werkzeuge am Start kosten, je Werkzeug", () => {
+    const teile = [{ id: "darf", abschnitte: [{ id: "eigenes-setup", quelle: null, bytes: 0 as const, text: "Eigenes Setup: so wie von Hand." },
+      { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "tools: Bash,Read" },
+      { id: "werkzeuge", quelle: "server/eigenes-setup.ts#eigenesSetup", bytes: 0 as const, text: "--tools Bash,Read\n--disallowedTools keine",
+        grund: "Schemas am Start: 9 000 B von 74 818 B (Bash 7 000, Read 2 000) · gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)" }] }];
+    const zeile = umfeldZeilen(teile).find((z) => z.label === "Werkzeuge");
+    expect(zeile?.wert).toBe("Schemas am Start: 9 000 B von 74 818 B (Bash 7 000, Read 2 000)");
+    expect(zeile?.titel).toContain("gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)");
+    expect(zeile?.titel).toContain("--tools Bash,Read");
+  });
+});

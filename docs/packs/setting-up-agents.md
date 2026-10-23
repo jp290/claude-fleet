@@ -57,6 +57,8 @@ It never says how to do the work.
 - Say what it does after its report. If the work ends there, write "then stop and wait"; a seat that isn't told
   goes looking for more. Never forbid a handover: when Fleet says its context is due, it hands over its open work,
   and a seat that may not runs full.
+- Say in one sentence when it stops and reports instead of searching on, for example "If the test only turns green
+  with a change to server.ts, stop and report." A stop turns a failure into a planned outcome.
 
 ## How seats start today
 

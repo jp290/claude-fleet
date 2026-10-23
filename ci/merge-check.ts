@@ -207,6 +207,8 @@ async function main(): Promise<number> {
   if ("conflict" in cand) return finish("conflict", false, cand.conflict, 3);
   Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits,
     ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
+  const hidden = hiddenLayerOf(cand.sha);
+  if (hidden.length) return finish("red", false, `verweigert, ein verstecktes Regelbuch: ${hidden.join("; ")}`, 1);
   const host = helperHost();
   if (!pushCandidate(host, cand.sha)) return finish("error", false, `Kandidat ließ sich nicht zum Helfer ${host} schieben`, 3);
   const state = mainState(mainSha);
@@ -240,6 +242,28 @@ async function main(): Promise<number> {
   return finish(verdict, d.mergeable,
     verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
 }
+// KEIN VERSTECKTES REGELBUCH (E9, Owner 23.10.: „[Zitat entfernt]“
+// ): was ein Sitz liest, steht in AGENTS.md, Verträgen und Packs. Der Kandidat trägt kein
+// CLAUDE.md, und keine Pack-Quelle — Manifest oder Saat in context-packs.ts — zeigt auf eines.
+const CLAUDE_MD = /(^|\/)CLAUDE\.md$/;
+export function hiddenLayerOf(sha: string, dir = REPO_DIR): string[] {
+  const found = mustGit(["ls-tree", "-r", "--name-only", sha], undefined, dir).split("\n")
+    .filter((path) => CLAUDE_MD.test(path)).map((path) => `getracktes ${path}`);
+  const manifest = git(["show", `${sha}:.fleet/context-packs.json`], undefined, dir);
+  if (manifest.ok) {
+    let packs: unknown;
+    try { packs = JSON.parse(manifest.out); } catch { packs = []; }
+    for (const pack of Array.isArray(packs) ? packs as { id?: unknown; sources?: { path?: unknown }[] }[] : [])
+      for (const source of Array.isArray(pack.sources) ? pack.sources : [])
+        if (typeof source.path === "string" && CLAUDE_MD.test(source.path))
+          found.push(`Pack ${String(pack.id)} liest ${source.path} (.fleet/context-packs.json)`);
+  }
+  const seeds = git(["show", `${sha}:context-packs.ts`], undefined, dir);
+  if (seeds.ok) for (const m of seeds.out.matchAll(/\bpath:\s*"([^"]*CLAUDE\.md)"/g))
+    found.push(`eine Saat liest ${m[1]} (context-packs.ts)`);
+  return found;
+}
+
 // Rot ist nie mergebar; grün bei rotem main nur mit --repair
 export function decide(run: "green" | "red", main: MainState, repair: boolean): { mergeable: boolean; code: number; why: string } {
   if (run === "red") return { mergeable: false, code: 1, why: "rot" };

@@ -79,7 +79,7 @@ const ALLTAG: Readonly<Record<string, string>> = {
   "self-credential": "Ausweis für Fleet", "delivery-header": "Kopfzeile jeder Nachricht", "spawn-profile": "Agent, Modell, Effort",
   "portable-contract": "Grundregeln von Fleet", "context-anchors": "Lesehinweise auf Fleets Wissen", "memory-pointer": "Hinweis auf dein Gedächtnis",
   "auto-memory": "Notizen von Claude", "owner-heft": "Deine Korrekturen", "lane-notes": "Notizen zur Aufgabe", "commit-expectation": "Pflicht zu committen",
-  "lane-footer": "Wie er zurückmeldet", "role-card": "Rolle", "private-rulebook": "Fleets Regelbuch",
+  "lane-footer": "Wie er zurückmeldet", "role-card": "Rolle",
   Listenschnitt: "Gekürzte Liste der Skills", "Auto-Mode": "Hinweis zum Auto-Mode", Gepflogenheiten: "Fleets Gepflogenheiten",
   bibliothek: "Fleets Bibliothek", "bibliothek-skills": "Fleets Bibliothek als Skills",
 };

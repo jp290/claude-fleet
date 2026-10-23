@@ -23,14 +23,6 @@ export const CONTEXT_MANIFEST_MAX_PACKS = 64;
 export const CONTEXT_MANIFEST_MAX_SOURCE_PATHS = 64;
 
 export function taskContextTriggers(texts: readonly string[], possible: readonly ContextPackTrigger[]): ContextPackTrigger[] {
-  const rulebook = String.raw`\b(?:regelbuch|rulebook|CLAUDE\.md)\b`;
-  const edit = String.raw`(?<![\p{L}\p{N}_])(?:aender\w*|änder\w*|bearbeit\w*|edit\w*|update\w*|change\w*|fix\w*|repair\w*|reparier\w*|render\w*)\b`;
-  const rulebookEdit = new RegExp([
-    `${edit}[^\\n,;.!?]{0,100}${rulebook}`,
-    `${rulebook}(?:\\s+|\\([^\\n)]*\\)|[-:]){1,30}${edit}`,
-    String.raw`\b(?:FLAECHE|Fläche|surface)\s*:[^\n]*\b(?:rulebook(?:\.ts|\/)|CLAUDE\.md)\b`,
-    String.raw`^(?:rulebook\.ts|rulebook\/[^\n]+|CLAUDE\.md)$`,
-  ].join("|"), "iu");
   // Only the SURFACE line counts, and only a path rooted at `src/` or `public/` (the client bundle
   // and what it serves): a ZIEL that mentions the client, or `drills/src/`, is no visible work.
   const visibleSurface = /\b(?:FLAECHE|FLÄCHE|surface)\s*:[^\n]*(?<![\p{L}\p{N}_./-])(?:src|public)\//iu;
@@ -38,7 +30,6 @@ export function taskContextTriggers(texts: readonly string[], possible: readonly
     ["jev-use", /\bjev\b/i],
     ["harness-selection", /\bharness(?:es|[- ](?:adapter|selection|auswahl))?\b(?!\.ts)|\b(?:HARNESSES|CONTAINER_HARNESS)\b/i],
     ["measurement", /\b(?:mess(?:en|e|t|auftrag|ung(?:en)?|notiz(?:en)?)|misst|vermess\w*|measur(?:e(?:ment(?:s)?|s|d)?|ing))\b|docs\/messungen\//i],
-    ["rulebook-edit", rulebookEdit],
     ["visible-surface", visibleSurface],
   ];
   // `orchestrator-start` is passed by the orchestrator's own founding only, the two seat triggers by a

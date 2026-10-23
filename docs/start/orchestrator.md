@@ -96,8 +96,7 @@ Read when you need it:
   Read the entries for your role before your first act.
 - How we write for agents: `docs/start/writing-for-agents.md`.
 - Where things stand: `./state.sh --brief`. Your doors: `./ctl.sh` without arguments and `docs/self-api.md`.
-- Land, deploy, red audits, the helper, acts on a live session or instance: `docs/packs/running-fleet.md`, with the
-  steps in `CLAUDE.md` §Deploy.
+- Land, deploy, red audits, the helper, acts on a live session or instance: `docs/packs/running-fleet.md`.
 - This machine (helper, disk, demo, publishing), local only: `~/local-notes/this-machine.md`.
 - When and how to hand over: `docs/controller.md` §Nachfolge ohne kalten Wiederaufruf.
 - Visible work, before you build it and before it lands: `docs/testinstanz.md` §Abnahme sichtbarer Arbeit.

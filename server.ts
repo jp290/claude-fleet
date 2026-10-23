@@ -60,10 +60,6 @@ import { buildClarifyBrief } from "./clarify-prompt";
 import { LOCAL_PROOF_STEPS, gateChainFor, localProofFor,
   type GateClass, type LocalProof, type LocalProofStep } from "./verify-proportion";
 import { GATE_SUITES, moduleListFrom, type GateSuiteStep } from "./suite-modules";
-import {
-  RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName, renderRulebook, renderRoleRulebook, rulebookBody,
-  type RulebookFragment,
-} from "./rulebook";
 import { cardVariante, claudeMcpConfigFlag, planContext, planMcpServers, planProgramContext, programContextPacksFrom, resolveVariante, renderPrivatePackLines, resolveContextHarness, resolvePrivatePack, readPrivatePack,
   validateProgramContextPacks, PROGRAM_CONTEXT_PACKS_MAX,
   PROGRAM_CONTEXT_PACK_SOURCES_MAX, type ContextPackAnatomie, type ContextPlan, type ContextPlanInput, type ContextPlanSelection,
@@ -299,7 +295,6 @@ function rWithoutAt(r: PerfRecord & { at: number }): unknown {
   return record;
 }
 const FLEET_REPORT_LEDGER_FILE = `${STATE_DIR}/fleet-reports.jsonl`;
-const RULEBOOK_AB_LEDGER_FILE = `${STATE_DIR}/rulebook/ab.jsonl`;
 // WHAT WAS TYPED INTO A POSTFACH SURVIVES A DEPLOY. One row per remembered attempt
 // (slot, session, message ids, at); the boot folds it back into postfachAttempted, bounded and only
 // for the session still sitting on the slot (server/postfach-versuche.ts).
@@ -379,25 +374,6 @@ if (HABITS_PROMPT_VALUE !== undefined && !HABITS_PROMPT_ENABLED
     && !["0", "false", "off", "no"].includes(HABITS_PROMPT_VALUE))
   console.error("[fleet] FLEET_HABITS_PROMPT is invalid; habits prompt remains off");
 const HABITS_PROMPT_PATH = `${import.meta.dir}/fleet-gepflogenheiten.md`;
-// THE ROLE CUT IS ON BY DEFAULT (owner 2026-10-06: „[Zitat entfernt]“
-// ). Every non-lane claude session in the
-// server checkout starts with its role render (rulebook.ts#renderRoleRulebook) instead of the
-// 82 863-B monolith. `FLEET_RULEBOOK_ROLE_CUT=off` is the way back to the full render for every
-// role; `ab` keeps the preregistered A/B (arm A full, arm B cut), and the older
-// `FLEET_RULEBOOK_AB=on` still means `ab` when the new switch is unset. An unrecognised value says
-// so in one line and keeps the default.
-type RulebookCutMode = "rolle" | "voll" | "ab";
-const RULEBOOK_CUT_MODE: RulebookCutMode = (() => {
-  const raw = process.env.FLEET_RULEBOOK_ROLE_CUT?.trim().toLowerCase();
-  if (raw === undefined || raw === "") {
-    return ["1", "true", "on", "yes"].includes(process.env.FLEET_RULEBOOK_AB?.trim().toLowerCase() ?? "") ? "ab" : "rolle";
-  }
-  if (["1", "true", "on", "yes"].includes(raw)) return "rolle";
-  if (["0", "false", "off", "no"].includes(raw)) return "voll";
-  if (raw === "ab") return "ab";
-  console.error(`FLEET_RULEBOOK_ROLE_CUT=${JSON.stringify(raw)} is invalid; the role cut stays on`);
-  return "rolle";
-})();
 // THE SESSION LIST CUT (card 3eddb803). Owner 09.10.: „[Zitat entfernt]“,
 // bound by: a session that needs a cut entry must be able to load it. Every claude session Fleet
 // spawns saw the whole skill listing (~22 KB) and agent listing (~6.8 KB) of this machine, Office,
@@ -523,11 +499,11 @@ function sessionListCut(role: SessionListRole): { skillOverrides: Record<string,
 // adapter's spawnCmd (HARNESSES calls this function rather than restating it).
 // Why the session id is pinned: docs/sanierung-2026-09/server-narrativ-archiv.md#slotcmd
 function slotCmd(sessionId: string | null, resume: boolean, model: string | null = null,
-  effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  effort: string | null = null, browserMcp = true, fleetCheckout = false,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
   remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
   seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau, startDatei)}; exec ${SHELL}`;
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, fleetCheckout, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau, startDatei)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -545,7 +521,7 @@ function sitzRechte(rechte: Rechte | null, sitzDeny: readonly string[] | undefin
   return { permissions: { allow: [...(eigene?.allow ?? [])], deny: [...(eigene?.deny ?? []), ...sitzDeny] } };
 }
 function agentCmd(sessionId: string | null, resume: boolean, model: string | null,
-  effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
+  effort: string | null, browserMcp = true, fleetCheckout = false,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
   handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
   seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
@@ -617,29 +593,17 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
       ...(notizbuch ? notizbuchSettings(notizbuch) : {}), ...aspects?.settings, ...rechteSettings(rechte),
       // a real seat's deny rules (session-start.ts#REAL_SEAT_DENY) stand beside the session's own rights, never instead
       ...sitzRechte(rechte, aspects?.settings.permissions?.deny) };
-    // DIE ORCHESTRATORIN LÄDT KEINEN ROLLEN-RENDER MEHR (TASK.md, Runde 1): ihre Rolle und ihr Start
-    // stehen im Prompt (server/orchestrator-start.ts). Der Projekt-Monolith und die AGENTS.md-Fälle
-    // bleiben trotzdem ausgeschlossen — sonst läse sie 80 kB Regeln, die ihr Start nicht nennt.
-    const rulebook = sessionId && rulebookRole && listRole !== "orchestrator"
-      ? rulebookRenderForSession(sessionId, rulebookRole) : null;
-    if (rulebook) {
-      const render = rulebook.render;
-      const root = `${import.meta.dir}/CLAUDE.md`;
-      // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09): ~/.claude/CLAUDE.md loads
-      // (.claude/settings.json no longer excludes it). It does NOT close the AGENTS.md fallback: the
-      // config dir's own CLAUDE.md never counts for it, and with the monolith excluded nothing else
-      // on the path does, so claude would load every AGENTS.md above the cwd. Both are excluded by
-      // absolute path: ~/AGENTS.md (the Codex version of the global rules) and the checkout's own
-      // AGENTS.md, whose "Portable operating contract" the render's loader block has the session read
-      // as a section. The checkout's gitignored .claude/CLAUDE.md stays out as under the old glob.
-      // Probe of both roles with and without the user file: the commit body; mechanism:
-      // docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md (A2/A5).
-      const settings = JSON.stringify({ claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
-      cmd = `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 ${cmd} --settings ${shellSingleQuote(settings)} --add-dir ${shellSingleQuote(render.path)}`;
-    } else if (listRole === "orchestrator") {
-      const settings = JSON.stringify({ claudeMdExcludes: [`${import.meta.dir}/CLAUDE.md`, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
+    // KEIN REGELBUCH MEHR (E9, Owner 23.10.): Fleet rendert kein CLAUDE.md. Das gitignorierte CLAUDE.md des
+    // Server-Checkouts liegt bis zu seiner Archivierung noch auf Platte, und claude läse es nativ; darum bleibt es
+    // für jede Session dort ausgeschlossen. Dann zählt kein CLAUDE.md mehr, und claude lädt die AGENTS.md
+    // (docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md A2/A5). Die Orchestratorin schließt auch
+    // die AGENTS.md aus: ihre Rolle und ihr Start stehen im Prompt (server/orchestrator-start.ts).
+    const checkoutExcludes = [`${import.meta.dir}/CLAUDE.md`, `${import.meta.dir}/.claude/CLAUDE.md`, ...BAU_CLAUDE_MD_EXCLUDES];
+    if (listRole === "orchestrator") {
+      const settings = JSON.stringify({ claudeMdExcludes: [...checkoutExcludes, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
       cmd += ` --settings ${shellSingleQuote(settings)}`;
-    } else if (bau) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES, ...cutSettings }))}`;
+    } else if (fleetCheckout) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: checkoutExcludes, ...cutSettings }))}`;
+    else if (bau) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES, ...cutSettings }))}`;
     else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
     // THE LIBRARY'S SKILLS (server/sitz-wissen.ts): claude loads <dir>/.claude/skills of every --add-dir, the description
     // in context, the text on invocation (probe claude 2.1.308; code.claude.com/docs/en/skills)
@@ -770,7 +734,7 @@ interface Harness {
   // claude's, and a foreign harness never receives a name it could put on its line.
   spawnCmd(o: { sessionId: string | null; resume: boolean; model: string | null; effort: string | null;
     container: string; containerContext: string; cwd: string; browserMcp: boolean;
-    context: SlotContext | null; permissions: SlotPermissions | null; rulebookRole: "main" | "orchestrator" | null;
+    context: SlotContext | null; permissions: SlotPermissions | null; fleetCheckout: boolean;
     remoteName: string | null; webSearch?: boolean; projectDocMaxBytes?: number;
     // the slot's lane branch from Fleet's own record (Slot.worktree.branch), null for a non-lane.
     // Only pi-zai reads it: its fence grants writing that ONE ref, never one read from the worktree.
@@ -1038,7 +1002,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false, o.startDatei ?? null),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.fleetCheckout, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false, o.startDatei ?? null),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -7395,142 +7359,6 @@ async function decideLaneAnchor(repo: string, explicit: LaneAnchor | undefined):
   return mostRecentMainAnchor(eligible);
 }
 
-// The rulebook is SEVEN FRAGMENTS in `rulebook/` of the source checkout, and rulebook.ts is the
-// pure half of that split — it reads nothing. This is the impure half, and it lives here because
-// the caller is the only side that knows which checkout it may read. A PARTIAL rulebook/ counts as
-// none: renderRulebook would refuse the hole anyway, and a short rulebook reads exactly like a
-// complete one.
-function readRulebookFragments(repo: string): Map<RulebookFragment, string> | null {
-  const m = new Map<RulebookFragment, string>();
-  for (const f of RULEBOOK_FRAGMENTS) {
-    try { m.set(f, readFileSync(`${repo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, "utf8")); }
-    catch { return null; }
-  }
-  return m;
-}
-
-// A role render on disk: `path` is the directory handed to `--add-dir` (it holds exactly one
-// CLAUDE.md), `hash` the render's own content hash for the ledger.
-type RulebookRender = { path: string; hash: string };
-type RulebookSessionRender = { arm: "A" | "B" | "cut"; render: RulebookRender };
-
-// Write a file whose bytes are fixed by the directory it lives in (a source-hash directory): an
-// existing file is left alone when it already holds those bytes and replaced when it does not —
-// a half-written file from a crashed spawn must not become the permanent answer for that hash.
-function writeRenderFile(file: string, body: string): void {
-  if (existsSync(file) && readFileSync(file, "utf8") === body) return;
-  writeFileSync(file, body, { mode: 0o600 });
-}
-
-// The impure half of the role cut, prepared AT SPAWN rather than at boot, for two reasons. The
-// source moves under a running server (a fragment edit plus re-render needs no restart), and the
-// boot-time version THREW when CLAUDE.md and the fragments disagreed — harmless behind an opt-in
-// experiment, a srv restart loop once the cut is the default (note 4a33d84a). So every failure
-// here answers `null`, and `null` means the session gets what every session got before: the
-// monolith CLAUDE.md of its cwd. One log line per source state, not one per spawn.
-//
-// Layout, all under the gitignored `rulebook/`: `render/<source hash>/<role>/CLAUDE.md` is the
-// add-dir, and `render/<source hash>/abschnitte/<anchor>.md` holds every section some role render
-// leaves out — the files its anchor block names. Keyed by the SOURCE hash (all seven fragments),
-// not the render's own hash, because the render quotes the anchor directory and a directory named
-// after the bytes that name it cannot exist.
-let rulebookRenderRefusal = "";
-function roleRulebookRender(role: "main" | "orchestrator" | "voll"): RulebookRender | null {
-  const refuse = (why: string): null => {
-    if (why !== rulebookRenderRefusal) console.error(`[fleet] rulebook role cut unavailable (${why}); role sessions get the monolith CLAUDE.md`);
-    rulebookRenderRefusal = why;
-    return null;
-  };
-  const fragments = readRulebookFragments(import.meta.dir);
-  if (!fragments) return refuse("rulebook/ fragments not readable in the server checkout");
-  try {
-    const voll = renderRulebook("voll", fragments);
-    // the monolith is what claudeMdExcludes takes away; a role render of a DIFFERENT source would
-    // be a second rulebook, and the loader contract stops work over exactly that contradiction
-    if (readFileSync(`${import.meta.dir}/CLAUDE.md`, "utf8") !== voll)
-      return refuse("CLAUDE.md is not the render of rulebook/ — re-render it (rulebook.ts header)");
-    const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
-    const base = `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}`;
-    let body = voll;
-    if (role !== "voll") {
-      const r = renderRoleRulebook(role, fragments, { repoRoot: import.meta.dir, anchorDir: `${base}/abschnitte`, sourceHash });
-      mkdirSync(`${base}/abschnitte`, { recursive: true });
-      for (const [name, text] of r.files) writeRenderFile(`${base}/abschnitte/${name}`, text);
-      body = r.text;
-    }
-    mkdirSync(`${base}/${role}`, { recursive: true });
-    writeRenderFile(`${base}/${role}/CLAUDE.md`, body);
-    rulebookRenderRefusal = "";
-    return { path: `${base}/${role}`, hash: createHash("sha256").update(body).digest("hex").slice(0, 16) };
-  } catch (e) {
-    return refuse(e instanceof Error ? e.message : String(e));
-  }
-}
-
-// The one function both the command line (agentCmd) and the ledger (ensureSlot) ask, so they cannot
-// disagree by construction — only by a fragment edit landing in the milliseconds between the two.
-// The A/B arm is the first hex digit of the session id, as preregistered; resume recomputes it.
-function rulebookRenderForSession(sessionId: string, role: "main" | "orchestrator"): RulebookSessionRender | null {
-  if (RULEBOOK_CUT_MODE === "voll") return null;
-  const arm = RULEBOOK_CUT_MODE === "ab" ? (parseInt(sessionId[0] ?? "0", 16) % 2 === 0 ? "A" : "B") : "cut";
-  const render = roleRulebookRender(arm === "A" ? "voll" : role);
-  return render ? { arm, render } : null;
-}
-
-// The bytes a MAIN's or the Orchestratorin's CLAUDE.md holds when this server spawns it — chosen as
-// rulebookRenderForSession chooses, measured without writing a file: the role cut, or the checkout's
-// own CLAUDE.md where roleRulebookRender refuses the cut (fragments unreadable, CLAUDE.md not their
-// render). The A/B arm hangs on the session id, which a plan does not have yet: unknown.
-function roleRulebookBytes(role: "main" | "orchestrator"): PlanBytes {
-  if (RULEBOOK_CUT_MODE === "ab") return "unknown";
-  const own = readPresent(`${import.meta.dir}/CLAUDE.md`);
-  const monolith: PlanBytes = own.ok ? own.bytes?.length ?? 0 : "unknown";
-  if (RULEBOOK_CUT_MODE === "voll") return monolith;
-  const fragments = readRulebookFragments(import.meta.dir);
-  if (!fragments) return monolith;
-  try {
-    const voll = renderRulebook("voll", fragments);
-    if (!own.ok || own.bytes?.toString("utf8") !== voll) return monolith;
-    const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
-    return Buffer.byteLength(renderRoleRulebook(role, fragments,
-      { repoRoot: import.meta.dir, anchorDir: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`, sourceHash }).text);
-  } catch { return "unknown"; }
-}
-
-// The bytes a lane's CLAUDE.md is SUPPOSED to hold, given this source checkout: the three lane
-// fragments cut by rulebook.ts#ROLE_SECTION_CUT.lane, plus the closing block naming every fragment
-// and section it does not get, each with the anchor file that holds it. `null` = this repo has
-// no readable `rulebook/` at all, which a foreign task.repo legitimately has not — the two callers
-// (the spawn seam, the /api/self/gate drift probe) then both fall back to the pre-split behaviour,
-// and they MUST fall back the same way or the probe judges bytes the spawn never wrote.
-// The source hash is taken over the MAIN render, i.e. over all seven fragments: a lane should be
-// able to tell that the rulebook moved even when the part that moved is one it does not hold.
-//
-// A lane of a VARIANT (card 1f9834a9) gets the variant's section cut instead (keyed by the pack
-// model's variant name): the same three fragments minus the sections the variant borrows later.
-// The anchor files are
-// the role renders' own — same directory, same bytes — and only the spawn seam writes them (`write`);
-// the drift probe and the plan compare bytes and touch nothing.
-function laneRulebookFor(repo: string, variante: ContextPositionVariante | null = null, write = false): string | null {
-  const frag = readRulebookFragments(repo);
-  if (!frag) return null;
-  let whole: string;
-  try { whole = renderRulebook("voll", frag); } catch { return null; }
-  // a plain lane is cut too (rulebook.ts#ROLE_SECTION_CUT.lane): the verify sections its session
-  // file carries inline are anchors here, exactly as a variant's omitted sections are
-  const sourceHash = createHash("sha256").update(whole).digest("hex").slice(0, 16);
-  const anchorDir = `${repo}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`;
-  let cut: ReturnType<typeof renderRoleRulebook>;
-  try { cut = renderRoleRulebook(variante ?? "lane", frag, { repoRoot: repo, anchorDir, sourceHash }); } catch { return null; }
-  if (write) {
-    try {
-      mkdirSync(anchorDir, { recursive: true });
-      for (const [name, text] of cut.files) writeRenderFile(`${anchorDir}/${name}`, text);
-    } catch { return null; } // a render naming anchors nobody wrote would be a rulebook with holes
-  }
-  return cut.text;
-}
-
 // Tool scratch thrown into a lane's cwd by its own harness — Playwright-MCP writes
 // `.playwright-mcp/` next to wherever it was started — is UNTRACKED, and untracked is dirty
 // forever: `done-looking` requires dirty===0 (lane-signals.ts, DONE_LOOKING_RULES), so such a lane
@@ -7606,7 +7434,7 @@ async function writeLaneSessionAgents(lanePath: string, agents: SessionAgents,
 
 // creates <repo-toplevel>.worktrees/<branch-slug> on a NEW branch off the repo's current
 // HEAD. Worktrees only materialize tracked files, so the two files agents predictably
-// need but repos predictably don't track (.env, CLAUDE.md) are copied in when present.
+// need but repos predictably don't track (.env, OWNER.md) are copied in when present; never a CLAUDE.md (E9).
 // `startAt`: a commit to fork from INSTEAD of the integration branch's current tip. Only the variant
 // group passes one (startVariantGroup): its n lanes must stand on ONE base, and main may move between
 // the n spawns. Absent — every other caller — keeps the integration branch as the start point.
@@ -7623,7 +7451,7 @@ function taskBranchSlug(title: string): string {
 }
 
 async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm = "worktree", startAt?: string, title?: string,
-  harness: Harness = CLAUDE_HARNESS, variante: ContextPositionVariante | null = null, rulebook = true): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
+  harness: Harness = CLAUDE_HARNESS): Promise<{ repo: string; path: string; branch: string; form: LaneForm }> {
   const root = await repoRootOf(repoRaw);
   const slug = title ? taskBranchSlug(title) : "";
   const stamp = new Date().toISOString().slice(2, 19).replace(/[-:T]/g, "");
@@ -7664,7 +7492,7 @@ async function createWorktree(repoRaw: string, branchRaw: string, form: LaneForm
     if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   }
   await excludeLaneScratch(path);
-  await laneScaffoldFor(root, path, harness, variante, rulebook);
+  await laneScaffoldFor(root, path, harness);
   return { repo: root, path, branch, form };
 }
 
@@ -7737,11 +7565,10 @@ async function linkLaneGraph(root: string, path: string): Promise<void> {
   }
 }
 const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
-// `rulebook` false = no CLAUDE.md at all, neither the lane rendering nor the monolith copy: a BRANCH
-// worktree (Neuaufbau K11 R1, docs/neuaufbau/befunde/15-pruefpraxis.md). Its session follows the
-// branch's own AGENTS.md, which Claude Code loads only while no CLAUDE.md sits beside it.
-async function laneScaffoldFor(root: string, path: string, harness: Harness,
-  variante: ContextPositionVariante | null = null, rulebook = true): Promise<void> {
+// NO CLAUDE.md IN A WORKTREE (E9, owner 2026-10-23: Fleet stops supporting the hidden layer): neither a
+// rendering nor a copy of the source's gitignored one. A lane or branch session follows the repo's own
+// AGENTS.md, which Claude Code loads only while no CLAUDE.md sits beside it, and its session file.
+async function laneScaffoldFor(root: string, path: string, harness: Harness): Promise<void> {
   // every harness reads the graph the same way; it is no private scaffold, so it stands before the split
   await linkLaneGraph(root, path);
   if (scaffoldFree(harness)) {
@@ -7755,33 +7582,11 @@ async function laneScaffoldFor(root: string, path: string, harness: Harness,
   // (same rule as claude's .worktreeinclude). A copied *unignored* file shows as untracked
   // and would leave the lane permanently "dirty", blocking `land`. Gitignored copies stay
   // invisible to `git status`, so the lane is landable the moment its real work is committed.
-  // OWNER.md rides along for the same reason CLAUDE.md does: it is the owner model the steward
-  // ritual names as a load duty, it is gitignored (so the copy cannot dirty the lane), and until
-  // now neither a lane nor the steward worktree ever saw it. Same snapshot caveat as CLAUDE.md —
-  // a long-lived lane's copy ages against the source (docs/ungoverned-artifacts.md).
-  // CLAUDE.md stays in this list as the FALLBACK ONLY: the branch above wrote the lane rendering
-  // where a `rulebook/` exists, and the `existsSync(path/f)` guard then skips it here.
-  // CLAUDE.md is the one that is WRITTEN rather than copied: a lane gets the LANE rendering of the
-  // rulebook — 3 of 7 fragments. Measured 2026-10-06 on the source checkout (source hash e0cdf04b):
-  // full render 82 863 B, lane render 21 936 B. The two other roles are not served here — they
-  // live in the main checkout and get their render through agentCmd (roleRulebookRender): the
-  // orchestrator 34 297 B (37 of 110 sections), a Program-MAIN 54 436 B (77 of 110), each with an
-  // anchor for every section it does not carry. Bytes, not tokens; at the measured ~0.5 token per
-  // byte of this German markdown (docs/messungen/2026-09-27-session-bloat.md) the full render is
-  // ~41 000 tokens of every main-checkout session's start. And the file must still be called exactly
-  // CLAUDE.md (nothing else is auto-loaded) and still be gitignored (an untracked copy blocks
-  // `land`), so it keeps every guard the copies have. `laneRulebookFor` null → no readable
-  // `rulebook/` in the source, which is the ordinary state of a FOREIGN task.repo: fall back to
-  // copying the monolith below rather than leaving the lane with no rulebook at all. Failing the
-  // spawn over it would be worse still — the rulebook is scaffolding, not the lane's work.
-  const laneRulebook = rulebook ? laneRulebookFor(root, variante, true) : null;
-  if (laneRulebook !== null && !existsSync(`${path}/CLAUDE.md`)
-      && (await git(root, "check-ignore", "-q", "CLAUDE.md")).code === 0) {
-    writeFileSync(`${path}/CLAUDE.md`, laneRulebook, { mode: 0o600 });
-    chmodSync(`${path}/CLAUDE.md`, 0o600);
-  }
+  // OWNER.md rides along: it is the owner model the steward ritual names as a load duty, it is
+  // gitignored (so the copy cannot dirty the lane), and until then neither a lane nor the steward
+  // worktree ever saw it. A long-lived lane's copy ages against the source (docs/ungoverned-artifacts.md).
   for (const f of PRIVATE_SCAFFOLD) {
-    if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`) || (!rulebook && f === "CLAUDE.md")) continue;
+    if (!existsSync(`${root}/${f}`) || existsSync(`${path}/${f}`) || f === "CLAUDE.md") continue;
     if ((await git(root, "check-ignore", "-q", f)).code !== 0) continue; // not ignored → don't dirty the lane
     if (f.includes("/")) mkdirSync(dirname(`${path}/${f}`), { recursive: true });
     // 0600 at creation, NOT "preserve the source's mode": .env is *the* documented place for a
@@ -8548,7 +8353,7 @@ async function checkoutBranchWorktree(repo: string, branch: string, harness: Har
   const add = await git(repo, "worktree", "add", path, branch);
   if (add.code !== 0) throw new Error(`worktree add failed: ${(add.err || add.out).slice(0, 300)}`);
   await excludeLaneScratch(path);
-  await laneScaffoldFor(repo, path, harness, null, false); // a branch worktree: no rulebook (K11 R1)
+  await laneScaffoldFor(repo, path, harness);
   return path;
 }
 
@@ -8720,7 +8525,7 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
   if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
   let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
   try {
-    if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h, null, false)).path;
+    if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h)).path;
     else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
   } catch (e) {
     const error = e instanceof Error ? e.message : "worktree failed";
@@ -10129,17 +9934,11 @@ async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target
   throw new Error("slot teardown E2E latch timed out before release");
 }
 
-function rulebookRoleForSpawn(s: Slot, occupant: SlotSpawnOccupant): "main" | "orchestrator" | null {
-  // Lanes have their own render; another checkout owns its own rulebook. Only these boundaries
-  // and the explicit full-render switch bypass role selection here.
-  if (RULEBOOK_CUT_MODE === "voll" || s.worktree || resolve(occupant.cwd) !== import.meta.dir) return null;
-  // DIE ORCHESTRATORIN HAT KEINEN ROLLEN-RENDER MEHR (TASK.md, Runde 1): ihr Start ist der Prompt
-  // aus server/orchestrator-start.ts, und agentCmd hält den Projekt-Monolithen für sie heraus.
-  if (positionRole(s) === "orchestrator") return null;
-  // Binding can happen after spawn: project MAINs, unbound sessions, Owner conversations and
-  // the steward all start with MAIN's cut. Omitted sections remain reachable through its anchors.
-  return "main";
-}
+// A session in the server checkout itself, whose gitignored CLAUDE.md agentCmd keeps out (E9). A lane or
+// another checkout has none of Fleet's to keep out. Real paths on both sides, as fassungImFleetCheckout: a pane
+// opened at /tmp/… is the checkout Bun names /private/tmp/… (measured on a test instance 23.10.).
+const fleetCheckoutForSpawn = (s: Slot, occupant: SlotSpawnOccupant): boolean =>
+  !s.worktree && realpathLoose(resolve(occupant.cwd)) === realpathLoose(import.meta.dir);
 
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
@@ -10199,8 +9998,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
     // no-session into a broken-promise reading (b7d449a0). Narrativ: server-narrativ-archiv.md#ensureslot
     const healDetail = resume ? "resumed" : priorSessionId ? "created:no-transcript" : "created:no-session";
     const candidate = resume ? priorSessionId! : crypto.randomUUID();
-    const rulebookRole = h.id === "claude" && /^claude(\s|$)/.test(BASE_CMD)
-      ? rulebookRoleForSpawn(s, occupant) : null;
+    const fleetCheckout = h.id === "claude" && /^claude(\s|$)/.test(BASE_CMD) && fleetCheckoutForSpawn(s, occupant);
     // self-scheduling credential: EVERY session with a cwd gets it, lane or not, ⚙ steward
     // included — it reaches only this slot's own row and its /api/self planning family; the two
     // lane-only questions keep their 409s. Why the widening is safe: server-narrativ-archiv.md#ensureslot
@@ -10305,7 +10103,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
-          browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, rulebookRole,
+          browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, fleetCheckout,
           webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null, projectDocMaxBytes,
           // THE FOUNDING'S MCP SERVERS, the same persisted list on open, heal, restart and wake (Slot.packMcp)
           packMcp: s.packMcp,
@@ -10332,11 +10130,6 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           return;
         }
         throw unavailable;
-      }
-      const rulebook = rulebookRole ? rulebookRenderForSession(candidate, rulebookRole) : null;
-      if (rulebookRole && rulebook) {
-        const { arm, render: { hash: renderHash } } = rulebook;
-        await appendEvent(RULEBOOK_AB_LEDGER_FILE, { sessionId: candidate, rolle: rulebookRole, arm, renderHash });
       }
       if (!sameSlotSpawnOccupant(s, occupant) || slotTeardownInflight.has(s.id)) return;
       s.cols = 200;
@@ -10756,7 +10549,7 @@ async function laneClosedNote(wt: LaneRef, base: string | null): Promise<string>
 // THE LANE'S VARIANT (card 1f9834a9, a card header since 66936847): the rows' cards and texts
 // through the ONE reader (context-plan.ts#cardVariante: `card.variante`, else the interim line of
 // the text), judged by the plan's own rule (resolveVariante). Every seam that writes or compares a
-// lane's context — the plan, the CLAUDE.md render and its drift probe, the exit footer, the baton —
+// lane's context — the plan, the exit footer, the baton —
 // asks these two, so they cannot tell different stories. A variant row is read off its group, like
 // every other byte of its brief.
 function laneVarianteRaw(rows: readonly Task[]): string | null {
@@ -20689,8 +20482,7 @@ async function dispatchTask(next: Task, free: Slot, ownerAct: boolean, clarify =
       : undefined);
     guard();
     if (base && !baseTip) throw new Error(`base branch does not exist at dispatch: ${base}`);
-    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH,
-      laneVarianteOf([next, ...(wave?.followers ?? [])]));
+    const wt = await createWorktree(dispatchRepo, "", dForm.form, baseTip, next.card?.valid ? next.card.ziel : undefined, spawnH);
     guard();
     // `base` from the same source and with the same omission as openLaneInSlot: a dispatched lane
     // that left it out sent every `worktree.base` reader (laneBaseRef, the plan CLI's lane read) to
@@ -20963,15 +20755,13 @@ type FassungRolle = ReturnType<typeof positionRole>;
 const fassungRolleVon = (rolle: SessionRole): FassungRolle =>
   rolle === "main" ? "program-main" : rolle === "orchestratorin" ? "orchestrator" : rolle === "lane" ? "lane" : "generic";
 
-// DER ROLLEN-RENDER IST DIE PROJEKTREGEL (server.ts#slotCmd: claudeMdExcludes nimmt den Monolithen
-// heraus, --add-dir lädt den Render). `rulebookRoleForSpawn` entscheidet dasselbe für den Spawn; hier
-// steht die reine Form seiner Bedingung, damit eine Fassung ohne Spawn-Occupant dieselbe Wahl trifft.
-function fassungRulebookRole(cwd: string, rolle: FassungRolle, worktree: unknown): "main" | "orchestrator" | null {
-  if (RULEBOOK_CUT_MODE === "voll" || worktree || realpathLoose(resolve(cwd)) !== realpathLoose(import.meta.dir)) return null;
-  // DIE ORCHESTRATORIN HAT KEINEN ROLLEN-RENDER MEHR: ihr Start ist der Prompt (server/orchestrator-start.ts).
-  if (rolle === "orchestrator") return null;
-  return "main";
-}
+// EINE SESSION IM SERVER-CHECKOUT (E9): agentCmd hält dessen CLAUDE.md heraus, und claude lädt die AGENTS.md.
+// `fleetCheckoutForSpawn` entscheidet dasselbe für den Spawn; hier steht die reine Form seiner Bedingung.
+const fassungImFleetCheckout = (cwd: string, worktree: unknown): boolean =>
+  !worktree && realpathLoose(resolve(cwd)) === realpathLoose(import.meta.dir);
+// ...und die drei Pfade, die agentCmd ihr dafür nimmt
+const fassungCheckoutExcludes = (cwd: string): ReadonlySet<string> =>
+  new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`].map((p) => resolve(p)));
 
 // Die Bedingung ist genau agentCmd's: die vier Pfade, die claudeMdExcludes by absolute path nimmt.
 function fassungClaudeMdExcludes(cwd: string): ReadonlySet<string> {
@@ -20991,28 +20781,6 @@ function fassungDateiText(dateien: readonly { pfad: string; bytes: number }[]):
     catch { return { ok: false, grund: `${datei.pfad} ist nicht lesbar` }; }
   }
   return { ok: true, text: teile.join("\n\n"), bytes: dateien.reduce((sum, datei) => sum + datei.bytes, 0) };
-}
-
-// Die Rolle und die Bytes eines Rollen-Renders, ohne ihn zu schreiben (roleRulebookBytes nimmt
-// dieselbe Wahl). null = der Spawn fällt auf den Monolithen zurück.
-function fassungRoleRender(role: "main" | "orchestrator", sessionId: string | null): { path: string; text: string } | null {
-  if (RULEBOOK_CUT_MODE === "voll") return null;
-  const fragments = readRulebookFragments(import.meta.dir);
-  if (!fragments) return null;
-  let voll: string;
-  try { voll = renderRulebook("voll", fragments); } catch { return null; }
-  const own = readPresent(`${import.meta.dir}/CLAUDE.md`);
-  if (!own.ok || own.bytes?.toString("utf8") !== voll) return null;
-  const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
-  const arm: "main" | "orchestrator" | "voll" | null = RULEBOOK_CUT_MODE === "ab"
-    ? (sessionId === null ? null : parseInt(sessionId[0] ?? "0", 16) % 2 === 0 ? "voll" : role)
-    : role;
-  if (arm === null) return null;
-  try {
-    const text = arm === "voll" ? voll : renderRoleRulebook(arm, fragments,
-      { repoRoot: import.meta.dir, anchorDir: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/abschnitte`, sourceHash }).text;
-    return { path: `${import.meta.dir}/${RULEBOOK_DIR}/render/${sourceHash}/${arm}`, text };
-  } catch { return null; }
 }
 
 // DER START DER ORCHESTRATORIN ALS FASSUNG (Runde 1, vierte Fassung in Runde 4): dieselben acht
@@ -21094,11 +20862,13 @@ function basisFehlt(fleetBaum: string, dateien: readonly { pfad: string; bytes: 
   return `Basis fehlt: ${name} in ${ort} schaltet ${fleetBaum}/AGENTS.md ab`;
 }
 
-function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "main" | "orchestrator" | null,
-  sessionId: string | null, orchestrator = false, bau = false, fleetBaum: string | null = null): FassungAbschnittEingang[] {
-  const loaded = nativeLoaderBytes(cwd, harness);
+function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: boolean,
+  orchestrator = false, bau = false, fleetBaum: string | null = null): FassungAbschnittEingang[] {
+  // what the line excludes does not count for the AGENTS.md fallback either, so the loader skips it
+  const checkout = fleetCheckout && !orchestrator && harnessFamilie(harness) === "claude" ? fassungCheckoutExcludes(cwd) : new Set<string>();
+  const loaded = nativeLoaderBytes(cwd, harness, checkout);
   if ("grund" in loaded) return [unknownAbschnitt("projektregeln", loaded.grund)];
-  // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Rollen-Render ist weg, und der Projekt-
+  // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Projekt-
   // Monolith samt AGENTS.md bleibt ausgeschlossen (server.ts#agentCmd). Was übrig bleibt, steht hier.
   if (orchestrator) {
     const excludes = fassungClaudeMdExcludes(cwd);
@@ -21112,48 +20882,19 @@ function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "ma
       text: gelesen.text, bytes: gelesen.bytes, dateien: global,
       grund: "Projekt-Monolith und AGENTS.md sind für die Orchestratorin ausgeschlossen; ihre Projektregeln kommen aus der Rolle" }];
   }
-  if (!rulebookRole) {
-    // a seat that builds excludes what its line excludes (BAU_CLAUDE_MD_EXCLUDES)
-    const aus = new Set(bau ? BAU_CLAUDE_MD_EXCLUDES.map((pfad) => resolve(pfad)) : []);
-    const dateien = loaded.dateien.filter((datei) => !aus.has(resolve(datei.pfad)));
-    const basis = fleetBaum ? basisFehlt(fleetBaum, dateien) : null;
-    const grund = [basis, dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : null]
-      .filter(Boolean).join(" · ") || undefined;
-    if (!dateien.length)
-      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
-    const gelesen = fassungDateiText(dateien);
-    if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
-    return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"),
-      gelesen.text, true, gelesen.bytes, dateien, grund)];
-  }
-  // Der Render hängt bei RULEBOOK_CUT_MODE=ab an der Session-Id; vor dem Start ist sie unbekannt.
-  if (RULEBOOK_CUT_MODE === "ab" && sessionId === null)
-    return [unknownAbschnitt("projektregeln", "der A/B-Arm des Rollen-Renders hängt an der Session-Id, die vor dem Start nicht feststeht")];
-  // GEMESSEN, NICHT GESCHRIEBEN: dieselbe Wahl und dieselben Bytes wie roleRulebookRender, aber
-  // ohne die Render-Datei anzulegen. Die Route ist lesend; nur der Spawn schreibt das Render.
-  const render = fassungRoleRender(rulebookRole, sessionId);
-  if (!render) {
-    // Genau der Rückfall des Spawns: ohne Render lädt claude den Monolithen. Der Grund steht dabei.
-    if (!loaded.dateien.length)
-      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0,
-        undefined, "Rollen-Render nicht verfügbar (kein lesbares rulebook/ oder CLAUDE.md ist nicht sein Render); Claude lädt den Monolithen")];
-    const gelesen = fassungDateiText(loaded.dateien);
-    if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
-    return [{ id: "projektregeln", quelle: loaded.dateien.map((datei) => datei.pfad).join("\n"), aenderbar: true,
-      text: gelesen.text, bytes: gelesen.bytes, dateien: loaded.dateien,
-      grund: "Rollen-Render nicht verfügbar (kein lesbares rulebook/ oder CLAUDE.md ist nicht sein Render); Claude lädt den Monolithen" }];
-  }
-  const excludes = fassungClaudeMdExcludes(cwd);
-  const global = loaded.dateien.filter((datei) => !excludes.has(resolve(datei.pfad)));
-  const gelesen = fassungDateiText(global);
+  // a seat that builds excludes what its line excludes (BAU_CLAUDE_MD_EXCLUDES)
+  const aus = new Set(bau ? BAU_CLAUDE_MD_EXCLUDES.map((pfad) => resolve(pfad)) : []);
+  const dateien = loaded.dateien.filter((datei) => !aus.has(resolve(datei.pfad)));
+  const basis = fleetBaum ? basisFehlt(fleetBaum, dateien) : null;
+  const grund = [basis, checkout.size && existsSync(`${cwd}/CLAUDE.md`) ? "das CLAUDE.md des Server-Checkouts bleibt ausgeschlossen; Fleet rendert kein Regelbuch mehr (server.ts#agentCmd)" : null,
+    dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : null]
+    .filter(Boolean).join(" · ") || undefined;
+  if (!dateien.length)
+    return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
+  const gelesen = fassungDateiText(dateien);
   if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
-  const renderPfad = `${render.path}/CLAUDE.md`;
-  const renderBytes = Buffer.byteLength(render.text);
-  const dateien = [...global, { pfad: renderPfad, bytes: renderBytes }];
-  const text = [gelesen.text, `${fassungDateiKopf(global.length, global.length + 1, renderPfad)}${render.text}`]
-    .filter(Boolean).join("\n\n");
-  return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"), text, true,
-    gelesen.bytes + renderBytes, dateien)];
+  return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"),
+    gelesen.text, true, gelesen.bytes, dateien, grund)];
 }
 
 // DAS NOTIZBUCH DES SETUPS (server/notizbuch.ts): eigen, geteilt oder aus, mit Ordner und den Bytes seiner MEMORY.md.
@@ -21318,7 +21059,6 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   repoRoot: string; claudeCode?: unknown }): Promise<Fassung> {
   const claude = harnessFamilie(o.harness) === "claude";
   const modell = o.modell ?? (claude ? DEFAULT_MODEL : null);
-  const rulebookRole = fassungRulebookRole(o.repoRoot, o.rolle, null);
   const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] });
   return baueFassung({
     slot: 0, anlass: "neu",
@@ -21332,7 +21072,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       ...fassungRolleKarte(o.rolle, o.repoRoot),
       fleet.zusatz,
       ...(fleet.start ? [fleet.start] : []),
-      ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator", false,
+      ...fassungProjektregelnAus(o.repoRoot, o.harness, fassungImFleetCheckout(o.repoRoot, null), o.rolle === "orchestrator", false,
         o.rolle === "generic" ? await fleetBaumVon(o.repoRoot) : null),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
@@ -21429,7 +21169,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
-    ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
+    ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungImFleetCheckout(cwd, s.worktree),
       rolle === "orchestrator", bau, rolle === "generic" ? await fleetBaumVon(cwd) : null),
     ...(await fassungWissen(s, rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
@@ -42315,7 +42055,7 @@ type NativeLoaderBytes = { bytes: number; dateien: { pfad: string; bytes: number
 // five deep, and every `.claude/rules/**.md` without `paths:` frontmatter — a path-scoped rule loads on
 // demand and is named in `nachgeladen`, not counted. Codex: the
 // CODEX_HOME file and the folder's, AGENTS.override.md before AGENTS.md. Any other harness: unknown.
-function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
+function nativeLoaderBytes(dir: string, harness: string, aus: ReadonlySet<string> = new Set()): NativeLoaderBytes {
   const familie = harnessFamilie(harness);
   const dateien: { pfad: string; bytes: number }[] = [];
   const seen = new Set<string>();
@@ -42326,7 +42066,7 @@ function nativeLoaderBytes(dir: string, harness: string): NativeLoaderBytes {
     const roots: string[] = [];
     for (let d = resolve(dir); dirname(d) !== d; d = dirname(d)) roots.unshift(d);
     const visit = (pfad: string, depth: number): NativeLoaderBytes | null => {
-      if (seen.has(pfad)) return null;
+      if (seen.has(pfad) || aus.has(resolve(pfad))) return null;
       seen.add(pfad);
       const read = readPresent(pfad);
       if (!read.ok) return unreadable(pfad);
@@ -42482,9 +42222,9 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
   const notizbuch = harnessFamilie(harness) === "claude" ? await notizbuchFuerStart(fp.repoRoot,
     o.rolle === "lane" ? "lane" : o.rolle === "orchestratorin" ? "orchestrator" : "generic", null) : null;
   const memory = notizbuch ? await autoMemoryBytes(notizbuch) : null;
-  const native = o.rolle === "nur-ordner" && o.ort === "ordner" ? nativeLoaderBytes(fp.repoRoot, harness) : null;
-  const laneRulebook = o.rolle === "lane" ? laneRulebookFor(fp.repoRoot) : null;
-  const ownRulebook = resolve(fp.repoRoot) === import.meta.dir && RULEBOOK_CUT_MODE !== "voll" && readRulebookFragments(import.meta.dir) !== null;
+  // in the server checkout claude starts without its CLAUDE.md (agentCmd), so it counts as the spawn loads it
+  const native = o.rolle === "nur-ordner" && o.ort === "ordner" ? nativeLoaderBytes(fp.repoRoot, harness,
+    harnessFamilie(harness) === "claude" && fassungImFleetCheckout(fp.repoRoot, null) ? fassungCheckoutExcludes(fp.repoRoot) : undefined) : null;
   let rendered: SessionAgents | null = null;
   const result = resolveSessionPlan({
     rolle: o.rolle, ort: { art: o.ort, pfad: fp.repoRoot, branch: fp.branch, head: fp.head },
@@ -42495,7 +42235,6 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
         : o.ort === "repo" ? `direkt in ${basename(fp.repoRoot)}` : `Ordner ${basename(fp.repoRoot)}` },
     packs,
     bedingungen: {
-      "private-rulebook": o.rolle === "lane" ? laneRulebook !== null : ownRulebook,
       "commit-expectation": o.ort === "worktree",
       "delivery-header": harnessFamilie(harness) === "claude",
       // a Claude lane starts with autoMemoryEnabled:false (server/notizbuch.ts): the index may exist, it never loads
@@ -42514,9 +42253,6 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     for (const block of SESSION_BLOCKS) if (block.lieferart.every((l) => l === "plan")) bytes[block.id] = 0;
     bytes["owner-heft"] = Buffer.byteLength(ownerHeft);
     if (o.rolle === "lane" || o.rolle === "main") bytes["memory-pointer"] = Buffer.byteLength(memoryPointer(o.rolle));
-    if (laneRulebook !== null) bytes["private-rulebook"] = Buffer.byteLength(laneRulebook);
-    else if (ownRulebook && (o.rolle === "main" || o.rolle === "orchestratorin"))
-      bytes["private-rulebook"] = roleRulebookBytes(o.rolle === "main" ? "main" : "orchestrator");
     if (memory && notizbuch) { bytes["auto-memory"] = memory.bytes; details["auto-memory"] = { ...(notizbuch.pfad ? { pfad: memory.pfad } : {}), notizbuch }; }
     if (native) { bytes["native-agents"] = native.bytes; details["native-agents"] = "grund" in native ? { grund: native.grund } : { dateien: native.dateien, nachgeladen: native.nachgeladen, regel: native.regel }; }
     // the start block as agentCmd appends it, the skill lines as Claude lists them, and the folder --add-dir names
@@ -42977,26 +42713,17 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
   if (door === "main") switch (row.id) {
     case "role-card": case "main-rail": case "owner-heft": case "memory-pointer": return { immer: "Prompt" };
     case "context-anchors": return ctx.packsOn ? { folgt: "Prompt" } : { nie: "kein Pack ist an" };
-    case "private-rulebook": return claude && resolve(ctx.repoRoot) === import.meta.dir ? { immer: "native Datei" }
-      : { nie: "nur eine Claude-Session im Fleet-Checkout laedt das private Regelbuch" };
     default: return { nie: "der MAIN-Brief traegt das nicht" };
   }
   if (door === "lane") switch (row.id) {
     case "role-card": case "owner-heft": case "lane-footer": case "memory-pointer": case "context-anchors": return { folgt: "Session-Datei" };
     case "commit-expectation": return ctx.laneFooterOn ? { immer: "Session-Datei" } : { nie: "es steht im lane-footer, und der ist nicht an" };
-    // the copy lands in every lane's worktree, but only Claude loads CLAUDE.md — the same claude && as /open
-    case "private-rulebook": return !claude ? { nie: "nur Claude laedt CLAUDE.md; die Kopie im Worktree liest dieser Harness nicht" }
-      : laneRulebookFor(ctx.repoRoot) !== null ? { immer: "native Datei" }
-      : { nie: "der Quell-Checkout hat kein lesbares rulebook/" };
     default: return { nie: "die Lane-Tuer liefert das nicht" };
   }
   switch (row.id) {
     case "orchestrator-card": case "owner-heft":
       return ctx.orchestratorCard ? { immer: "Prompt" } : { nie: "/open sendet das nur mit der Orchestratorin-Karte (Label)" };
     case "context-anchors": return ctx.orchestratorCard ? { immer: "Prompt" } : ctx.packsOn ? { folgt: "Prompt" } : { nie: "kein Pack ist an" };
-    // a Claude session in the Fleet checkout loads the private rulebook natively, cut or whole (rulebookRoleForSpawn)
-    case "private-rulebook": return claude && resolve(ctx.repoRoot) === import.meta.dir ? { immer: "native Datei" }
-      : { nie: "nur eine Claude-Session im Fleet-Checkout laedt das private Regelbuch" };
     default: return { nie: "/open schreibt keine Session-Datei und sendet das nicht" };
   }
 }
@@ -46504,8 +46231,8 @@ if (existsSync(file)) {
 }
 // START (only as entry point): the boot, up to the audit clock below
 if (import.meta.main) {
-// FLEET_STATE_DIR may name a directory that does not exist yet; unset, both already exist
-mkdirSync(dirname(RULEBOOK_AB_LEDGER_FILE), { recursive: true, mode: 0o700 });
+// FLEET_STATE_DIR may name a directory that does not exist yet
+mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 await claimInstanceLock();
 // A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
 // live peer can be writing one, and a credential-bearing temp must not be left lying around.
@@ -51195,26 +50922,13 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     }
 
     // the lane's own view of THE GATE — the one fact family no file in its worktree can carry: the live
-    // gate is this process's env, a lane's CLAUDE.md is a spawn-time COPY. Read-only, grants no
+    // gate is this process's env. Read-only, grants no
     // capability. Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
     if (url.pathname === "/api/self/gate" && req.method === "GET") {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
       if (!s.worktree) return json({ error: "not a lane — the gate judges a lane's land" }, 409);
-      // rulebook drift: the expected side is `laneRulebookFor`, the SAME function the spawn seam wrote
-      // with (null ⇒ the spawn copied the monolith, and the compare falls back to it, in lockstep).
-      // Compared BODY-ONLY — the back-reference block carries the generation timestamp. null = not
-      // comparable, served as absent, NEVER as "no drift". Narrativ: server-narrativ-archiv.md#fetch-get-apiselfgate
-      let rulebookDrifted: boolean | null = null;
-      try {
-        const copy = await Bun.file(`${s.cwd!}/CLAUDE.md`).text();
-        const rendered = laneRulebookFor(s.worktree.repo, laneVarianteOf(waveRowsOf(s.id)));
-        const expected = rendered === null
-          ? await Bun.file(`${s.worktree.repo}/CLAUDE.md`).text()
-          : rendered;
-        rulebookDrifted = rulebookBody(copy) !== rulebookBody(expected);
-      } catch { /* either side unreadable → stays null */ }
       // Resolved ONCE, through the same entry lookup the self-land route gates on — a lane whose
       // repo is a linked worktree of a configured repository must be told the command it will
       // actually meet, not the global.
@@ -51234,7 +50948,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // for THIS LANE'S REPO, like `verify` above: a repo-worker arms tier 2 for its repo alone
         postlandAudit: auditCmdFor(s.worktree.repo) !== null,
         mergeRepairRounds: MERGE_REPAIR_ROUNDS,
-        rulebookDrifted,
         // the machine-busy fact (autonomy verbs, Verb 1): the suite mutex is the one wait a lane's verify
         // actually hangs on. null = free; states mirror e2e-stage.sh exactly (held/overdue/stale/parked).
         suiteLock: suiteLockView(),
@@ -56018,6 +55731,6 @@ if (process.stdout.isTTY) {
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
-  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
+  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };

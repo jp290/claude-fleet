@@ -3,9 +3,9 @@
 // den main nach dem Merge hätte (Bauleitung 12.10.: Branch-Arbeit per Rebase/Cherry-Pick auf main,
 // ohne bau/neuaufbau).
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, mainVerdict } from "./merge-check";
+import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, hiddenLayerOf, mainVerdict } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -195,5 +195,46 @@ describe("auditShardsLine: was das Urteil über die gefahrenen Audit-Shards sagt
   });
   test("ohne audit-shard-Zeile (Doku-Änderung) keine Zeile", () => {
     expect(auditShardsLine(out(), [])).toBeNull();
+  });
+});
+
+// E9 (Owner 23.10.): Fleet rendert kein CLAUDE.md mehr, und der Merge-Check verhindert, dass es zurückkommt
+describe("hiddenLayerOf: kein verstecktes Regelbuch im Kandidaten", () => {
+  const tree = (files: Record<string, string>): { sha: string; dir: string } => {
+    const dir = mkdtempSync(`${tmpdir()}/mc-hidden-`);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    g("init", "-q", "-b", "main");
+    for (const [path, text] of Object.entries({ "AGENTS.md": "# Regeln\n", ...files })) {
+      mkdirSync(`${dir}/${path}`.replace(/\/[^/]+$/, ""), { recursive: true });
+      writeFileSync(`${dir}/${path}`, text);
+    }
+    g("add", "-A");
+    g("commit", "-q", "-m", "baum");
+    return { sha: g("rev-parse", "HEAD"), dir };
+  };
+  const pack = (path: string): string => JSON.stringify([{ id: "p1", sources: [{ path, anchor: "# x" }] }]);
+  test("ein Baum mit AGENTS.md, Packs auf Docs und ohne CLAUDE.md geht durch", () => {
+    const t = tree({ ".fleet/context-packs.json": pack("docs/packs/x.md"), "context-packs.ts": 'sources: [{ path: "docs/a.md" }]\n' });
+    try { expect(hiddenLayerOf(t.sha, t.dir)).toEqual([]); } finally { rmSync(t.dir, { recursive: true, force: true }); }
+  });
+  test("ein getracktes CLAUDE.md wird verweigert, auch tief im Baum und unter .claude/", () => {
+    const t = tree({ "CLAUDE.md": "x\n", "docs/CLAUDE.md": "x\n", ".claude/CLAUDE.md": "x\n", "docs/NOT-CLAUDE.md.txt": "x\n" });
+    try {
+      expect(hiddenLayerOf(t.sha, t.dir)).toEqual(["getracktes .claude/CLAUDE.md", "getracktes CLAUDE.md", "getracktes docs/CLAUDE.md"]);
+    } finally { rmSync(t.dir, { recursive: true, force: true }); }
+  });
+  test("eine Pack-Quelle auf CLAUDE.md wird verweigert, im Manifest und in der Saat", () => {
+    const t = tree({ ".fleet/context-packs.json": pack("CLAUDE.md"), "context-packs.ts": 'sources: [{ path: "rulebook/CLAUDE.md" }]\n' });
+    try {
+      expect(hiddenLayerOf(t.sha, t.dir)).toEqual(["Pack p1 liest CLAUDE.md (.fleet/context-packs.json)",
+        "eine Saat liest rulebook/CLAUDE.md (context-packs.ts)"]);
+    } finally { rmSync(t.dir, { recursive: true, force: true }); }
+  });
+  test("Fleets eigener Baum trägt keins", () => {
+    expect(hiddenLayerOf("HEAD")).toEqual([]);
   });
 });

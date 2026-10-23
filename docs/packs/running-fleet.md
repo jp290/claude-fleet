@@ -36,6 +36,11 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
 - **The board door runs the checkout's runner, not the branch's.** `POST /api/branches/check` starts
   `<repo>/ci/merge-check.ts` from the checkout the body names. A branch that changes the runner is checked from its
   own worktree, `bun ci/merge-check.ts <branch> --base main`, or its first check runs the old runner.
+- **A dirty main checkout refuses a land.** The land ends with a fast-forward of the main checkout, and an
+  uncommitted edit to a file the land touches stops it: the door answers 409 `dirty-main` and names up to five
+  paths (`server.ts#dirtyMainStop`). Only the overlap counts. Commit an edit in the main checkout right away.
+- **Commit doc analysis on main before a branch touches the same docs.** A branch starts from committed HEAD and
+  doesn't see uncommitted work in the main checkout; a land over it loses that work without a conflict.
 - **The merge check runs only what the footprint owes; the audit runs everything.** A change that alters a
   behaviour (a door that now answers 409) can pass its check and turn the audit red where another module pins the
   old answer. Before a land that changes a door, grep `e2e/` for the old answer. One module runs locally with
@@ -88,8 +93,22 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   is in flight, but it does not see a helper that has just claimed the shards of a waiting audit. In the same
   command as the deploy, read `./ctl.sh audits --last 1` (the `live:` line must say idle) and the tail of
   `audit.jsonl` for a `helper_claim` without a later `helper_result`. On a hit, don't fire.
+- **Never end srv by hand.** The deploy door checks lands, audits, successions and foundings first
+  (`server.ts#deployBlocker`); killing the srv tmux session checks nothing and ends a running land without a
+  verdict.
+- **`ok: null` at `GET /api/deploys` is never a pass.** The next boot writes the verdict; null means it couldn't be
+  established, for example after a restart outside the deploy door.
+- **A change to `watchdog.sh` takes effect only when the watchdog service restarts.** The running loop doesn't
+  reread its file, and a deploy restarts srv, not the watchdog. Restarting the service leaves a running srv
+  alone; its label is in `~/local-notes/this-machine.md`.
+- **A deploy resets every pane's idle clock.** The boot stamps each slot's last output with the boot time, because
+  unknown is never permission (`server.ts`, `boot-slot-rehydration`). Evidence that hangs on an idle window is
+  gone after a deploy; ask the seats that measure one before you deploy.
 
 ## Judging red audits
+
+- **Check a green audit by its `ms` and its PASS lines, not by the word.** `checks.ran: 0` with `result: green`
+  measured nothing, and zero PASS lines mean it crashed or never started; only `ms` tells the two apart.
 
 A red audit without a verdict stays with the owner, and he wants out of that loop. The orchestrator judges it
 through her own door, `POST /api/self/post-land-audits/adjudicate {at, verdict, note}` (`at` is the audit row's
@@ -125,6 +144,13 @@ reads as his.
 
 ## Acting on live sessions and instances
 
+- **Never `git checkout --` or `git reset` in another seat's worktree.** Finished uncommitted work is the normal
+  state of a working branch, and either command deletes it. Probe with `git stash push -- <file>` and `stash pop`,
+  or on a copy.
+- **A watch message is a server predicate, not the seat's report.** It says the seat looks done (idle, clean,
+  ahead); read the pane before you act on it. Keep `idleSec` at 0 (the default): a working seat that lands and
+  closes never sits idle for 60 s. Acknowledge events with `./ctl.sh events --ack`, because each unacknowledged one holds
+  delivery budget.
 - **Read the session's own brief first.** Before `POST /api/slots/<n>/model` or any other act on a session that
   isn't yours, read its pane for younger owner words. The owner credential carries no speaker, so your act looks
   like his, and a brief he gave that session beats your record of his policy. If they disagree, the question goes

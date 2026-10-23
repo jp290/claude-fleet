@@ -93,8 +93,8 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
   orchestrator lands. A red in a job your change can't have touched: run that test on your branch and on main
   before you blame the change.
 - No real hostname, address, name or token in the file. The `leak-pin` lines of `bun e2e/pins.ts` catch addresses
-  and the configured hosts. Names they can't know: the local grep for them is in `rulebook/deploy.md`, the
-  gitignored source `CLAUDE.md` is rendered from, and it must come back empty.
+  and the configured hosts. Names they can't know: the local grep for them is in `~/local-notes/this-machine.md`
+  (Publishing claude-fleet), and it must come back empty.
 
 ## Whom it reaches
 

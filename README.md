@@ -255,5 +255,3 @@ No longer used, and still in the code:
 
 - **Steward role.** `server.ts:46657` (`handleStewardSend`), `:49149` (`handleStewardRoute`);
   `.claude/commands/steward.md`, `rundgang.md`, `inspektion.md`, `projekt-blick.md`, `foreman.md`.
-- **Generated rulebook.** `rulebook.ts` (imported at `server.ts:58`), which renders a `CLAUDE.md`
-  from a `rulebook/` folder that is not part of this repository.

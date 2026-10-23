@@ -15,7 +15,6 @@ import { otherSender, pendingSettledBy, splitDeliveryHeader } from "../src/pendi
 import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
-import { RULEBOOK_DIR, RULEBOOK_FRAGMENTS, fragmentFileName } from "../rulebook";
 import { normalizeLaneAnchor, validPerfRecord, PERF_BATCH_MAX, type PerfRecord, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
 import { composerResidue } from "../composer";
 import { scanTitleOnly, type TitleCarry } from "../titlebytes";
@@ -5348,10 +5347,6 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
     sources: [{ id: "plan-probe.section", path: "docs/probe.md", anchor: "## Probe section", sorte: "wissen", positions: { lane: "box", main: "box", orchestratorin: "box" } }],
     requiredCapabilities: ["tracked-source-read"], harnesses: ["claude", "codex", "pi"], modes: ["read-only", "mutating"],
     estimatedBytes: 64, evidence: "tree-anchor", owner: "owner", status: "active" }], null, 2));
-  // a readable rulebook/ (gitignored, as in the Fleet checkout): only a Claude lane loads its render
-  mkdirSync(`${repo}/${RULEBOOK_DIR}`, { recursive: true });
-  for (const f of RULEBOOK_FRAGMENTS) writeFileSync(`${repo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, `## ${f}\n\nrule text of ${f}\n`);
-  appendFileSync(`${repo}/.gitignore`, `${RULEBOOK_DIR}/\n`);
   const commit = (msg: string): boolean => git("add", "-A").status === 0
     && git("-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", msg).status === 0;
   check("planned start — SETUP: the fixture declares a pack at a commit", commit("declare the probe pack"));
@@ -5502,7 +5497,7 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
   }
 
   // EVERY DOOR THE PLAN REACHES, and what each must not do with it (MAIN review of 44e468d7): parts
-  // reach a lane's file; a non-Claude lane starts where a rulebook/ is readable; open-worktree
+  // reach a lane's file; a non-Claude lane starts with its Claude-only rows left out; open-worktree
   // reserves its place before the plan check awaits; /open starts a planned main; what /open cannot
   // carry (parts, a Nur-Ordner plan) the preview and the door refuse with the same reasons; attach
   // takes no plan.
@@ -5526,11 +5521,11 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
     const piBody = await piStart.json() as Started;
     if (piBody.slot) opened.push(piBody.slot);
     const piQuittung = typeof piBody.plan === "object" ? piBody.plan : null;
-    check("planned start: a planned pi lane starts beside a readable rulebook/ — the private rulebook is a Claude row, left out with its reason",
-      claudeLane.plan?.bausteine.find((row) => row.id === "private-rulebook")?.zustand === "an"
-        && pi.start?.startbar === true && pi.plan?.bausteine.find((row) => row.id === "private-rulebook")?.zustand === "aus"
+    check("planned start: a planned pi lane starts — the delivery header is a Claude row, left out with its reason",
+      claudeLane.plan?.bausteine.find((row) => row.id === "delivery-header")?.zustand === "an"
+        && pi.start?.startbar === true && pi.plan?.bausteine.find((row) => row.id === "delivery-header")?.zustand === "aus"
         && piStart.status === 200 && !!piQuittung && piQuittung.hash === pi.plan.planHash
-        && piQuittung.ausgelassen.some((row) => row.id === "private-rulebook" && row.grund.startsWith("Plan: aus") && row.grund.includes("Nur Claude"))
+        && piQuittung.ausgelassen.some((row) => row.id === "delivery-header" && row.grund.startsWith("Plan: aus") && row.grund.includes("Claude-Weg"))
         && fileOf(piBody.cwd) === pi.sessionAgents?.text,
       `${piStart.status} start=${JSON.stringify(pi.start)} ${JSON.stringify(piBody).slice(0, 300)}`);
     for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});

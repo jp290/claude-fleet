@@ -26,12 +26,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { basename, join, resolve } from "node:path";
-import {
-  FRAGMENTS_FOR, FRAGMENT_BY_RULE_PREFIX, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
-  RULEBOOK_BACKREF_HEADING,
-  FRAGMENT_TITLES, ROLE_SECTION_CUT, fragmentFileName, fragmentSections, renderRulebook, renderRoleRulebook, LANE_CUT_INLINE,
-  rulebookBody, type RoleAudience, type RoleRulebook, type RulebookFragment,
-} from "../rulebook";
 import { HANDOFF_WARN_KB, splitHandoff } from "../tools/handoff-rotate";
 import { VERIFY_SKIP_EXIT as LAND_LOG_SKIP_EXIT, renderLandLog, verifyLabel, type MainCommit } from "../tools/land-log";
 import { SHARD_UNITS, selectSkipUnits, shardPlan } from "./ctx";
@@ -2095,7 +2089,7 @@ export default function (pi) {
 {
   const RULE_CTL = "ctl.sh's verb list, its usage block and docs/controller.md §Werkzeuge are one set";
   const ctl = read("ctl.sh");
-  // TOKEN HYGIENE, as a fastener rather than a habit (CLAUDE.md §Self-scheduling): ensureSlot bakes
+  // TOKEN HYGIENE, as a fastener rather than a habit (AGENTS.md §Hard limits): ensureSlot bakes
   // every pane's self-credential into its zsh line, so a `ps` that prints COMMANDS prints foreign
   // slots' tokens into whatever reads the output. ctl.sh may COUNT processes and must never render
   // one — so `command` may appear in a ps invocation only where it is piped straight into `grep -c`.
@@ -2164,20 +2158,16 @@ export default function (pi) {
   // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09). Every Claude session here —
   // lane, MAIN, orchestrator — loads ~/.claude/CLAUDE.md, so no project exclude may match it: the
   // `**/.claude/CLAUDE.md` glob of 0ceacbca did, and the role sessions fell back to ~/AGENTS.md, the
-  // Codex version. The role line (agentCmd) excludes ~/AGENTS.md by name and the checkout's own
-  // gitignored .claude/CLAUDE.md by absolute path instead — and the checkout's AGENTS.md too: the
-  // user file never closes the AGENTS.md fallback, so without that path MAIN and the orchestrator
-  // load the repo's 21 kB natively beside their render. Glob test: a pattern matching
+  // Codex version. The line itself (agentCmd: ~/AGENTS.md, the server checkout's CLAUDE.md and
+  // .claude/CLAUDE.md by absolute path) is held by its bytes in server/fassung.test.ts. Glob test: a pattern matching
   // `<home>/.claude/CLAUDE.md` for any home — `**`, `*` and `?` widened, the rest literal.
   const userRules = "/Users/someone/.claude/CLAUDE.md";
   const globHits = (pat: string): boolean => new RegExp(`^${pat.split(/(\*\*\/|\*\*|\*|\?)/).map((part) =>
     part === "**/" ? "(?:.*/)?" : part === "**" ? ".*" : part === "*" ? "[^/]*" : part === "?" ? "[^/]"
       : part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("")}$`).test(userRules);
   const hiding = (settings?.claudeMdExcludes ?? []).filter(globHits);
-  const agentLine = read("server.ts").slice(read("server.ts").indexOf("function agentCmd("));
-  pin(`${RULE_HOOK} — no project claudeMdExcludes hides ~/.claude/CLAUDE.md, and the role line excludes ~/AGENTS.md, the checkout's .claude/CLAUDE.md and its AGENTS.md instead`,
-    hiding.length === 0
-      && agentLine.slice(0, agentLine.indexOf("\n}\n")).includes("claudeMdExcludes: [root, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`]"),
+  pin(`${RULE_HOOK} — no project claudeMdExcludes hides ~/.claude/CLAUDE.md`,
+    hiding.length === 0,
     `hiding=[${hiding.join(",")}]`);
 
   // the two pane facts the hook reads are the two ensureSlot bakes, and the route it posts to is served
@@ -2686,7 +2676,7 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
       { packId: "verify-e2e", vorlage: "founding-packs", ausgelassen: null, harnesses: null },
       { packId: "konzept-x", vorlage: "konzept", ausgelassen: harness === "codex" ? null : "harness-unsupported", harnesses: ["codex"] },
     ],
-    bedingungen: { "auto-memory": true, "commit-expectation": true, "private-rulebook": true, bibliothek: true, "bibliothek-skills": true }, schalter,
+    bedingungen: { "auto-memory": true, "commit-expectation": true, bibliothek: true, "bibliothek-skills": true }, schalter,
   });
   const measure = (): SessionPlanMessung => ({ bytes: { "lane-footer": 100, "role-card": 50, "context-anchors": 400,
     "pack:portable-core": 300, "pack:verify-e2e": 80, "native-agents": 1000, "auto-memory": 2000, "commit-expectation": "unknown",
@@ -2719,7 +2709,7 @@ pin("model register: Haiku 5.5 is current at 1M, Haiku 4.5 is superseded by it, 
     lane.ok ? JSON.stringify(lane.plan.bytesVorAuftrag) : "");
   pin("S3 plan: a harness-limited row is off with its reason, and switching it on is refused",
     laneRow("pack:konzept-x")?.harness.gueltig === false && laneRow("pack:konzept-x")?.zustand === "aus"
-      && errorOf(planInput("lane", "codex", { "private-rulebook": "an" })).includes("gilt nicht fuer codex"));
+      && errorOf(planInput("lane", "codex", { bibliothek: "an" })).includes("gilt nicht fuer codex"));
   pin("S3 plan: a required row cannot be switched off, a locked one cannot be replaced, a stranger cannot replace",
     errorOf(planInput("lane", "claude", { "lane-footer": "aus" })).includes("ist noetig")
       && errorOf(planInput("lane", "claude", { "owner-heft": "ersetzt:portable-contract" })).includes("ist gesperrt")

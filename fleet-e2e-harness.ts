@@ -1380,7 +1380,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
         spawnCmd:(o)=>{${adapter}}};
       const harnessOf = () => h;
       const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
-      const rulebookRoleForSpawn=()=>null;
+      const fleetCheckoutForSpawn=()=>false;
       ${validators}
       ${occupant}
       const slotTeardownInflight = new Map(),slotSpawnInflight = new Map();

@@ -10,10 +10,6 @@ import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
 // the same table the runner reads, so this family measures the advice AND the closure it implies
 import { modulePlanFor } from "../suite-modules";
-import {
-  FRAGMENTS_FOR, FRAGMENT_TITLES, RULEBOOK_BACKREF_HEADING, RULEBOOK_DIR, RULEBOOK_FRAGMENTS,
-  fragmentFileName, renderRulebook, rulebookBody, type RulebookFragment,
-} from "../rulebook";
 
 export async function run(ctx: Ctx): Promise<void> {
   // --- Part C: scoped self-scheduling token (FLEET_SELF_TOKEN / FLEET_SELF_SLOT) ---
@@ -712,7 +708,7 @@ export async function run(ctx: Ctx): Promise<void> {
 
   // --- GET /api/self/gate: the live land-gate facts, served from the server's own process env.
   // The env pass-throughs (verify/cleanReview/…) are pinned by their own suites; what is tested
-  // HARD here is this route's own logic — auth, the one-scope rule, and the rulebook compare. ---
+  // HARD here is this route's own logic — auth and the one-scope rule. ---
   check("local proof: docs-only asks for exactly install,pins and no isolated preview",
     JSON.stringify(localProofFor(["docs/guide.md"]))
       === JSON.stringify({ steps: ["install", "pins"], isolatedPreview: false,
@@ -776,7 +772,7 @@ export async function run(ctx: Ctx): Promise<void> {
   });
   type Gate = { verify: { cmd: string; timeoutMs: number; waitMs: number; skipExit: number } | null; cleanReview: string;
     autoReview: { tickMs: number; idleMs: number } | null; postlandAudit: boolean;
-    mergeRepairRounds: number; rulebookDrifted: boolean | null;
+    mergeRepairRounds: number;
     suiteLock: { pid: number | null; alive: boolean | null; heldMs: number; state: string } | null;
     localProof: ReturnType<typeof localProofFor> | null };
   const g0Res = await selfGate(selfTok);
@@ -820,14 +816,14 @@ export async function run(ctx: Ctx): Promise<void> {
   // the work budget and `waitMs` the queueing one, and a route that named only the first would
   // still be telling a lane that a 300s gate is a 300s gate when 255s of it can be somebody else's
   // suite (VERIFY_WAIT_MS in server.ts, the 2026-08-06 incident).
-  check("GET /api/self/gate: full shape, skipExit pinned to 42, no rulebook on either side reads null",
+  check("GET /api/self/gate: full shape, skipExit pinned to 42, no rulebook drift field",
     g0Res.ok && (g0.verify === null || (typeof g0.verify.cmd === "string" && g0.verify.skipExit === 42
       && g0.verify.timeoutMs > 0 && g0.verify.waitMs > 0))
       && ["off", "gate", "shadow"].includes(g0.cleanReview)
       && (g0.autoReview === null || g0.autoReview.tickMs > 0)
       && typeof g0.postlandAudit === "boolean"
       && g0.mergeRepairRounds >= 0 && g0.mergeRepairRounds <= 3
-      && g0.rulebookDrifted === null,
+      && !("rulebookDrifted" in g0),
     JSON.stringify(g0));
   check("gate: the owner token does not substitute for a selfToken", (await selfGate(TOKEN)).status === 401);
   check("gate: a missing selfToken header is rejected", (await selfGate(undefined)).status === 401);
@@ -976,91 +972,32 @@ export async function run(ctx: Ctx): Promise<void> {
     spawnSync("git", ["-C", repo, "worktree", "prune"]);
   }
 
-  // rulebook compare: identical copy reads false, a moved source reads true. Fixtures are
-  // UNTRACKED files in REPO and the lane — removed right after, an untracked file in either
-  // tree would poison later modules' clean-tree assumptions (and a lane's landability).
-  writeFileSync(`${REPO}/CLAUDE.md`, "rules v1\n");
-  writeFileSync(`${lnTok.cwd}/CLAUDE.md`, "rules v1\n");
-  const g1 = (await (await selfGate(selfTok)).json()) as Gate;
-  check("gate: an identical rulebook copy reads rulebookDrifted:false", g1.rulebookDrifted === false,
-    JSON.stringify({ rb: g1.rulebookDrifted }));
-  writeFileSync(`${REPO}/CLAUDE.md`, "rules v1\nrules v2\n");
-  const g2 = (await (await selfGate(selfTok)).json()) as Gate;
-  check("gate: a source rulebook that moved past the copy reads rulebookDrifted:true", g2.rulebookDrifted === true,
-    JSON.stringify({ rb: g2.rulebookDrifted }));
-  rmSync(`${REPO}/CLAUDE.md`);
-  rmSync(`${lnTok.cwd}/CLAUDE.md`);
-
-  // --- THE SPLIT ITSELF: a lane of a repo that HAS a `rulebook/` is WRITTEN the lane rendering (a
-  // strict subset of the fragments) instead of being handed the monolith, and the gate still reads
-  // false on it. Both halves in one fixture on purpose: the seam without the probe fix is the
-  // self-cancelling state — a permanent `rulebookDrifted: true` ordering every lane to load the
-  // very bytes the split saved. Own repo, so REPO's clean-tree assumptions stay untouched.
+  // --- NO CLAUDE.md IN A LANE (E9, owner 2026-10-23: Fleet stops supporting the hidden layer): a repo whose
+  // checkout holds a gitignored CLAUDE.md spawns a lane with none — neither a copy nor a rendering — so the
+  // lane's session loads the repo's AGENTS.md. Own repo, so REPO's clean-tree assumptions stay untouched.
   {
-    const rbRepo = `${ROOT}/rulebook-split-repo`;
+    const rbRepo = `${ROOT}/rulebook-free-repo`;
     rmSync(rbRepo, { recursive: true, force: true });
-    mkdirSync(`${rbRepo}/${RULEBOOK_DIR}`, { recursive: true });
+    mkdirSync(rbRepo, { recursive: true });
     spawnSync("git", ["-C", rbRepo, "init", "-q", "-b", "main"]);
     spawnSync("git", ["-C", rbRepo, "config", "user.email", "e2e@example.invalid"]);
     spawnSync("git", ["-C", rbRepo, "config", "user.name", "Fleet E2E"]);
-    // gitignored on BOTH counts, exactly as in the real checkout: an untracked copy would leave
-    // every lane permanently dirty and block `land`, which is why the seam checks check-ignore.
-    writeFileSync(`${rbRepo}/.gitignore`, `CLAUDE.md\n${RULEBOOK_DIR}/\n`);
-    spawnSync("git", ["-C", rbRepo, "add", ".gitignore"]);
+    writeFileSync(`${rbRepo}/.gitignore`, "CLAUDE.md\n");
+    writeFileSync(`${rbRepo}/AGENTS.md`, "# rules of this repo\n");
+    spawnSync("git", ["-C", rbRepo, "add", ".gitignore", "AGENTS.md"]);
     spawnSync("git", ["-C", rbRepo, "commit", "-qm", "seed"]);
-    const frag = new Map<RulebookFragment, string>(
-      RULEBOOK_FRAGMENTS.map((f) => [f, `## ${f}\n\nrule text of ${f}\n`]),
-    );
-    for (const [f, body] of frag) writeFileSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName(f)}`, body);
-    writeFileSync(`${rbRepo}/CLAUDE.md`, renderRulebook("voll", frag));
-
+    writeFileSync(`${rbRepo}/CLAUDE.md`, "# monolith\n");
     const rbLane = (await (await post("/api/lanes", { repo: rbRepo })).json()) as
       { ok?: boolean; slot?: number; cwd?: string; error?: string };
-    check("rulebook split: a lane of a repo with rulebook/ spawns",
+    check("no rulebook: a lane of a repo with a gitignored CLAUDE.md spawns",
       typeof rbLane.slot === "number" && typeof rbLane.cwd === "string", JSON.stringify(rbLane));
-    const written = ((): string | null => {
-      try { return readFileSync(`${rbLane.cwd}/CLAUDE.md`, "utf8"); } catch { return null; }
-    })();
-    const expectBody = renderRulebook("lane", frag);
-    const omitted = RULEBOOK_FRAGMENTS.filter((f) => !FRAGMENTS_FOR.lane.includes(f));
-    // the SUBSET claim is about the rules, so it is measured on the body: the back-reference block
-    // is a fixed ~1 KB and outweighs a synthetic monolith, which says nothing about the real one.
-    check("rulebook split: the lane is WRITTEN the lane rendering, not handed the monolith",
-      written !== null && rulebookBody(written) === expectBody
-        && Buffer.byteLength(expectBody) < Buffer.byteLength(renderRulebook("voll", frag))
-        && omitted.every((f) => !rulebookBody(written).includes(`rule text of ${f}`))
-        && FRAGMENTS_FOR.lane.every((f) => rulebookBody(written).includes(`rule text of ${f}`)),
-      `written=${written === null ? "absent" : Buffer.byteLength(written)} B (body ${written === null ? "-" : Buffer.byteLength(rulebookBody(written))} B), lane body=${Buffer.byteLength(expectBody)} B, main=${Buffer.byteLength(renderRulebook("voll", frag))} B`);
-    // the block's read path is an anchor directory inside the SOURCE checkout's rulebook/, and the
-    // spawn wrote a file there for every fragment the lane does not hold
-    const anchorDir = written === null ? null : /cat (\S+)\/<anker>\.md/.exec(written)?.[1] ?? null;
-    check("rulebook split: its closing block names every omitted fragment and an anchor file in the SOURCE checkout that holds it",
-      written !== null && written.includes(RULEBOOK_BACKREF_HEADING) && anchorDir !== null
-        && anchorDir.startsWith(`${rbRepo}/${RULEBOOK_DIR}/render/`)
-        && omitted.every((f) => written.includes(FRAGMENT_TITLES[f]))
-        && omitted.every((f) => existsSync(`${anchorDir}/${f}.md`) && readFileSync(`${anchorDir}/${f}.md`, "utf8") === frag.get(f)),
-      `omitted=${omitted.join(",")} anchorDir=${anchorDir}`);
-    // the lane must still be landable: a copy that git sees would block it
+    check("no rulebook: the lane's worktree holds no CLAUDE.md, neither a copy nor a rendering, and its AGENTS.md",
+      typeof rbLane.cwd === "string" && !existsSync(`${rbLane.cwd}/CLAUDE.md`) && existsSync(`${rbLane.cwd}/AGENTS.md`),
+      `cwd=${rbLane.cwd}`);
     const rbStatus = spawnSync("git", ["-C", rbLane.cwd ?? rbRepo, "status", "--porcelain"]).stdout.toString().trim();
-    check("rulebook split: the written rulebook leaves the lane clean (gitignored, so `land` is not blocked)",
-      rbStatus === "", `status=[${rbStatus.slice(0, 200)}]`);
-    const rbTok = typeof rbLane.slot === "number" ? await paneEnv(`s${rbLane.slot}`, "FLEET_SELF_TOKEN") : null;
-    const rbGate = (await (await selfGate(rbTok ?? "")).json()) as Gate;
-    check("rulebook split: the gate reads rulebookDrifted:false on a subset it wrote itself",
-      rbGate.rulebookDrifted === false, JSON.stringify({ rb: rbGate.rulebookDrifted }));
-    // and it still SEES a source that moved — including a move in a fragment the lane does not hold
-    writeFileSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName("lane-discipline")}`, "## lane-discipline\n\nmoved\n");
-    const rbGate2 = (await (await selfGate(rbTok ?? "")).json()) as Gate;
-    check("rulebook split: a moved source fragment still reads rulebookDrifted:true",
-      rbGate2.rulebookDrifted === true, JSON.stringify({ rb: rbGate2.rulebookDrifted }));
-    // …and a rulebook/ that cannot be read is null — never true, and never a quiet false
-    rmSync(`${rbRepo}/${RULEBOOK_DIR}/${fragmentFileName("deploy")}`);
-    rmSync(`${rbRepo}/CLAUDE.md`);
-    const rbGate3 = (await (await selfGate(rbTok ?? "")).json()) as Gate;
-    check("rulebook split: an unreadable source rulebook is null (not comparable), never true",
-      rbGate3.rulebookDrifted === null, JSON.stringify({ rb: rbGate3.rulebookDrifted }));
+    check("no rulebook: the lane is clean", rbStatus === "", `status=[${rbStatus.slice(0, 200)}]`);
     if (typeof rbLane.slot === "number")
-      check("rulebook split: the lane slot is torn down", (await post(`/api/slots/${rbLane.slot}/kill`, {})).ok);
+      check("no rulebook: the lane slot is torn down", (await post(`/api/slots/${rbLane.slot}/kill`, {})).ok);
     spawnSync("git", ["-C", rbRepo, "worktree", "remove", "--force", rbLane.cwd ?? ""]);
     rmSync(`${rbRepo}.worktrees`, { recursive: true, force: true });
     rmSync(rbRepo, { recursive: true, force: true });

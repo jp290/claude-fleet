@@ -13,7 +13,7 @@
 # the credential the caller already has. It decides nothing — no verb picks a lane, a task or a
 # moment. What it removes is the retyping and the field-shape guessing.
 #
-# TOKEN HYGIENE (CLAUDE.md §Self-scheduling). ensureSlot bakes the self-credentials into every
+# TOKEN HYGIENE (AGENTS.md §Hard limits). ensureSlot bakes the self-credentials into every
 # pane's zsh string, so `ps -eo command` prints FOREIGN slots' tokens. NOTHING in this file ever
 # prints a process command line — `lock` deliberately reports pid/birth/elapsed and NOT the
 # holder's command, which is the one place e2e-stage.sh's own wait message does print one.
@@ -411,7 +411,7 @@ get)
 # owner-gated. `/api/selfish` is not `/api/self` — the pattern ends at a slash, a `?` or the string,
 # so a route that merely starts with those letters gets the owner credential it actually wants.
 #
-# TOKEN HYGIENE (the file header, and CLAUDE.md §Self-scheduling). The token travels in the
+# TOKEN HYGIENE (the file header, and AGENTS.md §Hard limits). The token travels in the
 # environment into the embedded program and from there into a request header. It is never an
 # argument, never part of the URL, and never printed: a 401 names the SOURCE it was resolved from
 # ("FLEET_CTL_TOKEN", "<home>/fleet.json") and never the value, which is the answer the 79 hand-built

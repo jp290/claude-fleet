@@ -18,25 +18,6 @@
     "status": "active"
   },
   {
-    "id": "rulebook-generat",
-    "useWhen": "Bevor du das Regelbuch (CLAUDE.md) aenderst: es ist ein Generat — Fragment editieren und rendern.",
-    "scope": "repo-contract",
-    "audience": "agent",
-    "triggers": ["rulebook-edit"],
-    "hardness": "guidance",
-    "sources": [
-      { "path": "docs/tailored-context.md", "anchor": "### 6d. Das Regelbuch-Generat bearbeiten" },
-      { "path": "rulebook.ts", "anchor": "export const RULEBOOK_FRAGMENTS =" }
-    ],
-    "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
-    "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1408,
-    "evidence": "tree-anchor",
-    "owner": "owner",
-    "status": "active"
-  },
-  {
     "id": "messnotiz-index",
     "useWhen": "Bevor du misst: durchsuche den Index (rg), ob deine Frage schon vermessen wurde — nicht ganz lesen.",
     "scope": "repo-contract",
@@ -296,7 +277,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 15189,
+    "estimatedBytes": 17539,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -315,7 +296,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 10413,
+    "estimatedBytes": 10400,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

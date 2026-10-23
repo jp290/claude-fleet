@@ -196,7 +196,6 @@ export const PACK_WORDS: Record<string, { name: string; say: string }> = {
   "land-mechanics": { name: "Landen", say: "Was beim Landen einer Lane wirklich passiert." },
   "harness-adapter": { name: "Agent-Anbindung", say: "Wie ein Agent-Programm angebunden wird." },
   "orchestrator-eigenarten": { name: "Eigenarten der Orchestrierung", say: "Watches und Nachfolge, zwei bezahlte Lektionen." },
-  "rulebook-generat": { name: "Regelbuch ändern", say: "Das Regelbuch wird erzeugt, nicht von Hand bearbeitet." },
   "messnotiz-index": { name: "Frühere Messungen", say: "Erst nachsehen, ob es schon gemessen wurde." },
   "jev-use": { name: "Jev", say: "Wie Jev verwendet wird." },
   "owner-instanzweg": { name: "Weg zum Owner", say: "Wie eine Session den Owner erreicht." },

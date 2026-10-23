@@ -9,7 +9,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fragmentFileName, RULEBOOK_FRAGMENTS } from "../rulebook";
 import { type Answer, branchTestkit, commitIn, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
 
 const { TMP, PROJECTS, fixture, life, cleanup } = branchTestkit();
@@ -405,23 +404,21 @@ esac
 // weder die Lane-Fassung des Regelbuchs noch die Kopie des Monolithen. Liegt dort eines, lädt Claude Code
 // die AGENTS.md des Branches nicht, und die Bau-Session startet mit dem alten Lane-Vertrag. Owner-Satz: „[Zitat entfernt]“
 // 
-//  Ein Worktree über POST /api/worktrees (Standardwert, wie jede Lane) bekommt es weiter.
-describe("Branch-Worktree ohne Regelbuch: die Session lädt die AGENTS.md ihres Branches", () => {
-  // das Haupt-Checkout wie das echte: Regelbuch-Fragmente, Monolith und .env, alle drei gitignored
+//  Seit E9 (Owner 23.10.: Fleet rendert kein CLAUDE.md mehr) gilt das für jeden Worktree, auch eine Lane.
+describe("Worktree ohne Regelbuch: die Session lädt die AGENTS.md ihres Branches", () => {
+  // das Haupt-Checkout wie das echte bis zur Archivierung: Monolith und .env, beide gitignored
   function withRulebook(repo: string): void {
-    writeFileSync(join(repo, ".gitignore"), "CLAUDE.md\n.env\nrulebook/\n");
+    writeFileSync(join(repo, ".gitignore"), "CLAUDE.md\n.env\n");
     writeFileSync(join(repo, "AGENTS.md"), "# Regeln dieses Branches\n");
     sh(repo, "add", ".gitignore", "AGENTS.md");
     sh(repo, "commit", "-q", "-m", "Regeln");
     writeFileSync(join(repo, "CLAUDE.md"), "# Monolith\n");
     writeFileSync(join(repo, ".env"), "PROBE=1\n");
-    mkdirSync(join(repo, "rulebook"));
-    for (const fragment of RULEBOOK_FRAGMENTS) writeFileSync(join(repo, "rulebook", fragmentFileName(fragment)), `## ${fragment}\n\n- Regel.\n`);
   }
   const scaffold = (path: string) => ({ claudeMd: existsSync(join(path, "CLAUDE.md")), env: existsSync(join(path, ".env")),
     agentsMd: existsSync(join(path, "AGENTS.md")) });
 
-  test("neu angelegt, neu ausgecheckt und beim Öffnen ausgecheckt: .env kommt mit, CLAUDE.md nicht; ein Lane-Worktree trägt es weiter", async () => {
+  test("neu angelegt, neu ausgecheckt und beim Öffnen ausgecheckt: .env kommt mit, CLAUDE.md nicht, auch nicht in eine Lane", async () => {
     const f = fixture();
     withRulebook(f.repo);
     const [made, lane] = await life(f, [
@@ -430,10 +427,9 @@ describe("Branch-Worktree ohne Regelbuch: die Session lädt die AGENTS.md ihres 
     const path = String(made?.body.path);
     expect(made?.status).toBe(201);
     expect(scaffold(path)).toEqual({ claudeMd: false, env: true, agentsMd: true });
-    // die Gegenprobe: dasselbe Haupt-Checkout gibt einem Worktree mit Standardwert die Lane-Fassung
+    // ein Worktree mit Standardwert, wie jede Lane: weder die Kopie des Monolithen noch eine Lane-Fassung
     expect(lane?.status).toBe(201);
-    expect(scaffold(String(lane?.body.path))).toEqual({ claudeMd: true, env: true, agentsMd: true });
-    expect(readFileSync(join(String(lane?.body.path), "CLAUDE.md"), "utf8")).not.toBe("# Monolith\n");
+    expect(scaffold(String(lane?.body.path))).toEqual({ claudeMd: false, env: true, agentsMd: true });
 
     sh(f.repo, "worktree", "remove", "--force", path);
     const [reopened] = await life(f, [post("/api/branches", { repo: f.repo, branch: "branch/ohne-regelbuch", name: "Ohne Regelbuch" })]);

@@ -27,8 +27,6 @@ import { dirname, join, resolve } from "node:path";
 import { CONTEXT_MANIFEST_MAX_BYTES, CONTEXT_MANIFEST_OMISSION_ID, CONTEXT_MANIFEST_PATH, observedSourceHash, packAnatomyIssues, planRepoContext,
   readContextManifest, splitPackAnatomy, stampObservedSourceHashes, taskContextTriggers } from "../context-manifest";
 import { parseFormattedCard, validateCard } from "../card-extract";
-import { RULEBOOK_BACKREF_HEADING, RULEBOOK_FRAGMENTS, ROLE_SECTION_CUT, fragmentSections, renderRoleRulebook, renderRulebook,
-  type RulebookFragment } from "../rulebook";
 import { packIdFassung, standSincePreview, type PackStandPreview, type PackStandReceipt } from "../src/protocol";
 import { SNIPPET_BLOCK_MAX_BYTES, SNIPPET_HIT_MAX_LINES, SNIPPET_OMISSION_MAX_BYTES, buildSnippetPackage, definitionLines,
   planSnippets, renderSnippetBlock, snippetPathRefusal, symbolSpan,
@@ -837,7 +835,7 @@ function packMcpChecks(check: ContextPlanCheck): void {
       && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 0, `branch=${claudeBranch.length}b`);
   check("pack mcp: only the claude adapter reads o.packMcp — the one harness the evidence table says apply to",
     (source.match(/o\.packMcp/g) ?? []).length === 1
-      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.rulebookRole, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null, o\.agentMd \?\? null, o\.notizbuch \?\? null, o\.seat \?\? null, o\.bau \?\? false, o\.startDatei \?\? null\)/.test(source),
+      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.fleetCheckout, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null, o\.agentMd \?\? null, o\.notizbuch \?\? null, o\.seat \?\? null, o\.bau \?\? false, o\.startDatei \?\? null\)/.test(source),
     `${(source.match(/o\.packMcp/g) ?? []).length} reads`);
 
   // THE HAND-OVER (card a8bc6c54 lifted the seed tripwire of clarification 51c72127): ensureSlot hands
@@ -916,27 +914,17 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
     !every.omitted.some((pack) => pack.why === "manifest-invalid"), JSON.stringify(every.omitted));
   const code = catalog(["ZIEL: Queue-Ansicht korrigieren", "FLAECHE: src/client.ts"]);
   const measurement = catalog(["ZIEL: Zustellungsdauer messen", "FLAECHE: docs/messungen/latenz.md"]);
-  const rulebook = catalog(["ZIEL: Regelbuch aendern", "FLAECHE: rulebook/einstieg.md"]);
   // `src/` in the FLAECHE makes it visible work: the testinstanz acceptance rides along (trigger visible-surface)
-  const act = (row: { selected: string[] }, wanted: string) => ["testinstanz-abnahme", "messnotiz-index", "rulebook-generat"]
+  const act = (row: { selected: string[] }, wanted: string) => ["testinstanz-abnahme", "messnotiz-index"]
     .every((id) => row.selected.includes(id) === (id === wanted));
   check("task catalog: an ordinary code task on src/ adds only the testinstanz acceptance of the act packs", act(code, "testinstanz-abnahme"), JSON.stringify(code));
   check("task catalog: a measurement task adds only the measurement index of the act packs", act(measurement, "messnotiz-index"), JSON.stringify(measurement));
-  check("task catalog: a rulebook edit adds only the generator guidance of the act packs", act(rulebook, "rulebook-generat"), JSON.stringify(rulebook));
-  check("task catalog: code, measurement and rulebook catalogs are pairwise different",
-    new Set([code, measurement, rulebook].map((row) => row.selected.join(","))).size === 3);
-  check("task catalog: unrelated work omits both act-specific packs by trigger",
-    ["rulebook-generat", "messnotiz-index"].every((id) => code.omitted.some((p) => p.id === id && p.why === "trigger-not-matched")),
-    JSON.stringify(code.omitted));
-  check("task catalog: reading the rulebook alone does not select editing guidance",
-    ["Lies CLAUDE.md", "Lies CLAUDE.md und aendere src/client.ts"].every((text) =>
-      !catalog([text]).selected.includes("rulebook-generat")));
-  check("task catalog: surfaces alone can name rulebook and measurement work",
-    catalog(["rulebook.ts"]).selected.includes("rulebook-generat")
-      && catalog(["docs/messungen/latenz.md"]).selected.includes("messnotiz-index"));
-  check("task catalog: rulebook editing matches umlauts and their ASCII spelling",
-    ["Regelbuch ändern", "Ändere CLAUDE.md", "Regelbuch aendern"].every((text) =>
-      catalog([text]).selected.includes("rulebook-generat")));
+  check("task catalog: code and measurement catalogs are different",
+    code.selected.join(",") !== measurement.selected.join(","));
+  check("task catalog: unrelated work omits the measurement index by trigger",
+    code.omitted.some((p) => p.id === "messnotiz-index" && p.why === "trigger-not-matched"), JSON.stringify(code.omitted));
+  check("task catalog: a surface alone can name measurement work",
+    catalog(["docs/messungen/latenz.md"]).selected.includes("messnotiz-index"));
   const harness = catalog(["ZIEL: Harness-Adapter pruefen", "FLAECHE: server.ts#HARNESSES"]);
   check("task catalog: a harness task selects the adapter pack through the text path",
     harness.selected.includes("harness-adapter"), JSON.stringify(harness));
@@ -944,9 +932,9 @@ function taskCatalogChecks(check: ContextPlanCheck): void {
     catalog(["Harness auswaehlen"], "claude", fullCapabilities().filter((c) => c !== "harness-adapter-read"))
       .omitted.some((p) => p.id === "harness-adapter" && p.why === "capability-missing"));
   check("task catalog: a monitoring role omits act packs by mode even with matching text",
-    ["rulebook-generat", "messnotiz-index"].every((id) => planRepoContext({ manifest, repo, facts: { harness: "claude", mode: "monitoring", capabilities: fullCapabilities(),
-      triggers: taskContextTriggers(["Regelbuch aendern und messen"], baseline) } })
-      .omitted.some((p) => p.id === id && p.why === "mode-unsupported")));
+    planRepoContext({ manifest, repo, facts: { harness: "claude", mode: "monitoring", capabilities: fullCapabilities(),
+      triggers: taskContextTriggers(["Latenz messen"], baseline) } })
+      .omitted.some((p) => p.id === "messnotiz-index" && p.why === "mode-unsupported"));
   // `orchestration` is a caller-supplied trigger (server.ts#BOOTSTRAP_CONTEXT_TRIGGERS), never read from task text.
   check("task catalog: an empty task keeps only baseline triggers even if all candidates are offered",
     taskContextTriggers([], CONTEXT_PACK_TRIGGERS).join(",") === "always,verification,landing,orchestration");
@@ -1827,21 +1815,6 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
       && baton(null, footer) === footer && server.includes("footer: laneBatonFooter(context.variante, laneExitFooter(s.harness, selfPosition(s).receiver))"),
     JSON.stringify(baton("live-bau", footer)));
 
-  // --- the rulebook: the lane render minus the 15 sections, each an anchor (fixture fragments: the
-  // real ones are gitignored and live in the source checkout only)
-  const ohne = (ROLE_SECTION_CUT["live-bau"]["lane-discipline"] as { ohne: readonly string[] }).ohne;
-  const fixture = new Map<RulebookFragment, string>(RULEBOOK_FRAGMENTS.map((f) => [f, [`## ${f}\n\nprose before the first bullet of ${f}\n`,
-    ...(f === "lane-discipline" ? ohne : []).map((slug) => `- **${slug.split("-").join(" ")}** rule text of ${f}/${slug}\n  wrapped line\n`),
-    `- **kept rule of ${f}**\n`].join("")]));
-  const lane = renderRulebook("lane", fixture);
-  const cut = renderRoleRulebook("live-bau", fixture, { repoRoot: "/fixture/repo", anchorDir: "/fixture/abschnitte", sourceHash: "0123456789abcdef" });
-  const omittedSections = fragmentSections("lane-discipline", fixture.get("lane-discipline")!).sections.filter((sec) => ohne.includes(sec.slug));
-  const body = cut.text.slice(0, cut.text.indexOf(`\n${RULEBOOK_BACKREF_HEADING}\n`));
-  check("live-bau rulebook: the variant's CLAUDE.md is the lane render minus exactly the 15 sections, each named with its file",
-    ohne.length === 15 && omittedSections.length === 15 && cut.staleOmissions.length === 0
-      && body === omittedSections.reduce((text, sec) => text.replace(sec.text, ""), lane)
-      && omittedSections.every((sec) => cut.text.includes(`\`${sec.anchor}\``) && cut.files.get(`${sec.anchor}.md`) === sec.text),
-    `lane ${Buffer.byteLength(lane)} B, live-bau body ${Buffer.byteLength(body)} B`);
 }
 
 async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promise<void> {

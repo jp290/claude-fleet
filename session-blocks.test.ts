@@ -63,7 +63,7 @@ const INPUT: SessionPlanInput = {
   rolle: "lane", ort: { art: "worktree", pfad: "/repo", branch: "main", head: "a".repeat(40) }, harness: "claude", modell: null, effort: "high",
   woerter: { harness: "Claude", modell: null, effort: "hoch", ort: "neuer Worktree aus main" },
   packs: [pack("portable-core"), pack("jev-use"), pack("verify-e2e"), pack("haltung-worker"), pack("konzept-claude-fleet", "konzept")],
-  bedingungen: { "auto-memory": true, "commit-expectation": true, "private-rulebook": true }, schalter: {},
+  bedingungen: { "auto-memory": true, "commit-expectation": true }, schalter: {},
 };
 const PLAN = (() => {
   const r = resolveSessionPlan(INPUT, () => ({ bytes: {}, enthaltenIn: {} }));

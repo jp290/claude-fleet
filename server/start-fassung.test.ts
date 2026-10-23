@@ -526,7 +526,7 @@ describe("ein Sitz ohne Rolle in Fleets Repo, dem ein CLAUDE.md die AGENTS.md ni
       const script = `
         const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
         const { writeFileSync, rmSync } = await import("node:fs");
-        const regeln = (baum) => S.fassungProjektregelnAus(${JSON.stringify(sitz)}, "claude", null, null, false, false, baum)[0];
+        const regeln = (baum) => S.fassungProjektregelnAus(${JSON.stringify(sitz)}, "claude", false, false, false, baum)[0];
         const ohne = regeln(${JSON.stringify(baum)});
         writeFileSync(${JSON.stringify(join(oben, "CLAUDE.md"))}, "eine Regel von oben\\n");
         const mit = regeln(${JSON.stringify(baum)});

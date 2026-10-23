@@ -329,7 +329,7 @@ describe("SOLLTE 5 — a real seat's line forbids another claude, and every role
       const id = "11111111-2222-4333-8444-555555555555";
       await Bun.write(process.env.LINE_OUT, JSON.stringify({ own: R.rechteSettings(rechte).permissions,
         generic: S.slotCmd(id, false, "claude-haiku-5-5", "low", true, null, [], "generic", false, null, rechte, null, null),
-        orchestrator: S.slotCmd(id, false, "claude-haiku-5-5", "low", true, "orchestrator", [], "orchestrator", false, null, null, null, null) }));
+        orchestrator: S.slotCmd(id, false, "claude-haiku-5-5", "low", true, true, [], "orchestrator", false, null, null, null, null) }));
     `;
     const proc = Bun.spawn([process.execPath, "--no-env-file", "-e", script], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe",
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: join(dir, "home"), SHELL: "/bin/sh", FLEET_HOST: "127.0.0.1", FLEET_PORT: "8790",

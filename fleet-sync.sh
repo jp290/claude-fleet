@@ -172,7 +172,7 @@ run_build() {
 # throwaway pair the suite builds — and then there is no srv to pull forward: that is a named skip,
 # not a failure, whichever source would have held a token.
 #
-# TOKEN HYGIENE (CLAUDE.md §Self-scheduling): the owner token never reaches curl's argv, where
+# TOKEN HYGIENE (AGENTS.md §Hard limits): the owner token never reaches curl's argv, where
 # `ps` would print it for every account on the box. It travels through curl's config on stdin, and
 # no line this function prints ever contains it.
 deploy_self() {

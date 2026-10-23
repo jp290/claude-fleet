@@ -1136,7 +1136,7 @@ await import(pathToFileURL(process.argv[2]).href);
   // The one verb that renders nothing: it turns the CREDENTIAL into a door. So what is asserted is
   // the credential split (both directions), the two named refusals, and that no output of any run
   // carries a token — the last one being the whole reason a passthrough is allowed to exist here at
-  // all (ctl.sh's header, CLAUDE.md §Self-scheduling).
+  // all (ctl.sh's header, AGENTS.md §Hard limits).
   const apiSessions = (await (await get("/api/sessions")).json()) as { slots: { id: number }[] };
   const gotOwner = await ctl(["get", "/api/sessions", "--json"]);
   const gotSlots = (gotOwner.json as { slots?: { id: number }[] })?.slots ?? [];

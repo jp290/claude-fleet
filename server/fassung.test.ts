@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { anatomieAusTranskript } from "./claude-code-anatomie";
 import { baueFassung, LIEST_REIHENFOLGE, textAbschnitt, unknownAbschnitt, type FassungEingang } from "./fassung";
-import { fragmentFileName, renderRoleRulebook, renderRulebook, RULEBOOK_FRAGMENTS } from "../rulebook";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -163,9 +162,9 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
         decisions: [], evidence: [], openQuestions: [], status: "active", createdAt: 1, proposedBy: { kind: "owner" } };
       const mainBrief = S.buildProgramMainBrief(program, "fleet-control", "\\n\\nANKER (fixture)\\n", "OWNER-KORREKTUREN (fixture)");
       const mainCmd = S.slotCmd("44444444-4444-4444-8444-444444444444", false, "claude-opus-5[1m]", "high",
-        true, "main", [], "main", true, null, rechte, agentMd, buch("main"));
+        true, true, [], "main", true, null, rechte, agentMd, buch("main"));
       const stewardCmd = S.slotCmd("55555555-5555-4555-8555-555555555555", false, "claude-opus-5[1m]", "high",
-        true, "main", [], "main", true, null, null, null, buch("main"));
+        true, true, [], "main", true, null, null, null, buch("main"));
       const roleCards = { main: S.MAIN_ROLE_CARD, lane: S.LANE_ROLE_CARD };
       await Bun.write(out, JSON.stringify({ laneBrief, laneCmd, freeBrief, freeCmd, mainBrief, mainCmd, stewardCmd, roleCards }, null, 2) + "\\n");
     `;
@@ -179,7 +178,8 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
     try {
       expect({ exitCode, stderr: exitCode === 0 ? "" : stderr.slice(-1200) }).toEqual({ exitCode: 0, stderr: "" });
       const before = JSON.parse(readFileSync(join(import.meta.dir, "fassung-spawn-bytes-uebrige.json"), "utf8"));
-      const after = JSON.parse(readFileSync(out, "utf8"));
+      // a session in the server checkout names its paths in claudeMdExcludes (server.ts#agentCmd): the place is not the pin
+      const after = JSON.parse(readFileSync(out, "utf8").replaceAll(ROOT, "<checkout>").replaceAll(home, "<home>"));
       expect(after).toEqual(before);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -218,7 +218,7 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       const startDatei = S.orchestratorStartDatei(process.env.FIX_ROOT);
       const startText = await Bun.file(startDatei).text();
       const orchCmd = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5[1m]", "high",
-        true, "orchestrator", [], "orchestrator", true, null, null, null, null, null, false, startDatei);
+        true, true, [], "orchestrator", true, null, null, null, null, null, false, startDatei);
       const slot = { id: 1, cwd: process.env.FIX_ROOT, openedAt: 1, label: "Orchestrator (Opus)", worktree: null,
         harness: "claude", model: null, effort: null, rechte: null, agentMd: null, history: [],
         sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", programId: null, taskId: null, lineageId: null,
@@ -411,14 +411,35 @@ describe("eine Form, ein Hash", () => {
       expect(got.slotQuelle).toContain(realpathSync(repo));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 100_000);
+
+  // E9: der Spawn hält das CLAUDE.md des Server-Checkouts heraus, wenn die Pane im Checkout steht — auch über einen
+  // Symlink (eine Testinstanz unter /tmp, das Bun /private/tmp nennt). Spawn und Fassung entscheiden gleich.
+  test("ein Sitz, der über einen Symlink im Server-Checkout steht, ist ein Sitz im Checkout — für Spawn und Fassung", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fassung-checkout-link-"));
+    const link = join(dir, "checkout");
+    symlinkSync(ROOT, link, "dir");
+    const out = join(dir, "out.json");
+    const script = `
+      const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+      const at = (cwd, worktree = null) => ({ spawn: S.fleetCheckoutForSpawn({ worktree }, { cwd }), fassung: S.fassungImFleetCheckout(cwd, worktree) });
+      await Bun.write(${JSON.stringify(out)}, JSON.stringify({ link: at(process.env.FIX_LINK), real: at(process.env.FIX_REAL),
+        lane: at(process.env.FIX_REAL, { repo: process.env.FIX_REAL, branch: "b", base: "main" }), fremd: at(process.env.FIX_DIR) }));
+    `;
+    try {
+      const r = await runServer(script, { FIX_LINK: link, FIX_REAL: ROOT, FIX_DIR: dir }, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
+      expect(JSON.parse(readFileSync(out, "utf8"))).toEqual({ link: { spawn: true, fassung: true }, real: { spawn: true, fassung: true },
+        lane: { spawn: false, fassung: false }, fremd: { spawn: false, fassung: false } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 100_000);
 });
 
 // WAS DIE ROUTE ALS GELADEN ZEIGT, MUSS DER TRANSCRIPT-KOPF AUCH ZEIGEN (docs/agent-objekt.md,
-// Schnitt 1 „Fertig, wenn“). Drei Fixture-Slots: Orchestratorin mit rollen-rendendem rulebook/,
-// eine Lane (Lane-Render im Worktree, kein Auto-Memory) und eine freie Session. Die Erwartung ist
-// aus den Spawn-Regeln gebaut (claudeMdExcludes, --add-dir, autoMemoryEnabled), nicht aus der Fassung.
+// Schnitt 1 „Fertig, wenn“). Vier Fixture-Slots: Orchestratorin und eine Session im Server-Checkout, der ein
+// CLAUDE.md liegen hat, eine Lane (kein CLAUDE.md im Worktree, kein Auto-Memory) und eine freie Session. Die
+// Erwartung ist aus den Spawn-Regeln gebaut (claudeMdExcludes, autoMemoryEnabled), nicht aus der Fassung.
 describe("Liest stimmt mit dem Transkript überein", () => {
-  test("Orchestratorin (rulebook/), Lane und freie Session: Pfade und Bytes wie anatomieAusTranskript().dateien", async () => {
+  test("Orchestratorin, Session im Server-Checkout, Lane und freie Session: Pfade und Bytes wie anatomieAusTranskript().dateien", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fassung-transcript-"));
     const home = join(dir, "home");
     const projects = join(home, ".claude", "projects");
@@ -435,7 +456,7 @@ describe("Liest stimmt mit dem Transkript überein", () => {
     gitRepo(freeRepo);
     const laneDir = join(dir, "lane", ".worktrees", "b1");
     mkdirSync(laneDir, { recursive: true });
-    writeFileSync(join(laneDir, "CLAUDE.md"), "LANE RENDER\n");
+    writeFileSync(join(laneDir, "AGENTS.md"), "LANE VERTRAG\n");
     // der Ort des Auto-Memorys so, wie server.ts#autoMemoryBytes ihn liest: ein Worktree unter dem Haupt-Repo,
     // und der Pfad aufgelöst (macOS: /var ist ein Link auf /private/var)
     const namespace = (repo: string): string => {
@@ -450,24 +471,15 @@ describe("Liest stimmt mit dem Transkript überein", () => {
     writeFileSync(join(orchBuch, "MEMORY.md"), "MEM ORCH\n");
     const memOrch = join(orchBuch, "MEMORY.md");
     const memFree = memory(namespace(freeRepo), "MEM FREE\n");
-    // das rulebook/ ist ein Fixture IM Server-Checkout, weil der Spawn genau dort den Rollen-Render
-    // nimmt (rulebookRoleForSpawn: resolve(cwd) === import.meta.dir). Vorher sichern, danach zurück.
-    const rulebookDir = join(ROOT, "rulebook");
+    const memRoot = join(projects, slug(namespace(ROOT)), "memory", "MEMORY.md");
+    // KEIN REGELBUCH MEHR (E9): ein CLAUDE.md im Server-Checkout bleibt für jede Session dort draußen, und
+    // claude lädt die AGENTS.md. Das Fixture liegt IM Server-Checkout; vorher sichern, danach zurück.
     const claudeMd = join(ROOT, "CLAUDE.md");
-    const hadRulebook = existsSync(rulebookDir), hadClaude = existsSync(claudeMd);
+    const hadClaude = existsSync(claudeMd);
     const backup = join(dir, "backup");
-    if (hadRulebook) cpSync(rulebookDir, join(backup, "rulebook"), { recursive: true });
     if (hadClaude) { mkdirSync(backup, { recursive: true }); cpSync(claudeMd, join(backup, "CLAUDE.md")); }
-    const frags = new Map(RULEBOOK_FRAGMENTS.map((f) => [f, `## ${f}\n\n- ${f} Regel.\n`]));
-    const voll = renderRulebook("voll", frags);
-    const sourceHash = createHash("sha256").update(voll).digest("hex").slice(0, 16);
-    const orchRender = renderRoleRulebook("orchestrator", frags,
-      { repoRoot: ROOT, anchorDir: `${rulebookDir}/render/${sourceHash}/abschnitte`, sourceHash }).text;
     try {
-      mkdirSync(rulebookDir, { recursive: true });
-      for (const f of RULEBOOK_FRAGMENTS) writeFileSync(join(rulebookDir, fragmentFileName(f)), frags.get(f)!);
-      writeFileSync(claudeMd, voll);
-      const renderPfad = join(rulebookDir, "render", sourceHash, "orchestrator", "CLAUDE.md");
+      writeFileSync(claudeMd, "PROJEKT-MONOLITH\n");
       const out = join(dir, "out.json");
       const script = `
         const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
@@ -485,14 +497,15 @@ describe("Liest stimmt mit dem Transkript überein", () => {
           lane: { ...base, id: 2, cwd: ${JSON.stringify(realpathSync(laneDir))}, label: "Lane", harness: "claude",
             worktree: { repo: ${JSON.stringify(join(dir, "lane"))}, branch: "b1", base: "main" } },
           free: { ...base, id: 3, cwd: ${JSON.stringify(realpathSync(freeRepo))}, label: "frei", harness: "claude" },
+          haupt: { ...base, id: 4, cwd: ${JSON.stringify(realpathSync(ROOT))}, label: "Steward", harness: "claude" },
         };
         // DIE ERWARTUNG AUS DERSELBEN VORFAHRENREGEL: nativeLoaderBytes ist der Loader, den der
         // Spawn und die Fassung teilen. Der Test darf nicht davon abhängen, ob der Checkout unter
         // einem Home mit eigenem ~/.claude/CLAUDE.md liegt (auf macOS sichtbar, auf Linux nicht).
         const ohne = (cwd) => new Set([\`\${cwd}/CLAUDE.md\`, \`\${cwd}/.claude/CLAUDE.md\`,
           \`\${process.env.HOME}/AGENTS.md\`, \`\${cwd}/AGENTS.md\`].map((p) => pResolve(p)));
-        const loader = (cwd) => {
-          const n = S.nativeLoaderBytes(cwd, "claude");
+        const loader = (cwd, aus) => {
+          const n = S.nativeLoaderBytes(cwd, "claude", aus);
           if ("grund" in n) throw new Error(n.grund);
           return n.dateien;
         };
@@ -501,6 +514,9 @@ describe("Liest stimmt mit dem Transkript überein", () => {
           orch: orchAll.filter((d) => !ohne(${JSON.stringify(realpathSync(ROOT))}).has(pResolve(d.pfad))),
           lane: loader(${JSON.stringify(realpathSync(laneDir))}),
           free: loader(${JSON.stringify(realpathSync(freeRepo))}),
+          // die Zeile nimmt CLAUDE.md, .claude/CLAUDE.md und ~/AGENTS.md heraus (server.ts#agentCmd)
+          haupt: loader(${JSON.stringify(realpathSync(ROOT))}, new Set([\`${realpathSync(ROOT)}/CLAUDE.md\`,
+            \`${realpathSync(ROOT)}/.claude/CLAUDE.md\`, \`\${process.env.HOME}/AGENTS.md\`].map((p) => pResolve(p)))),
         };
         const dateien = (f) => f.teile.find((t) => t.id === "liest").abschnitte.flatMap((a) => a.dateien ?? []);
         const out = {};
@@ -513,7 +529,7 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       const r = await runServer(script, {}, dir);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-2000) }).toEqual({ code: 0, stderr: "" });
       const roh = JSON.parse(readFileSync(out, "utf8")) as { slots: Record<string, { hash: string; dateien: { pfad: string; bytes: number }[] }>;
-        geladen: Record<"orch" | "lane" | "free", { pfad: string; bytes: number }[]> };
+        geladen: Record<"orch" | "lane" | "free" | "haupt", { pfad: string; bytes: number }[]> };
       const got = roh.slots;
       const geladen = roh.geladen;
       const transkript = (files: { path: string; content: string }[]) => {
@@ -538,12 +554,13 @@ describe("Liest stimmt mit dem Transkript überein", () => {
         ...mitInhalt(startWissen), datei(memOrch)]));
       expect(got.lane!.dateien).toEqual(transkript(mitInhalt(geladen.lane)));
       expect(got.free!.dateien).toEqual(transkript([...mitInhalt(geladen.free), datei(memFree)]));
+      // die Session im Server-Checkout lädt nie das CLAUDE.md, das dort liegt (ob die AGENTS.md lädt, hängt am Home: s. o.)
+      expect(geladen.haupt.map((d) => d.pfad)).not.toContain(join(realpathSync(ROOT), "CLAUDE.md"));
+      expect(got.haupt!.dateien).toEqual(transkript([...mitInhalt(geladen.haupt), datei(memRoot)]));
       // Auto-Memory ist bei der Lane kein Abschnitt mit Datei: sie startet ohne (autoMemoryEnabled:false)
       const laneF = roh.slots;
       expect(laneF.lane.hash).toMatch(/^[0-9a-f]{64}$/);
     } finally {
-      rmSync(rulebookDir, { recursive: true, force: true });
-      if (hadRulebook) cpSync(join(backup, "rulebook"), rulebookDir, { recursive: true });
       if (hadClaude) cpSync(join(backup, "CLAUDE.md"), claudeMd);
       else rmSync(claudeMd, { force: true });
       rmSync(dir, { recursive: true, force: true });

@@ -54,8 +54,9 @@ It never says how to do the work.
 - Write for the model that gets it. A weaker or less familiar model needs more about the situation and more
   material, not more prohibitions.
 - Ask it to say at the end, in one sentence, what was missing from its start.
-- Say what it does after its report. If the work ends there, write "then stop: no handover, no succeed"; a branch
-  or free session that isn't told may hand over, and its successor starts with nothing to do.
+- Say what it does after its report. If the work ends there, write "then stop and wait"; a seat that isn't told
+  goes looking for more. Never forbid a handover: when Fleet says its context is due, it hands over its open work,
+  and a seat that may not runs full.
 
 ## How seats start today
 

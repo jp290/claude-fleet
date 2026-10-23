@@ -69,11 +69,11 @@ concept or a pack, where everyone can see it.
 
 **Task and run.** A hard problem is worth sharing together with how it was solved. The task says what should be
 different and how anyone can check it. The run records which setup worked on it, what the agents said to each
-other, what it cost and how it ended. Together they show that a setup solved something, and other people can run
-the same task to see whether their setup does better.
+other, what it cost and how it ended. With both, anyone can see what the setup is about and what it does. Anyone can
+take the setup from there, improve it and share it again.
 
-**Sharing.** A setup or a constellation travels as one file, with its task and check, its run, and the knowledge it points
-to.
+**Sharing.** A setup or a constellation travels as one file with the knowledge it points to. Whoever imports it gives it
+their own task; the task with its check and a run can come along as an option.
 
 - **Knowledge is shareable or personal.** How-to packs and concepts travel. Personal knowledge stays home: the
   owner's corrections, and how to work with this owner in particular. Whoever imports a setup fills that place with

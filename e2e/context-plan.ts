@@ -833,9 +833,10 @@ function packMcpChecks(check: ContextPlanCheck): void {
   check("pack mcp: agentCmd appends the pack's flag from claudeMcpFlags right after --strict-mcp-config, once, on the claude branch",
     claudeBranch.replace(/\n\s*\n/g, "\n").includes(mcpFlagsLines) && (acCode.match(/claudeMcpFlags\(/g) ?? []).length === 1
       && (acCode.match(/claudeMcpConfigFlag/g) ?? []).length === 0, `branch=${claudeBranch.length}b`);
+  // the read is slotCmd's seventh argument, its packMcp; what follows it may grow without touching this claim
   check("pack mcp: only the claude adapter reads o.packMcp — the one harness the evidence table says apply to",
     (source.match(/o\.packMcp/g) ?? []).length === 1
-      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.fleetCheckout, o\.packMcp \?\? \[\], o\.listRole \?\? null, o\.handoverOn \?\? false, o\.remoteName, o\.rechte \?\? null, o\.agentMd \?\? null, o\.notizbuch \?\? null, o\.seat \?\? null, o\.bau \?\? false, o\.startDatei \?\? null\)/.test(source),
+      && /spawnCmd: \(o\) => slotCmd\(o\.sessionId, o\.resume, o\.model, o\.effort, o\.browserMcp, o\.fleetCheckout, o\.packMcp \?\? \[\],/.test(source),
     `${(source.match(/o\.packMcp/g) ?? []).length} reads`);
 
   // THE HAND-OVER (card a8bc6c54 lifted the seed tripwire of clarification 51c72127): ensureSlot hands

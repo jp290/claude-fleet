@@ -33,8 +33,8 @@ unknown, never a pass.
 **Improve what you set up.** When a setup didn't carry, change it and say why in one sentence. The change becomes a
 new version that names the one it was derived from, so anyone can compare the two.
 
-**Make it shareable.** When a task is solved, its task with the check, its setup and its run belong together, so
-someone else can run the same task and try to do better.
+**Make it shareable.** When a task is solved, its setup travels with the knowledge it points to; the task with its check
+and its run can come along as an option, so someone else can improve the setup and share it again.
 
 **Keep Fleet working.** Everything you build stands on it. Every change goes through a merge check
 and a land, then an audit and a deploy. When Fleet itself breaks, with a red audit, a failed deploy or a board

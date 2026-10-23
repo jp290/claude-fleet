@@ -33,7 +33,8 @@ for an answer small enough to keep.
 - **Hand a long question to a subagent.** When you see more than a handful of reading calls coming without an edit
   (an unknown area, checking a claim against the code, an analysis over logs or transcripts), start a subagent
   (Explore, or a smaller model) and ask for the findings with `file:line`. It starts small and you keep only the
-  answer.
+  answer. Its prompt names the files to read, what it can't derive, what done looks like and which tools to use;
+  Explore and Plan start without AGENTS.md and memory, so the standards they need go into the prompt.
 - **Keep the reading for the code you will edit.** The detail you need for a change has to be in your own context,
   and a summary of that code costs a second read.
 

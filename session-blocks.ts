@@ -459,7 +459,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe",
     belege: ["docs/messungen/2026-10-07-session-start-wirklich.md#Die Loader-Probe", "session-agents.ts#renderSessionAgents", "server.ts#agentCmd"],
     breaksWithout: "Die Regeln des Ordners fehlen; welche Dateien geladen werden, entscheidet der Agent, Fleet nimmt beim Start nur einzelne heraus.",
-    nichtSchaltbar: "Der Agent lädt den Ordner selbst; Fleet nimmt nur beim Start einer Claude-MAIN oder -Orchestratorin einzelne Dateien heraus (claudeMdExcludes), im Plan ist das kein Schalter.",
+    nichtSchaltbar: "Der Agent lädt den Ordner selbst; Fleet nimmt beim Start einer Claude-Session einzelne Dateien heraus (claudeMdExcludes; in Fleets Repo auch ~/.claude/CLAUDE.md und ~/.claude/rules/**), im Plan ist das kein Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {

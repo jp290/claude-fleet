@@ -445,6 +445,8 @@ describe("Liest stimmt mit dem Transkript überein", () => {
     const projects = join(home, ".claude", "projects");
     mkdirSync(projects, { recursive: true });
     writeFileSync(join(home, ".claude", "CLAUDE.md"), "GLOBALE REGEL\n");
+    mkdirSync(join(home, ".claude", "rules"), { recursive: true });
+    writeFileSync(join(home, ".claude", "rules", "eigen.md"), "EIGENE REGEL\n");
     const slug = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
     const memory = (repo: string, text: string): string => {
       const d = join(projects, slug(repo), "memory");
@@ -502,8 +504,11 @@ describe("Liest stimmt mit dem Transkript überein", () => {
         // DIE ERWARTUNG AUS DERSELBEN VORFAHRENREGEL: nativeLoaderBytes ist der Loader, den der
         // Spawn und die Fassung teilen. Der Test darf nicht davon abhängen, ob der Checkout unter
         // einem Home mit eigenem ~/.claude/CLAUDE.md liegt (auf macOS sichtbar, auf Linux nicht).
+        // EIN SITZ IN FLEETS REPO lässt dazu die eigenen Regeln des Owners aus: ~/.claude/CLAUDE.md und ~/.claude/rules/**
+        const eigeneAus = [\`\${process.env.HOME}/.claude/CLAUDE.md\`];
+        const ohneEigene = (dateien) => dateien.filter((d) => !pResolve(d.pfad).startsWith(\`\${process.env.HOME}/.claude/rules/\`));
         const ohne = (cwd) => new Set([\`\${cwd}/CLAUDE.md\`, \`\${cwd}/.claude/CLAUDE.md\`,
-          \`\${process.env.HOME}/AGENTS.md\`, \`\${cwd}/AGENTS.md\`].map((p) => pResolve(p)));
+          \`\${process.env.HOME}/AGENTS.md\`, \`\${cwd}/AGENTS.md\`, ...eigeneAus].map((p) => pResolve(p)));
         const loader = (cwd, aus) => {
           const n = S.nativeLoaderBytes(cwd, "claude", aus);
           if ("grund" in n) throw new Error(n.grund);
@@ -511,12 +516,12 @@ describe("Liest stimmt mit dem Transkript überein", () => {
         };
         const orchAll = loader(${JSON.stringify(realpathSync(ROOT))});
         const geladen = {
-          orch: orchAll.filter((d) => !ohne(${JSON.stringify(realpathSync(ROOT))}).has(pResolve(d.pfad))),
+          orch: ohneEigene(orchAll.filter((d) => !ohne(${JSON.stringify(realpathSync(ROOT))}).has(pResolve(d.pfad)))),
           lane: loader(${JSON.stringify(realpathSync(laneDir))}),
           free: loader(${JSON.stringify(realpathSync(freeRepo))}),
           // die Zeile nimmt CLAUDE.md, .claude/CLAUDE.md und ~/AGENTS.md heraus (server.ts#agentCmd)
-          haupt: loader(${JSON.stringify(realpathSync(ROOT))}, new Set([\`${realpathSync(ROOT)}/CLAUDE.md\`,
-            \`${realpathSync(ROOT)}/.claude/CLAUDE.md\`, \`\${process.env.HOME}/AGENTS.md\`].map((p) => pResolve(p)))),
+          haupt: ohneEigene(loader(${JSON.stringify(realpathSync(ROOT))}, new Set([\`${realpathSync(ROOT)}/CLAUDE.md\`,
+            \`${realpathSync(ROOT)}/.claude/CLAUDE.md\`, \`\${process.env.HOME}/AGENTS.md\`, ...eigeneAus].map((p) => pResolve(p))))),
         };
         // Pfad und Bytes gegen das Transkript; die Marke des Owners an einer Datei ist Anzeige und steht eigens
         const dateien = (f) => f.teile.find((t) => t.id === "liest").abschnitte.flatMap((a) => (a.dateien ?? []).map((d) => ({ pfad: d.pfad, bytes: d.bytes })));
@@ -559,15 +564,85 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       // die Session im Server-Checkout lädt nie das CLAUDE.md, das dort liegt (ob die AGENTS.md lädt, hängt am Home: s. o.)
       expect(geladen.haupt.map((d) => d.pfad)).not.toContain(join(realpathSync(ROOT), "CLAUDE.md"));
       expect(got.haupt!.dateien).toEqual(transkript([...mitInhalt(geladen.haupt), datei(memRoot)]));
-      // ~/.claude/CLAUDE.md ist das Eigene des Owners, das Gedächtnis nicht
-      for (const name of ["orch", "free"] as const)
-        expect((roh.slots[name] as { eigene?: string[] }).eigene).toEqual([join(home, ".claude", "CLAUDE.md")]);
+      // ~/.claude/CLAUDE.md und die Regeln sind das Eigene des Owners, das Gedächtnis nicht; ein Sitz in Fleets Repo lädt beides nicht
+      const eigene = (name: string): string[] | undefined => (roh.slots[name] as { eigene?: string[] }).eigene;
+      expect(eigene("free")).toEqual([join(home, ".claude", "CLAUDE.md"), join(home, ".claude", "rules", "eigen.md")]);
+      for (const name of ["orch", "haupt"]) expect(eigene(name)).toEqual([]);
       // Auto-Memory ist bei der Lane kein Abschnitt mit Datei: sie startet ohne (autoMemoryEnabled:false)
       const laneF = roh.slots;
       expect(laneF.lane.hash).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       if (hadClaude) cpSync(join(backup, "CLAUDE.md"), claudeMd);
       else rmSync(claudeMd, { force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+// DIE EIGENEN REGELN DES OWNERS BLEIBEN DRAUSSEN (Owner 23.10.: „[Zitat entfernt]“): ein Sitz in Fleets Repo startet ohne
+// ~/.claude/CLAUDE.md und ~/.claude/rules/**, ein Sitz in einem anderen Repo liest beides weiter. Die Fassung zeigt es, und ihr Hash
+// folgt: ändert der Owner seine Datei, ändert sich das Setup nur dort, wo sie lädt.
+describe("die eigenen Regeln des Owners in Fleets Repo", () => {
+  test("ein Sitz in Fleets Repo zeigt sie ausgeschlossen und behält seinen Hash, ein Sitz anderswo lädt sie und sein Hash folgt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fassung-eigene-"));
+    const home = join(dir, "home");
+    mkdirSync(join(home, ".claude", "rules"), { recursive: true });
+    mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+    writeFileSync(join(home, ".claude", "rules", "eigen.md"), "EIGENE REGEL\n");
+    const anderswo = join(dir, "anderswo");
+    gitRepo(anderswo);
+    try {
+      const out = join(dir, "out.json");
+      const script = `
+        const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+        const base = { openedAt: 1, worktree: null, model: null, effort: null, rechte: null, agentMd: null, history: [],
+          sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", programId: null, taskId: null, lineageId: null,
+          selfToken: "x", packMcp: [], context: null, permissions: null, sleeping: null, standingHandover: null,
+          compaction: null, startCompact: null, spawn: null, laneStandNudged: null, plan: null, handover: null,
+          container: null, containerContext: null, originId: null, releasedBy: null, laneSuccessions: 0, laneSeats: [],
+          browser: false, remote: false, webSearch: false, openedBy: null, lauf: null, clients: [], awaiting: null,
+          mission: null, successionRetirement: null, codexRecoveryState: null, codexPaneSpawnedAt: null,
+          codexDisconnectSeenAt: null, codexFirstTurn: null, sessionIdLearned: null, label: "frei", harness: "claude" };
+        const slots = { fleet: { ...base, id: 1, cwd: ${JSON.stringify(realpathSync(ROOT))} },
+          anderswo: { ...base, id: 2, cwd: ${JSON.stringify(realpathSync(anderswo))} } };
+        const abschnitt = (f, id) => f.teile.flatMap((t) => t.abschnitte).find((a) => a.id === id);
+        const lies = async () => {
+          const r = {};
+          for (const [name, slot] of Object.entries(slots)) {
+            const f = await S.fassungFuerSlot(slot, "laufend");
+            const regeln = abschnitt(f, "projektregeln");
+            r[name] = { hash: f.hash, dateien: (regeln?.dateien ?? []).map((d) => d.pfad), grund: regeln?.grund ?? null,
+              einstellungen: abschnitt(f, "einstellungen")?.text ?? null, eigenes: abschnitt(f, "claude-eigenes")?.text ?? null };
+          }
+          return r;
+        };
+        await Bun.write(${JSON.stringify(join(home, ".claude", "CLAUDE.md"))}, "GLOBALE REGEL\\n");
+        const vorher = await lies();
+        await Bun.write(${JSON.stringify(join(home, ".claude", "CLAUDE.md"))}, "GLOBALE REGEL, GEÄNDERT\\n");
+        const nachher = await lies();
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ vorher, nachher }));
+        process.exit(0);
+      `;
+      const r = await runServer(script, {}, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-2000) }).toEqual({ code: 0, stderr: "" });
+      type Sitz = { hash: string; dateien: string[]; grund: string | null; einstellungen: string | null; eigenes: string | null };
+      const { vorher, nachher } = JSON.parse(readFileSync(out, "utf8")) as Record<"vorher" | "nachher", Record<"fleet" | "anderswo", Sitz>>;
+      const global = join(home, ".claude", "CLAUDE.md"), regel = join(home, ".claude", "rules", "eigen.md");
+      // in Fleets Repo: nicht geladen, mit Grund, in den Einstellungen der Zeile, und die Regel zählt 0
+      expect(vorher.fleet.dateien).not.toContain(global);
+      expect(vorher.fleet.dateien).not.toContain(regel);
+      expect(vorher.fleet.grund).toContain("~/.claude/CLAUDE.md und ~/.claude/rules/** sind für einen Sitz in Fleets Repo ausgeschlossen");
+      expect((JSON.parse(vorher.fleet.einstellungen!) as { claudeMdExcludes?: string[] }).claudeMdExcludes)
+        .toEqual(expect.arrayContaining(["~/.claude/CLAUDE.md", "~/.claude/rules/**"]));
+      expect(vorher.fleet.eigenes).toContain("Regeln 0 — ausgeschlossen: eigen.md");
+      // anderswo: geladen, ohne Exclude
+      expect(vorher.anderswo.dateien).toEqual(expect.arrayContaining([global, regel]));
+      expect(vorher.anderswo.einstellungen).not.toContain("claudeMdExcludes");
+      expect(vorher.anderswo.eigenes).toContain("Regeln 1: eigen.md");
+      // der Hash folgt dem, was lädt
+      expect(nachher.fleet.hash).toBe(vorher.fleet.hash);
+      expect(nachher.anderswo.hash).not.toBe(vorher.anderswo.hash);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);

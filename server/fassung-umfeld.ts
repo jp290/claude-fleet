@@ -235,8 +235,9 @@ const istEigenes = (herkunft: HookEintrag["herkunft"]): boolean => herkunft !== 
 const QUELL_ORT: Record<QuellArt, string> = { verwaltet: "in der verwalteten Datei", owner: "in deiner Datei", repo: "in der Datei des Repos",
   lokal: "in der lokalen Datei des Checkouts" };
 
-/** Die Abschnitte für „Darf“ (Hooks und Einstellungen) und „Arbeitet mit“ (Plugins). Nur für Claude; ein anderer Harness liest sie nicht. */
-export function umfeldAbschnitte(u: Umfeld, home: string, cwd: string): { darf: FassungAbschnittEingang[]; arbeitet: FassungAbschnittEingang[] } {
+/** Die Abschnitte für „Darf“ (Hooks und Einstellungen) und „Arbeitet mit“ (Plugins). Nur für Claude; ein anderer Harness liest sie nicht.
+ *  `regelnAus`: der Grund, aus dem die Zeile dem Sitz die eigenen Regeln nimmt (server.ts#eigeneRegelnExcludes), sonst null. */
+export function umfeldAbschnitte(u: Umfeld, home: string, cwd: string, regelnAus: string | null = null): { darf: FassungAbschnittEingang[]; arbeitet: FassungAbschnittEingang[] } {
   const zeige = (pfad: string): string => zeigePfad(pfad, home, cwd);
   const kaputt = u.quellen.filter((q) => q.fehler);
   const grund = kaputt.length ? kaputt.map((q) => `${zeige(q.pfad)}: ${q.fehler}`).join(" · ") : undefined;
@@ -272,7 +273,7 @@ export function umfeldAbschnitte(u: Umfeld, home: string, cwd: string): { darf: 
       einstellung(["repo"], "cc-einstellungen", false),
       einstellung(["verwaltet", "owner", "lokal"], "cc-einstellungen-eigene", true),
     ],
-    arbeitet: [eigenesAbschnitt(u.eigenes), ...(u.eigenes.mcpRepo.length ? [textAbschnitt("mcp-repo", ".mcp.json des Repos",
+    arbeitet: [eigenesAbschnitt(u.eigenes, regelnAus), ...(u.eigenes.mcpRepo.length ? [textAbschnitt("mcp-repo", ".mcp.json des Repos",
       u.eigenes.mcpRepo.map((m) => `${m.name} · ${m.was}`).join("\n"), true)] : []),
       { ...textAbschnitt("plugins", "enabledPlugins der Einstellungen · plugins/installed_plugins.json", pluginText || "(keine Plugins)", true),
       eigentum: "owner" }],
@@ -315,13 +316,17 @@ export function warmhaltenAbschnitt(f: WarmFakten): FassungAbschnittEingang {
 
 // DAS ÜBRIGE EIGENE als ein Abschnitt unter „Arbeitet mit“: je Art die Dateien mit Bytes und Kurz-Hash, die MCP-Server mit ihrem Ziel
 const EIGENES_ARTEN = [["agenten", "Agenten"], ["skills", "Skills"], ["befehle", "Befehle"], ["stile", "Ausgabestile"], ["regeln", "Regeln"]] as const;
-function eigenesAbschnitt(e: Eigenes): FassungAbschnittEingang {
+function eigenesAbschnitt(e: Eigenes, regelnAus: string | null): FassungAbschnittEingang {
+  // ausgeschlossene Regeln erreichen den Sitz nicht: sie zählen 0 und stehen mit dem Grund da, ohne Datei im Hash
+  const arten = EIGENES_ARTEN.filter(([k]) => !(regelnAus && k === "regeln"));
   const zeilen = [
-    ...EIGENES_ARTEN.map(([k, wort]) => `${wort} ${e[k].length}${e[k].length ? `: ${e[k].map((d) => `${d.name}${d.art ? ` (${d.art})` : ""} ${d.bytes} B ${d.sha}`).join(", ")}` : ""}`),
+    ...EIGENES_ARTEN.map(([k, wort]) => regelnAus && k === "regeln"
+      ? `${wort} 0${e[k].length ? ` — ausgeschlossen: ${e[k].map((d) => d.name).join(", ")}` : ""} (${regelnAus})`
+      : `${wort} ${e[k].length}${e[k].length ? `: ${e[k].map((d) => `${d.name}${d.art ? ` (${d.art})` : ""} ${d.bytes} B ${d.sha}`).join(", ")}` : ""}`),
     `MCP-Server aus ~/.claude.json ${e.mcp.length}${e.mcp.length ? `: ${e.mcp.map((m) => `${m.name}${m.wo === "ordner" ? " (nur dieser Ordner)" : ""} · ${m.was}`).join(", ")}` : ""}`,
     "Konnektoren des claude.ai-Kontos: stehen in keiner Datei, Claude Code holt sie beim Start",
   ];
-  const dateien = EIGENES_ARTEN.flatMap(([k]) => e[k].map((d) => ({ pfad: d.pfad, bytes: d.bytes })));
+  const dateien = arten.flatMap(([k]) => e[k].map((d) => ({ pfad: d.pfad, bytes: d.bytes })));
   return { ...textAbschnitt("claude-eigenes", "~/.claude (agents, skills, commands, output-styles, rules) · ~/.claude.json (mcpServers)",
     zeilen.join("\n"), true, undefined, dateien), eigentum: "owner" };
 }

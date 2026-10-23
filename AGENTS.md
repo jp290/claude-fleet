@@ -22,8 +22,15 @@ owner's word.
   other session.
 - Never work on `main`. Every change has its own branch and worktree and lands through merge check, land and
   audit. A deploy needs the owner's word.
+- Commit subjects start with `feat:`, `fix:`, `docs:`, `chore:` or `refactor:` and say in the present tense what
+  changes; the message ends with the attribution line the harness supplies. Never skip a hook with `--no-verify`
+  unless the owner asks for it.
 - Checks prove behaviour, in the owner's words. No pins on source or doc text; a check that fixes the opposite of
   what the owner said gets turned around.
+- Before you change code, say in one sentence what done looks like and which check proves it, and run that check
+  before you call it done. The same fix-run-fail loop five times means the problem is structural: stop and rethink.
+  Before you hand-roll a utility or an integration, look for one in the repo and the package registry, and confirm
+  an API's behaviour in the vendor's own docs.
 - Remove before you add: look for the layer that can go. New parts are loadable modules outside `server.ts`.
 - Write docs only where a decision hangs on them. A measurement note is evidence, not a result.
 - A rule, check or step that stifles initiative without protecting anything is built wrong. Such a case, and any
@@ -41,7 +48,9 @@ owner's word.
 - **The full e2e suite** never runs beside the live sessions. It runs on a helper.
 - **Nothing public from a seat.** No push to any remote; the owner publishes. Tracked files carry no real
   hostnames, addresses, account names or tokens. Those live in the local binding.
-- **Runtime:** Bun, not Node.
+- **Destructive acts.** Prefer the reversible way. Before a force-push, a `git reset --hard` or dropping a table,
+  ask. Never edit anything in `node_modules/`.
+- **Runtime:** Bun, not Node: `bun`, `bun test`, `bun install`, `bunx`. Bun loads `.env` itself; never add dotenv.
 
 ## Your seat in Fleet
 

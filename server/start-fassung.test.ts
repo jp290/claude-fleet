@@ -233,25 +233,26 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const rechteWahl = [null, { stufe: "bauen", an: [], aus: [] }, { stufe: "lesen", an: [], aus: [] }];
         const mcpWahl = [[], [{ name: "n1", command: "bun", args: ["x.ts", "it's"] }]];
         const faelle = [];
-        for (const [listRole, bau] of [["lane", false], ["main", false], ["orchestrator", false], ["generic", false], ["generic", true]])
+        for (const [listRole, bau, fleetRepo] of [["lane", false, false], ["main", false, false], ["orchestrator", false, false],
+          ["generic", false, false], ["generic", true, false], ["generic", false, true], ["generic", true, true]])
           for (const rechte of rechteWahl) for (const packMcp of mcpWahl) for (const browserMcp of [true, false]) {
-            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau);
+            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau, fleetRepo);
             // ensureSlot gibt der Orchestratorin ihren Start als Datei (server.ts#orchestratorStartDatei), keiner anderen Rolle
             const startDatei = listRole === "orchestrator" ? "/fixture/orchestrator-start.md" : null;
-            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau, startDatei);
-            faelle.push({ listRole, bau, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
+            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau, startDatei, fleetRepo);
+            faelle.push({ listRole, bau, fleetRepo, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
           }
         await Bun.write(${JSON.stringify(out)}, JSON.stringify(faelle));
         process.exit(0);
       `;
       const r = await runServer(script, dir, env);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      type Fall = { listRole: string; bau: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
+      type Fall = { listRole: string; bau: boolean; fleetRepo: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
         fleet: { zusatz: { text: string | null }; start: { text: string | null } | null; darf: { id: string; text: string | null }[] } };
       const faelle = JSON.parse(readFileSync(out, "utf8")) as Fall[];
-      expect(faelle).toHaveLength(60);
+      expect(faelle).toHaveLength(84);
       for (const f of faelle) {
-        const wo = `${f.listRole}${f.bau ? " (baut)" : ""} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
+        const wo = `${f.listRole}${f.bau ? " (baut)" : ""}${f.fleetRepo ? " (in Fleets Repo)" : ""} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
         const gleich = (fassung: unknown, zeile: unknown): void => { expect({ wo, wert: fassung }).toEqual({ wo, wert: zeile }); };
         const tokens = zerlege(f.zeile);
         const flag = (name: string): string | null => { const i = tokens.indexOf(name); return i < 0 ? null : tokens[i + 1] ?? ""; };
@@ -302,13 +303,15 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
       const out = join(dir, "out.json");
       const script = `
         const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
-        const zeile = (browserMcp, bau) => S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, null, null, browserMcp, null, [], "generic", false, null, null, null, null, null, bau);
-        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ bau: zeile(true, true), frei: zeile(true, false), home: process.env.HOME }));
+        const zeile = (browserMcp, bau, fleetRepo = false, rolle = "generic", checkout = false) => S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, null, null, browserMcp, checkout, [], rolle, false, null, null, null, null, null, bau, null, fleetRepo);
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ bau: zeile(true, true), frei: zeile(true, false), home: process.env.HOME,
+          // in Fleets Repo: der Bau-Sitz, die freie Session, die Session im Checkout und die Orchestratorin
+          fleet: [zeile(true, true, true), zeile(true, false, true), zeile(true, false, true, "main", true), zeile(true, false, true, "orchestrator")] }));
         process.exit(0);
       `;
       const r = await runServer(script, dir);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      const z = JSON.parse(readFileSync(out, "utf8")) as { bau: string; frei: string; home: string };
+      const z = JSON.parse(readFileSync(out, "utf8")) as { bau: string; frei: string; home: string; fleet: string[] };
       const flag = (zeile: string, name: string): string | null => { const t = zerlege(zeile); const i = t.indexOf(name); return i < 0 ? null : t[i + 1] ?? ""; };
       const tools = flag(z.bau, "--tools")!.split(",");
       // die Liste steht in einer Datei, damit ein Eintrag ohne Codeänderung zurückkommt
@@ -320,6 +323,11 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
       expect(flag(z.frei, "--tools")).toBeNull();
       expect(z.frei).not.toContain("claudeMdExcludes");
       expect(zerlege(z.frei)).not.toContain("--strict-mcp-config");
+      // EIN SITZ IN FLEETS REPO lässt die eigenen Regeln des Owners aus, jede Rolle; außerhalb nennt die Zeile sie nicht
+      for (const zeile of z.fleet)
+        expect((JSON.parse(flag(zeile, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes)
+          .toEqual(expect.arrayContaining([`${z.home}/.claude/CLAUDE.md`, `${z.home}/.claude/rules/**`]));
+      expect(z.bau).not.toContain("/.claude/CLAUDE.md");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

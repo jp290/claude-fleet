@@ -2168,11 +2168,12 @@ export default function (pi) {
   pin(`${RULE_HOOK} — project settings disable the measured user plugins`,
     plugins.length > 0 && plugins.every((enabled) => enabled === false),
     `disabled=${plugins.filter((enabled) => enabled === false).length} total=${plugins.length}`);
-  // THE GLOBAL RULES ARE CLAUDE'S (row c1c0, owner word 2026-10-09). Every Claude session here —
-  // lane, MAIN, orchestrator — loads ~/.claude/CLAUDE.md, so no project exclude may match it: the
+  // NO PROJECT EXCLUDE FOR THE GLOBAL RULES (row c1c0, 2026-10-09; owner 2026-10-23). A seat Fleet starts in
+  // its own repo leaves ~/.claude/CLAUDE.md and ~/.claude/rules/** out through its line (server.ts#eigeneRegelnExcludes),
+  // and a session the owner starts here by hand keeps them, so the tracked project settings may not match it: the
   // `**/.claude/CLAUDE.md` glob of 0ceacbca did, and the role sessions fell back to ~/AGENTS.md, the
   // Codex version. The line itself (agentCmd: ~/AGENTS.md, the server checkout's CLAUDE.md and
-  // .claude/CLAUDE.md by absolute path) is held by its bytes in server/fassung.test.ts. Glob test: a pattern matching
+  // .claude/CLAUDE.md by absolute path) is held in server/fassung.test.ts and server/start-fassung.test.ts. Glob test: a pattern matching
   // `<home>/.claude/CLAUDE.md` for any home — `**`, `*` and `?` widened, the rest literal.
   const userRules = "/Users/someone/.claude/CLAUDE.md";
   const globHits = (pat: string): boolean => new RegExp(`^${pat.split(/(\*\*\/|\*\*|\*|\?)/).map((part) =>

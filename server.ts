@@ -466,8 +466,9 @@ function bauTools(): readonly string[] | null {
   } catch (e) { logError("bauTools", e); }
   return null;
 }
-// ...and its line excludes the Codex version of the global rules, which Claude would otherwise load beside ~/.claude/CLAUDE.md
-const BAU_CLAUDE_MD_EXCLUDES: readonly string[] = [`${HOME}/AGENTS.md`];
+// ...and its line excludes the Codex version of the global rules, which Claude would otherwise load beside ~/.claude/CLAUDE.md:
+// under the HOME claude runs in, on a test instance with real seats the owner's (FLEET_CLAUDE_HOME, Mangel 125)
+const BAU_CLAUDE_MD_EXCLUDES: readonly string[] = [`${process.env.FLEET_CLAUDE_HOME || HOME}/AGENTS.md`];
 // the built-in tools a spawn's line names; null = no --tools, every built-in tool
 const startTools = (role: SessionSpawnRole, bau: boolean): readonly string[] | null =>
   role === "generic" ? bau ? bauTools() : null : SESSION_TOOLS[role];
@@ -503,8 +504,8 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   effort: string | null = null, browserMcp = true, fleetCheckout = false,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
   remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, fleetCheckout, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau, startDatei)}; exec ${SHELL}`;
+  seat: SeatStart | null = null, bau = false, startDatei: string | null = null, fleetRepo = false): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, fleetCheckout, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau, startDatei, fleetRepo)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -525,7 +526,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   effort: string | null, browserMcp = true, fleetCheckout = false,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
   handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
+  seat: SeatStart | null = null, bau = false, startDatei: string | null = null, fleetRepo = false): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
@@ -599,12 +600,15 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // für jede Session dort ausgeschlossen. Dann zählt kein CLAUDE.md mehr, und claude lädt die AGENTS.md
     // (docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md A2/A5). Die Orchestratorin schließt auch
     // die AGENTS.md aus: ihre Rolle und ihr Start stehen im Prompt (server/orchestrator-start.ts).
+    // Ein Sitz in Fleets Repo lässt dazu die eigenen Regeln des Owners aus (eigeneRegelnExcludes).
+    const eigene = fleetRepo ? eigeneRegelnExcludes() : [];
     const checkoutExcludes = [`${import.meta.dir}/CLAUDE.md`, `${import.meta.dir}/.claude/CLAUDE.md`, ...BAU_CLAUDE_MD_EXCLUDES];
     if (listRole === "orchestrator") {
-      const settings = JSON.stringify({ claudeMdExcludes: [...checkoutExcludes, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
+      const settings = JSON.stringify({ claudeMdExcludes: [...checkoutExcludes, `${import.meta.dir}/AGENTS.md`, ...eigene], ...cutSettings });
       cmd += ` --settings ${shellSingleQuote(settings)}`;
-    } else if (fleetCheckout) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: checkoutExcludes, ...cutSettings }))}`;
-    else if (bau) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES, ...cutSettings }))}`;
+    } else if (fleetCheckout) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: [...checkoutExcludes, ...eigene], ...cutSettings }))}`;
+    else if (bau) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: [...BAU_CLAUDE_MD_EXCLUDES, ...eigene], ...cutSettings }))}`;
+    else if (eigene.length) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: eigene, ...cutSettings }))}`;
     else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
     // THE LIBRARY'S SKILLS (server/sitz-wissen.ts): claude loads <dir>/.claude/skills of every --add-dir, the description
     // in context, the text on invocation (probe claude 2.1.308; code.claude.com/docs/en/skills)
@@ -757,6 +761,8 @@ interface Harness {
     seat?: SeatStart | null;
     // a seat that builds (isBauCwd): its own tools (.fleet/sitz-werkzeuge.json) and excludes; claude alone reads it
     bau?: boolean;
+    // a seat in Fleet's own repo (fleetBaumVon): the owner's own rules stay out (eigeneRegelnExcludes); claude alone reads it
+    fleetRepo?: boolean;
     // the Orchestratorin's start as a system-prompt file (orchestratorStartDatei); claude alone reads it
     startDatei?: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
@@ -1003,7 +1009,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.fleetCheckout, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false, o.startDatei ?? null),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.fleetCheckout, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false, o.startDatei ?? null, o.fleetRepo ?? false),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -5833,6 +5839,11 @@ const projDir = (cwd: string) => `${process.env.FLEET_CLAUDE_PROJECTS_DIR ?? `${
 // einer Testinstanz mit echten Sitzen unter dem HOME, unter dem ihr claude läuft (testinstanz-agent.sh#ti_real_env: FLEET_CLAUDE_HOME)
 const CLAUDE_HOME = process.env.FLEET_CLAUDE_HOME || null;
 const claudeConfigDir = (): string => CLAUDE_HOME ? `${CLAUDE_HOME}/.claude` : dirname(dirname(projDir("x")));
+// DIE EIGENEN REGELN DES OWNERS BLEIBEN DRAUSSEN (Owner 23.10.: „[Zitat entfernt]“): ein Sitz in Fleets Repo startet nur mit dem
+// Wissen, das das Repo zeigt. Was er davon brauchte, steht in AGENTS.md und der Bindung. claudeMdExcludes nimmt jede Datei außer der
+// verwalteten (code.claude.com/docs/en/memory, „Exclude specific CLAUDE.md files“); Sitze außerhalb lesen beides weiter.
+const eigeneRegelnExcludes = (): string[] => [`${claudeConfigDir()}/CLAUDE.md`, `${claudeConfigDir()}/rules/**`];
+const EIGENE_REGELN_AUS = "~/.claude/CLAUDE.md und ~/.claude/rules/** sind für einen Sitz in Fleets Repo ausgeschlossen (server.ts#eigeneRegelnExcludes)";
 const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
 const MAX_HISTORY = 100;
 
@@ -10100,6 +10111,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       }
       // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
       const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd) : null;
+      // A SEAT IN FLEET'S REPO (checkout and every worktree of it) starts without the owner's own rules (eigeneRegelnExcludes)
+      const fleetRepo = h.id === "claude" && (await fleetBaumVon(occupant.cwd)) !== null;
+      if (!current()) return;
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -10120,7 +10134,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch,
-          seat, bau, startDatei })}`);
+          seat, bau, startDatei, fleetRepo })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -20769,11 +20783,11 @@ const fassungImFleetCheckout = (cwd: string, worktree: unknown): boolean =>
   !worktree && realpathLoose(resolve(cwd)) === realpathLoose(import.meta.dir);
 // ...und die drei Pfade, die agentCmd ihr dafür nimmt
 const fassungCheckoutExcludes = (cwd: string): ReadonlySet<string> =>
-  new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`].map((p) => resolve(p)));
+  new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, ...BAU_CLAUDE_MD_EXCLUDES].map((p) => resolve(p)));
 
 // Die Bedingung ist genau agentCmd's: die vier Pfade, die claudeMdExcludes by absolute path nimmt.
 function fassungClaudeMdExcludes(cwd: string): ReadonlySet<string> {
-  return new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${cwd}/AGENTS.md`].map((p) => resolve(p)));
+  return new Set([`${cwd}/CLAUDE.md`, `${cwd}/.claude/CLAUDE.md`, ...BAU_CLAUDE_MD_EXCLUDES, `${cwd}/AGENTS.md`].map((p) => resolve(p)));
 }
 
 // Jede geladene Datei bekommt im Text einen Kopf aus ihrer STELLE in der Ladereihenfolge, nicht aus
@@ -20871,11 +20885,17 @@ function basisFehlt(fleetBaum: string, dateien: readonly { pfad: string; bytes: 
 }
 
 function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: boolean,
-  orchestrator = false, bau = false, fleetBaum: string | null = null): FassungAbschnittEingang[] {
-  // what the line excludes does not count for the AGENTS.md fallback either, so the loader skips it
-  const checkout = fleetCheckout && !orchestrator && harnessFamilie(harness) === "claude" ? fassungCheckoutExcludes(cwd) : new Set<string>();
-  const loaded = nativeLoaderBytes(cwd, harness, checkout);
-  if ("grund" in loaded) return [unknownAbschnitt("projektregeln", loaded.grund)];
+  orchestrator = false, bau = false, fleetBaum: string | null = null, fleetRepo = false): FassungAbschnittEingang[] {
+  // what the line excludes does not count for the AGENTS.md fallback either, so the loader skips it — and with the
+  // owner's ~/.claude/CLAUDE.md out (eigeneRegelnExcludes), its imports stay out too
+  const eigene = fleetRepo && harnessFamilie(harness) === "claude";
+  const checkout = new Set([...(fleetCheckout && !orchestrator && harnessFamilie(harness) === "claude" ? fassungCheckoutExcludes(cwd) : []),
+    ...(eigene ? [resolve(eigeneRegelnExcludes()[0]!)] : [])]);
+  const regelnDir = `${resolve(claudeConfigDir())}/rules/`;
+  const geladen = nativeLoaderBytes(cwd, harness, checkout);
+  if ("grund" in geladen) return [unknownAbschnitt("projektregeln", geladen.grund)];
+  const loaded = eigene ? { ...geladen, dateien: geladen.dateien.filter((datei) => !resolve(datei.pfad).startsWith(regelnDir)) } : geladen;
+  const eigeneGrund = eigene ? EIGENE_REGELN_AUS : null;
   // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Projekt-
   // Monolith samt AGENTS.md bleibt ausgeschlossen (server.ts#agentCmd). Was übrig bleibt, steht hier.
   if (orchestrator) {
@@ -20883,19 +20903,20 @@ function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: bo
     const global = loaded.dateien.filter((datei) => !excludes.has(resolve(datei.pfad)));
     if (!global.length)
       return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`,
-        "(keine globalen Projektregeln geladen — der Projekt-Monolith bleibt für die Orchestratorin aus)", false, 0)];
+        "(keine globalen Projektregeln geladen — der Projekt-Monolith bleibt für die Orchestratorin aus)", false, 0, undefined, eigeneGrund ?? undefined)];
     const gelesen = fassungDateiText(global);
     if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
     return [{ id: "projektregeln", quelle: global.map((datei) => datei.pfad).join("\n"), aenderbar: true,
       text: gelesen.text, bytes: gelesen.bytes, dateien: global,
-      grund: "Projekt-Monolith und AGENTS.md sind für die Orchestratorin ausgeschlossen; ihre Projektregeln kommen aus der Rolle" }];
+      grund: ["Projekt-Monolith und AGENTS.md sind für die Orchestratorin ausgeschlossen; ihre Projektregeln kommen aus der Rolle", eigeneGrund]
+        .filter(Boolean).join(" · ") }];
   }
   // a seat that builds excludes what its line excludes (BAU_CLAUDE_MD_EXCLUDES)
   const aus = new Set(bau ? BAU_CLAUDE_MD_EXCLUDES.map((pfad) => resolve(pfad)) : []);
   const dateien = loaded.dateien.filter((datei) => !aus.has(resolve(datei.pfad)));
   const basis = fleetBaum ? basisFehlt(fleetBaum, dateien) : null;
   const grund = [basis, checkout.size && existsSync(`${cwd}/CLAUDE.md`) ? "das CLAUDE.md des Server-Checkouts bleibt ausgeschlossen; Fleet rendert kein Regelbuch mehr (server.ts#agentCmd)" : null,
-    dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : null]
+    dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : null, eigeneGrund]
     .filter(Boolean).join(" · ") || undefined;
   if (!dateien.length)
     return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
@@ -21034,7 +21055,7 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
 // (Fleet-URL, tmux-Socket, Hub) bleiben draußen, der Hash hängt am Inhalt und nicht am Ort. Nicht im Hash: `autoCompactEnabled`, das am
 // Slot hängt (Übergabe-Schwelle), nicht an der Rolle.
 function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | null,
-  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false): { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
+  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false, fleetRepo = false): { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
   if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), start: null, darf: [] };
   const aspects = startAspects({ role: listRole, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS });
   const flags = claudeMcpFlags(mcp.browserMcp, mcp.packMcp);
@@ -21042,6 +21063,7 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
   const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
   const zusatz = [cut?.line, cut ? aspects.briefLine : null, habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null].filter(Boolean).join("\n");
   const werkzeuge = startTools(listRole, bau)?.join(",") ?? "alle eingebauten";
+  const excludes = [...(bau ? BAU_CLAUDE_MD_EXCLUDES : []), ...(fleetRepo ? eigeneRegelnExcludes() : [])].map((pfad) => pfad.replace(CLAUDE_HOME ?? HOME, "~"));
   return {
     zusatz: textAbschnitt("systemzusatz", "server.ts#sessionListCut · server/session-start.ts#AUTO_MODE_BRIEF", zusatz, false),
     // the Orchestratorin's start rides beside the line as a file (orchestratorStartDatei); its texts stand under Richtung, Rolle and Wissen
@@ -21052,7 +21074,7 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
       textAbschnitt("modus", "server/session-start.ts#PERMISSION_MODE", aspects.mode, false),
       textAbschnitt("werkzeuge", bau ? ".fleet/sitz-werkzeuge.json#bau · server.ts#sessionListCut" : "server.ts#SESSION_TOOLS · #sessionListCut", `--tools ${werkzeuge}\n--disallowedTools ${cut?.disallowed || "keine"}`, false),
       textAbschnitt("einstellungen", "--settings der Zeile (Vorlage ohne Adressen)", JSON.stringify({
-        ...(bau ? { claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES.map((pfad) => pfad.replace(HOME, "~")) } : {}), skillOverrides: cut?.skillOverrides ?? {},
+        ...(excludes.length ? { claudeMdExcludes: excludes } : {}), skillOverrides: cut?.skillOverrides ?? {},
         autoMode: { environment: AUTOMODE_ENVIRONMENT }, ...rechteSettings(rechte), ...sitzRechte(rechte, aspects.settings.permissions?.deny) }), false),
       textAbschnitt("mcp", "server.ts#claudeMcpFlags (das strikte Flag und die Server der Packs)",
         `--strict-mcp-config ${flags.strict ? "ja" : "nein"}\n${flags.config ?? MCP_CONFIG_KEINE}`, false),
@@ -21067,8 +21089,10 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   repoRoot: string; claudeCode?: unknown }): Promise<Fassung> {
   const claude = harnessFamilie(o.harness) === "claude";
   const modell = o.modell ?? (claude ? DEFAULT_MODEL : null);
-  const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] });
-  const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness);
+  // a seat in Fleet's repo, as ensureSlot decides it (fleetBaumVon)
+  const fleetBaum = claude ? await fleetBaumVon(o.repoRoot) : null;
+  const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] }, false, fleetBaum !== null);
+  const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness, fleetBaum !== null);
   const art: SessionKind = o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : o.rolle === "program-main" ? "program-main" : "session";
   return baueFassung({
     slot: 0, anlass: "neu",
@@ -21083,7 +21107,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       fleet.zusatz,
       ...(fleet.start ? [fleet.start] : []),
       ...fassungProjektregelnAus(o.repoRoot, o.harness, fassungImFleetCheckout(o.repoRoot, null), o.rolle === "orchestrator", false,
-        o.rolle === "generic" ? await fleetBaumVon(o.repoRoot) : null),
+        o.rolle === "generic" ? fleetBaum : null, fleetBaum !== null),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
       ...(await fassungGedaechtnisAus(claude ? await notizbuchFuerStart(o.repoRoot,
@@ -21162,11 +21186,11 @@ function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Fassun
 
 // WAS DEN SITZ AUSSER FLEETS ZEILE FORMT (server/fassung-umfeld.ts): die Hooks, Plugins und Claude-Code-Einstellungen, die Claude Code im
 // Ordner des Sitzes liest, denn die Zeile setzt kein --setting-sources (agentCmd). Gelesen, nie ausgeführt.
-const fassungUmfeld = (cwd: string, harness: string): ReturnType<typeof umfeldAbschnitte> => {
+const fassungUmfeld = (cwd: string, harness: string, fleetRepo = false): ReturnType<typeof umfeldAbschnitte> => {
   if (harnessFamilie(harness) !== "claude") return umfeldOhneClaude();
   const home = CLAUDE_HOME ?? HOME;
   return umfeldAbschnitte(leseUmfeld({ configDir: claudeConfigDir(), home, cwd,
-    managed: VERWALTETE_EINSTELLUNGEN }), home, cwd);
+    managed: VERWALTETE_EINSTELLUNGEN }), home, cwd, fleetRepo ? EIGENE_REGELN_AUS : null);
 };
 // die eigenen Dateien des Owners unter den Projektregeln (sein ~/.claude/CLAUDE.md und seine Regeln) tragen seine Marke; die Marke einer Datei
 // ist Anzeige. Das Notizbuch unter ~/.claude/projects nicht: es gehört dem Setup und teilt nach seiner eigenen Regel (src/sitz.ts#NOTIZ_TEILBAR).
@@ -21221,13 +21245,14 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const spawnRolle = fassungSpawnRolle(s, rolle, spawnPick.harness);
   // a seat that builds, read as ensureSlot reads it
   const bau = spawnRolle === "generic" && s.label !== STEWARD_LABEL && isBauCwd(cwd);
-  const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau);
+  const fleetBaum = harnessFamilie(spawnPick.harness) === "claude" ? await fleetBaumVon(cwd) : null;
+  const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null);
   const liest: FassungAbschnittEingang[] = [
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungImFleetCheckout(cwd, s.worktree),
-      rolle === "orchestrator", bau, rolle === "generic" ? await fleetBaumVon(cwd) : null),
+      rolle === "orchestrator", bau, rolle === "generic" ? fleetBaum : null, fleetBaum !== null),
     ...(await fassungWissen(s, rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil ?? null) : null, spawnPick.harness, saat)),
@@ -21237,7 +21262,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
         ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
   ];
-  const umfeld = fassungUmfeld(cwd, spawnPick.harness);
+  const umfeld = fassungUmfeld(cwd, spawnPick.harness, fleetBaum !== null);
   const claudeCode = harnessFamilie(spawnPick.harness) === "claude" && s.cwd
     ? claudeCodeStart(rolle === "program-main" ? "main" : rolle === "orchestrator" ? "orchestratorin" : rolle === "lane" ? "lane" : "nur-ordner",
       spawnPick.harness, { repo: cwd, modell: modell ?? DEFAULT_MODEL })

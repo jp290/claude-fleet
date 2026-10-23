@@ -29,6 +29,14 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   commit on top. If the charge conflicts with main, merging main in does not help the check (it skips the merge):
   rebuild the charge as a merge of the landed tip with main, plus one commit on top that carries the finished tree.
   The land squashes anyway.
+- **A red main lands only a repair.** While the last audit is red, the land door refuses every check that wasn't
+  run with `--repair`, even a green one, and the board door `POST /api/branches/check` has no such flag. The branch
+  that carries the fix is checked by hand: `bun ci/merge-check.ts <branch> --base main --repair`; every other branch
+  waits for the next green audit.
+- **The merge check runs only what the footprint owes; the audit runs everything.** A change that alters a
+  behaviour (a door that now answers 409) can pass its check and turn the audit red where another module pins the
+  old answer. Before a land that changes a door, grep `e2e/` for the old answer. One module runs locally with
+  `FLEET_E2E_MODULES=<a,b> ./e2e-isolated.sh` (the module names are in `e2e/ctx.ts#SHARD_UNITS`).
 - **A weight in the shard table reshuffles the whole plan.** `e2e/ctx.ts#SHARD_UNITS` is split greedily by
   `seconds`, so one changed weight can move a dozen units to another shard and run modules in a new order in the
   same instance. Before you commit a weight, diff `shardPlan` old against new and name the modules that now run
@@ -99,6 +107,9 @@ reads as his.
 
 ## The helper
 
+- **An audit waits up to four hours after the last full one.** `server.ts#auditCadenceOf` holds a land's audit
+  for `AUDIT_QUIET_MS` (4 h) unless a deploy or `POST /api/self/repos/audit-tip` releases it; `./ctl.sh status`
+  names the hold. When a deploy waits on the audit, release it with audit-tip.
 - **A daemon update drains the helper.** `POST /api/helper/devices/<id>/update` lets nothing else start until
   `running` is 0, then restarts the daemon. Queue it when `./ctl.sh merges` is empty, best right after a green
   audit, and bundle setting changes into one update, because they take effect only on restart. Watch
@@ -131,6 +142,7 @@ reads as his.
   of unacknowledged messages hide the one that matters. An unacknowledged message also comes back: the postfach
   types every unread message again into the pane of a new session in the slot, your successor or you after
   `/clear`.
+- **Reply in one call.** `./ctl.sh reply <id> <file|-> --log <plan.md>` sends to the message's sender with `replyTo`, marks it read and appends one line to your log; an id prefix is enough.
 - **A seat in auto mode can stall on a question.** After three classifier denials in a row, or twenty in a
   session, Claude Code pauses auto mode and asks a human (code.claude.com/docs/en/permission-modes, "When auto
   mode falls back"); Fleet shows only a `lastOutput` that keeps aging. Before you call a quiet seat dead, read
@@ -147,6 +159,8 @@ reads as his.
   „[Zitat entfernt]“ don't prove nobody looks.
 
 ## Reading state without leaking
+
+- **Where things stand in one call.** `./ctl.sh status` prints seats, merge checks, lands, the audit, helpers and unread messages one line each (`--full` adds the message texts); what it cannot read says UNKNOWN.
 
 - **Print named fields only.** A pane's command line exports its self credential, so `ps` with arguments and any
   `grep` over them prints tokens, cut or not. Search processes with `pgrep -x <name>` or `ps -eo pid,etime,comm`,

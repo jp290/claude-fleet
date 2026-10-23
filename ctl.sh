@@ -24,7 +24,7 @@
 # CLI's space — `wait-merge` is typed `./ctl.sh wait merge 5`.
 set -u
 
-CTL_VERBS="get merges lock ctx report task audits watch events inbox comment file land dispatch wait-merge wait-change send commit-main"
+CTL_VERBS="get merges lock ctx report task audits watch events inbox comment file land dispatch wait-merge wait-change send reply status commit-main"
 
 usage() {
   cat <<'USAGE'
@@ -60,6 +60,11 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    address the Orchestrator through /api/self/messages with the self token
   send --lane <slot> <textfile> [--json]
                                    read the lane occupant now, then /send with its openedAt pin
+  reply <messageId> <textfile|-> [--log <file>] [--line <text>] [--program <id>] [--json]
+                                   answer a message in one call: to its sender, replyTo set, marked read,
+                                   one line appended to --log (self token; ≤2000 characters)
+  status [--full] [--json]         where things stand: seats, merge checks, lands, audit, helpers, unread
+                                   messages — one line each (self doors + owner routes; UNKNOWN named)
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
                                    wait (bounded) for `merges` exit 0, git commit the staged index in the main
                                    checkout, then push it ff-only to FLEET_HUB_REMOTE if one is set
@@ -1841,6 +1846,280 @@ if (!hub) {
     process.exit(3);
   }
 }
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+reply)
+# ------------------------------------------------------------------------------------------------
+# ONE CALL FOR AN ANSWER IN THE MAILBOX. Measured 22.–23.10. over the Orchestratorin's transcripts: a reply was three
+# to four calls — write the text, POST /api/self/messages with to/replyTo/key typed by hand (slot and openedAt copied
+# out of an earlier read), POST …/read, a line into her plan file — and each call carried ~250k tokens of context.
+# The address is never typed here: it is the `from` of the message being answered, read off her own view
+# (GET /api/self/messages) in the same call, so the openedAt pin is the sender's own and a successor on that line
+# still receives it (docs/self-api.md §messages). The idempotency key is the answered id plus the text's hash: the
+# same reply sent twice is one message (`existing`), a different text is a second one.
+# ORDER: send, then receipt, then the log line. A refused send receipts nothing and logs nothing; a receipt or log
+# that fails after the send says so and exits 1 — the message stands either way.
+  msg=""; textfile=""; log=""; line=""; line_set=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CTL_JSON=1 ;;
+      --program) program_choice reply "${2:-}"; shift ;;
+      --log) [ $# -ge 2 ] || { printf 'reply: --log needs a file\n' >&2; exit 2; }; shift; log=$1 ;;
+      --line) [ $# -ge 2 ] || { printf 'reply: --line needs a text\n' >&2; exit 2; }; shift; line=$1; line_set=1 ;;
+      -) [ -z "$textfile" ] && [ -n "$msg" ] || { printf 'reply: use reply <messageId> <textfile|-> [--log <file>]\n' >&2; exit 2; }; textfile=- ;;
+      --*) printf 'reply: unknown flag %s\n' "$1" >&2; exit 2 ;;
+      *) if [ -z "$msg" ]; then msg=$1
+         elif [ -z "$textfile" ]; then textfile=$1
+         else printf 'reply: too many arguments\n' >&2; exit 2; fi ;;
+    esac
+    shift
+  done
+  printf '%s' "$msg" | grep -Eq '^[0-9a-f]{6,24}$' || {
+    printf 'reply: give the id of the message you answer (6–24 lowercase hex, a prefix is enough), then a text file or - for stdin\n' >&2; exit 2; }
+  [ -n "$textfile" ] || { printf 'reply: give a text file, or - and the text on stdin\n' >&2; exit 2; }
+  [ "$textfile" = "-" ] || [ -f "$textfile" ] || { printf 'reply: %s is not a file — nothing sent\n' "$textfile" >&2; exit 2; }
+  [ "$line_set" -eq 0 ] || [ -n "$line" ] || { printf 'reply: --line is empty\n' >&2; exit 2; }
+  [ "$line_set" -eq 0 ] || [ -n "$log" ] || { printf 'reply: --line names the line for --log; give --log <file> too\n' >&2; exit 2; }
+  # the log is a file she keeps; a mistyped path must not become a new file nobody reads
+  [ -z "$log" ] || [ -f "$log" ] || { printf 'reply: --log %s does not exist — nothing sent\n' "$log" >&2; exit 2; }
+  need_self reply
+  export CTL_MSG="$msg" CTL_TEXTFILE="$textfile" CTL_LOG="$log" CTL_LINE="$line" CTL_LINE_SET="$line_set"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const want = process.env.CTL_MSG, src = process.env.CTL_TEXTFILE, logFile = process.env.CTL_LOG;
+const refuse = (why, code = 1) => { console.error(`reply: ${why} — nothing sent`); process.exit(code); };
+let text;
+try { text = fs.readFileSync(src === "-" ? 0 : src, "utf8").trimEnd(); } catch { refuse("cannot read the text", 2); }
+if (!text.trim()) refuse("the text is empty", 2);
+if (text.length > 2000) refuse(`the text is ${text.length} characters, the mailbox takes at most 2000`, 2);
+const key = (a) => !a ? "" : a.kind === "program" ? `program:${a.id}` : a.kind === "role" ? `role:${a.role}` : `${a.kind}:${a.slot}:${a.openedAt}`;
+const who = (a) => !a ? "?" : a.kind === "program" ? `program ${String(a.id).slice(0, 8)}` : a.kind === "role" ? `the ${a.role}` : `slot ${a.slot}`;
+// a connection that drops is an answer of its own (status 0), never a stack trace: after the POST it means "unknown"
+const tryApi = (path, opts) => api(path, opts).catch((e) => ({ status: 0, ok: false,
+  body: { error: `no answer from ${URL_} (${e?.code ?? e?.message ?? e})` } }));
+const view = await tryApi("/api/self/messages", { headers: selfH() });
+if (!view.ok) refuse(`GET /api/self/messages ${view.status}: ${selfError(view, "reply")}`);
+const own = new Set((view.body.addresses ?? []).map(key));
+// only her incoming messages: a reply to her own outgoing line would be addressed to herself
+const hits = (view.body.entries ?? []).filter((e) => String(e.id).startsWith(want) && !own.has(key(e.from)));
+if (hits.length === 0) refuse(`no message ${want} addressed to you in GET /api/self/messages`);
+if (hits.length > 1) refuse(`${want} names ${hits.length} messages (${hits.map((e) => e.id).join(", ")}) — give more of the id`, 2);
+const m = hits[0];
+const digest = require("node:crypto").createHash("sha256").update(text).digest("hex").slice(0, 16);
+const r = await tryApi("/api/self/messages", { method: "POST", headers: selfH(), body: JSON.stringify({
+  to: m.from, payload: { kind: "text", text }, idempotencyKey: `ctl-reply-${m.id}-${digest}`, replyTo: m.id,
+  ...(chosenProgram ? { programId: chosenProgram } : {}) }) });
+if (r.status === 0) {
+  console.error(`reply: SENT UNKNOWN — ${r.body.error}; nothing marked read, nothing logged. The same command again is safe: the same text is the same key, so it stays one message`);
+  process.exit(1);
+}
+if (!r.ok) {
+  if (JSONOUT) console.log(JSON.stringify({ ok: false, sent: false, replyTo: m.id, to: m.from, status: r.status, error: selfError(r, "reply") }, null, 2));
+  refuse(`POST /api/self/messages ${r.status}: ${selfError(r, "reply")}`);
+}
+const sent = r.body?.message ?? null, existing = r.body?.existing === true;
+const read = await tryApi(`/api/self/messages/${m.id}/read`, { method: "POST", headers: selfH() });
+let logged = null, logError = null;
+if (logFile && !existing) {
+  const first = text.split("\n").find((l) => l.trim()) ?? "";
+  const hhmm = new Date().toTimeString().slice(0, 5);
+  logged = process.env.CTL_LINE_SET === "1" ? process.env.CTL_LINE.replace(/\s*\n\s*/g, " ")
+    : `- ${hhmm} → ${who(m.from)} (zu ${m.id.slice(0, 8)}): ${first.length > 120 ? first.slice(0, 119) + "…" : first}`;
+  try {
+    const prior = fs.readFileSync(logFile, "utf8");
+    fs.appendFileSync(logFile, (prior && !prior.endsWith("\n") ? "\n" : "") + logged + "\n");
+  } catch (e) { logError = String(e?.message ?? e); }
+}
+const lines = [`reply to ${who(m.from)} (re ${m.id.slice(0, 8)}): ${existing ? "already sent as" : "sent"} ${String(sent?.id ?? "?").slice(0, 8)}`
+  + ` · ${read.ok ? "marked read" : `READ FAILED ${read.status} ${read.body?.error ?? ""}`}`
+  + (!logFile ? "" : existing ? " · not logged again (the run that sent it did)" : logError ? ` · LOG FAILED ${logError}` : ` · logged to ${logFile}`)];
+if (r.body?.holder === null && r.body?.note) lines.push(`  ${r.body.note}`);
+out({ ok: read.ok && !logError, sent: true, existing, message: sent, replyTo: m.id, to: m.from, holder: r.body?.holder ?? null,
+  note: r.body?.note ?? null, read: read.ok, readStatus: read.status, logged: logError ? null : logged, logError }, lines);
+process.exit(read.ok && !logError ? 0 : 1);
+EOF
+  js_run
+  ;;
+
+# ================================================================================================
+status)
+# ------------------------------------------------------------------------------------------------
+# WHERE THINGS STAND, IN ONE CALL. Measured 22.–23.10.: 12 % of the Orchestratorin's context went to looking it up —
+# GET /api/sessions piped through python, `audits`, `merges`, the helper's jobs, the merge-check ledger, a ps for running
+# checks — each a call of its own. This verb reads the same sources in parallel and prints one short line per fact.
+# THE CREDENTIAL FOLLOWS THE SOURCE, as in `get`: unread messages and lands come through the self doors
+# (/api/self/messages, /api/self/merges); seats, audits, helpers and the branch view have no self door and are owner
+# routes (owner_token: FLEET_CTL_TOKEN, FLEET_TOKEN, else fleet.json). A source that cannot be read is printed as
+# UNKNOWN with its route and status, never left out, and makes the exit 1.
+# TOKEN HYGIENE: running merge checks are found in the process table; of each process only its elapsed time and the
+# branch argument after ci/merge-check.ts (git ref characters only) are kept — no command line is ever printed.
+  full=0
+  for a in "$@"; do case "$a" in --json) CTL_JSON=1 ;; --full) full=1 ;; *) printf 'status: unknown argument %s\n' "$a" >&2; exit 2 ;; esac; done
+  CTL_TOKEN=$(owner_token 2>/dev/null || true)
+  CTL_SELF=${FLEET_SELF_TOKEN:-}
+  if [ -z "$CTL_TOKEN" ] && [ -z "$CTL_SELF" ]; then
+    printf 'status: neither a self token (FLEET_SELF_TOKEN) nor an owner token — nothing can be read\n' >&2; exit 2
+  fi
+  export CTL_TOKEN CTL_SELF CTL_FULL="$full"
+  js_head
+  cat >> "$CTL_TMP" <<'EOF'
+const owner = !!process.env.CTL_TOKEN, self = !!process.env.CTL_SELF, now = Date.now();
+const me = Number(process.env.FLEET_SELF_SLOT || 0);
+const ago = (t) => {
+  if (typeof t !== "number") return "?";
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 172800 ? `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, "0")}` : `${Math.floor(s / 86400)}d`;
+};
+const cut = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+const sha8 = (s) => String(s ?? "").slice(0, 8) || "-";
+const unknown = [];
+const why = (label, route, r, need) => { unknown.push(label); return `${label}: UNKNOWN — ${r ? `${route} ${r.status} ${r.body?.error ?? ""}`.trim() : `needs the ${need} credential, this shell has none`}`; };
+// a refused connection is a source that could not be read (status 0), never a crash: a restart is when this is wanted.
+// A 200 whose shape is not the expected one is unread too — an empty list from it would read as "none".
+const read = (path, headers, shape) => api(path, { headers }).then((r) => r.ok && !shape(r.body)
+  ? { status: r.status, ok: false, body: { error: "unexpected shape" } } : r)
+  .catch((e) => ({ status: 0, ok: false, body: { error: `no answer (${e?.code ?? e?.message ?? e})` } }));
+const arr = (...keys) => (b) => keys.every((k) => Array.isArray(b?.[k]));
+const [ses, jobs, br, msgs, mer, trail] = await Promise.all([
+  owner ? read("/api/sessions", ownerH(), arr("slots")) : null,
+  owner ? read("/api/helper/jobs", ownerH(), arr("jobs")) : null,
+  owner ? read("/api/branches", ownerH(), arr("repos")) : null,
+  self ? read("/api/self/messages?unread=1", selfH(), arr("entries")) : null,
+  self ? read("/api/self/merges", selfH(), arr("rows", "busy")) : null,
+  // `pending` carries what holds a queued audit (server.ts#auditHoldOf); postLandAuditLive names only the disk hold
+  owner ? read("/api/post-land-audits?limit=1", ownerH(), arr("audits", "pending")) : null,
+]);
+const lines = [];
+const result = {};
+
+// --- seats
+const slots = ses?.ok ? (ses.body.slots ?? []).filter((s) => s.cwd) : null;
+if (slots) {
+  result.seats = slots.map((s) => ({ slot: s.id, name: s.name ?? null, label: s.label ?? null, ctxPct: s.ctx?.pct ?? null,
+    lastOutput: s.lastOutput ?? null, branch: s.worktree?.branch ?? s.git?.branch ?? null, agent: s.agent ?? null }));
+  lines.push(`seats (${slots.length}):`);
+  for (const s of result.seats) {
+    const quiet = typeof s.lastOutput !== "number" ? "quiet ?" : now - s.lastOutput < 60000 ? "active" : `quiet ${ago(s.lastOutput)}`;
+    lines.push(`  ${String(s.slot).padStart(2)}${s.slot === me ? "*" : " "} ${cut([s.name, s.label].filter(Boolean).join(" "), 30).padEnd(30)}`
+      + `  ${s.ctxPct === null ? "ctx ?" : `${Math.round(s.ctxPct)}%`.padStart(4)}  ${quiet.padEnd(10)}  ${s.branch ?? "-"}`
+      + (s.agent && s.agent !== "alive" && s.agent !== "unprobed" ? `  agent=${s.agent}` : ""));
+  }
+} else lines.push(why("seats", "GET /api/sessions", ses, "owner"));
+
+// --- merge checks: running (process table, and the server's own runs off /api/branches) and the newest verdicts
+const running = new Map();
+const ps = require("node:child_process").spawnSync("ps", ["-Ao", "etime=,args="], { encoding: "utf8" });
+const secs = (e) => { const [d, rest] = e.includes("-") ? e.split("-") : ["0", e]; return rest.split(":").map(Number).reduce((a, n) => a * 60 + n, 0) + Number(d) * 86400; };
+const psRead = !ps.error && ps.status === 0;
+for (const l of psRead ? String(ps.stdout).split("\n") : []) {
+  // ci/merge-check.ts <branch> [--base <ref>] [--repair], the flags also before the branch
+  const m = /^\s*([\d:-]+)\s+\S*\bbun\s+(?:run\s+)?\S*ci\/merge-check\.ts\s+(?:(?:--base\s+\S+|--repair)\s+)*([A-Za-z0-9._\/][A-Za-z0-9._\/-]*)(?:\s|$)/.exec(l);
+  if (m) running.set(m[2], now - secs(m[1]) * 1000);
+}
+if (br?.ok) for (const repo of br.body.repos ?? []) for (const b of repo.branches ?? [])
+  if (b.check?.state === "running" && !running.has(b.branch)) running.set(b.branch, null);
+result.checksRunning = [...running].map(([branch, since]) => ({ branch, since }));
+if (!psRead) unknown.push("checks running");
+lines.push(`checks running: ${!psRead ? `UNKNOWN — ps ${ps.error?.code ?? `exit ${ps.status}`}${running.size ? `; the server runs ${[...running.keys()].join(", ")}` : ""}` : running.size ? result.checksRunning.map((c) => `${c.branch}${c.since ? ` (${ago(c.since)})` : ""}`).join(", ") : "none"}`);
+const common = require("node:child_process").spawnSync("git", ["-C", HOME, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" });
+let ledger = null;
+try { ledger = fs.readFileSync(String(common.stdout).trim() + "/merge-checks.jsonl", "utf8"); } catch {}
+if (ledger === null) lines.push(`checks last: no merge-checks.jsonl under ${HOME}'s git dir`);
+else {
+  const rows = ledger.split("\n").flatMap((l) => { try { return l.trim() ? [JSON.parse(l)] : []; } catch { return []; } }).slice(-3).reverse();
+  result.checksLast = rows.map((x) => ({ at: x.at, branch: x.branch, tip: x.tip, verdict: x.verdict, mergeable: x.mergeable }));
+  lines.push("checks last:");
+  for (const x of rows) lines.push(`  ${x.branch} ${sha8(x.tip)} ${x.verdict}${x.mergeable ? " mergeable" : ""} ${ago(x.at)} ago`);
+}
+
+// --- lands in flight (the self door's own busy rule)
+if (mer?.ok) {
+  const busy = mer.body.busy ?? [];
+  const runningRows = (mer.body.rows ?? []).filter((x) => x.running === true);
+  result.lands = { busy, running: runningRows.map((x) => x.slot) };
+  lines.push(busy.length || runningRows.length
+    ? `lands: WAIT — ${[...new Set([...busy, ...runningRows.map((x) => x.slot)])].map((s) => {
+        const row = (mer.body.rows ?? []).find((x) => x.slot === s);
+        return `slot ${s}${row?.lane?.branch ? ` ${row.lane.branch}` : ""}${row?.running ? " running" : " interrupted"}`; }).join(", ")}`
+    : "lands: none in flight");
+  if (mer.body.scope !== "fleet") lines.push(`  (scope ${mer.body.scope}: the lanes of your own repo only)`);
+} else lines.push(why("lands", "GET /api/self/merges", mer, "self"));
+
+// --- audit: now and the last one with its verdict
+if (ses?.ok) {
+  const live = ses.body.postLandAuditLive;
+  const run = live?.running, wait = live?.waiting ?? [];
+  let now_ = live === undefined ? "UNKNOWN — /api/sessions carried no postLandAuditLive" : "idle";
+  if (live === undefined) unknown.push("audit now");
+  if (run?.phase === "running") now_ = `RUNNING ${run.main}@${sha8(run.mainSha)} for ${ago(run.startedAt)}`
+    + (run.sharded ? ` shards ${run.sharded.shards.map((s) => `${s.k}/${run.sharded.n} ${s.state}`).join(", ")}` : "")
+    + ` covers ${(run.covers ?? []).join(", ") || "-"}`;
+  else if (run?.phase === "starting") now_ = "STARTING";
+  if (wait.length) now_ = (now_ === "idle" ? "" : now_ + "; ") + `WAITING ${wait.length}: ${wait.map((w) => `${w.branch}@${sha8(w.mainAfter)}${w.at ? ` since ${ago(w.at)}` : ""}`).join(", ")}`;
+  // …and what holds it, per repo: quiet until the cadence releases it, a helper nobody has claimed, the disk
+  if (wait.length) {
+    const clock = (t) => new Date(t).toTimeString().slice(0, 5);
+    const holdOf = (p) => !p ? "not in the queue" : p.hold === "quiet" ? `quiet until ${clock(p.releaseAt)} (a deploy or audit-tip starts it now)`
+      : p.hold ?? "nothing holds it";
+    const repos = [...new Set(wait.map((w) => w.repo))];
+    if (trail?.ok) now_ += ` — held: ${repos.map((r) => `${repos.length > 1 ? `${r} ` : ""}${holdOf(trail.body.pending.find((p) => p.repo === r))}`).join("; ")}`;
+    else { unknown.push("audit hold"); now_ += ` — held: UNKNOWN (GET /api/post-land-audits ${trail?.status ?? "not asked"})`; }
+    result.auditPending = trail?.ok ? trail.body.pending : null;
+  }
+  lines.push(`audit now: ${now_}`);
+  const last = ses.body.postLandAudit;
+  result.audit = { live: live ?? null, last: last ?? null };
+  if (last) {
+    const adj = last.adjudication;
+    const verdict = !adj ? "adj none" : `adj ${typeof adj === "string" ? adj : adj.verdict}`;
+    const covers = (last.covers ?? []).map((c) => typeof c === "string" ? c : c?.branch).filter(Boolean).join(", ") || "-";
+    lines.push(`audit last: ${last.result} ${sha8(last.mainSha)} ${ago(last.at)} ago covers ${covers}${last.result === "green" ? "" : ` · ${verdict}`}`);
+  } else lines.push("audit last: none recorded");
+} else lines.push(why("audit", "GET /api/sessions", ses, "owner"));
+
+// --- helpers: each device, what they run (their claims), then what waits for one
+if (ses?.ok) {
+  const onlineMs = ses.body.helperOnlineMs ?? 90000;
+  const devices = ses.body.helperDevices ?? [];
+  for (const h of devices) {
+    const online = typeof h.lastSeen === "number" && now - h.lastSeen < onlineMs;
+    lines.push(`helper ${h.name}: ${online ? `online ${h.mode ?? "?"} · ${h.running ?? "?"}/${h.maxParallelSuites ?? "?"} running` : `offline ${ago(h.lastSeen)}`}`);
+  }
+  const claims = devices.flatMap((h) => (h.claims ?? []).map((c) => ({ device: h.name, kind: c.kind, repo: c.repo, ref: c.ref, slot: c.slot ?? null, claimedAt: c.claimedAt })));
+  result.helperClaims = claims;
+  lines.push(`helper jobs running: ${claims.length ? claims.map((c) => `${c.kind} ${c.repo} ${c.ref ?? ""}${c.slot ? ` slot ${c.slot}` : ""} on ${c.device} ${ago(c.claimedAt)}`.replace(/ +/g, " ")).join("; ") : "none"}`);
+}
+// GET /api/helper/jobs without a deviceId leaves out shard, command and narrowed suite jobs (server.ts#helperJobsView);
+// what it shows is what waits, and the line says that it is that view
+if (jobs?.ok) {
+  const open = jobs.body.jobs.filter((j) => !j.claim);
+  result.helperQueued = open.map((j) => ({ id: j.id, kind: j.kind, repo: j.repo, branches: j.branches, oldestAt: j.oldestAt }));
+  lines.push(`helper jobs queued (deviceless view): ${open.length ? open.map((j) => `${j.kind} ${j.repo} ${(j.branches ?? []).join(",")} ${ago(j.oldestAt)}`).join("; ") : "none"}`);
+} else lines.push(why("helper jobs queued", "GET /api/helper/jobs", jobs, "owner"));
+
+// --- unread messages: one line each, the whole text with --full
+if (msgs?.ok) {
+  const entries = msgs.body.entries ?? [];
+  const label = (a) => {
+    if (a?.kind === "program") { const p = (ses?.ok ? ses.body.programs ?? [] : []).find((x) => x.id === a.id); return `program ${sha8(a.id)}${p?.title ? ` ${cut(p.title, 24)}` : ""}`; }
+    if (a?.kind === "role") return a.role;
+    const s = slots?.find((x) => x.id === a?.slot);
+    return `slot ${a?.slot}${s && s.openedAt === a?.openedAt ? ` ${cut(s.label, 24)}` : ""}`;
+  };
+  result.unread = entries.map((e) => ({ id: e.id, at: e.at, from: e.from, text: e.payload?.text ?? null }));
+  lines.push(`unread: ${entries.length}`);
+  for (const e of entries) {
+    lines.push(`  ${sha8(e.id)} ${new Date(e.at).toTimeString().slice(0, 5)} ${label(e.from)}: ${process.env.CTL_FULL === "1" ? "" : cut(e.payload?.text, 140)}`);
+    if (process.env.CTL_FULL === "1") lines.push(...String(e.payload?.text ?? "").split("\n").map((l) => `    ${l}`));
+  }
+} else lines.push(why("unread", "GET /api/self/messages", msgs, "self"));
+
+result.unknown = unknown;
+out(result, lines);
+process.exit(unknown.length ? 1 : 0);
 EOF
   js_run
   ;;

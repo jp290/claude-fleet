@@ -1032,6 +1032,8 @@ curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $F
 - Das Ziel kommt als erste Nachricht. Es beginnt mit „geöffnet von der Session in Slot N über ihren Self-Token“, der
   Kopf lautet „Ziel eines Branches (vom Öffner, …)“.
 - Ein Board-Name, der ein Rollen-Label ist (Orchestrator, `⚙ steward`), gibt 409. Er würde das Label der neuen Session.
+- Die Session auf dem Branch baut und startet schlank: nur die Werkzeuge in `.fleet/sitz-werkzeuge.json` (`bau`),
+  ohne `~/AGENTS.md`; ihre MCP-Server bleiben. Was sie wirklich bekommt, zeigt `GET /api/slots/<n>/fassung`.
 - **Ein Kind ist nie weiter als seine Öffnerin** (seit 2026-10-22, Befund F4 der Sicherheitsprüfung,
   `server/kind-weite.ts`). Was die Öffnerin hat, liest der Server an ihrem Slot ab, nie aus dem Body:
   - **Ohne Schranke** ist nur Claude Code in `bypassPermissions` (die Orchestratorin) oder Codex mit

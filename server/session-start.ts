@@ -110,8 +110,9 @@ export function spawnListRole(f: { claude: boolean; lane: boolean; orchestrator:
 // THE OCCUPATION'S LAST CLAUDE SPAWN as the board reads it (K16 R3, Bauleitung 16.10.: which tools a running MAIN
 // really has). Bound to the occupation like a standing handover: persisted with the slot, so a server restart keeps
 // it, and a record of another occupation, or a malformed one, loads as none. No timestamp: a restart that re-runs the
-// spawn must leave the persisted record as it was (e2e/lanes-lifecycle.ts), and nothing read one.
-export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; bibliothek?: SpawnBibliothek }
+// spawn must leave the persisted record as it was (e2e/lanes-lifecycle.ts), and nothing read one. `bau`: a "generic" seat
+// that builds and so started with its own tools (.fleet/sitz-werkzeuge.json).
+export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; bau?: true; bibliothek?: SpawnBibliothek }
 // FLEETS BIBLIOTHEK AT THAT SPAWN (server/sitz-wissen.ts): which start block the conversation reads. Claude Code records
 // the system prompt on a conversation's first request and keeps it after --resume until the conversation is compacted
 // (code.claude.com/docs/en/cli-reference, „System prompt flags in resumed conversations“). `wirksam` = the sha256 of the
@@ -127,5 +128,6 @@ export function slotSpawnFrom(raw: unknown, openedAt: number): SlotSpawn | null 
   const b = typeof r.bibliothek === "object" && r.bibliothek !== null ? r.bibliothek as Record<string, unknown> : null;
   const bibliothek = b && (b.wirksam === null || typeof b.wirksam === "string" && SHA.test(b.wirksam)) && typeof b.zuletzt === "string"
     && SHA.test(b.zuletzt) && typeof b.am === "number" && Number.isFinite(b.am) ? { wirksam: b.wirksam as string | null, zuletzt: b.zuletzt, am: b.am } : null;
-  return { role: r.role as ClaudeStartRole, openedAt, ...(bibliothek ? { bibliothek } : {}) };
+  return { role: r.role as ClaudeStartRole, openedAt, ...(r.role === "generic" && r.bau === true ? { bau: true as const } : {}),
+    ...(bibliothek ? { bibliothek } : {}) };
 }

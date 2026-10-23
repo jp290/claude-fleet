@@ -468,6 +468,31 @@ const SESSION_TOOLS: Readonly<Record<SessionListRole, readonly string[]>> = {
   orchestrator: ["Bash", "Read", "Write", "ToolSearch", "PushNotification", "Agent", "Artifact", "WebSearch", "Edit",
     "WebFetch", "TaskStop", "Skill", "Workflow", "AskUserQuestion", "ScheduleWakeup"],
 };
+// A SEAT THAT BUILDS (isBauCwd: the session on a board branch's own worktree) is "generic" to every role reader and still
+// knows what it is at its spawn, so it gets its own list (Kostenprüfung 23.10., Paket 1). The list is a file, so an entry
+// comes back without a code change (Orchestratorin 23.10.): `.fleet/sitz-werkzeuge.json`, key `bau`, read at every spawn and
+// by the Fassung and the board alike. Calls in the 62 top-level sessions under a branch worktree from 15.10. to 23.10.
+// (calls/sessions): Bash 6998/62, Read 368/41, Edit 168/26, Write 148/34, ToolSearch 53/36, Agent 46/11, TaskStop 12/8,
+// WebFetch 10/5, ScheduleWakeup 8/2, Monitor 5/3, SendMessage 4/2, CronList 1/1 — none of Artifact, Workflow,
+// AskUserQuestion, SendFeedback, ReportFindings, ListAgents. ToolSearch must stay: without it the deferred tools load whole.
+// A free session (no branch) keeps every tool: the owner talks with it about anything, and its list was never measured.
+// A missing or unreadable file, or a name outside the charset, = no --tools, every built-in tool, as before the cut.
+const SITZ_WERKZEUGE_PATH = `${import.meta.dir}/.fleet/sitz-werkzeuge.json`;
+const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+function bauTools(): readonly string[] | null {
+  try {
+    const v: unknown = JSON.parse(readFileSync(SITZ_WERKZEUGE_PATH, "utf8"));
+    const list = typeof v === "object" && v !== null ? (v as Record<string, unknown>).bau : null;
+    if (Array.isArray(list) && list.length && list.every((t) => typeof t === "string" && TOOL_NAME_RE.test(t))) return list as string[];
+    logError("bauTools", new Error(`${SITZ_WERKZEUGE_PATH}: "bau" is no list of tool names`));
+  } catch (e) { logError("bauTools", e); }
+  return null;
+}
+// ...and its line excludes the Codex version of the global rules, which Claude would otherwise load beside ~/.claude/CLAUDE.md
+const BAU_CLAUDE_MD_EXCLUDES: readonly string[] = [`${HOME}/AGENTS.md`];
+// the built-in tools a spawn's line names; null = no --tools, every built-in tool
+const startTools = (role: SessionSpawnRole, bau: boolean): readonly string[] | null =>
+  role === "generic" ? bau ? bauTools() : null : SESSION_TOOLS[role];
 const SESSION_LIST_RELOAD: Readonly<Record<SessionListFrom, string>> = {
   "user-command": "Datei ~/.claude/commands/<name>.md lesen und befolgen",
   "fleet-command": "Datei .claude/commands/<name>.md im Fleet-Checkout lesen und befolgen",
@@ -500,8 +525,8 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
   remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat)}; exec ${SHELL}`;
+  seat: SeatStart | null = null, bau = false): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -522,7 +547,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
   handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null): string {
+  seat: SeatStart | null = null, bau = false): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
@@ -577,7 +602,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const anhang = [rechte ? rechteSatz(rechte) : null, agentMd ? agentMdBlock(agentMd) : null, seat?.text || null];
     if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, ...anhang].filter(Boolean).join("\n"))}`;
     else if (anhang.some(Boolean)) cmd += ` --append-system-prompt ${shellSingleQuote(anhang.filter(Boolean).join("\n\n"))}`;
-    if (listRole && listRole !== "generic") cmd += ` --tools ${shellSingleQuote(SESSION_TOOLS[listRole].join(","))}`;
+    const tools = listRole ? startTools(listRole, bau) : null;
+    if (tools) cmd += ` --tools ${shellSingleQuote(tools.join(","))}`;
     // THE SETUP'S NOTEBOOK (server/notizbuch.ts): its own directory, off for a lane (Z3,
     // docs/messungen/2026-10-09-loader-proben-agents-md-automemory.md M1 — a lane reads its state through
     // memoryPointer("lane")), or nothing set and Claude's shared project folder. Per launch in the same
@@ -609,7 +635,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     } else if (listRole === "orchestrator") {
       const settings = JSON.stringify({ claudeMdExcludes: [`${import.meta.dir}/CLAUDE.md`, `${import.meta.dir}/.claude/CLAUDE.md`, `${HOME}/AGENTS.md`, `${import.meta.dir}/AGENTS.md`], ...cutSettings });
       cmd += ` --settings ${shellSingleQuote(settings)}`;
-    } else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
+    } else if (bau) cmd += ` --settings ${shellSingleQuote(JSON.stringify({ claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES, ...cutSettings }))}`;
+    else if (Object.keys(cutSettings).length) cmd += ` --settings ${shellSingleQuote(JSON.stringify(cutSettings))}`;
     // THE LIBRARY'S SKILLS (server/sitz-wissen.ts): claude loads <dir>/.claude/skills of every --add-dir, the description
     // in context, the text on invocation (probe claude 2.1.308; code.claude.com/docs/en/skills)
     if (seat?.skillsDir) cmd += ` --add-dir ${shellSingleQuote(seat.skillsDir)}`;
@@ -758,7 +785,9 @@ interface Harness {
     // the notebook of this setup (server/notizbuch.ts, notizbuchFuerStart); claude alone reads it, null = nothing set
     notizbuch?: Notizbuch | null;
     // Fleet's library for a seat without a standing role (server/sitz-wissen.ts); claude alone reads it
-    seat?: SeatStart | null }): string;
+    seat?: SeatStart | null;
+    // a seat that builds (isBauCwd): its own tools (.fleet/sitz-werkzeuge.json) and excludes; claude alone reads it
+    bau?: boolean }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1003,7 +1032,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -10180,6 +10209,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // the setup's notebook (server/notizbuch.ts) — the same answer the Fassung shows under „Liest“
       const notizbuch = h.id === "claude" ? await notizbuchFuerStart(occupant.cwd, listRole, occupant.agentMd?.profil ?? null) : null;
       if (!current()) return;
+      // A SEAT THAT BUILDS (bauTools): its own tools and excludes; its ambient MCP stays (Playwright: 14 of 56 building seats)
+      const bau = listRole === "generic" && occupant.label !== STEWARD_LABEL && isBauCwd(occupant.cwd);
       // FLEETS BIBLIOTHEK FÜR EINEN SITZ OHNE STEHENDE ROLLE (server/sitz-wissen.ts), auf jedem Spawn neu am Kopf gelesen.
       // Ist sie nicht zu haben, startet der Sitz ohne sie, wie vorher; der Grund steht im Log.
       let seat: SeatStart | null = null;
@@ -10213,7 +10244,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch,
-          seat })}`);
+          seat, bau })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -10241,7 +10272,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // ...and which library block its conversation reads (session-start.ts#SpawnBibliothek): a resumed conversation keeps
       // the prompt of its first request, unless it was compacted after the spawn before
       const priorBib = s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null;
-      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, ...(seat?.text
+      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, ...(bau ? { bau: true as const } : {}), ...(seat?.text
         ? { bibliothek: bibliothekBeimSpawn(priorBib, resume, sha256Of(seat.text), s.compaction?.at ?? null, Date.now()) } : {}) } : null;
       // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
@@ -20959,7 +20990,7 @@ function orchestratorPlanSessionAgents(repoRoot: string): SessionAgents {
 }
 
 function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "main" | "orchestrator" | null,
-  sessionId: string | null, orchestrator = false): FassungAbschnittEingang[] {
+  sessionId: string | null, orchestrator = false, bau = false): FassungAbschnittEingang[] {
   const loaded = nativeLoaderBytes(cwd, harness);
   if ("grund" in loaded) return [unknownAbschnitt("projektregeln", loaded.grund)];
   // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Rollen-Render ist weg, und der Projekt-
@@ -20977,12 +21008,16 @@ function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "ma
       grund: "Projekt-Monolith und AGENTS.md sind für die Orchestratorin ausgeschlossen; ihre Projektregeln kommen aus der Rolle" }];
   }
   if (!rulebookRole) {
-    if (!loaded.dateien.length)
-      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0)];
-    const gelesen = fassungDateiText(loaded.dateien);
+    // a seat that builds excludes what its line excludes (BAU_CLAUDE_MD_EXCLUDES)
+    const aus = new Set(bau ? BAU_CLAUDE_MD_EXCLUDES.map((pfad) => resolve(pfad)) : []);
+    const dateien = loaded.dateien.filter((datei) => !aus.has(resolve(datei.pfad)));
+    const grund = dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : undefined;
+    if (!dateien.length)
+      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
+    const gelesen = fassungDateiText(dateien);
     if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
-    return [textAbschnitt("projektregeln", loaded.dateien.map((datei) => datei.pfad).join("\n"),
-      gelesen.text, true, gelesen.bytes, loaded.dateien)];
+    return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"),
+      gelesen.text, true, gelesen.bytes, dateien, grund)];
   }
   // Der Render hängt bei RULEBOOK_CUT_MODE=ab an der Session-Id; vor dem Start ist sie unbekannt.
   if (RULEBOOK_CUT_MODE === "ab" && sessionId === null)
@@ -21143,20 +21178,21 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
 // (Fleet-URL, tmux-Socket, Hub) bleiben draußen, der Hash hängt am Inhalt und nicht am Ort. Nicht im Hash: `autoCompactEnabled`, das am
 // Slot hängt (Übergabe-Schwelle), nicht an der Rolle.
 function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | null,
-  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }): { zusatz: FassungAbschnittEingang; darf: FassungAbschnittEingang[] } {
+  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false): { zusatz: FassungAbschnittEingang; darf: FassungAbschnittEingang[] } {
   if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), darf: [] };
   const aspects = startAspects({ role: listRole, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS });
   const flags = claudeMcpFlags(mcp.browserMcp, mcp.packMcp);
   const cut = sessionListCut(listRole === "generic" ? "main" : listRole);
   const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
   const zusatz = [cut?.line, cut ? aspects.briefLine : null, habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null].filter(Boolean).join("\n");
-  const werkzeuge = listRole === "generic" ? "alle eingebauten" : SESSION_TOOLS[listRole].join(",");
+  const werkzeuge = startTools(listRole, bau)?.join(",") ?? "alle eingebauten";
   return {
     zusatz: textAbschnitt("systemzusatz", "server.ts#sessionListCut · server/session-start.ts#AUTO_MODE_BRIEF", zusatz, false),
     darf: [
       textAbschnitt("modus", "server/session-start.ts#PERMISSION_MODE", aspects.mode, false),
-      textAbschnitt("werkzeuge", "server.ts#SESSION_TOOLS · #sessionListCut", `--tools ${werkzeuge}\n--disallowedTools ${cut?.disallowed || "keine"}`, false),
-      textAbschnitt("einstellungen", "--settings der Zeile (Vorlage ohne Adressen)", JSON.stringify({ skillOverrides: cut?.skillOverrides ?? {},
+      textAbschnitt("werkzeuge", bau ? ".fleet/sitz-werkzeuge.json#bau · server.ts#sessionListCut" : "server.ts#SESSION_TOOLS · #sessionListCut", `--tools ${werkzeuge}\n--disallowedTools ${cut?.disallowed || "keine"}`, false),
+      textAbschnitt("einstellungen", "--settings der Zeile (Vorlage ohne Adressen)", JSON.stringify({
+        ...(bau ? { claudeMdExcludes: BAU_CLAUDE_MD_EXCLUDES.map((pfad) => pfad.replace(HOME, "~")) } : {}), skillOverrides: cut?.skillOverrides ?? {},
         autoMode: { environment: AUTOMODE_ENVIRONMENT }, ...rechteSettings(rechte), ...sitzRechte(rechte, aspects.settings.permissions?.deny) }), false),
       textAbschnitt("mcp", "server.ts#claudeMcpFlags (das strikte Flag und die Server der Packs)",
         `--strict-mcp-config ${flags.strict ? "ja" : "nein"}\n${flags.config ?? MCP_CONFIG_KEINE}`, false),
@@ -21270,15 +21306,18 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   // denselben realpath, damit „Liest“ und der Hash dieselben Quellen nennen.
   const cwd = realpathLoose(s.cwd!);
   const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
-  const fleet = fassungFleetStart(fassungSpawnRolle(s, rolle, spawnPick.harness), s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp });
+  const spawnRolle = fassungSpawnRolle(s, rolle, spawnPick.harness);
+  // a seat that builds, read as ensureSlot reads it
+  const bau = spawnRolle === "generic" && s.label !== STEWARD_LABEL && isBauCwd(cwd);
+  const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau);
   const liest: FassungAbschnittEingang[] = [
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
-      rolle === "orchestrator"),
+      rolle === "orchestrator", bau),
     ...(await fassungWissen(s, rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
-      ? await notizbuchFuerStart(cwd, fassungSpawnRolle(s, rolle, spawnPick.harness), s.agentMd?.profil ?? null) : null, spawnPick.harness, saat)),
+      ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil ?? null) : null, spawnPick.harness, saat)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
     s.agentMd ? textAbschnitt("eigenes", `Slot.agentMd (Profil „${s.agentMd.profil}“)`, agentMdBlock(s.agentMd), true)
       : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
@@ -27558,9 +27597,11 @@ function sessionKindOf(s: Slot): SessionKind {
   if (s.worktree) return "lane";
   if (deliveryRecipient({ kind: "orchestrator" }) === s) return "orchestrator";
   if (boundProgramsForMain(s).length) return "program-main";
-  const cwd = s.cwd;
-  if (cwd && branchBook.some((r) => r.name !== null && repoCanon(worktreePathFor(r.repo, r.branch)) === repoCanon(cwd))) return "bau";
-  return "session";
+  return s.cwd && isBauCwd(s.cwd) ? "bau" : "session";
+}
+// a seat that builds: its folder is a board branch's own worktree (POST /api/branches/open → worktreePathFor)
+function isBauCwd(cwd: string): boolean {
+  return branchBook.some((r) => r.name !== null && repoCanon(worktreePathFor(r.repo, r.branch)) === repoCanon(cwd));
 }
 // the env value of the session's rail: FLEET_LANE_MIGRATE_PCT for a lane (null = unset), FLEET_MIGRATE_PCT otherwise
 const railEnvPct = (kind: SessionKind): number | null => (kind === "lane" ? LANE_MIGRATE_PCT_ENV : MIGRATE_PCT);
@@ -51941,7 +51982,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(reading.permissionMode ? { permissionMode: reading.permissionMode } : {}),
             // the role its last claude spawn knew, and so the built-in tools on its line (null = no --tools, all of them)
             ...(s.spawn && s.spawn.openedAt === s.openedAt
-              ? { spawn: { role: s.spawn.role, tools: s.spawn.role === "generic" ? null : SESSION_TOOLS[s.spawn.role].length } } : {}),
+              ? { spawn: { role: s.spawn.role, tools: startTools(s.spawn.role, !!s.spawn.bau)?.length ?? null } } : {}),
             // the ROLE the server actually gives this session (positionRole), beside the label the
             // owner typed: an „[Zitat entfernt]“ label on a bound Program-MAIN is a MAIN. Only the two
             // roles a label cannot show — a lane is `worktree`, generic is absent; spelled

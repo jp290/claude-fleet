@@ -233,23 +233,23 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const rechteWahl = [null, { stufe: "bauen", an: [], aus: [] }, { stufe: "lesen", an: [], aus: [] }];
         const mcpWahl = [[], [{ name: "n1", command: "bun", args: ["x.ts", "it's"] }]];
         const faelle = [];
-        for (const listRole of ["lane", "main", "orchestrator", "generic"])
+        for (const [listRole, bau] of [["lane", false], ["main", false], ["orchestrator", false], ["generic", false], ["generic", true]])
           for (const rechte of rechteWahl) for (const packMcp of mcpWahl) for (const browserMcp of [true, false]) {
-            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp });
-            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null);
-            faelle.push({ listRole, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile });
+            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau);
+            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau);
+            faelle.push({ listRole, bau, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
           }
         await Bun.write(${JSON.stringify(out)}, JSON.stringify(faelle));
         process.exit(0);
       `;
       const r = await runServer(script, dir, env);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      type Fall = { listRole: string; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string;
+      type Fall = { listRole: string; bau: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
         fleet: { zusatz: { text: string | null }; darf: { id: string; text: string | null }[] } };
       const faelle = JSON.parse(readFileSync(out, "utf8")) as Fall[];
-      expect(faelle).toHaveLength(48);
+      expect(faelle).toHaveLength(60);
       for (const f of faelle) {
-        const wo = `${f.listRole} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
+        const wo = `${f.listRole}${f.bau ? " (baut)" : ""} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
         const gleich = (fassung: unknown, zeile: unknown): void => { expect({ wo, wert: fassung }).toEqual({ wo, wert: zeile }); };
         const tokens = zerlege(f.zeile);
         const flag = (name: string): string | null => { const i = tokens.indexOf(name); return i < 0 ? null : tokens[i + 1] ?? ""; };
@@ -260,9 +260,12 @@ describe("die Fassung und die Zeile des Spawns", () => {
         gleich(darf("werkzeuge"), `--tools ${flag("--tools") ?? "alle eingebauten"}\n--disallowedTools ${flag("--disallowedTools") ?? "keine"}`);
         // --settings: skillOverrides und Rechte wörtlich; die Auto-Mode-Umgebung als Vorlage ohne Adressen (`{fleetUrl}` …), also jede Zeile der Zeile
         // passt der Reihe nach auf eine Vorlagenzeile, und was die Zeile weglässt, sind nur die Hub-Zeilen (ohne Hub gibt es sie dort nicht)
-        const zeileSet = JSON.parse(flag("--settings") ?? "{}") as { skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment?: string[] } };
-        const fassungSet = JSON.parse(darf("einstellungen")) as { skillOverrides: unknown; permissions?: unknown; autoMode: { environment: string[] } };
+        const zeileSet = JSON.parse(flag("--settings") ?? "{}") as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment?: string[] } };
+        const fassungSet = JSON.parse(darf("einstellungen")) as { claudeMdExcludes?: string[]; skillOverrides: unknown; permissions?: unknown; autoMode: { environment: string[] } };
         gleich(fassungSet.skillOverrides, zeileSet.skillOverrides ?? {});
+        // die Orchestratorin zeigt ihre Excludes unter „Liest“ (fassungProjektregelnAus), eine Session ohne Rolle hier
+        if (f.listRole === "generic")
+          gleich(fassungSet.claudeMdExcludes ?? null, zeileSet.claudeMdExcludes?.map((pfad) => pfad.replace(f.home, "~")) ?? null);
         gleich(fassungSet.permissions ?? null, zeileSet.permissions ?? null);
         const deny = (zeileSet.permissions as { deny?: string[] } | undefined)?.deny ?? [];
         gleich("FLEET_NO_BYPASS" in env ? deny.slice(-REAL_SEAT_DENY.length) : null, "FLEET_NO_BYPASS" in env ? [...REAL_SEAT_DENY] : null);
@@ -279,6 +282,41 @@ describe("die Fassung und die Zeile des Spawns", () => {
         gleich(config === null ? tokens.includes("--mcp-config") : f.zeile.includes(config), config !== null);
         gleich((flag("--append-system-prompt") ?? "").startsWith(f.fleet.zusatz.text ?? "(kein Systemzusatz)"), true);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+// EIN SITZ, DER BAUT, STARTET SCHLANK (Kostenprüfung 23.10., Paket 1): ohne die Werkzeuge, die in 62 Bau-Sessions niemand rief, ohne die
+// Codex-Fassung der globalen Regeln; seine MCP-Server bleiben (Playwright nutzen 14 von 56 Bau-Sitzen). Eine freie Session behält alles.
+describe("ein Sitz, der baut, gegen eine freie Session", () => {
+  test("die Zeile des Bau-Sitzes nimmt sechs Werkzeuge und ~/AGENTS.md heraus, die freie Session behält beides", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "start-fassung-bau-"));
+    try {
+      mkdirSync(join(dir, "state"), { recursive: true });
+      mkdirSync(join(dir, "home"), { recursive: true });
+      const out = join(dir, "out.json");
+      const script = `
+        const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+        const zeile = (browserMcp, bau) => S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, null, null, browserMcp, null, [], "generic", false, null, null, null, null, null, bau);
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ bau: zeile(true, true), frei: zeile(true, false), home: process.env.HOME }));
+        process.exit(0);
+      `;
+      const r = await runServer(script, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
+      const z = JSON.parse(readFileSync(out, "utf8")) as { bau: string; frei: string; home: string };
+      const flag = (zeile: string, name: string): string | null => { const t = zerlege(zeile); const i = t.indexOf(name); return i < 0 ? null : t[i + 1] ?? ""; };
+      const tools = flag(z.bau, "--tools")!.split(",");
+      // die Liste steht in einer Datei, damit ein Eintrag ohne Codeänderung zurückkommt
+      expect(tools).toEqual((JSON.parse(readFileSync(join(ROOT, ".fleet/sitz-werkzeuge.json"), "utf8")) as { bau: string[] }).bau);
+      for (const weg of ["Artifact", "Workflow", "AskUserQuestion", "SendFeedback", "ReportFindings", "ListAgents"]) expect(tools).not.toContain(weg);
+      for (const bleibt of ["Bash", "Read", "Edit", "Write", "Agent", "Skill", "ToolSearch", "Monitor"]) expect(tools).toContain(bleibt);
+      expect((JSON.parse(flag(z.bau, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).toEqual([`${z.home}/AGENTS.md`]);
+      expect(zerlege(z.bau)).not.toContain("--strict-mcp-config");
+      expect(flag(z.frei, "--tools")).toBeNull();
+      expect(z.frei).not.toContain("claudeMdExcludes");
+      expect(zerlege(z.frei)).not.toContain("--strict-mcp-config");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

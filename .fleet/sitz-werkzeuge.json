@@ -1,0 +1,4 @@
+{
+  "bau": ["Bash", "Read", "Edit", "Write", "ToolSearch", "Agent", "Skill", "TaskStop", "WebFetch", "WebSearch", "Monitor",
+    "ScheduleWakeup", "SendMessage"]
+}

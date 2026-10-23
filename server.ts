@@ -20996,8 +20996,32 @@ function orchestratorPlanSessionAgents(repoRoot: string): SessionAgents {
   return { text, bytes: Buffer.byteLength(text), parts };
 }
 
+// DER WÄCHTER FÜR DIE BASIS (R11, Mangel M12 der AGENTS.md-Prüfung 23.10.): Claude liest AGENTS.md nur, solange kein CLAUDE.md
+// zählt (nativeLoaderBytes). Eine einzige solche Datei im Ordner oder darüber nimmt jedem Sitz in Fleets Repo die Basis, und
+// bisher sagte das niemand. Fleets Baum ist ein Checkout desselben Objektspeichers, ohne git (die Kopie einer Testinstanz) Fleets
+// eigener Ordner, wie claudeCodeAnatomie ihn nimmt.
+async function fleetBaumVon(cwd: string): Promise<string | null> {
+  if (FLEET_GIT_COMMON === null) {
+    const eigen = realpathLoose(import.meta.dir), ort = realpathLoose(cwd);
+    return ort === eigen || ort.startsWith(`${eigen}/`) ? eigen : null;
+  }
+  const root = await repoRootOf(cwd).catch(() => null);
+  return root !== null && await gitCommonDirOf(root) === FLEET_GIT_COMMON ? root : null;
+}
+function basisFehlt(fleetBaum: string, dateien: readonly { pfad: string; bytes: number }[]): string | null {
+  const agents = realpathLoose(`${fleetBaum}/AGENTS.md`);
+  if (!existsSync(agents) || dateien.some((datei) => realpathLoose(datei.pfad) === agents)) return null;
+  const configDir = dirname(dirname(projDir("x")));
+  const sperrt = dateien.find((datei) => datei.bytes > 0 && !datei.pfad.startsWith(`${configDir}/`)
+    && /(^|\/)(CLAUDE\.md|CLAUDE\.local\.md)$/.test(datei.pfad));
+  if (!sperrt) return null;
+  const name = sperrt.pfad.endsWith("/.claude/CLAUDE.md") ? ".claude/CLAUDE.md" : basename(sperrt.pfad);
+  const ort = name === ".claude/CLAUDE.md" ? dirname(dirname(sperrt.pfad)) : dirname(sperrt.pfad);
+  return `Basis fehlt: ${name} in ${ort} schaltet ${fleetBaum}/AGENTS.md ab`;
+}
+
 function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "main" | "orchestrator" | null,
-  sessionId: string | null, orchestrator = false, bau = false): FassungAbschnittEingang[] {
+  sessionId: string | null, orchestrator = false, bau = false, fleetBaum: string | null = null): FassungAbschnittEingang[] {
   const loaded = nativeLoaderBytes(cwd, harness);
   if ("grund" in loaded) return [unknownAbschnitt("projektregeln", loaded.grund)];
   // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Rollen-Render ist weg, und der Projekt-
@@ -21018,7 +21042,9 @@ function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "ma
     // a seat that builds excludes what its line excludes (BAU_CLAUDE_MD_EXCLUDES)
     const aus = new Set(bau ? BAU_CLAUDE_MD_EXCLUDES.map((pfad) => resolve(pfad)) : []);
     const dateien = loaded.dateien.filter((datei) => !aus.has(resolve(datei.pfad)));
-    const grund = dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : undefined;
+    const basis = fleetBaum ? basisFehlt(fleetBaum, dateien) : null;
+    const grund = [basis, dateien.length < loaded.dateien.length ? "~/AGENTS.md ist für einen Sitz, der baut, ausgeschlossen (server.ts#BAU_CLAUDE_MD_EXCLUDES)" : null]
+      .filter(Boolean).join(" · ") || undefined;
     if (!dateien.length)
       return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
     const gelesen = fassungDateiText(dateien);
@@ -21232,7 +21258,8 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       ...fassungRolleKarte(o.rolle, o.repoRoot),
       fleet.zusatz,
       ...(fleet.start ? [fleet.start] : []),
-      ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator"),
+      ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator", false,
+        o.rolle === "generic" ? await fleetBaumVon(o.repoRoot) : null),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
       ...(await fassungGedaechtnisAus(claude ? await notizbuchFuerStart(o.repoRoot,
@@ -21327,7 +21354,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
-      rolle === "orchestrator", bau),
+      rolle === "orchestrator", bau, rolle === "generic" ? await fleetBaumVon(cwd) : null),
     ...(await fassungWissen(s, rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil ?? null) : null, spawnPick.harness, saat)),
@@ -55909,6 +55936,6 @@ if (process.stdout.isTTY) {
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
-  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, buildLaneSuccessionBrief,
+  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };

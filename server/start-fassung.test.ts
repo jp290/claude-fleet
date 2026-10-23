@@ -510,3 +510,49 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect((l as Lauf & { slotNachher?: number }).slotNachher).toBe(400);
   });
 });
+
+// DER WÄCHTER FÜR DIE BASIS (R11, Mangel M12): ein CLAUDE.md im Ordner oder darüber schaltet Claudes AGENTS.md-Rückfall ab. Ein Sitz
+// ohne Rolle in Fleets Repo verlöre so die Basis, und die Fassung sagt es dann, mit der Datei, die sie abschaltet.
+describe("ein Sitz ohne Rolle in Fleets Repo, dem ein CLAUDE.md die AGENTS.md nimmt", () => {
+  test("die Fassung zeigt „Basis fehlt“ mit dem Pfad; ohne CLAUDE.md oder außerhalb von Fleets Baum schweigt sie", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "start-fassung-basis-"));
+    try {
+      mkdirSync(join(dir, "state"), { recursive: true });
+      mkdirSync(join(dir, "home", ".claude"), { recursive: true });
+      const oben = join(dir, "oben"), baum = join(oben, "baum"), sitz = join(baum, "sub");
+      mkdirSync(sitz, { recursive: true });
+      writeFileSync(join(baum, "AGENTS.md"), "Basis fixture\n");
+      const out = join(dir, "out.json");
+      const script = `
+        const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
+        const { writeFileSync, rmSync } = await import("node:fs");
+        const regeln = (baum) => S.fassungProjektregelnAus(${JSON.stringify(sitz)}, "claude", null, null, false, false, baum)[0];
+        const ohne = regeln(${JSON.stringify(baum)});
+        writeFileSync(${JSON.stringify(join(oben, "CLAUDE.md"))}, "eine Regel von oben\\n");
+        const mit = regeln(${JSON.stringify(baum)});
+        const fremd = regeln(null);
+        rmSync(${JSON.stringify(join(oben, "CLAUDE.md"))});
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ ohne, mit, fremd,
+          fleet: await S.fleetBaumVon(${JSON.stringify(ROOT)}), draussen: await S.fleetBaumVon(${JSON.stringify(sitz)}) }));
+        process.exit(0);
+      `;
+      const r = await runServer(script, dir);
+      expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
+      type Regeln = { quelle: string | null; grund?: string };
+      const z = JSON.parse(readFileSync(out, "utf8")) as { ohne: Regeln; mit: Regeln; fremd: Regeln; fleet: string | null; draussen: string | null };
+      const real = (pfad: string): string => Bun.spawnSync(["realpath", pfad]).stdout.toString().trim();
+      // ohne CLAUDE.md lädt Claude die AGENTS.md, und kein Hinweis steht da
+      expect(z.ohne.quelle).toContain("AGENTS.md");
+      expect(z.ohne.grund ?? "").not.toContain("Basis fehlt");
+      // mit CLAUDE.md darüber fehlt sie, und die Fassung nennt die Datei und ihren Ordner
+      expect(z.mit.quelle).not.toContain("AGENTS.md");
+      expect(z.mit.grund).toBe(`Basis fehlt: CLAUDE.md in ${oben} schaltet ${baum}/AGENTS.md ab`);
+      // außerhalb von Fleets Baum gibt es keine Basis, die fehlen könnte
+      expect(z.fremd.grund ?? "").not.toContain("Basis fehlt");
+      expect(z.fleet).toBe(real(ROOT));
+      expect(z.draussen).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});

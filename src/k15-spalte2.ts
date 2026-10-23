@@ -1,6 +1,7 @@
 // K15 ENTWURF D · SPALTE 2, der Aufbau der gewählten Konstellation als Baum kompakter Session-Karten; oben, wer anleitet. Eine Karte
 // zeigt Rolle, Name, Kennzeichen und darunter Agent und Modell (Runde 4, Owner Z62); Effort, Succession und was sie vom Profil abweicht erst
 // beim Darüberfahren oder mit „Alles zeigen“ (Owner 16.10.: „[Zitat entfernt]“).
+import { mitgereistTeil } from "./k15-mitgereist";
 import { el, bausteinName } from "./k15-haupt";
 import { harnessMark, icon } from "./icons";
 import { modelLabel } from "./modelname";
@@ -126,6 +127,8 @@ export function spalteAufbau(ansichten: readonly string[]): HTMLElement {
   const fass = fassungenTeil(s);
   if (fass) col.append(fass);
   col.append(protokollTeil(s), erlaubtTeil(s));
+  const mit = mitgereistTeil(s);
+  if (mit) col.append(mit);
   if (s.k.heuteNicht) col.append(el("div", "k15hinweis", s.k.heuteNicht));
   const orch = orchHinweis(orchZahl(s.k, s.profile));
   if (orch) col.append(el("div", "k15hinweis", orch));

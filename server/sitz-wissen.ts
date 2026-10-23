@@ -59,6 +59,8 @@ export interface SeatPack {
   readonly sources: readonly { readonly path: string; readonly anchor: string }[];
   /** die Abschnitte aller Quellen am Kopf, wie die Ausleihe sie liefert; null, wenn eine Quelle nicht lesbar war */
   readonly text: string | null;
+  /** nur ein mitgereister Pack (server/sitz-reise.ts): sein Weg aus der Datei; sonst entscheidet SEAT_BOX */
+  readonly weg?: "start" | "skill";
 }
 
 export interface SeatKnowledge {
@@ -69,7 +71,7 @@ export interface SeatKnowledge {
   readonly packs: readonly SeatPack[];
 }
 
-const isBox = (pack: SeatPack): boolean => pack.id in SEAT_BOX;
+const isBox = (pack: SeatPack): boolean => pack.weg ? pack.weg === "start" : pack.id in SEAT_BOX;
 // ein Pack ohne lesbaren Text kommt weder in den Start noch als Skill: ein leerer Text wäre eine falsche Zusage
 const boxOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => isBox(pack) && pack.text !== null);
 const skillsOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => !isBox(pack) && pack.text !== null && pack.useWhen);
@@ -152,7 +154,7 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
     textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${k.repoRoot}/${source.path} · ${source.anchor}`).join("\n"),
-      boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : `wörtlich im Start: ${SEAT_BOX[pack.id]}`)),
+      boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? "so mitgereist"}`)),
     ...skills.map((pack) => textAbschnitt("wissen", `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills/${pack.id}/SKILL.md\n`
       + pack.sources.map((source) => `${k.repoRoot}/${source.path} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,

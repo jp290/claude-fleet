@@ -2119,6 +2119,9 @@ interface Slot {
   openedBy: import("./opener").Opener | null;
   lauf: import("./laeufe").LaufBindung | null; // der Lauf einer Konstellation und die Position darin (server/laeufe.ts), gesetzt nach dem Start
   agentMd: import("./agentmd").AgentMd | null; // the Agent-MD of the profile it started from (server/agentmd.ts), set at open; claude only
+  // what a seat of an imported constellation reads instead of this Fleet's library (server/sitz-reise.ts), set at open from the door's
+  // `sitz`; claude only; carried by a generic succession; persisted; cleared on open/kill
+  sitz: import("./sitz-reise").SitzStart | null;
   // Fleets Bibliothek for this session (server.ts#seatLibraryOn), chosen at its opening: null = no choice, the place decides
   // (on in Fleet's own repo, off elsewhere). claude only; carried by a generic succession; persisted; cleared on open/kill.
   bibliothek: boolean | null;

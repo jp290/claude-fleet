@@ -289,7 +289,7 @@ describe("die Fassung und die Zeile des Spawns", () => {
 // Vorschau, die es dafür zeigte. Abnahme 22.10.: ohne diese Felder war „gezeigt = laufend“ nur für den nackten Start wahr. Der Kindprozess ruft
 // den Handler von server.ts (serveOptions.fetch) wie die Route-Handler-Tests in server/load.test.ts; die Panes laufen auf einem eigenen
 // tmux-Socket mit `true` als Agent.
-interface Lauf { paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
+interface Lauf { ohneSitz?: string; liest?: string; gedaechtnis?: string | null; paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
 describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
   const dir = mkdtempSync(join(tmpdir(), "start-fassung-tuer-"));
   let laeufe: Record<string, Lauf> = {};
@@ -306,7 +306,12 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     mkdirSync(join(dir, "home"), { recursive: true });
     writeFileSync(join(dir, "state", SPEICHER_DATEI), JSON.stringify({ fassungen: [], packs: [], profile: [
       { id: "planer", rolle: "nur-ordner", schiene: "session", name: "Planer", datei: { titel: "planer.md", v: 2, pfad: "eigene Datei",
-        abschnitte: [{ titel: "# Planer", text: "Du setzt selten ein Ziel." }] } }] }));
+        abschnitte: [{ titel: "# Planer", text: "Du setzt selten ein Ziel." }] } }],
+      // eine importierte Konstellation mit einem Sitz, der mitbringt, was er liest, darf und im Notizbuch hat (server/sitz-reise.ts#sitzDerTuer)
+      konstellationen: [{ id: "reise", name: "Reise", abgeleitetVon: "a".repeat(64), positionen: [{ id: "bauer", name: "Bauer", sitz: {
+        liest: [{ id: "reise-pack", weg: "start", quellen: [{ pfad: "docs/x.md", anker: "A" }], wofuer: "zeigen", text: "Das Pack, das mit der Datei reiste." }],
+        persoenlich: [], darf: { rechte: { stufe: "lesen", an: [], aus: [] }, modus: "auto" },
+        notizbuch: { index: "# Notizen\n- das Notizbuch reiste mit\n", notizen: [], daheim: 0 } } }] }] }));
     const out = join(dir, "out.json");
     const script = `
       const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
@@ -324,16 +329,17 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       const repo = process.env.FIX_REPO;
       const laeufe = {};
       // eine Variante so, wie das Fenster sie fährt: Vorschau mit den Wahlen, dann open mit denselben Feldern und dem gezeigten Hash
-      const fahre = async (schritt, slot, { cwd = repo, role = "nur-ordner", rechte, profil, bibliothek, fassung } = {}) => {
+      const fahre = async (schritt, slot, { cwd = repo, role = "nur-ordner", rechte, profil, bibliothek, fassung, sitz } = {}) => {
         const q = new URLSearchParams({ repo: cwd, role, anlass: "neu" });
         if (rechte) q.set("rechte", JSON.stringify(rechte));
         if (profil) q.set("profil", profil);
+        if (sitz) q.set("sitz", sitz);
         if (bibliothek !== undefined) { q.set("bibliothek", String(bibliothek)); q.set("bausteine", "bibliothek=" + (bibliothek ? "an" : "aus")); }
         const v = await call("GET", "/api/founding-plan?" + q);
         if (v.status !== 200) throw new Error(schritt + ": Vorschau " + v.status + " " + JSON.stringify(v.body));
         const startbar = v.body.start.startbar;
         const body = { cwd, fassung: fassung ?? v.body.fassungsHash, ...(role === "orchestratorin" ? { label: "Orchestrator" } : {}),
-          ...(rechte ? { rechte } : {}), ...(profil ? { profil } : {}),
+          ...(rechte ? { rechte } : {}), ...(profil ? { profil } : {}), ...(sitz ? { sitz } : {}),
           ...(startbar ? { plan: { hash: v.body.plan.planHash, role, ...(bibliothek !== undefined ? { bausteine: "bibliothek=" + (bibliothek ? "an" : "aus") } : {}) } }
             : bibliothek !== undefined ? { bibliothek } : {}) };
         const o = await call("POST", "/api/slots/" + slot + "/open", body);
@@ -352,6 +358,15 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       await fahre("bibliothek-aus", 7, { bibliothek: false });
       await fahre("unterordner", 8, { cwd: repo + "/unter" });
       await fahre("alles", 9, { rechte: { stufe: "bauen", an: [], aus: [] }, profil: "planer", bibliothek: false, cwd: repo + "/unter/ordner" });
+      // ein Sitz aus einer Datei: Lesestoff und gedeckeltes Darf aus dem Sitz-Block; mit Profil auch das gesäte Notizbuch (nur in ein eigenes, noch leeres)
+      await fahre("sitz", 1, { sitz: "reise/bauer" });
+      await fahre("sitz-profil", 2, { sitz: "reise/bauer", profil: "planer" });
+      const ohneSitz = await call("GET", "/api/founding-plan?" + new URLSearchParams({ repo, role: "nur-ordner", anlass: "neu" }));
+      laeufe.sitz.ohneSitz = ohneSitz.body?.fassungsHash;
+      const lesen = await call("GET", "/api/slots/1/fassung?anlass=laufend");
+      laeufe.sitz.liest = JSON.stringify(lesen.body?.teile?.find((x) => x.id === "liest")?.abschnitte.map((a) => a.text));
+      const lesen2 = await call("GET", "/api/slots/2/fassung?anlass=laufend");
+      laeufe["sitz-profil"].gedaechtnis = lesen2.body?.teile?.find((x) => x.id === "liest")?.abschnitte.find((a) => a.id === "gedaechtnis")?.text ?? null;
       await fahre("orchestratorin-rechte", 10, { role: "orchestratorin", rechte: { stufe: "lesen", an: [], aus: [] } });
       // veraltet: die Vorschau ohne Rechte, der Start mit Rechten -> 409 mit dem Hash, den der Start trüge; nichts ist gestartet
       const nackt = await call("GET", "/api/founding-plan?" + new URLSearchParams({ repo, role: "nur-ordner", anlass: "neu" }));
@@ -401,7 +416,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(abbruch).toBe("");
   });
 
-  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles", "orchestratorin-rechte"]) {
+  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil"]) {
     test(`${schritt}: open mit dem gezeigten Hash gibt 200, und laufend ist der gezeigte, festgehaltene`, () => {
       const l = laeufe[schritt];
       expect(l?.open).toBe(200);
@@ -409,6 +424,12 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       expect(l?.festgehalten).toBe(true);
     });
   }
+
+  test("ein Sitz aus einer Datei: der gezeigte Hash trägt sein Pack und unterscheidet sich vom Start ohne Sitz; das gesäte Notizbuch steht im laufenden Sitz", () => {
+    expect(laeufe.sitz?.liest).toContain("Das Pack, das mit der Datei reiste.");
+    expect(laeufe.sitz?.vorschau).not.toBe(laeufe.sitz?.ohneSitz);
+    expect(laeufe["sitz-profil"]?.gedaechtnis).toBe("# Notizen\n- das Notizbuch reiste mit\n");
+  });
 
   test("das Netz allein: eine Fassung, die sich nach der Prüfung der Tür bewegt, gibt 409; keine Pane davor, kein Slot, keine Datei danach", () => {
     const l = laeufe.netz;

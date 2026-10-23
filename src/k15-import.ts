@@ -8,6 +8,8 @@ import {
 import { MAX_PROFILE } from "./k15-speicher";
 import { aufgabeAus } from "./aufgabe";
 import { laufBerichteAus, type LaufBericht } from "./lauf-bericht";
+import { sitzAus, sitzZumTeilen, type Sitz } from "./sitz";
+import { rechteAus } from "../session-rechte";
 export { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE } from "./k15-speicher";
 
 // DIE GRENZEN: was größer ist, liest das Fenster nicht erst ein (eine gezogene Videodatei fror den Tab ein)
@@ -195,6 +197,13 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
     if (abw === null || werteAbw === null || schalter === null || (ohne !== undefined && !(Array.isArray(ohne) && ohne.every((t) => typeof t === "string"))))
       return `Session ${name}: ihre Einstellungen passen nicht`;
     if (x.wann !== undefined && typeof x.wann !== "string") return `Session ${name}: „wann“ ist kein Text`;
+    // was mit dem Sitz reiste (src/sitz.ts); ein schiefer Block lehnt die ganze Datei ab, wie eine schiefe Einstellung
+    const sitzRoh: Sitz | string | undefined = x.sitz === undefined || x.sitz === null ? undefined : sitzAus(x.sitz);
+    if (typeof sitzRoh === "string") return `Session ${name}: ${sitzRoh}`;
+    // aus einer Datei kommt keine Freigabe der Rechte und kein Recht am Sitz vorbei an sitz.darf, das die Tür deckelt (src/sitz.ts#sitzRechte);
+    // beides steht nur im eigenen Speicher (behalte)
+    const sitz = sitzRoh && !behalte ? { ...sitzRoh, persoenlich: sitzRoh.persoenlich, darf: sitzZumTeilen(sitzRoh).darf } : sitzRoh;
+    const rechte = behalte && x.rechte !== undefined ? rechteAus(x.rechte) : null;
     let datei: Quelle | undefined;
     if (typeof x.eigeneDatei === "string") hinweise.push(`${name}: die eigene Datei ${x.eigeneDatei.slice(0, 80)} war nur genannt, nicht mitgegeben`);
     else if (x.eigeneDatei !== undefined) {
@@ -203,7 +212,8 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
       datei = d;
     }
     neu.push(pos(ids[n], name, pr.id, { ...(abw ? { abw } : {}), ...(werteAbw ? { werteAbw } : {}), ...(schalter ? { schalter } : {}),
-      ...(ohne ? { ohne: (ohne as string[]).slice(0, 200) } : {}), ...(typeof x.wann === "string" ? { wann: x.wann.slice(0, 200) } : {}), ...(datei ? { datei } : {}) }));
+      ...(ohne ? { ohne: (ohne as string[]).slice(0, 200) } : {}), ...(typeof x.wann === "string" ? { wann: x.wann.slice(0, 200) } : {}), ...(datei ? { datei } : {}),
+      ...(sitz ? { sitz } : {}), ...(rechte ? { rechte } : {}) }));
   }
   // die Eltern: jede `meldetAn` muss es geben, keine Session meldet an sich selbst, und kein Kreis
   const vater = new Map<string, string>();
@@ -236,7 +246,12 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   const laeufe = o.laeufe === undefined ? [] : laufBerichteAus(o.laeufe, ids);
   if (typeof laeufe === "string") return laeufe;
   if (laeufe.length) hinweise.push(`${laeufe.length === 1 ? "ein Lauf reist" : `${laeufe.length} Läufe reisen`} als Bericht mit, nur zum Lesen`);
+  // woraus sie exportiert wurde: der sha256 der Fassung dort (server/konst-fassungen.ts#fassungsHash)
+  if (o.abgeleitetVon !== undefined && !(typeof o.abgeleitetVon === "string" && /^[0-9a-f]{64}$/.test(o.abgeleitetVon)))
+    return "abgeleitetVon ist der sha256 der Fassung, aus der exportiert wurde";
+  const abgeleitetVon = typeof o.abgeleitetVon === "string" ? o.abgeleitetVon : undefined;
   return { k: { id: behalte ?? `i${jetzt}`, name: str(o.name, 80) ?? "Importiert", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "importiert", eigen: true,
     ...(autor ? { autor } : {}), ...(typeof o.quer === "string" ? { quer: o.quer.slice(0, 300) } : {}),
-    ...(protokoll ? { protokoll } : {}), ...(aufgabe ? { aufgabe } : {}), wurzeln }, neueProfile, hinweise, laeufe };
+    ...(abgeleitetVon ? { abgeleitetVon } : {}), ...(protokoll ? { protokoll } : {}), ...(aufgabe ? { aufgabe } : {}), ...(laeufe.length ? { laeufe } : {}),
+    wurzeln }, neueProfile, hinweise, laeufe };
 }

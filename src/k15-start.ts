@@ -11,7 +11,7 @@ import type { Answer } from "./founding";
 import type { Auftrag, ProgZeile } from "./start-tuer";
 import type { BranchOtherView } from "./protocol";
 import type { Eingang } from "./k15-lader";
-import { S, agentMdKommt, antwort, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
+import { S, agentMdKommt, antwort, sitzKommt, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
 import { PROFILE0, alle, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
 import { eigeneVon } from "./k15-wortlaut-ui";
 import { bindeLauf, laufSatz } from "./k15-lauf";
@@ -82,6 +82,9 @@ function nichtMit(s: St, p: Profil, q: Position, l: Lage, a: Answer): string[] {
   if (p.datei && !agentMdKommt(s, p, q)) out.push(`die Agent-MD ${p.datei.titel}`);
   else if (!p.datei && p.id === "eigen") out.push("deine Agent-MD");
   if (p.autonomie) out.push("deine Fassung der Autonomie");
+  // die Rechte nehmen nur /open und die Branch-Tür, und nur für Claude Code (server/rechte.ts#rechteDerTuer)
+  if (q.rechte && (!(tuerVon(p) === "open" || tuerVon(p) === "branch") || wahlVon(s, p, q, "agent").wert !== "claude")) out.push("die Rechte");
+  if (q.sitz && !sitzKommt(s, p, q)) out.push(s.konstNeu.has(s.k.id) || !s.konstGespeichert.has(s.k.id) ? "was mit ihr reiste (erst speichern)" : "was mit ihr reiste");
   const fleet = PROFILE0.find((x) => x.id === p.id)?.werte ?? {};
   const werte = [...Object.keys(q.werteAbw ?? {}), ...Object.keys(p.werte).filter((k) => JSON.stringify(p.werte[k]) !== JSON.stringify(fleet[k]))];
   if (werte.length) out.push([...new Set(werte)].map(aspektName).join(", "));
@@ -174,7 +177,8 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   if (t === "branch") {
     const b = st.branch;
     return { tuer: "branch", repo, name: b.name.trim(), ziel: b.ziel.trim(), punkte: b.punkte.split("\n").map((x) => x.trim()).filter(Boolean), dreier: d,
-      ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}),
+      ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}), ...(sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}),
+      ...(q.rechte ? { rechte: q.rechte } : {}),
       ...(b.modus === "bestehend" && b.wahl ? { bestehend: b.wahl } : {}), ...(b.gemacht?.repo === repo ? { gemacht: b.gemacht.branch } : {}) };
   }
   const plus = vonPlus(s.eingang);
@@ -193,7 +197,8 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   const gezeigt = fassungGezeigt(p, a);
   return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(gezeigt ? { fassung: gezeigt } : {}),
     ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}),
-    ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}) };
+    ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}), ...(sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}),
+    ...(q.rechte ? { rechte: q.rechte } : {}) };
 }
 
 export async function los(s: St): Promise<void> {

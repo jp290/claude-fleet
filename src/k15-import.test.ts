@@ -159,3 +159,26 @@ describe("das Protokoll einer Konstellation (Harness 2.0 Schritt 3) reist mit", 
     expect(imp({ ...roh, protokoll: "CI" })).toBe("das Protokoll passt nicht");
   });
 });
+
+// Abnahme datei-traegt 22.10. (MUSS 1): Rechte an der Position gäbe das Fenster als body.rechte an die Tür, und die gehen dort vor dem Deckel
+// aus sitz.darf (server/sitz-reise.ts#sitzDerTuer). Darum nimmt eine Datei sie nie an die Position; nur der eigene Speicher (behalte) behält sie
+describe("Rechte an einer Position kommen nur aus dem eigenen Speicher", () => {
+  const DEPLOYEN = { stufe: "deployen" as const, an: [] as string[], aus: [] as string[] };
+  const mitRechten = { fleet: "konstellation", name: "K", positionen: [{ id: "a", profil: "lane", rechte: DEPLOYEN }] };
+  test("aus einer Datei: keine Rechte an der Position", () => {
+    const r = imp(mitRechten);
+    if (typeof r === "string") throw new Error(r);
+    expect(r.k.wurzeln[0]?.rechte).toBeUndefined();
+  });
+  test("aus dem eigenen Speicher: die Rechte bleiben", () => {
+    const r = importKonst(JSON.stringify(mitRechten), PROFILE0, 7, "k1");
+    if (typeof r === "string") throw new Error(r);
+    expect(r.k.wurzeln[0]?.rechte).toEqual(DEPLOYEN);
+  });
+  test("der Export aus dem Fenster (teilen) trägt keine Rechte an der Position", () => {
+    const kk: Konst = { id: "k1", name: "K", v: 1, satz: "", eigen: true, wurzeln: [pos("a", "A", "lane", { rechte: { stufe: "deployen", an: [], aus: [] } })] };
+    const geteilt = exportObjekt({ ebene: "konst", voll: true, konst: [kk], k: kk, profile: PROFILE0, q: null, p: PROFILE0[0]!, teilen: true });
+    const gespeichert = exportObjekt({ ebene: "konst", voll: true, konst: [kk], k: kk, profile: PROFILE0, q: null, p: PROFILE0[0]! });
+    expect([JSON.stringify(geteilt).includes("deployen"), JSON.stringify(gespeichert).includes("deployen")]).toEqual([false, true]);
+  });
+});

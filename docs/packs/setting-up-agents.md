@@ -29,7 +29,7 @@ their defaults.
 One well set-up agent is the default. A second seat earns its place only if it brings one of these:
 
 - an independent check
-- another model
+- another model (for a second judgment here that is Sonnet 5.5; Fable doesn't run in this Fleet)
 - other rights
 - more breadth than one agent can hold
 

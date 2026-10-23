@@ -330,6 +330,8 @@ async function instanceBandChecks(): Promise<void> {
   try {
     writeFileSync(`${fx}/testinstanz.sh`, readFileSync(`${src}/testinstanz.sh`));
     chmodSync(`${fx}/testinstanz.sh`, 0o700);
+    // testinstanz.sh sources what runs in a pane from its own directory (echte-sitze)
+    writeFileSync(`${fx}/testinstanz-agent.sh`, readFileSync(`${src}/testinstanz-agent.sh`));
     const setup = [git("init", "-q", "-b", "overhaul"), git("add", "-A"), git("commit", "-qm", "base"), git("checkout", "-qb", "fleet/r11-fixture")];
     for (const f of ["one", "two", "three"]) { writeFileSync(`${fx}/${f}.txt`, `${f}\n`); setup.push(git("add", "-A"), git("commit", "-qm", f)); }
     check("band measure SETUP: fixture repository with overhaul and a lane three commits ahead", setup.every((r) => r.status === 0),
@@ -472,12 +474,16 @@ async function snapshotTruthChecks(): Promise<void> {
   check("snapshot script MUTATION: the old strip (exception removed, drop without parent) loses every binding",
     !keepsBinding(code.replace(/if\(k==='sessionId'&&parent==='main'\)return \[\[k,null\]\];/, ""))
     && !keepsBinding(code.replace(/\[k,null\]/, "[k,'gone']")));
-  const snapshotCat = (t: string) => /= snapshot \]; then/.test(t) && /TI_AGENT_CMD='cat'/.test(t)
-    && /TI_AGENT_CMD='true'/.test(t) && t.indexOf("TI_AGENT_CMD='cat'") < t.indexOf("TI_AGENT_CMD='true'");
+  // the pane's command is testinstanz-agent.sh#ti_agent_cmd since echte-sitze: asked, not read as text
+  const agentCmdOf = (agent: string, kind: string) => spawnSync("sh", ["-c", `. "${agent}"; ti_agent_cmd`],
+    { env: { PATH: process.env.PATH ?? "", TI_KIND: kind }, encoding: "utf8" }).stdout.trim();
+  const snapshotCat = (agent: string) => agentCmdOf(agent, "snapshot") === "cat" && agentCmdOf(agent, "mixed") === "true";
   check("snapshot script: snapshot panes run the cat stand-in, mixed keeps true (its painters type shell loops)",
-    snapshotCat(code), "");
-  check("snapshot script MUTATION: the old FLEET_CMD=true for the snapshot is red",
-    !snapshotCat(code.replace("TI_AGENT_CMD='cat'", "TI_AGENT_CMD='true'")));
+    snapshotCat(`${src}/testinstanz-agent.sh`), `snapshot=${agentCmdOf(`${src}/testinstanz-agent.sh`, "snapshot")} mixed=${agentCmdOf(`${src}/testinstanz-agent.sh`, "mixed")}`);
+  const oldTrue = `${ROOT}/ti-agent-mutant-${process.pid}.sh`;
+  writeFileSync(oldTrue, readFileSync(`${src}/testinstanz-agent.sh`, "utf8").replace("then echo cat", "then echo true"));
+  check("snapshot script MUTATION: the old FLEET_CMD=true for the snapshot is red", !snapshotCat(oldTrue));
+  rmSync(oldTrue, { force: true });
 
   // source — the board paints the snapshot rows only from instance.source (comments stripped first)
   const boardCode = stripped(readFileSync(`${src}/src/board.ts`, "utf8"));

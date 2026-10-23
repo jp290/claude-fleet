@@ -358,7 +358,7 @@ export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
 export interface Dreier { harness?: string; model?: string; effort?: string }
 // was die Öffnung außer dem Plan noch liest (server.ts#startVonAdresse): damit die Vorschau die Fassung DIESES Starts rechnet und der gezeigte
 // Hash der ist, der läuft. Rechte als JSON, das Profil als Kennung, die Bibliothek nur für einen Start ohne Plan.
-export interface Dazu { rechte?: Rechte; profil?: string; bibliothek?: boolean }
+export interface Dazu { rechte?: Rechte; profil?: string; bibliothek?: boolean; sitz?: string }
 export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier = {}, dazu: Dazu = {}): string => {
   // `anlass=neu`: die Antwort trägt den fassungsHash, den die Tür beim Start gegenprüft (server.ts#fassungGezeigtPruefung)
   const q = new URLSearchParams({ repo, role: rolle, anlass: "neu" });
@@ -367,6 +367,7 @@ export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier
   if (d.effort) q.set("effort", d.effort);
   if (dazu.rechte) q.set("rechte", JSON.stringify(dazu.rechte));
   if (dazu.profil) q.set("profil", dazu.profil);
+  if (dazu.sitz) q.set("sitz", dazu.sitz);
   if (dazu.bibliothek !== undefined) q.set("bibliothek", String(dazu.bibliothek));
   const b = Object.entries(sch).map(([id, v]) => `${id}=${v}`).sort().join(",");
   if (b) q.set("bausteine", b);
@@ -414,7 +415,7 @@ export interface Lage { voll: PlanStand; plan: PlanStand; umfang: Partial<Record
 export function lage(s: St, p: Profil, q: Position | null): Lage | null {
   if (!s.repo) return null;
   const d = dreier(s, p, q);
-  const dazu: Dazu = agentMdKommt(s, p, q) ? { profil: p.id } : {};
+  const dazu = dazuDerPosition(s, p, q);
   const voll = hole(s, planUrl(s.repo, p.rolle, {}, d, dazu));
   const va = antwort(voll);
   const umfang: Partial<Record<GruppeId, Stufe>> = {}, regler: Partial<Record<GruppeId, Regler>> = {};
@@ -519,6 +520,13 @@ export const rollenStandardGelesen = (s: St, p: Profil): boolean => !!s.repo && 
 // liest den Block; die Tür der MAIN und der Lane nehmen es noch nicht. Hier statt im Start, weil auch die Vorschau das Profil mitrechnet.
 export const agentMdKommt = (s: St, p: Profil, q: Position | null): boolean =>
   !!p.datei && s.speicher === "da" && (p.schiene === "bau" || (p.rolle !== "lane" && p.rolle !== "main")) && wahlVon(s, p, q, "agent").wert === "claude";
+// was aus einer importierten Datei an einem Sitz hängt und die Tür nimmt (server/sitz-reise.ts#sitzDerTuer): nur aus dem Speicher, nur Claude Code, nur
+// ohne Rolle. Hier statt im Start, weil auch die Vorschau es mitrechnet (der gezeigte Hash ist der des Starts).
+export const sitzKommt = (s: St, p: Profil, q: Position): boolean =>
+  !!q.sitz && s.konstGespeichert.has(s.k.id) && !s.konstNeu.has(s.k.id) && p.rolle === "nur-ordner" && wahlVon(s, p, q, "agent").wert === "claude";
+// was die Vorschau einer Position außer dem Plan mitnimmt, wie ihr Start es an die Tür schickt (k15-start.ts#auftrag): Profil, Sitz und die Rechte der Position
+export const dazuDerPosition = (s: St, p: Profil, q: Position | null): Dazu => ({ ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}),
+  ...(q && sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}), ...(q?.rechte ? { rechte: q.rechte } : {}) });
 export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): Wahl {
   const std = rollenStd(s, p), kat = s.katalog ?? null;
   const gesetzt = (v: unknown, gilt: (x: string) => boolean) => typeof v === "string" && v !== "" && gilt(v);

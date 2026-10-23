@@ -1,6 +1,7 @@
 // K15 ENTWURF D · SPALTE 3, was die angeklickte Session (oder jede Session eines Profils) bekommt: die Bausteine ihres Gründungsplans
 // in Gruppen, ihre Einstellungen mit Herkunft, ihre Rechte und ihre Verbindungen im Lauf. Tokens und Größen stehen erst beim
 // Darüberfahren oder mit „Alles zeigen“ da (Owner 16.10.); fehlt ein Thema, legt man hier einen Kontextpack an.
+import { darfWahl } from "./k15-mitgereist";
 import { el, baseName, PACK_WORDS, bausteinName } from "./k15-haupt";
 import { icon } from "./icons";
 import { modelLabel } from "./modelname";
@@ -177,6 +178,7 @@ export function spalteSession(): HTMLElement {
   // was nur der Start dieser Session braucht (Program, Branch, Worktree), direkt unter ihrem Kopf
   const sf = q ? startFelder(s, q, p) : null;
   if (sf) col.append(sf);
+  if (q && s.k.eigen) col.append(darfWahl(s, q));
   // bei einer Session mit eigener Agent-MD ist die Datei das Erste, was sie bekommt: direkt unter dem Kopf, vor der Autonomie
   if (p.id === "eigen" || p.glyph === "file") {
     const cta = el("button", "k15mdcta");
@@ -367,6 +369,9 @@ export function spalteSession(): HTMLElement {
     const wo = el("div", "k15x k15grw");
     wo.append(el("span", "", `Einstellen: ${gr.wo}`));
     box.append(kopfz, lauf, wo);
+    // EIN MITGEREISTER SITZ (src/sitz.ts) startet mit den Packs aus der Datei, nicht mit dieser Fleet Bibliothek (server/sitz-reise.ts#sitzWissen)
+    if (gr.id === "wissen" && q?.sitz && p.rolle === "nur-ordner")
+      box.append(el("div", "k15hinweis", `Mitgereist: Dieser Sitz startet mit ${q.sitz.liest.map((x) => `${x.id} (${x.weg === "start" ? "im Start" : "Skill"})`).join(", ") || "keinem Pack"} aus der Datei, nicht mit Fleets Bibliothek.${q.sitz.persoenlich.length ? ` Persönliche Plätze: ${q.sitz.persoenlich.map((x) => `${x.id} ${x.text ? "mit deinem Eigenen" : "leer, gefüllt aus deiner Bibliothek, wenn sie ihn hat"}`).join(", ")}.` : ""}`));
     const std = new Map((va?.plan.bausteine ?? []).map((b) => [b.id, b.zustand]));
     const spur = el("div", "k15spur");
     spur.style.setProperty("--n", String(bs.length));

@@ -1,16 +1,37 @@
 // K15 ENTWURF D · EXPORT UND IMPORT: eine Ebene wählen (System, Konstellation, Session, Baustein) und die Form (Verweise oder
 // vollständig); zurück kommt es per Hineinziehen oder ⌘V. Der vollständige Export trägt die eigenen Fassungen und die Kontextpacks als
 // Entwurf mit ihrem Text.
-import { el, copyText } from "./k15-haupt";
+import { el, copyText, api } from "./k15-haupt";
 import { erlaubtOeffnen } from "./k15-erlaubt";
 import { fassungenNeu } from "./k15-konst-fassungen";
 import { icon } from "./icons";
-import { abwZahl, alle, exportJson, type Ebene, type Profil } from "./k15-entwurf-modell";
+import { abwZahl, alle, exportJson, type Ebene, type Konst, type Profil } from "./k15-entwurf-modell";
 import { MAX_FASSUNGEN, MAX_PACKS, abschnitte, dateiPasst, importKonst } from "./k15-import";
 import { fassungenExport, fassungenImport } from "./k15-wortlaut";
 import { istPackRolle, packsExport, packsImport, type PackEntwurf } from "./k15-kontextpack";
 import { S, gehe, gewaehlt, plural, profilVon, render, speichereEigenes, speichereKonst, toast, type St } from "./k15-zustand";
 import { unterkopf } from "./k15-teile";
+import { KONST_ROUTE } from "./k15-speicher";
+
+// DIE GANZE DATEI EINER GESPEICHERTEN KONSTELLATION (server/sitz-reise.ts#dateiFuer): erst der Server weiß, was ihre Sitze lesen, was in
+// ihren Notizbüchern steht und welche Läufe sie hatte. Je Konstellation und Repo einmal gelesen, solange das Fenster offen ist
+type ServerDatei = { text: string; hinweise: string[] } | { fehler: string } | "laedt";
+const dateien = new Map<string, ServerDatei>();
+function serverDatei(s: St): ServerDatei | null {
+  if (s.ebene !== "konst" || !s.voll || !s.konstGespeichert.has(s.k.id) || s.konstNeu.has(s.k.id)) return null;
+  const key = `${s.k.id}\n${s.repo ?? ""}\n${JSON.stringify(s.konstGespeichert.get(s.k.id)).length}`;
+  const da = dateien.get(key);
+  if (da) return da;
+  dateien.set(key, "laedt");
+  void api(`${KONST_ROUTE}/${encodeURIComponent(s.k.id)}/datei${s.repo ? `?repo=${encodeURIComponent(s.repo)}` : ""}`).then(async (r) => {
+    const j: unknown = await r.json().catch(() => null);
+    const o = j && typeof j === "object" ? j as Record<string, unknown> : {};
+    dateien.set(key, r.ok && o.datei ? { text: JSON.stringify(o.datei, null, 2), hinweise: Array.isArray(o.hinweise) ? o.hinweise.map(String) : [] }
+      : { fehler: typeof o.error === "string" ? o.error : `Antwort ${r.status}` });
+  }).catch((e: unknown) => { dateien.set(key, { fehler: e instanceof Error ? e.message : "Server nicht erreichbar" }); })
+    .finally(() => { if (S === s && s.exp) render(); });
+  return "laedt";
+}
 
 // welche Pack-Entwürfe auf einer Ebene mitreisen: im System alle, in einer Konstellation die, die eine ihrer Rollen bekommt, in einer
 // Session die ihrer Rolle; ein einzelner Baustein trägt keine
@@ -61,8 +82,14 @@ export function exportPanel(): HTMLElement {
     el("div", "k15ks k15popsay", s.voll ? "Alle Werte stehen mit drin, dazu deine eigenen Fassungen und Pack-Entwürfe. Läuft auch dort, wo diese Profile fehlen." : "Klein. Wer es einfügt, braucht dieselben Profile in diesen Versionen."));
   const packs = packsFuer(s, s.ebene, p);
   const fassungen = s.ebene === "baustein" ? [] : [...s.fassungen.values()];
-  const text = exportJson({ ebene: s.ebene, voll: s.voll, konst: s.konst, k: s.k, profile: s.profile, q, p,
-    zusatz: s.voll ? { ...(fassungen.length ? { fassungen: fassungenExport(fassungen) } : {}), ...(packs.length ? { kontextpacks: packsExport(packs) } : {}) } : {} });
+  const sd = serverDatei(s);
+  if (sd === "laedt") { box.append(el("div", "k15ks k15popsay", "Der Server stellt die Datei zusammen: was jeder Sitz liest, darf und weiß …")); return box; }
+  const zusatz = s.voll ? { ...(fassungen.length ? { fassungen: fassungenExport(fassungen) } : {}), ...(packs.length ? { kontextpacks: packsExport(packs) } : {}) } : {};
+  const text = sd && "text" in sd ? JSON.stringify({ ...JSON.parse(sd.text), ...zusatz }, null, 2)
+    : exportJson({ ebene: s.ebene, voll: s.voll, konst: s.konst, k: s.k, profile: s.profile, q, p, zusatz, teilen: true });
+  if (sd && "fehler" in sd) box.append(el("div", "k15hinweis", `Die ganze Datei gibt der Server nicht: ${sd.fehler}. Darunter steht der Aufbau ohne das, was die Sitze lesen.`));
+  if (sd && "text" in sd) box.append(el("div", "k15ks k15popsay", "Mit allem, was jeder Sitz liest, darf und in seinem Notizbuch hat, mit den Läufen und „abgeleitetVon“. Persönliches bleibt daheim: Sein Platz ist leer, wer importiert, füllt ihn."),
+    ...sd.hinweise.map((h) => el("div", "k15ks k15popsay", h)));
   const zeilen = text.split("\n");
   box.append(el("pre", "k15pre k15code k15json", zeilen.length > 30 ? [...zeilen.slice(0, 30), `  … ${zeilen.length - 30} Zeilen mehr`].join("\n") : text));
   const btns = el("div", "k15row2");
@@ -131,6 +158,11 @@ export function nimm(name: string, text: string): void {
     toast(`${name}: Das ließ sich nicht einsetzen; alles ist wie vorher.`);
   }
 }
+// die persönlichen Plätze, die mitkamen (src/sitz.ts): leer, und wer importiert, füllt sie mit seinem Eigenen
+const platzSatz = (k: Konst): string => {
+  const ids = [...new Set(alle(k.wurzeln).flatMap((q) => q.sitz?.persoenlich.map((p) => p.id) ?? []))];
+  return ids.length ? ` Leer mitgekommen: ${ids.join(", ")}. Füll ${ids.length === 1 ? "ihn" : "sie"} im Aufbau unter „Mitgereist“ mit deinem Eigenen.` : "";
+};
 function nimmRoh(s: St, name: string, text: string): void {
   if (/\.json$/i.test(name)) {
     const r0 = importKonst(text, s.profile, Date.now());
@@ -158,7 +190,7 @@ function nimmRoh(s: St, name: string, text: string): void {
     s.k = k;
     s.sel = { art: "pos", id: alle(k.wurzeln)[0]?.id ?? "" };
     erlaubtOeffnen(k.id);
-    const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene und auf dem Server gespeichert; was sie erlaubt, steht im Aufbau.${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
+    const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene und auf dem Server gespeichert; was sie erlaubt, steht im Aufbau.${platzSatz(k)}${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
     // eine importierte Konstellation ist gleich gespeichert (Konstellation Stück 1): Hineinziehen ist schon die Entscheidung, sie zu behalten
     // gespeichert, liest die Ansicht ihre Fassungen neu (wie nach jedem Speichern, k15-spalte2.ts): vorher fragte sie zu früh und sah keine
     void speichereKonst(s, k.id, k).then((ok) => {

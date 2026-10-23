@@ -20,9 +20,20 @@ type Buch = Record<string, Verlauf>;
 // kanonisch: Schlüssel sortiert, Kennung und Zähler weg; so hängt der Hash nur am Inhalt
 const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
   : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, x]) => [k, kanon(x)])) : v;
+// Was mitreiste, zählt nicht (src/sitz.ts, docs/start/direction.md Schritt 3): woraus sie abgeleitet ist, ihre Läufe als Bericht und je Position der
+// Block `sitz`. So hat ein Import ohne Änderung denselben Hash wie das, woraus er exportiert wurde, und `abgeleitetVon` nennt genau ihn; was ein
+// Sitz liest, misst je Sitz seine Fassung (server/fassung.ts). Was er darf, zählt hier, gleich ob es an der Position steht (hier gesetzt) oder in
+// ihrem Sitz-Block (mitgereist): so hat A, wo es gesetzt wurde, denselben Hash wie B, wo es ankam
 export function fassungsHash(form: Record<string, unknown>): string {
-  const { id: _id, version: _v, ...inhalt } = form;
-  return new Bun.CryptoHasher("sha256").update(JSON.stringify(kanon(inhalt))).digest("hex");
+  const { id: _id, version: _v, abgeleitetVon: _a, laeufe: _l, ...inhalt } = form;
+  const positionen = Array.isArray(inhalt.positionen) ? inhalt.positionen.map((p: unknown) => {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return p;
+    const { sitz, rechte, ...rest } = p as Record<string, unknown>;
+    const darf = sitz && typeof sitz === "object" && "darf" in sitz && sitz.darf && typeof sitz.darf === "object" && "rechte" in sitz.darf ? sitz.darf.rechte : null;
+    const r = rechte ?? darf ?? null;
+    return r ? { ...rest, rechte: r } : rest;
+  }) : inhalt.positionen;
+  return new Bun.CryptoHasher("sha256").update(JSON.stringify(kanon({ ...inhalt, ...(positionen !== undefined ? { positionen } : {}) }))).digest("hex");
 }
 
 let seq = 0;

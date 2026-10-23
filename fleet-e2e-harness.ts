@@ -611,6 +611,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedMcp: [], plan: { selected: [] }, planMcpServers: () => [],
           // ...and its rights (server/rechte.ts), claude only — a codex fixture carries none
           carriedRechte: null, carriedAgentMd: null,
+          // ...and what an imported seat reads (server/sitz-reise.ts), claude only — a codex fixture carries none
+          carriedSitz: null,
           // ...and its delivery choice (server/zustellung.ts); these slots carry none
           carriedZustellung: null,
           // ...and its choice of Fleet's library (server.ts#seatLibraryOn), claude only — a codex fixture carries none

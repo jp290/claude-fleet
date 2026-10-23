@@ -812,6 +812,16 @@
 .k15 .k15fkopf { display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 7px 10px; text-align: left; color: var(--chat-mute); }
 .k15 .k15fkopf b { color: var(--chat-ink); font-weight: 600; }
 .k15 .k15fkopf:hover { background: var(--chat-surface); }
+.k15 .k15mit .k15fkopf:hover { background: none; }
+.k15 .k15mitsitz { display: grid; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--chat-edge-soft); }
+.k15 .k15mitsitz > b { color: var(--chat-ink); font-weight: 600; }
+.k15 .k15mitz { color: var(--chat-mute); }
+.k15 .k15mitz .k15mitk { display: inline-block; min-width: 6.5em; color: var(--chat-faint); }
+.k15 .k15mitz button { margin-top: 4px; }
+.k15 .k15mitsitz .k15platz { padding: 8px 0 0; display: grid; gap: 4px; }
+.k15 .k15mitsitz .k15platz textarea { width: 100%; box-sizing: border-box; }
+.k15 .k15mitsitz .k15platz button { justify-self: start; }
+.k15 .k15darf .k15seg { display: flex; flex-wrap: wrap; }
 .k15 .k15frow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 10px; border-top: 1px solid var(--chat-edge-soft); }
 .k15 .k15frow code { font: 11.5px var(--chat-mono); color: var(--chat-mute); }
 .k15 .k15erlz > span { color: var(--chat-faint); }

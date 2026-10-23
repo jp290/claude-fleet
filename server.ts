@@ -14,6 +14,7 @@ import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./serv
 import { halteFassung, holeFassung, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { dateiFuer, leerePlaetze, liesNotizbuch, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
 import { notizbuchFuer, notizbuchSettings, type Notizbuch } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -245,7 +246,7 @@ import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
-import { k15Laeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht } from "./server/laeufe";
+import { k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht } from "./server/laeufe";
 import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
 import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR_CONTEXT_LINE_CODEX,
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
@@ -258,7 +259,7 @@ import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderS
   seatSkillsVerwaist, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
 import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
-import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
+import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
@@ -2761,6 +2762,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   lauf: null,
   rechte: null,
   agentMd: null,
+  sitz: null,
   bibliothek: null,
   zustellung: null,
   packMcp: [],
@@ -5978,7 +5980,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}) } } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -8726,6 +8728,11 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
   if (!rt.ok) return json({ error: rt.error }, 400);
   const am = await agentMdDerTuer(body, h.id, STATE_DIR);
   if (!am.ok) return json({ error: am.error }, 400);
+  const sd = await sitzDerTuer(body, h.id, STATE_DIR, null, isOrchestratorLabel);
+  if (!sd.ok) return json({ error: sd.error }, 400);
+  // an der Self-Tür ist auch das Darf aus der Datei nie weiter als die Öffnerin (server/sitz-reise.ts#rechteAnDerTuer, Befund F4)
+  const wr = rechteAnDerTuer(rt.rechte, sd.rechte, h.id, opener === "self" && by ? oeffnerinOf(by) : null);
+  if (!wr.ok) return json({ error: wr.error }, 409);
   const bib = bibliothekDerTuer(body, null, opener);
   if (!bib.ok) return json({ error: bib.error }, 400);
   const ro = await branchRepoOf(body.repo);
@@ -8745,9 +8752,10 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
     attachBusy.add(path);
     try {
       const resumeId = body.fresh === true ? null : lastConversationIn(path);
+      if (sd.notizbuch) await saeSitzNotizbuch(path, am.agentMd, sd.notizbuch);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
-        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, rt.rechte, am.agentMd,
-        null, bib.wahl);
+        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, am.agentMd,
+        null, bib.wahl, undefined, sd.sitz);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
@@ -9936,6 +9944,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   remote: boolean;
   rechte: Rechte | null;
   agentMd: AgentMd | null;
+  sitz: SitzStart | null;
   bibliothek: boolean | null;
   context: SlotContext | null;
   permissions: SlotPermissions | null;
@@ -9947,7 +9956,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, remote: s.remote, rechte: s.rechte, agentMd: s.agentMd, bibliothek: s.bibliothek, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, rechte: s.rechte, agentMd: s.agentMd, sitz: s.sitz, bibliothek: s.bibliothek, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
   webSearch: s.webSearch,
 } : null;
 
@@ -10178,7 +10187,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       if (listRole === "generic" && occupant.label !== STEWARD_LABEL) {
         try {
           if (seatLibraryOn(occupant.bibliothek)) {
-            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true);
+            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz);
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
         } catch (e) { logError("ensureSlot:seat-library", e); }
@@ -10347,7 +10356,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // Fleet's library for this session (seatLibraryOn): the door's choice, null = the place decides; claude only
   bibliothek: boolean | null = null,
   // the fassungsHash the preview showed (door field `fassung`): an open that would run another Fassung stops before the pane exists
-  gezeigt?: string): Promise<SlotOpenResult> {
+  gezeigt?: string,
+  // what a seat of an imported constellation reads (server/sitz-reise.ts), already read by its door; claude only
+  sitz: SitzStart | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10473,6 +10484,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
   s.rechte = h.id === "claude" ? rechte : null; // ...nor its rules
   s.agentMd = h.id === "claude" ? agentMd : null; // ...nor its Agent-MD
+  s.sitz = h.id === "claude" ? sitz : null; // ...nor what an imported seat reads
   s.bibliothek = h.id === "claude" ? bibliothek : null; // ...nor its choice of Fleet's library
   s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
   s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
@@ -10739,6 +10751,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.lauf = null;
   s.rechte = null;
   s.agentMd = null;
+  s.sitz = null;
   s.bibliothek = null;
   s.zustellung = null;
   s.packMcp = [];
@@ -14574,6 +14587,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // ...and what it may do, as long as the successor is Claude Code too (server/rechte.ts)
   const carriedRechte = harnessOf(harness).id === "claude" ? s.rechte : null;
   const carriedAgentMd = harnessOf(harness).id === "claude" ? s.agentMd : null;
+  const carriedSitz = harnessOf(harness).id === "claude" ? s.sitz : null;
   const carriedBibliothek = harnessOf(harness).id === "claude" ? s.bibliothek : null;
   // ...and how its Postfach arrives, on every harness: the setting is no agent rule
   const carriedZustellung = s.zustellung;
@@ -14590,7 +14604,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek),
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -21002,7 +21016,9 @@ function fassungProjektregelnAus(cwd: string, harness: string, rulebookRole: "ma
 
 // DAS NOTIZBUCH DES SETUPS (server/notizbuch.ts): eigen, geteilt oder aus, mit Ordner und den Bytes seiner MEMORY.md.
 // Ein leeres oder noch nicht angelegtes Notizbuch hat 0 Bytes und lädt keine Datei; aus ist bekannt, nicht unknown.
-async function fassungGedaechtnisAus(notizbuch: Notizbuch | null, harness: string): Promise<FassungAbschnittEingang[]> {
+// `saat`: das Notizbuch, das die Tür eines mitgereisten Sitzes VOR dem Spawn sät (saeSitzNotizbuch); die Vorschau und die Prüfung der Tür lesen den Ordner
+// vor dem Säen und rechnen es deshalb so mit, wie saeNotizbuch es schriebe: nur in ein eigenes Notizbuch ohne MEMORY.md, und MEMORY.md ist sein Index.
+async function fassungGedaechtnisAus(notizbuch: Notizbuch | null, harness: string, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<FassungAbschnittEingang[]> {
   if (harnessFamilie(harness) !== "claude" || !notizbuch)
     return [unknownAbschnitt("gedaechtnis", "nur Claude lädt ein Auto-Memory; dieser Harness liest es nicht")];
   const art = notizbuch.art === "eigen" ? "eigenes Notizbuch" : notizbuch.art === "geteilt" ? "geteiltes Notizbuch" : "kein Notizbuch";
@@ -21010,6 +21026,10 @@ async function fassungGedaechtnisAus(notizbuch: Notizbuch | null, harness: strin
   if (!notizbuch.pfad) return [{ id: "gedaechtnis", quelle: null, aenderbar: true, text: "", bytes: 0, grund, notizbuch }];
   const memory = await autoMemoryBytes(notizbuch);
   if (memory.bytes === "unknown") return [{ ...unknownAbschnitt("gedaechtnis", `${grund} — ${memory.pfad} ist nicht lesbar`, notizbuch.pfad), notizbuch }];
+  if (saat && notizbuch.art === "eigen" && !existsSync(memory.pfad) && (saat.notizen.length || saat.index.trim()) && saat.index) {
+    const bytes = Buffer.byteLength(saat.index);
+    return [{ id: "gedaechtnis", quelle: notizbuch.pfad, aenderbar: true, text: saat.index, bytes, grund, dateien: [{ pfad: memory.pfad, bytes }], notizbuch }];
+  }
   if (!memory.bytes) return [{ id: "gedaechtnis", quelle: notizbuch.pfad, aenderbar: true, text: "", bytes: 0, grund, notizbuch }];
   try {
     const text = readFileSync(memory.pfad, "utf8");
@@ -21053,19 +21073,19 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string): Promise
   }
   if (s.label === STEWARD_LABEL) return [unknownAbschnitt("wissen", "der Steward hat keinen Kontextplan")];
   return fassungSeatWissen(cwd, s.harness ?? null, s.bibliothek, { slot: s.id, openedAt: s.openedAt,
-    spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null });
+    spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz);
 }
 
 // EIN SITZ OHNE STEHENDE ROLLE (server/sitz-wissen.ts): was sein Start wörtlich trägt und welche Skills er bekommt, je
 // Pack mit Quelle im Fleet-Baum. Die Route ist lesend: sie nennt den Skill-Ordner, schreibt ihn aber nicht. `laufend`: die
 // Belegung einer laufenden Session und ihr Spawn-Beleg (session-start.ts#SpawnBibliothek) — ohne sie ist es der Start einer neuen.
 async function fassungSeatWissen(cwd: string, harness: string | null, wahl: boolean | null,
-  laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }): Promise<FassungAbschnittEingang[]> {
+  laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }, sitz: SitzStart | null = null): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
     if (claude && !seatLibraryOn(wahl))
       return [unknownAbschnitt("wissen", "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz);
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
@@ -21238,7 +21258,7 @@ function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Fassun
     `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
 
-async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung> {
+async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
   const rolle = positionRole(s);
   const nachfolge = anlass === "nachfolge";
   // Der Nachfolger erbt Agent, Modell und Effort; nur der Wechsel ist eine andere Wahl.
@@ -21258,7 +21278,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass): Promise<Fassung>
       rolle === "orchestrator"),
     ...(await fassungWissen(s, rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
-      ? await notizbuchFuerStart(cwd, fassungSpawnRolle(s, rolle, spawnPick.harness), s.agentMd?.profil ?? null) : null, spawnPick.harness)),
+      ? await notizbuchFuerStart(cwd, fassungSpawnRolle(s, rolle, spawnPick.harness), s.agentMd?.profil ?? null) : null, spawnPick.harness, saat)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
     s.agentMd ? textAbschnitt("eigenes", `Slot.agentMd (Profil „${s.agentMd.profil}“)`, agentMdBlock(s.agentMd), true)
       : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
@@ -21309,18 +21329,22 @@ interface OeffnungEingang {
   readonly cwd: string; readonly label: string | null; readonly harness: string | null; readonly model: string | null; readonly effort: string | null;
   readonly rechte: Rechte | null; readonly agentMd: AgentMd | null; readonly bibliothek: boolean | null;
   readonly packMcp: readonly ContextPackMcpServer[];
+  // ein Sitz aus einer importierten Datei (server/sitz-reise.ts#sitzDerTuer): was er liest (Slot.sitz) und das Notizbuch, das die Tür vor dem Spawn sät;
+  // `rechte` ist dann schon das, was die Tür aus Body und Sitz-Block macht (rechteAnDerTuer)
+  readonly sitz?: SitzStart | null; readonly notizbuch?: import("./src/sitz").SitzNotizbuch | null;
 }
 // (Parameter `eingang`, nicht `o`: e2e/context-plan.ts zählt die Lesungen der Adapter-Option dieses Namens)
 const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => {
   const claude = harnessOf(eingang.harness).id === "claude";
   return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt: Date.now(), awaiting: null, successionRetirement: null, mission: null, worktree: null,
     model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: false,
-    rechte: claude ? eingang.rechte : null, agentMd: claude ? eingang.agentMd : null, bibliothek: claude ? eingang.bibliothek : null, zustellung: null, lauf: null,
+    rechte: claude ? eingang.rechte : null, agentMd: claude ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude ? eingang.bibliothek : null, zustellung: null, lauf: null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
     programId: null, releasedBy: null, lineageId: null, handover: null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
     sessionIdLearned: null, sleeping: null, standingHandover: null, compaction: null, spawn: null, startCompact: null, laneStandNudged: null, history: [] };
 };
-const fassungDerOeffnung = (basis: Slot, o: OeffnungEingang): Promise<Fassung> => fassungFuerSlot(fassungSlotDerOeffnung(basis, o), "laufend");
+const fassungDerOeffnung = (basis: Slot, o: OeffnungEingang): Promise<Fassung> =>
+  fassungFuerSlot(fassungSlotDerOeffnung(basis, o), "laufend", harnessOf(o.harness).id === "claude" ? o.notizbuch ?? null : null);
 // the free slot a preview computes over: an open stamps every field the Fassung reads, so which free slot it is does not matter
 const freierSlotFuerVorschau = (): Slot => slots.find((x) => !x.cwd) ?? slots[0]!;
 
@@ -41973,9 +41997,11 @@ async function loadStateAndReap(file: string): Promise<void> {
   if (startupStateRefusal === null) reapSeatSkills();
 }
 // `belegung`: the occupancy whose folder this is; null for a start not yet made (the plan), which names no folder
-async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean):
-  Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
-  const { knowledge } = await seatKnowledgeFor(cwd, harness);
+// `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
+async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
+  sitz: SitzStart | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
+  const knowledge = sitz ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
+    : (await seatKnowledgeFor(cwd, harness)).knowledge;
   const files = seatSkillFiles(knowledge);
   const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
@@ -42217,6 +42243,29 @@ async function notizbuchFuerStart(cwd: string, rolle: SessionSpawnRole | null, p
     if (name && name !== "HEAD" && findBranch(branchBook, repoCanon(namespace), name)?.name) branch = name;
   }
   return notizbuchFuer({ rolle, profil, branch, projektOrdner: projDir(namespace) });
+}
+// DIE DATEI EINER GESPEICHERTEN KONSTELLATION (server/sitz-reise.ts#dateiFuer): was ihre Sitze lesen, aus Fleets Bibliothek im Repo `repo` (sonst
+// Fleets eigenem), ihre Notizbücher dort, ihre Läufe aus dem Laufbuch; der Mode ist der eines Sitzes ohne Rolle (session-start.ts#PERMISSION_MODE)
+async function konstDatei(id: string, repoRaw: string | null): Promise<Response> {
+  const repo = repoRaw ? resolve(expandCwd(repoRaw)) : FLEET_REPO_ROOT ?? import.meta.dir;
+  if (!existsSync(repo) || !statSync(repo).isDirectory()) return json({ error: `repo ${repoRaw} is no directory here` }, 400);
+  const gespeichert: unknown = await Bun.file(`${STATE_DIR}/${K15_SPEICHER_DATEI}`).json().catch(() => null);
+  const liste = gespeichert && typeof gespeichert === "object" && "konstellationen" in gespeichert && Array.isArray(gespeichert.konstellationen) ? gespeichert.konstellationen : [];
+  const form: unknown = liste.find((k: unknown) => !!k && typeof k === "object" && (k as Record<string, unknown>).id === id);
+  if (!form || typeof form !== "object") return json({ error: `keine gespeicherte Konstellation „${id}“` }, 404);
+  const laeufe = (await liesLaeufe(STATE_DIR).catch(() => [])).filter((l) => l.konst === id);
+  const d = await dateiFuer(form as Record<string, unknown>, { laeufe, modus: PERMISSION_MODE.generic,
+    bibliothek: async () => (await seatKnowledgeFor(repo, "claude")).knowledge,
+    notizbuch: async (profil) => { const n = await notizbuchFuerStart(repo, "generic", profil); return n.art === "eigen" && n.pfad ? liesNotizbuch(n.pfad) : null; } });
+  return typeof d === "string" ? json({ error: d }, 409) : json(d);
+}
+// DAS NOTIZBUCH EINES MITGEREISTEN SITZES (server/sitz-reise.ts): gesät in das Notizbuch, mit dem er startet, nur wenn es sein eigenes ist
+// (ein Profil mit Agent-MD) und noch leer; ein geteiltes Notizbuch des Projekts bekommt nie fremde Notizen
+async function saeSitzNotizbuch(cwd: string, agentMd: AgentMd | null, nb: import("./src/sitz").SitzNotizbuch): Promise<void> {
+  const n = await notizbuchFuerStart(cwd, "generic", agentMd?.profil ?? null);
+  if (n.art === "eigen" && n.pfad) {
+    try { saeNotizbuch(n.pfad, nb); } catch (e) { logError("sitz:notizbuch", e); }
+  }
 }
 async function autoMemoryBytes(n: Notizbuch): Promise<{ erfuellt: boolean | "unknown"; bytes: PlanBytes; pfad: string }> {
   if (!n.pfad) return { erfuellt: false, bytes: 0, pfad: "aus" };
@@ -42644,6 +42693,11 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       if (!rt.ok) return refuse(rt.error);
       const am = await agentMdDerTuer(startBody, hh.id, STATE_DIR);
       if (!am.ok) return refuse(am.error);
+      // ein Sitz aus einer importierten Datei: Darf, Lesestoff und Notizbuch rechnet die Vorschau so wie die Tür (sitzDerTuer, rechteAnDerTuer)
+      const sd = await sitzDerTuer(startBody, hh.id, STATE_DIR, rolle === "orchestratorin" ? "Orchestrator" : null, isOrchestratorLabel);
+      if (!sd.ok) return refuse(sd.error);
+      const wr = rechteAnDerTuer(rt.rechte, sd.rechte, hh.id, null);
+      if (!wr.ok) return refuse(wr.error);
       const startbar = verdict.refusals.length === 0;
       // mit Plan wählt die Bibliothek die Plan-Zeile (bausteine=bibliothek=…); das Feld `bibliothek` gilt nur ohne Plan, wie an der Tür
       const { bibliothek: feld, ...startOhneBib } = startBody;
@@ -42653,7 +42707,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
       fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { cwd: resolve(expandCwd(repo)),
         label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
-        rechte: rt.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp }), anlass: "neu" };
+        rechte: wr.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch }), anlass: "neu" };
     } else {
       fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
         effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
@@ -42666,7 +42720,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
     fp: fp.value, plan: resolved.plan, sessionAgents: planSessionAgents, rolle, harness: ho.harness, selection, packs: resolved.packs, ownerHeft: resolved.ownerHeft };
 }
 
-// WAS DIE ÖFFNUNG AUSSER DEM PLAN NOCH LIEST, AUS DER ADRESSE DER VORSCHAU: `rechte` (JSON), `profil`, `bibliothek` (true|false) — dieselben
+// WAS DIE ÖFFNUNG AUSSER DEM PLAN NOCH LIEST, AUS DER ADRESSE DER VORSCHAU: `rechte` (JSON), `profil`, `sitz` („<konst>/<position>“), `bibliothek` (true|false) — dieselben
 // Felder wie im Body der Tür, damit die Vorschau die Fassung dieses Starts rechnet und nicht die eines nackten.
 function startVonAdresse(q: URLSearchParams): Record<string, unknown> {
   const start: Record<string, unknown> = {};
@@ -42674,6 +42728,8 @@ function startVonAdresse(q: URLSearchParams): Record<string, unknown> {
   if (rechte) { try { start.rechte = JSON.parse(rechte); } catch { start.rechte = rechte; } }
   const profil = q.get("profil");
   if (profil) start.profil = profil;
+  const sitz = q.get("sitz");
+  if (sitz) start.sitz = sitz;
   const bibliothek = q.get("bibliothek");
   if (bibliothek === "true" || bibliothek === "false") start.bibliothek = bibliothek === "true";
   else if (bibliothek) start.bibliothek = bibliothek;
@@ -46016,6 +46072,8 @@ if (existsSync(file)) {
         s.rechte = rechteGeladen((v as { rechte?: unknown }).rechte, hOf.id);
         // ...and the Agent-MD of its profile, only on Claude Code (server/agentmd.ts)
         s.agentMd = agentMdGeladen((v as { agentMd?: unknown }).agentMd, hOf.id);
+        // ...and what an imported seat reads (server/sitz-reise.ts)
+        s.sitz = sitzStartGeladen((v as { sitz?: unknown }).sitz, hOf.id);
         // ...and the choice of Fleet's library, only a boolean and only on Claude Code (seatLibraryOn)
         const bib = (v as { bibliothek?: unknown }).bibliothek;
         s.bibliothek = typeof bib === "boolean" && hOf.id === "claude" ? bib : null;
@@ -51580,6 +51638,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
 
     // K15: eigene Profile, Fassungen und Packs des Fensters „Neue Session“, eine Datei im Zustandsverzeichnis (server/k15-speicher.ts)
     if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req, STATE_DIR);
+    const dateiMatch = req.method === "GET" ? new RegExp(`^${K15_KONST_ROUTE}/([^/]{1,80})/datei$`).exec(url.pathname) : null;
+    if (dateiMatch) return await konstDatei(decodeURIComponent(dateiMatch[1]!), url.searchParams.get("repo"));
     if (url.pathname.startsWith(`${K15_KONST_ROUTE}/`)) return await konstFassungen(req, url, STATE_DIR);
     if (url.pathname === K15_HISTORIE_ROUTE) return await startHistorie(req, url, STATE_DIR);
     if (url.pathname === K15_LAEUFE_ROUTE || url.pathname.startsWith(`${K15_LAEUFE_ROUTE}/`)) return await k15Laeufe(req, url, {
@@ -55166,6 +55226,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const am = await agentMdDerTuer(body, hh.id, STATE_DIR);
         guard();
         if (!am.ok) return json({ error: am.error }, 400);
+        const sd = await sitzDerTuer(body, hh.id, STATE_DIR, typeof body.label === "string" ? body.label.trim() : null, isOrchestratorLabel);
+        guard();
+        if (!sd.ok) return json({ error: sd.error }, 400);
+        const wr = rechteAnDerTuer(rt.rechte, sd.rechte, hh.id, null);
+        if (!wr.ok) return json({ error: wr.error }, 409);
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -55198,15 +55263,17 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
         const packMcp = acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [];
         const gezeigt = await fassungGezeigtPruefung(body, s, { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
-          harness: ho.harness, model: mo.model, effort: eo.effort, rechte: rt.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp });
+          harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp,
+          sitz: sd.sitz, notizbuch: sd.notizbuch });
         guard();
         if (gezeigt) return json(gezeigt.body, gezeigt.status);
         if (fassungTestHaken.nachPruefung) await fassungTestHaken.nachPruefung();
         let modelSupport: CodexModelSupport | null = null;
         try {
+          if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), am.agentMd, sd.notizbuch);
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            packMcp, undefined, rt.rechte, am.agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined);
+            packMcp, undefined, wr.rechte, am.agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;

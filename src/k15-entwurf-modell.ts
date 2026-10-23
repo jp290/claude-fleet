@@ -8,6 +8,9 @@ import { icon } from "./icons";
 import { K15_DATEN as D } from "./k15-entwurf-daten";
 import type { Answer, Baustein } from "./founding";
 import type { Aufgabe } from "./aufgabe";
+import type { LaufBericht } from "./lauf-bericht";
+import { sitzZumTeilen, type Sitz } from "./sitz";
+import type { Rechte } from "../session-rechte";
 
 export type Glyph = Parameters<typeof icon>[0];
 export interface Abschnitt { titel: string; text: string; pfad?: string; bytes?: number }
@@ -40,7 +43,11 @@ export interface Profil extends Werte {
 export interface Position { id: string; name: string; profil: string; kids?: Position[]; abw?: Partial<Werte>; datei?: Quelle;
   // Teile der Session-Datei, die nicht mitgehen sollen (Schritt 4, heute nicht schaltbar)
   ohne?: string[];
-  werteAbw?: Record<string, Wert>; schalter?: Schalter; wann?: string }
+  werteAbw?: Record<string, Wert>; schalter?: Schalter; wann?: string;
+  // was mit dem Sitz aus einer anderen Fleet reiste (src/sitz.ts): liest, persönliche Plätze, darf, Notizbuch; ohne ihn liest er Fleets Bibliothek
+  sitz?: Sitz;
+  // was die Session darf (session-rechte.ts), hier gesetzt; die Tür bekommt es beim Start, ein Export trägt es in sitz.darf
+  rechte?: Rechte }
 // DAS PROTOKOLL EINER KONSTELLATION (Harness 2.0 Schritt 3, harness-2-0-antwort.md Lücke 2): wann ein Lauf endet, wie viele Runden höchstens,
 // nach welcher Regel geprüft wird. Jedes Teil ist frei; die Endbedingung ist meist die CI und lässt sich abschalten (Owner 19.10.). null = nicht gesagt
 export interface Protokoll { ende: string | null; runden: number | null; regel: string | null }
@@ -48,7 +55,9 @@ export const ENDE_CI = "Die CI des Repos ist grün.";
 export const protokollLeer = (p: Protokoll | undefined): boolean => !p || (p.ende === null && p.runden === null && p.regel === null);
 // eigen = bearbeitbar; ohne eigen ist sie eine Fleet-Vorlage. autor: wer sie geschrieben hat (aus einem Import), sonst du
 // aufgabe: die Aufgabe, mit der sie reist (docs/konstellation/restplan.md T3); sie zählt in die Fassung
+// abgeleitetVon: der Hash der Fassung, aus der sie exportiert wurde; laeufe: mitgereiste Läufe als Bericht. Beide zählen nicht in die Fassung
 export interface Konst { id: string; name: string; v: number; satz: string; eigen?: true; autor?: string; quer?: string; protokoll?: Protokoll; aufgabe?: Aufgabe;
+  abgeleitetVon?: string; laeufe?: LaufBericht[];
   // was an dieser Konstellation heute nicht geht, in einem Satz
   heuteNicht?: string; wurzeln: Position[] }
 
@@ -540,8 +549,9 @@ export function abweichungen(p: Profil, q: Position, name: (id: string) => strin
 
 // EXPORT: dieselbe Form auf jeder Ebene; mit Verweisen (lane@3) oder vollständig (Werte eingebettet)
 export type Ebene = "system" | "konst" | "session" | "baustein";
-// `zusatz` hängt an, was im vollständigen Export mitreist (eigene Fassungen und Kontextpacks als Entwurf)
-type ExportEingang = { ebene: Ebene; voll: boolean; konst: Konst[]; k: Konst; profile: Profil[]; q: Position | null; p: Profil; zusatz?: object };
+// `zusatz` hängt an, was im vollständigen Export mitreist (eigene Fassungen und Kontextpacks als Entwurf). `teilen`: es geht hinaus, also
+// bleibt jeder persönliche Platz leer (src/sitz.ts#sitzZumTeilen); ohne es ist es die Form des eigenen Speichers, die das Eigene behält
+type ExportEingang = { ebene: Ebene; voll: boolean; konst: Konst[]; k: Konst; profile: Profil[]; q: Position | null; p: Profil; zusatz?: object; teilen?: boolean };
 export const exportJson = (o: ExportEingang): string => JSON.stringify(exportObjekt(o), null, 2);
 // dasselbe als Objekt: so legt der Server-Speicher eine Konstellation ab (k15-zustand.ts#konstForm)
 export function exportObjekt(o: ExportEingang): Record<string, unknown> {
@@ -557,12 +567,16 @@ export function exportObjekt(o: ExportEingang): Record<string, unknown> {
     return { id: x.id, name: x.name, profil: o.voll ? voll(von(x.profil)) : ref(von(x.profil)),
       ...(vater ? { meldetAn: vater.id } : {}), ...(x.abw ? { abweichend: x.abw } : {}),
       ...(x.datei ? { eigeneDatei: o.voll ? x.datei : x.datei.titel } : {}), ...(x.ohne ? { ohneTeile: x.ohne } : {}), ...(x.werteAbw ? { werteAbw: x.werteAbw } : {}),
-      ...(x.schalter ? { schalter: x.schalter } : {}), ...(x.wann ? { wann: x.wann } : {}) };
+      ...(x.schalter ? { schalter: x.schalter } : {}), ...(x.wann ? { wann: x.wann } : {}),
+      // Rechte an der Position nur im eigenen Speicher: hinaus gehen sie allein über den Server-Export in sitz.darf (server/sitz-reise.ts#dateiFuer)
+      ...(x.rechte && !o.teilen ? { rechte: x.rechte } : {}), ...(x.sitz ? { sitz: o.teilen ? sitzZumTeilen(x.sitz) : x.sitz } : {}) };
   };
   const konst = (k: Konst) => ({ name: k.name, version: k.v, satz: k.satz, autor: k.eigen ? k.autor ?? DU : FLEET, ...(k.quer ? { quer: k.quer } : {}),
+    ...(k.abgeleitetVon ? { abgeleitetVon: k.abgeleitetVon } : {}),
     ...(k.protokoll && !protokollLeer(k.protokoll) ? { protokoll: k.protokoll } : {}),
     ...(k.aufgabe ? { aufgabe: k.aufgabe } : {}),
-    positionen: alle(k.wurzeln).map((x) => position(k, x)) });
+    positionen: alle(k.wurzeln).map((x) => position(k, x)),
+    ...(k.laeufe?.length ? { laeufe: k.laeufe } : {}) });
   const p = o.p;
   const obj = o.ebene === "system" ? { fleet: "system", konstellationen: o.konst.map(konst), profile: o.profile.map((x) => o.voll ? voll(x) : ref(x)) }
     : o.ebene === "konst" ? { fleet: "konstellation", ...konst(o.k) }

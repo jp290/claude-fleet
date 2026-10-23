@@ -261,6 +261,17 @@ describe("what the instance server gets with real seats (testinstanz-agent.sh#ti
   test("without the switch the server gets none of it", () => {
     expect(env(false)).toBe("");
   });
+  // `up FLEET_TI_MODEL=… --real-seats` records realModel=; `refresh` (and every other restart) starts the server again
+  // through ti_real_env with the caller's environment, which then no longer names a model
+  test("the model chosen at up stays through a restart without FLEET_TI_MODEL, and a model named now wins", () => {
+    const state = join(root, `state-${++n}`);
+    writeFileSync(state, "realSeats=1\nrealModel=claude-haiku-5-5\n");
+    const model = (extra: Record<string, string>): string | undefined => Bun.spawnSync(["sh", "-c", `. '${AGENT}'; TI_REAL=1; ti_real_env`],
+      { env: { PATH: process.env.PATH ?? "", DIR: "/tmp/fleet-testinstanz-x", STATE: state, ...extra } })
+      .stdout.toString().split("\n").find((l) => l.startsWith("FLEET_MODEL="));
+    expect(model({})).toBe("FLEET_MODEL=claude-haiku-5-5");
+    expect(model({ FLEET_TI_MODEL: "claude-opus-5-5" })).toBe("FLEET_MODEL=claude-opus-5-5");
+  });
 });
 
 describe("MUSS 2 — a succession at the cap does not lose its seat: the door waits for the predecessor to end", () => {

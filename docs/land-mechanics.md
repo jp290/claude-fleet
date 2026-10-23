@@ -43,7 +43,7 @@ directly:
 ```
 $ git branch -f steward-live HEAD
 fatal: cannot force update the branch 'steward-live' used by worktree at
-       '/Users/someone/claude-fleet.worktrees/steward'          # exit 128
+       '/Users/someone/claude-fleet.worktrees/steward'           # exit 128
 ```
 
 **Consequence for automation:** a land mutates a working tree that someone may be sitting

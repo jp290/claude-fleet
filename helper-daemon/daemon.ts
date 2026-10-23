@@ -881,7 +881,7 @@ export function withdrawnRuns(running: ReadonlyMap<string, { claimedAt: number |
 // WHAT THIS TICK MAY START — pure, exported, checked in e2e/helper-daemon.ts (HD.1) and pinned in
 // e2e/pins.ts. A `daemon-update` ends this process with exit 75, and every claim the process holds
 // at that moment is left on the fleet with nobody running it until it EXPIRES. Measured 2026-09-14
-// 09:24 on helper-device-1: one poll saw an idle machine, an open audit and the update, claimed
+// 09:24 on the workhorse: one poll saw an idle machine, an open audit and the update, claimed
 // BOTH, the update swapped and exited, and the audit's claim sat on the fleet for ~45 min with no
 // run behind it (and the deploy behind the audit with it). Hence two rules, and only these:
 //   · while an update is listed for this machine, NOTHING ELSE is started — not beside it, and not

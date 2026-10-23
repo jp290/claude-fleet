@@ -1,9 +1,17 @@
 // separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
 // run its own s1..sN sessions without touching the live fleet's
 export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
+// WHAT A PANE INHERITS. The tmux server takes the environment of the client that starts it, and every pane
+// inherits that server's global environment. A client spawned with this server's own env handed each pane
+// FLEET_TOKEN (the owner's pass of the instance) and every other FLEET_* it was started with (Mangel 135,
+// measured 23.10. on a test instance: FLEET_CMD, FLEET_PORT, FLEET_REAL_SEAT_* and 17 more). None of them
+// is the pane's: what a pane needs from Fleet, its spawn line exports itself (FLEET_SELF_*, server.ts#ensureSlot).
+export const paneEnv = (env: Record<string, string | undefined>): Record<string, string> =>
+  Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined && !e[0].startsWith("FLEET_")));
+const TMUX_ENV = paneEnv(process.env);
 export interface TmuxResult { out: string; err: string; code: number }
 export async function tmux(...args: string[]): Promise<TmuxResult> {
-  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, ...args], { env: TMUX_ENV, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited,
   ]);
@@ -24,7 +32,7 @@ export const TMUX_NEW_SESSION_KILL_GRACE_MS = 500;
 // unbounded client process strands both lifecycle verbs. Kill only the exact Bun child we started:
 // TERM first, KILL after a short grace, and never a name-pattern/process-tree sweep.
 export async function tmuxNewSession(...args: string[]): Promise<TmuxNewSessionResult> {
-  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, "new-session", ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, "new-session", ...args], { env: TMUX_ENV, stdout: "pipe", stderr: "pipe" });
   const outP = new Response(p.stdout).text().catch(() => "");
   const errP = new Response(p.stderr).text().catch(() => "");
   let timer: ReturnType<typeof setTimeout> | undefined;

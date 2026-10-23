@@ -7,6 +7,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PROFILE0, alle, exportObjekt, type Konst, type Profil } from "../src/k15-entwurf-modell";
 import { importKonst } from "../src/k15-import";
+import { bindungsNamen } from "./bindung";
 import { fassungsHash } from "./konst-fassungen";
 
 const DIR = join(import.meta.dir, "..", "docs", "aufgaben");
@@ -28,7 +29,7 @@ const autoren = (): string[] => {
 };
 const PRIVAT: [string, RegExp][] = [
   ["ein Pfad auf einem Rechner", /\/Users\/|\/home\/|\/private\/|\/tmp\/|~\/|[A-Z]:\\/],
-  ["ein Rechnername", /someone|workhorse|tailscale|\.ts\.net|\.local\b/i],
+  ["ein Rechnername", /workhorse|tailscale|\.ts\.net|\.local\b/i],
   ["eine IP-Adresse", /\b(?:\d{1,3}\.){3}\d{1,3}\b/],
   ["ein Token im Text", /token=|Bearer\s+\S|x-fleet-self-token:\s*[0-9a-f]|FLEET_[A-Z_]*TOKEN=/i],
   ["ein Wert in Token-Form (32 Hex wie ein Self-Token)", /\b[0-9a-f]{32}\b/],
@@ -65,6 +66,8 @@ describe("eine Aufgaben-Datei geht in eine frische Fleet", () => {
   test.each(DATEIEN)("%s: kein Token, kein privater Pfad, kein Rechnername, kein Personenname", async (f) => {
     const text = await lies(f);
     for (const [was, muster] of PRIVAT) expect([was, muster.exec(text)?.[0] ?? null]).toEqual([was, null]);
+    // die echten Namen dieser Maschinen stehen in ihrer Bindung, nie hier (server/bindung.ts)
+    for (const name of bindungsNamen()) expect([name, text.toLowerCase().includes(name.toLowerCase())]).toEqual([name, false]);
     for (const name of autoren()) expect([name, new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text)]).toEqual([name, false]);
     const autor = [...text.matchAll(/"autor": "([^"]*)"/g)].map((m) => m[1]);
     expect(new Set(autor)).toEqual(new Set(["du"]));

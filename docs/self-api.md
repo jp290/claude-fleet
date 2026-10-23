@@ -2109,7 +2109,7 @@ Das misst Eingang bis Aufruf einschließlich Prüfung und Entscheidungen, keine 
 Offene Lanes und nicht zuordenbare Lands werden nicht zu Nullintervallen.
 
 ```sh
-python3 - /Users/someone/fleet-extracts/2026-10-04-a2 <<'PY'
+python3 - ~/fleet-extracts/2026-10-04-a2 <<'PY'
 import json, re, hashlib, math, statistics
 from pathlib import Path
 import sys

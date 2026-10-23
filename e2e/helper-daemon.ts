@@ -349,7 +349,7 @@ export async function run(h: {
   check("(HD) withdrawnRuns aborts exactly the runs the fleet took back — reaped, re-offered, re-claimed — and never one it still holds for me",
     JSON.stringify(gone) === JSON.stringify(["bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"]),
     JSON.stringify(gone));
-  // THE UPDATE STARTS ALONE (2026-09-14 09:24, helper-device-1): one poll claimed an audit AND the
+  // THE UPDATE STARTS ALONE (2026-09-14 09:24, on the workhorse): one poll claimed an audit AND the
   // daemon-update, the update exited 75, and the audit's claim sat on the fleet ~45 min with no run
   // behind it. MUTATION: drop the update branch in daemon.ts#jobsToStart ⇒ the idle list starts both
   // ⇒ red; drop `running === 0` ⇒ the busy machine starts the update beside its run ⇒ red; drop the

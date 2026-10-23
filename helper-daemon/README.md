@@ -245,7 +245,7 @@ shortening when a local branch has the same name. The configuration does not upd
   | --- | --- |
   | `FLEET_HELPER_WAKE_ADDR` | **required, no default.** The subnet-directed broadcast address of the segment the helper is on (`x.x.x.255`). Unset ⇒ both doors 409 and no tick is armed. |
   | `FLEET_HELPER_WAKE_PORT` | UDP port, default `9`. |
-  | `FLEET_HELPER_MAC_<DEVICEID IN CAPS>` | that device's MAC, e.g. `FLEET_HELPER_MAC_helper-device-1=00:11:22:33:44:55`. Colons, dashes or bare hex; anything unparseable reads as *not configured*. |
+  | `FLEET_HELPER_MAC_<DEVICEID IN CAPS>` | that device's MAC, e.g. `FLEET_HELPER_MAC_MYHELPER1=00:11:22:33:44:55`. Colons, dashes or bare hex; anything unparseable reads as *not configured*. |
   | `FLEET_HELPER_WAKE_AFTER_MS` | silence before the tick will wake it, default 600000. |
   | `FLEET_HELPER_WAKE_BACKOFF_MS` | per-device pause after a frame, default 900000. |
   | `FLEET_HELPER_WAKE_TICK_MS` | the tick's own clock, default 30000. Its own knob rather than `FLEET_HELPER_SWEEP_MS`, which `HELPER_FRESH_MS` is derived from. |

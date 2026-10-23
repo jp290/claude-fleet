@@ -607,6 +607,7 @@ JS
     echo "expiresAt=$((TI_NOW + TI_TTL * 60))"
     echo "mode=$TI_KIND"
     [ "$TI_REAL" = 1 ] && echo "realSeats=1"
+    [ "$TI_REAL" = 1 ] && echo "realModel=${FLEET_TI_MODEL:-claude-sonnet-5-5}"
     echo "sourceBefore=$TI_SOURCE_BEFORE"
     echo "sourceAfter=$TI_SOURCE_AFTER"
     echo "copyStartedAt=$TI_COPY_STARTED"
@@ -707,8 +708,13 @@ console.log(JSON.stringify({head,branch,dirty:status===null?null:status.split("\
   rm -rf "$TI_STAGE"
   # the state file records the stand NOW shown; ti_serve reads sourceBefore from it for the band
   # and rewrites pid= and birth= once the new server answers
-  sed -e '/^sourceBefore=/d' -e '/^sourceAfter=/d' -e '/^copyStartedAt=/d' -e '/^copyFinishedAt=/d' -e '/^builtAt=/d' "$STATE" > "$STATE.new"
+  # …and a model named now replaces the one `up` chose (without the variable the recorded one stays, ti_real_env)
+  TI_REMODEL=""
+  [ -n "${FLEET_TI_MODEL:-}" ] && [ "$(sed -n 's/^realSeats=//p' "$STATE" | head -1)" = 1 ] && TI_REMODEL=1
+  sed -e '/^sourceBefore=/d' -e '/^sourceAfter=/d' -e '/^copyStartedAt=/d' -e '/^copyFinishedAt=/d' -e '/^builtAt=/d' \
+    ${TI_REMODEL:+-e '/^realModel=/d'} "$STATE" > "$STATE.new"
   {
+    [ -n "$TI_REMODEL" ] && echo "realModel=$FLEET_TI_MODEL"
     echo "sourceBefore=$TI_SOURCE_BEFORE"
     echo "sourceAfter=$TI_SOURCE_AFTER"
     echo "copyStartedAt=$TI_COPY_STARTED"

@@ -11,7 +11,8 @@ import type { Answer } from "./founding";
 import type { Auftrag, ProgZeile } from "./start-tuer";
 import type { BranchOtherView } from "./protocol";
 import type { Eingang } from "./k15-lader";
-import { S, agentMdKommt, antwort, sitzKommt, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
+import { S, agentMdKommt, antwort, sitzKommt, dreier, info, lage, render, rollenStandardGelesen, schwelleDerWahl, schwelleWahl, schwelleWert, wahlVon,
+  type Lage, type St } from "./k15-zustand";
 import { PROFILE0, alle, aspekt, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
 import { eigeneVon } from "./k15-wortlaut-ui";
 import { bindeLauf, laufSatz } from "./k15-lauf";
@@ -209,7 +210,7 @@ function auftrag(s: St, q: Position, p: Profil): Auftrag | null {
   return { tuer: "open", cwd: repo, slot: frei, dreier: d, plan: ohnePlan(p, a) ? null : plan, ...(gezeigt ? { fassung: gezeigt } : {}),
     ...(p.rolle === "orchestratorin" ? { label: ORCH_LABEL } : {}),
     ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}), ...(sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}),
-    ...(q.rechte ? { rechte: q.rechte } : {}) };
+    ...(q.rechte ? { rechte: q.rechte } : {}), ...schwelleDerWahl(s, p, q) };
 }
 
 export async function los(s: St): Promise<void> {
@@ -246,7 +247,7 @@ export async function los(s: St): Promise<void> {
 // DIE ÜBERGABE-SCHWELLE DES PROFILS (Harness 2.0 Schritt 2, modell.md Änderung 1) über die Tür, mit der der Owner sie je Slot setzt: in
 // 5er-Schritten von 5 bis 95; der Satz sagt, was gilt
 async function setzeSchwelle(slot: number, pct: number): Promise<string> {
-  const wert = Math.min(95, Math.max(5, Math.round(pct / 5) * 5));
+  const wert = schwelleWert(pct);
   try {
     const j: unknown = await (await api("/api/sessions")).json();
     const zeilen = j && typeof j === "object" && "slots" in j && Array.isArray(j.slots) ? j.slots : [];

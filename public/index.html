@@ -3237,6 +3237,9 @@
   #board .bsec .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
     overflow-wrap: anywhere; }
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
+  /* what shapes the seat besides Fleet's line (src/fassung-umfeld-zeilen.ts); the owner's own parts say so */
+  #board .bsetup .bsumfeld .bsval { white-space: normal; overflow-wrap: anywhere; }
+  #board .bsetup .bseigen { color: var(--b-ink3); font-family: inherit; font-style: italic; }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-size: 10.5px; color: var(--b-ink2); }
   #board .bsetup .bspack { cursor: pointer; }

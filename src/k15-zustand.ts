@@ -378,7 +378,7 @@ export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
 export interface Dreier { harness?: string; model?: string; effort?: string }
 // was die Öffnung außer dem Plan noch liest (server.ts#startVonAdresse): damit die Vorschau die Fassung DIESES Starts rechnet und der gezeigte
 // Hash der ist, der läuft. Rechte als JSON, das Profil als Kennung, die Bibliothek nur für einen Start ohne Plan.
-export interface Dazu { rechte?: Rechte; profil?: string; bibliothek?: boolean; sitz?: string }
+export interface Dazu { rechte?: Rechte; profil?: string; bibliothek?: boolean; sitz?: string; schwelle?: number }
 export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier = {}, dazu: Dazu = {}): string => {
   // `anlass=neu`: die Antwort trägt den fassungsHash, den die Tür beim Start gegenprüft (server.ts#fassungGezeigtPruefung)
   const q = new URLSearchParams({ repo, role: rolle, anlass: "neu" });
@@ -389,6 +389,7 @@ export const planUrl = (repo: string, rolle: PlanRolle, sch: Schalter, d: Dreier
   if (dazu.profil) q.set("profil", dazu.profil);
   if (dazu.sitz) q.set("sitz", dazu.sitz);
   if (dazu.bibliothek !== undefined) q.set("bibliothek", String(dazu.bibliothek));
+  if (dazu.schwelle !== undefined) q.set("schwelle", String(dazu.schwelle));
   const b = Object.entries(sch).map(([id, v]) => `${id}=${v}`).sort().join(",");
   if (b) q.set("bausteine", b);
   return `/api/founding-plan?${q}`;
@@ -545,7 +546,14 @@ export const sitzKommt = (s: St, p: Profil, q: Position): boolean =>
   s.konstGespeichert.has(s.k.id) && !s.konstNeu.has(s.k.id) && p.rolle === "nur-ordner" && wahlVon(s, p, q, "agent").wert === "claude";
 // was die Vorschau einer Position außer dem Plan mitnimmt, wie ihr Start es an die Tür schickt (k15-start.ts#auftrag): Profil, Sitz und die Rechte der Position
 export const dazuDerPosition = (s: St, p: Profil, q: Position | null): Dazu => ({ ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}),
-  ...(q && sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}), ...(q?.rechte ? { rechte: q.rechte } : {}) });
+  ...(q && sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}), ...(q?.rechte ? { rechte: q.rechte } : {}), ...schwelleDerWahl(s, p, q) });
+// DIE SCHWELLE, DIE DER START SETZT (k15-start.ts#setzeSchwelle): in 5er-Schritten von 5 bis 95. Die Vorschau und die offene Tür bekommen sie
+// mit, damit die Fassung, die das Fenster zeigt, die mit dieser Schwelle ist (server.ts#schwelleDerTuer)
+export const schwelleWert = (pct: number): number => Math.min(95, Math.max(5, Math.round(pct / 5) * 5));
+export function schwelleDerWahl(s: St, p: Profil, q: Position | null): { schwelle?: number } {
+  const sw = schwelleWahl(s, p, q);
+  return sw.gesetzt && sw.pct !== null ? { schwelle: schwelleWert(sw.pct) } : {};
+}
 export function wahlVon(s: St, p: Profil, q: Position | null, feld: WahlFeld): Wahl {
   const std = rollenStd(s, p), kat = s.katalog ?? null;
   const gesetzt = (v: unknown, gilt: (x: string) => boolean) => typeof v === "string" && v !== "" && gilt(v);

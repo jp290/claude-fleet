@@ -52,7 +52,9 @@ ti_end_seats() {
 
 # WHAT THE INSTANCE SERVER GETS WITH REAL SEATS, one NAME=value per line (ti_serve passes them, env-names records the
 # names): no role in bypass and the deny rules (server/session-start.ts), a default model that is not the 1M Opus
-# (FLEET_TI_MODEL chooses another), and the machine's registry the open door counts (server/echte-sitze.ts)
+# (FLEET_TI_MODEL chooses another), the machine's registry the open door counts (server/echte-sitze.ts), and the HOME a
+# real seat's claude reads its hooks, plugins and settings from (ti_real_wrapper: the owner's), so the Fassung shows what
+# loads (server/fassung-umfeld.ts) instead of the instance's empty HOME
 ti_real_env() {
   [ "${TI_REAL:-}" = 1 ] || return 0
   echo FLEET_NO_BYPASS=1
@@ -60,6 +62,7 @@ ti_real_env() {
   echo "FLEET_REAL_SEAT_REGISTRY=$TI_SEATS"
   echo "FLEET_REAL_SEAT_CAP=$TI_SEAT_CAP"
   echo "FLEET_REAL_SEAT_ARMED=$DIR/bin/.real-armed"
+  echo "FLEET_CLAUDE_HOME=$HOME"
 }
 # AND THE HARNESS BINARIES ARE STAND-INS. FLEET_CMD=true only replaces the CLAUDE command; a slot
 # opened with harness codex or pi still starts the REAL `codex` / `pi` from PATH (measured

@@ -252,10 +252,11 @@ describe("MUSS 1 — one registry for the machine, whatever FLEET_TI_ROOT an ins
 describe("what the instance server gets with real seats (testinstanz-agent.sh#ti_real_env, ti_serve passes it)", () => {
   const AGENT = join(import.meta.dir, "..", "testinstanz-agent.sh");
   const env = (real: boolean): string => Bun.spawnSync(["sh", "-c", `. '${AGENT}'; TI_REAL=${real ? 1 : 0}; ti_real_env`],
-    { env: { PATH: process.env.PATH ?? "", DIR: "/tmp/fleet-testinstanz-x", FLEET_TI_SEAT_REGISTRY: "/r" } }).stdout.toString();
-  test("no role in bypass, a cheap default model, and the registry, cap and armed file of the door", () => {
+    { env: { PATH: process.env.PATH ?? "", DIR: "/tmp/fleet-testinstanz-x", FLEET_TI_SEAT_REGISTRY: "/r", HOME: "/home/owner" } }).stdout.toString();
+  test("no role in bypass, a cheap default model, the registry, cap and armed file of the door, and the HOME claude reads from", () => {
     expect(env(true).trim().split("\n")).toEqual(["FLEET_NO_BYPASS=1", "FLEET_MODEL=claude-sonnet-5-5",
-      "FLEET_REAL_SEAT_REGISTRY=/r", "FLEET_REAL_SEAT_CAP=2", "FLEET_REAL_SEAT_ARMED=/tmp/fleet-testinstanz-x/bin/.real-armed"]);
+      "FLEET_REAL_SEAT_REGISTRY=/r", "FLEET_REAL_SEAT_CAP=2", "FLEET_REAL_SEAT_ARMED=/tmp/fleet-testinstanz-x/bin/.real-armed",
+      "FLEET_CLAUDE_HOME=/home/owner"]);
   });
   test("without the switch the server gets none of it", () => {
     expect(env(false)).toBe("");

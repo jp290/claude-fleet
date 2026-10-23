@@ -330,7 +330,7 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
 // Vorschau, die es dafür zeigte. Abnahme 22.10.: ohne diese Felder war „gezeigt = laufend“ nur für den nackten Start wahr. Der Kindprozess ruft
 // den Handler von server.ts (serveOptions.fetch) wie die Route-Handler-Tests in server/load.test.ts; die Panes laufen auf einem eigenen
 // tmux-Socket mit `true` als Agent.
-interface Lauf { ohneSitz?: string; liest?: string; gedaechtnis?: string | null; paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
+interface Lauf { umfeld?: Record<string, { text: string | null; eigentum: string | null }> | null; ohneSitz?: string; liest?: string; gedaechtnis?: string | null; paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
 describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
   const dir = mkdtempSync(join(tmpdir(), "start-fassung-tuer-"));
   let laeufe: Record<string, Lauf> = {};
@@ -344,7 +344,11 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     mkdirSync(join(dir, "repo", "unter", "ordner"), { recursive: true });
     writeFileSync(join(dir, "repo", "unter", "CLAUDE.md"), "Regel im Unterordner\n");
     mkdirSync(join(dir, "state"), { recursive: true });
-    mkdirSync(join(dir, "home"), { recursive: true });
+    mkdirSync(join(dir, "home", ".claude", "hooks"), { recursive: true });
+    // ein eigener Hook des Owners: die Fassung liest ihn aus ~/.claude/settings.json, ohne ihn auszuführen
+    writeFileSync(join(dir, "home", ".claude", "hooks", "wache.sh"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(join(dir, "home", ".claude", "settings.json"), JSON.stringify({ model: "opus",
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "~/.claude/hooks/wache.sh" }] }] } }));
     writeFileSync(join(dir, "state", SPEICHER_DATEI), JSON.stringify({ fassungen: [], packs: [], profile: [
       { id: "planer", rolle: "nur-ordner", schiene: "session", name: "Planer", datei: { titel: "planer.md", v: 2, pfad: "eigene Datei",
         abschnitte: [{ titel: "# Planer", text: "Du setzt selten ein Ziel." }] } }],
@@ -370,8 +374,9 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       const repo = process.env.FIX_REPO;
       const laeufe = {};
       // eine Variante so, wie das Fenster sie fährt: Vorschau mit den Wahlen, dann open mit denselben Feldern und dem gezeigten Hash
-      const fahre = async (schritt, slot, { cwd = repo, role = "nur-ordner", rechte, profil, bibliothek, fassung, sitz } = {}) => {
+      const fahre = async (schritt, slot, { cwd = repo, role = "nur-ordner", rechte, profil, bibliothek, fassung, sitz, schwelle } = {}) => {
         const q = new URLSearchParams({ repo: cwd, role, anlass: "neu" });
+        if (schwelle !== undefined) q.set("schwelle", String(schwelle));
         if (rechte) q.set("rechte", JSON.stringify(rechte));
         if (profil) q.set("profil", profil);
         if (sitz) q.set("sitz", sitz);
@@ -380,17 +385,19 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
         if (v.status !== 200) throw new Error(schritt + ": Vorschau " + v.status + " " + JSON.stringify(v.body));
         const startbar = v.body.start.startbar;
         const body = { cwd, fassung: fassung ?? v.body.fassungsHash, ...(role === "orchestratorin" ? { label: "Orchestrator" } : {}),
-          ...(rechte ? { rechte } : {}), ...(profil ? { profil } : {}), ...(sitz ? { sitz } : {}),
+          ...(rechte ? { rechte } : {}), ...(profil ? { profil } : {}), ...(sitz ? { sitz } : {}), ...(schwelle !== undefined ? { schwelle } : {}),
           ...(startbar ? { plan: { hash: v.body.plan.planHash, role, ...(bibliothek !== undefined ? { bausteine: "bibliothek=" + (bibliothek ? "an" : "aus") } : {}) } }
             : bibliothek !== undefined ? { bibliothek } : {}) };
         const o = await call("POST", "/api/slots/" + slot + "/open", body);
-        let laufend = null, festgehalten = false, mcp = null;
+        let laufend = null, festgehalten = false, mcp = null, umfeld = null;
         if (o.status === 200) {
           const l = await call("GET", "/api/slots/" + slot + "/fassung?anlass=laufend");
           laufend = l.body.hash; festgehalten = !!l.body.festgehalten;
           mcp = l.body.teile.find((t) => t.id === "darf")?.abschnitte.find((a) => a.id === "mcp")?.text ?? null;
+          umfeld = Object.fromEntries(l.body.teile.flatMap((t) => t.abschnitte).filter((a) => ["schwelle", "warmhalten", "hooks", "hooks-eigene", "plugins", "cc-einstellungen-eigene"].includes(a.id))
+            .map((a) => [a.id, { text: a.text, eigentum: a.eigentum ?? null }]));
         }
-        laeufe[schritt] = { mcp, schritt, vorschau: v.body.fassungsHash, vorschauStartbar: startbar, open: o.status, offenBody: o.status === 200 ? null : o.body, laufend, festgehalten };
+        laeufe[schritt] = { mcp, umfeld, schritt, vorschau: v.body.fassungsHash, vorschauStartbar: startbar, open: o.status, offenBody: o.status === 200 ? null : o.body, laufend, festgehalten };
       };
       await fahre("nackt", 3);
       await fahre("rechte", 4, { rechte: { stufe: "bauen", an: [], aus: [] } });
@@ -409,6 +416,15 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       const lesen2 = await call("GET", "/api/slots/2/fassung?anlass=laufend");
       laeufe["sitz-profil"].gedaechtnis = lesen2.body?.teile?.find((x) => x.id === "liest")?.abschnitte.find((a) => a.id === "gedaechtnis")?.text ?? null;
       await fahre("orchestratorin-rechte", 10, { role: "orchestratorin", rechte: { stufe: "lesen", an: [], aus: [] } });
+      // die Schwelle des Fensters: Vorschau und Tür rechnen sie mit; ändert der Owner sie danach, führt die Route sie nach und nennt es
+      await fahre("schwelle", 16, { schwelle: 35 });
+      const s16 = await call("GET", "/api/sessions");
+      const offen16 = s16.body.slots.find((x) => x.id === 16)?.openedAt;
+      const patch = await call("PATCH", "/api/slots/16/handover", { expectedOpenedAt: offen16, thresholdPct: 50 });
+      const nach = await call("GET", "/api/slots/16/fassung?anlass=laufend");
+      Object.assign(laeufe.schwelle, { patch: patch.status, nachHash: nach.body.hash, nachgefuehrt: nach.body.festgehalten?.nachgefuehrt ?? null,
+        startHash: nach.body.festgehalten?.startHash ?? null,
+        nachText: nach.body.teile.flatMap((t) => t.abschnitte).find((a) => a.id === "schwelle")?.text ?? null });
       // veraltet: die Vorschau ohne Rechte, der Start mit Rechten -> 409 mit dem Hash, den der Start trüge; nichts ist gestartet
       const nackt = await call("GET", "/api/founding-plan?" + new URLSearchParams({ repo, role: "nur-ordner", anlass: "neu" }));
       await fahre("veraltet", 11, { rechte: { stufe: "bauen", an: [], aus: [] }, fassung: nackt.body.fassungsHash });
@@ -448,7 +464,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       Bun.spawnSync(["tmux", "-L", process.env.FLEET_SOCK, "kill-server"]);
       process.exit(0);
     `;
-    const r = await runServer(script, dir, { FLEET_CMD: "true" });
+    const r = await runServer(script, dir, { FLEET_CMD: "true", FLEET_MIGRATE_PCT: "40" });
     if (r.code !== 0) { abbruch = r.stderr.slice(-2000) || r.stdout.slice(-500) || `exit ${r.code}`; return; }
     laeufe = JSON.parse(readFileSync(out, "utf8")) as Record<string, Lauf>;
   }, 200_000);
@@ -457,7 +473,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(abbruch).toBe("");
   });
 
-  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil"]) {
+  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-aus", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil", "schwelle"]) {
     test(`${schritt}: open mit dem gezeigten Hash gibt 200, und laufend ist der gezeigte, festgehaltene`, () => {
       const l = laeufe[schritt];
       expect(l?.open).toBe(200);
@@ -470,6 +486,29 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(laeufe.sitz?.liest).toContain("Das Pack, das mit der Datei reiste.");
     expect(laeufe.sitz?.vorschau).not.toBe(laeufe.sitz?.ohneSitz);
     expect(laeufe["sitz-profil"]?.gedaechtnis).toBe("# Notizen\n- das Notizbuch reiste mit\n");
+  });
+
+  test("die Schwelle des Fensters steht im gezeigten und im laufenden Hash; eine spätere Änderung führt die Route nach und nennt sie", () => {
+    const l = laeufe.schwelle as Lauf & { patch: number; nachHash: string; nachgefuehrt: string[] | null; startHash: string | null; nachText: string | null };
+    expect(l.umfeld?.schwelle?.text).toBe("Übergabe ab 35 % · fällig ab 40 % · an der Schwelle: Hinweis · Hinweis an");
+    expect(l.vorschau).not.toBe(laeufe.nackt?.vorschau);
+    expect(l.patch).toBe(200);
+    expect(l.nachText).toBe("Übergabe ab 50 % · fällig ab 55 % · an der Schwelle: Hinweis · Hinweis an");
+    expect(l.nachgefuehrt).toEqual(["schwelle"]);
+    expect(l.startHash).toBe(l.laufend);
+    expect(l.nachHash).not.toBe(l.laufend);
+  });
+
+  test("der laufende Sitz zeigt seine Hooks, Einstellungen, Plugins und das Warmhalten, das Eigene des Owners mit seiner Marke", () => {
+    const u = laeufe.nackt?.umfeld;
+    expect(u?.["hooks-eigene"]).toEqual({ text: expect.stringContaining("PreToolUse · Bash · ~/.claude/hooks/wache.sh\n  Skript ~/.claude/hooks/wache.sh · 17 B"), eigentum: "owner" });
+    expect(u?.["cc-einstellungen-eigene"]?.eigentum).toBe("owner");
+    expect(u?.["cc-einstellungen-eigene"]?.text).toContain('"model": "opus"');
+    expect(u?.hooks).toEqual({ text: "(keine Hooks)", eigentum: null });
+    expect(u?.plugins).toEqual({ text: "(keine Plugins)", eigentum: "owner" });
+    expect(u?.warmhalten).toEqual({ text: "Cache warmhalten aus", eigentum: null });
+    // die Orchestratorin hält Fleet warm (keepCacheFleetOn)
+    expect(laeufe["orchestratorin-rechte"]?.umfeld?.warmhalten?.text).toStartWith("Cache warmhalten an: nach 50 min Ruhe");
   });
 
   test("das Netz allein: eine Fassung, die sich nach der Prüfung der Tür bewegt, gibt 409; keine Pane davor, kein Slot, keine Datei danach", () => {

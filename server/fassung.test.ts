@@ -518,11 +518,13 @@ describe("Liest stimmt mit dem Transkript überein", () => {
           haupt: loader(${JSON.stringify(realpathSync(ROOT))}, new Set([\`${realpathSync(ROOT)}/CLAUDE.md\`,
             \`${realpathSync(ROOT)}/.claude/CLAUDE.md\`, \`\${process.env.HOME}/AGENTS.md\`].map((p) => pResolve(p)))),
         };
-        const dateien = (f) => f.teile.find((t) => t.id === "liest").abschnitte.flatMap((a) => a.dateien ?? []);
+        // Pfad und Bytes gegen das Transkript; die Marke des Owners an einer Datei ist Anzeige und steht eigens
+        const dateien = (f) => f.teile.find((t) => t.id === "liest").abschnitte.flatMap((a) => (a.dateien ?? []).map((d) => ({ pfad: d.pfad, bytes: d.bytes })));
+        const eigene = (f) => f.teile.find((t) => t.id === "liest").abschnitte.flatMap((a) => (a.dateien ?? []).filter((d) => d.eigentum === "owner").map((d) => d.pfad));
         const out = {};
         for (const [name, slot] of Object.entries(slots)) {
           const f = await S.fassungFuerSlot(slot, "laufend");
-          out[name] = { hash: f.hash, dateien: dateien(f) };
+          out[name] = { hash: f.hash, dateien: dateien(f), eigene: eigene(f) };
         }
         await Bun.write(${JSON.stringify(out)}, JSON.stringify({ slots: out, geladen }, null, 2));
       `;
@@ -557,6 +559,9 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       // die Session im Server-Checkout lädt nie das CLAUDE.md, das dort liegt (ob die AGENTS.md lädt, hängt am Home: s. o.)
       expect(geladen.haupt.map((d) => d.pfad)).not.toContain(join(realpathSync(ROOT), "CLAUDE.md"));
       expect(got.haupt!.dateien).toEqual(transkript([...mitInhalt(geladen.haupt), datei(memRoot)]));
+      // ~/.claude/CLAUDE.md ist das Eigene des Owners, das Gedächtnis nicht
+      for (const name of ["orch", "free"] as const)
+        expect((roh.slots[name] as { eigene?: string[] }).eigene).toEqual([join(home, ".claude", "CLAUDE.md")]);
       // Auto-Memory ist bei der Lane kein Abschnitt mit Datei: sie startet ohne (autoMemoryEnabled:false)
       const laneF = roh.slots;
       expect(laneF.lane.hash).toMatch(/^[0-9a-f]{64}$/);

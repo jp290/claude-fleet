@@ -1510,8 +1510,6 @@ export default function (pi) {
 
 
 {
-  const codeLines = server.split("\n").filter((l) => !l.trim().startsWith("//"));
-  const settingsJson = codeLines.filter((l) => /settings\.json/.test(l));
   const providerReadAt = server.indexOf("function codexDefaultProviderBound(");
   const providerReadEnd = server.indexOf("\n}\n", providerReadAt);
   const providerRead = providerReadAt >= 0 && providerReadEnd > providerReadAt
@@ -1522,12 +1520,27 @@ export default function (pi) {
     providerRead.includes('Bun.TOML.parse(readFileSync(path, "utf8"))')
       && !/write|append|truncate|unlink|auth\.json|api_key|console|audit|json\(/i.test(providerRead),
     "bounded TOML reader only");
-  pin("Fleet writes no global plugin settings: no code line names ~/.claude/settings.json",
-    settingsJson.length === 0, settingsJson.map((l) => l.trim().slice(0, 80)).join(" | "));
+  // FLEET WRITES NO GLOBAL PLUGIN SETTINGS. The Fassung READS the owner's ~/.claude/settings.json and its enabledPlugins
+  // (server/fassung-umfeld.ts), so a line naming them is allowed in that one module only, and the module may not write:
+  // its node:fs import names readers only, and no write call stands in it. Tests are not Fleet's runtime and build their
+  // ~/.claude in a temp home (server/fassung-umfeld.test.ts#welt), so *.test.ts is outside this rule.
+  const SETTINGS_READER = "server/fassung-umfeld.ts";
+  const FS_READERS = new Set(["readFileSync", "readdirSync", "statSync", "existsSync", "lstatSync", "realpathSync"]);
+  const runtimeNaming = serverU.files.filter((f) => !f.file.endsWith(".test.ts") && f.file !== SETTINGS_READER)
+    .flatMap((f) => f.text.split("\n").filter((l) => !l.trim().startsWith("//") && /settings\.json|enabledPlugins/.test(l))
+      .map((l) => `${f.file}: ${l.trim().slice(0, 80)}`));
+  const reader = serverU.module(SETTINGS_READER);
+  const readerFs = [...reader.matchAll(/^import \{([^}]*)\} from "node:fs(?:\/promises)?";/gm)]
+    .flatMap((m) => m[1]!.split(",").map((n) => n.trim()).filter(Boolean));
+  const readerWrites = reader.split("\n").filter((l) => !l.trim().startsWith("//")
+    && /\b(write\w*|append\w*|rename\w*|copyFile\w*|unlink\w*|rm\w*|mkdir\w*|truncate\w*|symlink\w*|createWriteStream|Bun\.write|spawn\w*|child_process)\b/.test(l));
+  pin("Fleet writes no global plugin settings: only the read-only Fassung reader names settings.json or enabledPlugins",
+    runtimeNaming.length === 0, runtimeNaming.join(" | ") || "no other runtime line");
+  pin("Fleet writes no global plugin settings: the Fassung reader imports only fs readers and calls no write",
+    reader !== "" && readerFs.every((n) => FS_READERS.has(n)) && readerWrites.length === 0,
+    JSON.stringify({ fs: readerFs, writes: readerWrites.map((l) => l.trim().slice(0, 80)) }));
   pin("Fleet writes no global Codex configuration: no code line names config.toml",
     configToml.length === 0, configToml.map((l) => l.trim().slice(0, 80)).join(" | ") || "no config.toml line");
-  pin("Fleet writes no global plugin settings: enabledPlugins is never named in code",
-    !codeLines.some((l) => /enabledPlugins/.test(l)), "");
 }
 
 

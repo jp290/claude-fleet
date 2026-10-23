@@ -18,6 +18,8 @@ export type Auftrag =
   | { tuer: "lane"; repo: string; dreier: Dreier; plan: PlanKoerper; slot?: number; parent?: LaneAnchor }
   | { tuer: "lane-fort"; repo: string; worktree: string; dreier: Dreier; slot?: number }
   | { tuer: "open"; cwd: string; slot: number; dreier: Dreier; plan: PlanKoerper | null; fassung?: string; label?: string; rechte?: Rechte; profil?: string; bibliothek?: boolean;
+      // die Übergabe-Schwelle des Fensters: steht am Slot, bevor der Start seine Fassung festhält (server.ts#schwelleDerTuer)
+      schwelle?: number;
       // „<konst>/<position>“: der Sitz startet mit dem, was mitreiste (server/sitz-reise.ts#sitzDerTuer)
       sitz?: string }
   | { tuer: "main"; program: string; cwd: string; dreier: Dreier }
@@ -45,7 +47,7 @@ export async function starte(a: Auftrag): Promise<Antwort> {
       return await tuer("/api/lanes", { repo: a.repo, attach: a.worktree, ...(a.slot !== undefined ? { slot: a.slot } : {}), ...a.dreier }, a.slot);
     return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}), ...(a.fassung ? { fassung: a.fassung } : {}),
       ...(a.rechte ? { rechte: a.rechte } : {}), ...(a.profil ? { profil: a.profil } : {}), ...(a.bibliothek !== undefined ? { bibliothek: a.bibliothek } : {}),
-      ...(a.sitz ? { sitz: a.sitz } : {}) }, a.slot);
+      ...(a.sitz ? { sitz: a.sitz } : {}), ...(a.schwelle !== undefined ? { schwelle: a.schwelle } : {}) }, a.slot);
   } catch (e) {
     return nichtErreichbar(e);
   }

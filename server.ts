@@ -247,8 +247,9 @@ import { bindePosition, k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZ
 import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
 import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR_CONTEXT_LINE_CODEX,
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
-import { baueFassung, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
+import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
+import { leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
@@ -5828,6 +5829,10 @@ const legacyStreamPath = (id: number): string => `${STREAM_DIR}/s${id}.raw`;
 // claude's transcript dir for a cwd (used by ensureSlot's resume check at boot,
 // so it must be defined before the startup section runs)
 const projDir = (cwd: string) => `${process.env.FLEET_CLAUDE_PROJECTS_DIR ?? `${HOME}/.claude/projects`}/${cwd.replace(/[^a-zA-Z0-9]/g, "-")}`;
+// WO CLAUDE CODE SEINE EIGENEN DATEIEN LIEST (~/.claude/CLAUDE.md, Regeln, Einstellungen, Hooks, Plugins): unter dem HOME des Servers, auf
+// einer Testinstanz mit echten Sitzen unter dem HOME, unter dem ihr claude läuft (testinstanz-agent.sh#ti_real_env: FLEET_CLAUDE_HOME)
+const CLAUDE_HOME = process.env.FLEET_CLAUDE_HOME || null;
+const claudeConfigDir = (): string => CLAUDE_HOME ? `${CLAUDE_HOME}/.claude` : dirname(dirname(projDir("x")));
 const historyPath = (id: number) => `${STREAM_DIR}/s${id}.history.json`;
 const MAX_HISTORY = 100;
 
@@ -10255,7 +10260,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // the fassungsHash the preview showed (door field `fassung`): an open that would run another Fassung stops before the pane exists
   gezeigt?: string,
   // what a seat of an imported constellation reads (server/sitz-reise.ts), already read by its door; claude only
-  sitz: SitzStart | null = null): Promise<SlotOpenResult> {
+  sitz: SitzStart | null = null,
+  // the handover threshold the window chose (schwelleDerTuer): on the slot before the start holds its Fassung; claude only
+  schwelle: number | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10400,7 +10407,8 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
   s.lineageId = null; // a recycled slot is not the role line; the succession rails stamp it back
-  s.handover = null; // ...nor the owner's handover setting: a new occupant starts on the fleet's values
+  // ...nor the owner's handover setting: a new occupant starts on the fleet's values, or on the threshold its door was given
+  s.handover = h.id === "claude" && schwelle !== null ? schwelleAmStart(s.id, s.openedAt, schwelle) : null;
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
   // the one caller that stamps it back (prior + 1) right after this call, for the one case where
   // the slot keeps the same worktree and the same work across the session boundary
@@ -21060,6 +21068,8 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   const claude = harnessFamilie(o.harness) === "claude";
   const modell = o.modell ?? (claude ? DEFAULT_MODEL : null);
   const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] });
+  const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness);
+  const art: SessionKind = o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : o.rolle === "program-main" ? "program-main" : "session";
   return baueFassung({
     slot: 0, anlass: "neu",
     wer: [
@@ -21068,7 +21078,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       textAbschnitt("effort", "Slot.effort", o.effort ?? "kein Effort gesetzt", true),
     ],
     aufgabe: fassungAufgabeFuerPlan(o.rolle, o.repoRoot),
-    liest: [
+    liest: markiereEigenes([
       ...fassungRolleKarte(o.rolle, o.repoRoot),
       fleet.zusatz,
       ...(fleet.start ? [fleet.start] : []),
@@ -21080,11 +21090,12 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
         o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : "generic", null) : null, o.harness)),
       unknownAbschnitt("eigenes", !claude ? "dieser Harness liest keine Agent-MD (nur Claude Code)"
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
-    ],
+    ]),
     darf: !claude ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
       : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf],
-    arbeitet: fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot),
+        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf, ...umfeld.darf],
+    arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, steward: false, eigen: null,
+      wahl: fleetChoiceOf(art), warmFleet: art === "orchestrator" || art === "program-main" }), ...umfeld.arbeitet],
     claudeCode: o.claudeCode ?? null,
   });
 }
@@ -21149,6 +21160,52 @@ function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Fassun
     `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
 
+// WAS DEN SITZ AUSSER FLEETS ZEILE FORMT (server/fassung-umfeld.ts): die Hooks, Plugins und Claude-Code-Einstellungen, die Claude Code im
+// Ordner des Sitzes liest, denn die Zeile setzt kein --setting-sources (agentCmd). Gelesen, nie ausgeführt.
+const fassungUmfeld = (cwd: string, harness: string): ReturnType<typeof umfeldAbschnitte> => {
+  if (harnessFamilie(harness) !== "claude") return umfeldOhneClaude();
+  const home = CLAUDE_HOME ?? HOME;
+  return umfeldAbschnitte(leseUmfeld({ configDir: claudeConfigDir(), home, cwd,
+    managed: VERWALTETE_EINSTELLUNGEN }), home, cwd);
+};
+// die eigenen Dateien des Owners unter den Projektregeln (sein ~/.claude/CLAUDE.md und seine Regeln) tragen seine Marke; die Marke einer Datei
+// ist Anzeige. Das Notizbuch unter ~/.claude/projects nicht: es gehört dem Setup und teilt nach seiner eigenen Regel (src/sitz.ts#NOTIZ_TEILBAR).
+const markiereEigenes = (liest: FassungAbschnittEingang[]): FassungAbschnittEingang[] => {
+  const config = `${claudeConfigDir()}/`;
+  return liest.map((a) => a.id === "projektregeln" && a.dateien?.some((datei) => datei.pfad.startsWith(config))
+    ? { ...a, dateien: a.dateien.map((datei) => datei.pfad.startsWith(config) ? { ...datei, eigentum: "owner" as const } : datei) } : a);
+};
+
+// SCHWELLE UND WARMHALTEN (server/fassung-umfeld.ts#schwelleAbschnitt): dieselben Funktionen wie der Takt, der sie anwendet (thresholdOf,
+// thresholdChoiceOf, keepCacheFleetOn). Gezeigt wird die Einstellung, nicht der Augenblick: ob die Session gerade wartet oder noch keine
+// Unterhaltung hat, ändert ihr Setup nicht. Ein Slot, den eine Vorschau stempelt, steht nicht in `slots`; seine Art kommt aus der Rolle.
+const KEEP_CACHE_AUS_WORT: Record<KeepCacheExempt, string> = {
+  steward: "der Steward wird nicht warmgehalten", lane: "eine Lane gibt mit ihrem handoff-Report weiter und wird nicht warmgehalten",
+  harness: "nur eine Claude-Session hat die gemessene Cache-Lebensdauer",
+};
+function fassungLaufwerte(o: { art: SessionKind; claude: boolean; steward: boolean; eigen: HandoverSetting | null;
+  wahl: ThresholdChoice; warmFleet: boolean }): FassungAbschnittEingang[] {
+  const t = thresholdOf(o.art, railEnvPct(o.art), o.eigen?.thresholdPct ?? null);
+  const aus = o.steward ? "der Steward übergibt nicht" : !o.claude ? "nur eine Claude-Session steht auf der Übergabe-Schiene"
+    : MIGRATE_PCT <= 0 ? "FLEET_MIGRATE_PCT ist 0, Fleet hat keinen Übergabe-Takt"
+    : t.basePct <= 0 ? (t.from === "session" ? "für diese Session ausgeschaltet" : `${o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT"} ist 0`) : null;
+  const exempt: KeepCacheExempt | null = o.steward ? "steward" : o.art === "lane" ? "lane" : !o.claude ? "harness" : null;
+  return [
+    schwelleAbschnitt({ art: o.art, basePct: t.basePct, capPct: t.capPct, von: t.from, envName: o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT",
+      aus, wahl: o.wahl, hinweis: o.eigen?.nudge ?? true }),
+    warmhaltenAbschnitt({ an: !exempt && (o.eigen?.keepCache ?? o.warmFleet), von: o.eigen?.keepCache != null ? "session" : "fleet",
+      ausGrund: exempt ? KEEP_CACHE_AUS_WORT[exempt] : null, ruheMin: o.eigen?.keepCacheIdleMin ?? KEEP_CACHE_IDLE_MIN_DEFAULT,
+      text: o.eigen?.keepCacheText ?? KEEP_CACHE_TEXT, hoechstens: KEEP_CACHE_WARM_MAX, jeStunde: KEEP_CACHE_PER_HOUR, lebensdauerMin: KEEP_CACHE_LIFETIME_MIN }),
+  ];
+}
+function fassungLaufwerteFuer(s: Slot): FassungAbschnittEingang[] {
+  const live = slots.includes(s);
+  const art: SessionKind = live ? sessionKindOf(s) : s.worktree ? "lane" : isOrchestratorLabel(s.label) ? "orchestrator"
+    : boundProgramsForMain(s).length ? "program-main" : s.cwd && isBauCwd(s.cwd) ? "bau" : "session";
+  return fassungLaufwerte({ art, claude: harnessOf(s.harness) === CLAUDE_HARNESS, steward: s.label === STEWARD_LABEL, eigen: ownHandover(s),
+    wahl: thresholdChoiceOf(s, art), warmFleet: live ? keepCacheFleetOn(s) : art === "orchestrator" || art === "program-main" });
+}
+
 async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
   const rolle = positionRole(s);
   const nachfolge = anlass === "nachfolge";
@@ -21180,6 +21237,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
         ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
   ];
+  const umfeld = fassungUmfeld(cwd, spawnPick.harness);
   const claudeCode = harnessFamilie(spawnPick.harness) === "claude" && s.cwd
     ? claudeCodeStart(rolle === "program-main" ? "main" : rolle === "orchestrator" ? "orchestratorin" : rolle === "lane" ? "lane" : "nur-ordner",
       spawnPick.harness, { repo: cwd, modell: modell ?? DEFAULT_MODEL })
@@ -21192,13 +21250,13 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       textAbschnitt("effort", "Slot.effort", spawnPick.effort ?? "kein Effort gesetzt", true),
     ],
     aufgabe: await fassungAufgabe(s, rolle, repoRoot),
-    liest,
+    liest: markiereEigenes(liest),
     darf: harnessFamilie(spawnPick.harness) !== "claude"
       ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
       : [s.rechte ? textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)
         : textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf],
-    arbeitet: fassungArbeitet(s, rolle, repoRoot),
+          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf, ...umfeld.darf],
+    arbeitet: [...fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s), ...umfeld.arbeitet],
     claudeCode,
   });
 }
@@ -21227,15 +21285,26 @@ interface OeffnungEingang {
   // ein Sitz aus einer importierten Datei (server/sitz-reise.ts#sitzDerTuer): was er liest (Slot.sitz) und das Notizbuch, das die Tür vor dem Spawn sät;
   // `rechte` ist dann schon das, was die Tür aus Body und Sitz-Block macht (rechteAnDerTuer)
   readonly sitz?: SitzStart | null; readonly notizbuch?: import("./src/sitz").SitzNotizbuch | null;
+  // die Übergabe-Schwelle, die das Fenster für diesen Start gewählt hat (schwelleDerTuer): sie steht am Slot, bevor der Start seine Fassung festhält
+  readonly schwelle?: number | null;
 }
+// DIE SCHWELLE AN DER TÜR: dieselben Werte wie PATCH /api/slots/:id/handover (handoverPctOk), ohne Angabe keine
+const schwelleDerTuer = (v: unknown): { ok: true; schwelle: number | null } | { ok: false; error: string } =>
+  v === undefined || v === null ? { ok: true, schwelle: null } : handoverPctOk(v) ? { ok: true, schwelle: v }
+    : { ok: false, error: `schwelle must be ${HANDOVER_PCT_OFF} (off) or a multiple of ${HANDOVER_PCT_STEP} from ${HANDOVER_PCT_MIN} to ${HANDOVER_PCT_MAX}` };
+// die Einstellung, die eine Schwelle an der Tür am Slot ergibt: dieselbe, die PATCH mit nur `thresholdPct` schriebe
+const schwelleAmStart = (slot: number, openedAt: number, pct: number): HandoverSetting => ({ thresholdPct: pct, nudge: true, keepCache: null,
+  keepCacheIdleMin: KEEP_CACHE_IDLE_MIN_DEFAULT, keepCacheText: null, atThreshold: null, setAt: Date.now(), occupant: { slot, openedAt } });
 // (Parameter `eingang`, nicht `o`: e2e/context-plan.ts zählt die Lesungen der Adapter-Option dieses Namens)
 const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => {
   const claude = harnessOf(eingang.harness).id === "claude";
-  return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt: Date.now(), awaiting: null, successionRetirement: null, mission: null, worktree: null,
+  const openedAt = Date.now();
+  return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt, awaiting: null, successionRetirement: null, mission: null, worktree: null,
     model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: false,
     rechte: claude ? eingang.rechte : null, agentMd: claude ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude ? eingang.bibliothek : null, zustellung: null, lauf: null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
-    programId: null, releasedBy: null, lineageId: null, handover: null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
+    programId: null, releasedBy: null, lineageId: null,
+    handover: claude && eingang.schwelle != null ? schwelleAmStart(basis.id, openedAt, eingang.schwelle) : null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
     sessionIdLearned: null, sleeping: null, standingHandover: null, compaction: null, spawn: null, startCompact: null, laneStandNudged: null, history: [] };
 };
 const fassungDerOeffnung = (basis: Slot, o: OeffnungEingang): Promise<Fassung> =>
@@ -42062,7 +42131,7 @@ function nativeLoaderBytes(dir: string, harness: string, aus: ReadonlySet<string
   const nachgeladen: string[] = [];
   const unreadable = (pfad: string): NativeLoaderBytes => ({ bytes: "unknown", grund: `${pfad} ist nicht lesbar` });
   if (familie === "claude") {
-    const configDir = dirname(dirname(projDir("x"))); // projDir = <config>/projects/<slug>
+    const configDir = claudeConfigDir(); // projDir = <config>/projects/<slug>, unless FLEET_CLAUDE_HOME names claude's own HOME
     const roots: string[] = [];
     for (let d = resolve(dir); dirname(d) !== d; d = dirname(d)) roots.unshift(d);
     const visit = (pfad: string, depth: number): NativeLoaderBytes | null => {
@@ -42601,10 +42670,13 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       const bib = bibliothekDerTuer(startbar ? startOhneBib : startBody, startbar ? resolved.plan.bausteine : null, "owner");
       if (!bib.ok) return refuse(bib.error);
       const packMcp = startbar ? lieferteMcp(plan.selected, verdict.geliefert) : [];
+      const sw = schwelleDerTuer(startBody.schwelle);
+      if (!sw.ok) return refuse(sw.error);
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
       fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { cwd: resolve(expandCwd(repo)),
         label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
-        rechte: wr.rechte, agentMd: am.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch }), anlass: "neu" };
+        rechte: wr.rechte, agentMd: am.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch,
+        schwelle: sw.schwelle }), anlass: "neu" };
     } else {
       fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
         effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
@@ -42630,6 +42702,8 @@ function startVonAdresse(q: URLSearchParams): Record<string, unknown> {
   const bibliothek = q.get("bibliothek");
   if (bibliothek === "true" || bibliothek === "false") start.bibliothek = bibliothek === "true";
   else if (bibliothek) start.bibliothek = bibliothek;
+  const schwelle = q.get("schwelle");
+  if (schwelle) start.schwelle = /^\d+$/.test(schwelle) ? Number(schwelle) : schwelle;
   return start;
 }
 
@@ -52607,7 +52681,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // wird gerechnet und `festgehalten` sagt es. Nach einer Nachfolge hält der Start die Fassung MIT Übergabe.
       if (anlass === "laufend" && s.openedAt) {
         const gehalten = holeFassung(STATE_DIR, s.id, s.openedAt);
-        if (gehalten) return json({ ...gehalten.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am } });
+        // Schwelle und Warmhalten gehören dem Slot und dürfen sich nach dem Start ändern: sie stehen, wie sie jetzt gelten, und
+        // `nachgefuehrt` nennt, was sich seit dem Start bewegt hat (dann ist der Hash ein anderer als der des Starts)
+        const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", fassungLaufwerteFuer(s)) : null;
+        if (gehalten && nach) return json({ ...nach.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am,
+          ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) } });
       }
       return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null });
     }
@@ -55155,9 +55233,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         }
         // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
         const packMcp = acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [];
+        const sw = schwelleDerTuer(body.schwelle);
+        if (!sw.ok) return json({ error: sw.error }, 400);
         const gezeigt = await fassungGezeigtPruefung(body, s, { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
           harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd, bibliothek: bib.wahl, packMcp,
-          sitz: sd.sitz, notizbuch: sd.notizbuch });
+          sitz: sd.sitz, notizbuch: sd.notizbuch, schwelle: sw.schwelle });
         guard();
         if (gezeigt) return json(gezeigt.body, gezeigt.status);
         if (fassungTestHaken.nachPruefung) await fassungTestHaken.nachPruefung();
@@ -55166,7 +55246,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), agentMd, sd.notizbuch);
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            packMcp, undefined, wr.rechte, agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz);
+            packMcp, undefined, wr.rechte, agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz, sw.schwelle);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;

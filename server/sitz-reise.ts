@@ -264,6 +264,9 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
     if (notizbuch?.daheim) hinweise.push(`${name}: ${notizbuch.daheim} Notiz${notizbuch.daheim === 1 ? "" : "en"} über den Owner ${notizbuch.daheim === 1 ? "bleibt" : "bleiben"} daheim`);
     // was er darf: was hier an ihm gesetzt ist (Position.rechte, so startet ihn das Fenster), sonst was mit ihm hierher reiste
     const rechte = (p.rechte === undefined ? null : rechteAus(p.rechte)) ?? da?.darf.rechte ?? null;
+    // DER PLATZ FÜR DAS EIGENE DES OWNERS IN CLAUDE CODE: was die Fassung mit `eigentum: „[Zitat entfernt]“` zeigt (seine Hooks, Plugins, Einstellungen,
+    // ~/.claude/CLAUDE.md; server/fassung-umfeld.ts), reist heute nicht mit; wer importiert, startet mit seinem eigenen. Ob es mitreist,
+    // entscheidet der Owner, und dann gehört es hierher, als Platz unter `persoenlich` ohne Text.
     const sitz: Sitz = sitzZumTeilen({ liest, persoenlich, darf: { rechte, modus: q.modus }, notizbuch });
     const { rechte: _r, ...ohneRechte } = p;
     mitSitz.push({ ...ohneRechte, sitz });

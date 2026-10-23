@@ -32,9 +32,11 @@ export interface FassungAbschnittEingang {
   readonly bytes?: FassungByte;
   readonly grund?: string;
   /** die Dateien, die dieser Abschnitt als geladen zeigt (Pfad und Bytes), in Ladereihenfolge */
-  readonly dateien?: readonly { readonly pfad: string; readonly bytes: number }[];
+  readonly dateien?: readonly { readonly pfad: string; readonly bytes: number; readonly eigentum?: "owner" }[];
   /** nur „gedaechtnis“: das Notizbuch des Setups, eigen, geteilt oder aus (server/notizbuch.ts) */
   readonly notizbuch?: Notizbuch;
+  /** gehört dem Owner (seine eigenen Claude-Code-Dateien): zählt im Hash, ist aber nicht Teil des teilbaren Setups und reist nicht mit */
+  readonly eigentum?: "owner";
 }
 
 export interface FassungAbschnitt {
@@ -44,8 +46,9 @@ export interface FassungAbschnitt {
   readonly bytes: FassungByte;
   readonly text: string | null;
   readonly grund?: string;
-  readonly dateien?: readonly { readonly pfad: string; readonly bytes: number }[];
+  readonly dateien?: readonly { readonly pfad: string; readonly bytes: number; readonly eigentum?: "owner" }[];
   readonly notizbuch?: Notizbuch;
+  readonly eigentum?: "owner";
 }
 
 export interface FassungTeil {
@@ -89,7 +92,7 @@ const byteLength = (text: string): number => Buffer.byteLength(text);
 function normalisiere(a: FassungAbschnittEingang): FassungAbschnitt {
   const text = typeof a.text === "string" ? a.text : null;
   const bytes = a.bytes ?? (text !== null ? byteLength(text) : "unknown");
-  const notizbuch = a.notizbuch ? { notizbuch: a.notizbuch } : {};
+  const notizbuch = { ...(a.notizbuch ? { notizbuch: a.notizbuch } : {}), ...(a.eigentum ? { eigentum: a.eigentum } : {}) };
   // Eine fehlende Quelle bleibt ein Abschnitt: unknown, Grund, nie leer.
   if (text === null)
     return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes: "unknown", text: null,
@@ -110,11 +113,13 @@ const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
 // ergeben denselben Hash. Von den Dateien zählen nur ihre Bytes und ihre Reihenfolge. Der `grund`
 // eines fehlenden Abschnitts ist ebenfalls Anzeige: fehlt die Quelle, ist `text` null, und das
 // genügt, um den Abschnitt als fehlend zu hashen, ohne einen lokalen Pfad in den Hash zu tragen.
-// Vom Notizbuch zählt nur, ob es eigen, geteilt oder aus ist; sein Ordner ist Anzeige wie `quelle`.
+// Vom Notizbuch zählt nur, ob es eigen, geteilt oder aus ist; sein Ordner ist Anzeige wie `quelle`. Ob ein Abschnitt dem Owner gehört,
+// zählt mit: dasselbe Hook-Skript im Repo oder in den eigenen Dateien ist ein anderes Setup. Die Marke an einer Datei ist Anzeige.
 const hashInhalt = (a: FassungAbschnitt): unknown => ({
   id: a.id, aenderbar: a.aenderbar, bytes: a.bytes, text: a.text,
   ...(a.dateien ? { dateien: a.dateien.map((datei) => datei.bytes) } : {}),
   ...(a.notizbuch ? { notizbuch: a.notizbuch.art } : {}),
+  ...(a.eigentum ? { eigentum: a.eigentum } : {}),
 });
 
 /** sha256 über den Inhalt der fünf Teile in kanonischer Form — claudeCode und Anlass gehören nicht dazu. */
@@ -150,4 +155,21 @@ export function baueFassung(e: FassungEingang): Fassung {
   ];
   return { slot: e.slot, anlass: e.anlass, teile, hash: fassungsHash(teile),
     claudeCode: e.claudeCode ?? null, hashUmfasst: "fuenf-teile" };
+}
+
+/**
+ * Führt Abschnitte eines Teils nach, die sich nach dem Start ändern dürfen (Schwelle, Warmhalten): ein Abschnitt mit derselben id wird
+ * ersetzt, einer, den die Fassung nicht trägt, nicht angehängt (ein Start von vor diesem Abschnitt bleibt, wie er war). Der Hash wird neu
+ * gerechnet; `geaendert` nennt die ids, deren Inhalt sich bewegt hat.
+ */
+export function fuehreNach(f: Fassung, teilId: FassungTeil["id"], neu: readonly FassungAbschnittEingang[]): { fassung: Fassung; geaendert: string[] } {
+  const ersatz = new Map(neu.map((a) => [a.id, normalisiere(a)]));
+  const geaendert: string[] = [];
+  const teile = f.teile.map((t) => t.id !== teilId ? t : { ...t, abschnitte: t.abschnitte.map((a) => {
+    const n = ersatz.get(a.id);
+    if (!n) return a;
+    if (JSON.stringify(kanon(hashInhalt(n))) !== JSON.stringify(kanon(hashInhalt(a)))) geaendert.push(a.id);
+    return n;
+  }) });
+  return geaendert.length ? { fassung: { ...f, teile, hash: fassungsHash(teile) }, geaendert } : { fassung: f, geaendert };
 }

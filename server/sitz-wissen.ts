@@ -40,6 +40,8 @@ export const SEAT_BOX: Readonly<Record<string, string>> = {
     + "kein späterer Moment sagt ihm, dass eine Beschreibung jetzt passen würde.",
   "working-with-the-owner": "Der Owner schreibt jedem Sitz direkt und liest alles, was er schreibt, ab der ersten Nachricht; "
     + "wie man ihn versteht, kommt zu spät, wenn es erst beim zweiten Missverständnis geladen wird.",
+  "working-in-few-calls": "Der erste Akt eines Sitzes ist eine Suche; wie man in wenigen Aufrufen sucht, liest und wartet, hilft nur "
+    + "vor ihr, und jeder gesparte Aufruf spart das Lesen des ganzen Kontexts (Kostenprüfung 23.10.).",
 };
 
 const SEAT_MODE: ContextPackMode = "mutating";

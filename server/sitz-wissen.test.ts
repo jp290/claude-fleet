@@ -89,10 +89,13 @@ describe("Die Regel: welche Packs zu welchem Sitz kommen, und wie", () => {
     expect(seatContextFacts("foreign", "claude", true).triggers).toEqual(["seat-start-any-repo"]);
     expect(seatContextFacts("fleet", "claude").triggers).toEqual(["seat-start", "seat-start-any-repo"]);
   });
-  test("was wörtlich im Start steht, erreicht jeden Sitz und hat einen Grund: für wen und mit dem Owner", () => {
-    expect(Object.keys(SEAT_BOX).sort()).toEqual(["who-it-is-for", "working-with-the-owner"]);
+  test("was wörtlich im Start steht, erreicht jeden Sitz seines Baums und hat einen Grund: für wen, mit dem Owner, in wenigen Aufrufen", () => {
+    expect(Object.keys(SEAT_BOX).sort()).toEqual(["who-it-is-for", "working-in-few-calls", "working-with-the-owner"]);
+    // für wen und mit dem Owner gilt in jedem Repo; wie man hier sucht, nur in Fleets eigenem
+    expect(erwartet(false)).toEqual(expect.arrayContaining(["who-it-is-for", "working-with-the-owner"]));
+    expect(erwartet(false)).not.toContain("working-in-few-calls");
     for (const [id, grund] of Object.entries(SEAT_BOX)) {
-      expect(erwartet(false)).toContain(id);
+      expect(erwartet(true)).toContain(id);
       expect(grund.length).toBeGreaterThan(40);
     }
   });

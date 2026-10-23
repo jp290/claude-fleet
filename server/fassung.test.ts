@@ -212,8 +212,13 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       const parts = S.readOrchestratorStartParts(process.env.FIX_ROOT);
       const brief = S.buildOrchestratorSpawnBrief(parts);
       const succession = S.buildOrchestratorSuccessionBrief(parts, "f1c70000000000000000cafe", lineage, "Das Erste, was ich täte: den nächsten Akt wählen.");
+      // auf der Claude-Zeile steht der Start im Systemprompt, und die Briefe tragen ihn nicht mehr
+      const briefClaude = S.buildOrchestratorSpawnBrief(parts, true);
+      const successionClaude = S.buildOrchestratorSuccessionBrief(parts, "f1c70000000000000000cafe", lineage, "Das Erste, was ich täte: den nächsten Akt wählen.", true);
+      const startDatei = S.orchestratorStartDatei(process.env.FIX_ROOT);
+      const startText = await Bun.file(startDatei).text();
       const orchCmd = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5[1m]", "high",
-        true, "orchestrator", [], "orchestrator", true, null, null, null);
+        true, "orchestrator", [], "orchestrator", true, null, null, null, null, null, false, startDatei);
       const slot = { id: 1, cwd: process.env.FIX_ROOT, openedAt: 1, label: "Orchestrator (Opus)", worktree: null,
         harness: "claude", model: null, effort: null, rechte: null, agentMd: null, history: [],
         sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", programId: null, taskId: null, lineageId: null,
@@ -235,13 +240,13 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       await S.appendOrchestratorStartReceipt(slot, parts, "nachfolge", succession, 1_760_000_000_002);
       const ledger = await Bun.file(\`\${process.env.FLEET_STATE_DIR}/context-receipts.jsonl\`).text();
       const receipts = ledger.trim().split("\\n").map((line) => JSON.parse(line));
-      await Bun.write(${JSON.stringify(out)}, JSON.stringify({ brief, succession, orchCmd, fassung, laufend, plan: plan.body, receipts }, null, 2));
+      await Bun.write(${JSON.stringify(out)}, JSON.stringify({ brief, succession, briefClaude, successionClaude, startDatei, startText, orchCmd, fassung, laufend, plan: plan.body, receipts }, null, 2));
     `;
     try {
       const r = await runServer(script, { FIX_ROOT: repo }, dir);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
       const got = JSON.parse(readFileSync(out, "utf8")) as {
-        brief: string; succession: string; orchCmd: string;
+        brief: string; succession: string; briefClaude: string; successionClaude: string; startDatei: string; startText: string; orchCmd: string;
         fassung: { hash: string; teile: { id: string; abschnitte: { id: string; quelle: string | null; bytes: number | "unknown"; text: string | null }[] }[] };
         laufend: { hash: string };
         plan: { fassungsHash: string; sessionAgents: { text: string; bytes: number; parts: { path: string | null }[] } };
@@ -255,6 +260,21 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       expect(got.brief).not.toContain("--- ROLLE ---");
       expect(got.succession).toContain("f1c70000000000000000cafe");
       expect(got.succession).toContain(got.brief);
+      // CLAUDE: der Start steht als Datei im Systemprompt, der Nachfolge-Brief trägt nur noch die Übergabe — 32 KiB Paste-Grenze
+      // (server.ts#PASTE_MAX_BYTES) hatten 3 von 13 Nachfolgen den Start genommen; so bleibt die Rolle unabhängig von der Briefgröße.
+      expect(got.startText).toBe(texte.join("\n\n"));
+      expect(got.orchCmd).toContain(`--append-system-prompt-file '${got.startDatei}'`);
+      expect(got.briefClaude.startsWith("[fleet Orchestrator start] ")).toBe(true);
+      expect(got.briefClaude).toContain("/api/self/konzepte/k-owner-korrekturen/leseansicht");
+      expect(got.successionClaude).toContain("f1c70000000000000000cafe");
+      expect(got.successionClaude).toContain("Naechster Schritt: Karte schaerfen");
+      expect(got.successionClaude).toContain("Das Erste, was ich täte: den nächsten Akt wählen.");
+      expect(got.successionClaude).toContain("/api/self/konzepte/k-owner-korrekturen/leseansicht");
+      for (const text of [...texte, ...texte.map((t) => t.split("\n")[0]!)]) {
+        expect(got.briefClaude).not.toContain(text);
+        expect(got.successionClaude).not.toContain(text);
+      }
+      expect(Buffer.byteLength(got.successionClaude)).toBeLessThan(4096);
       // Kein Rollen-Render: die Startzeile schließt den Projekt-Monolithen aus, lädt aber kein --add-dir.
       expect(got.orchCmd).not.toContain("--add-dir");
       expect(got.orchCmd).toContain("claudeMdExcludes");
@@ -269,6 +289,8 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       // als eigener Abschnitt vor der Rolle, danach Systemkonzept und die vier Packs unter „Wissen“.
       expect(liest[0]!.id).toBe("richtung");
       expect(liest[1]!.id).toBe("rolle");
+      // ...und sie sagt, wie der Start ankommt: als Datei am Systemprompt, nicht im ersten Brief
+      expect(liest.filter((abschnitt) => abschnitt.quelle === "server.ts#orchestratorStartDatei").map((abschnitt) => abschnitt.id)).toEqual(["systemzusatz"]);
       const startQuellen = liest.map((abschnitt) => abschnitt.quelle).filter((quelle): quelle is string => !!quelle && pfade.includes(quelle));
       expect(startQuellen).toEqual(pfade);
       for (const [index, pfad] of pfade.entries()) {

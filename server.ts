@@ -525,8 +525,8 @@ function slotCmd(sessionId: string | null, resume: boolean, model: string | null
   effort: string | null = null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, handoverOn = false,
   remoteName: string | null = null, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null, bau = false): string {
-  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau)}; exec ${SHELL}`;
+  seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
+  return `${PATH_EXPORT}${agentCmd(sessionId, resume, model, effort, browserMcp, rulebookRole, packMcp, listRole, remoteName, handoverOn, rechte, agentMd, notizbuch, seat, bau, startDatei)}; exec ${SHELL}`;
 }
 // the AGENT invocation alone — no PATH export, no `; exec $SHELL` fallback. Split out of slotCmd
 // for exactly one caller: the container adapter wraps THIS line in a `docker exec`.
@@ -547,7 +547,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   effort: string | null, browserMcp = true, rulebookRole: "main" | "orchestrator" | null = null,
   packMcp: readonly ContextPackMcpServer[] = [], listRole: SessionSpawnRole | null = null, remoteName: string | null = null,
   handoverOn = false, rechte: Rechte | null = null, agentMd: AgentMd | null = null, notizbuch: Notizbuch | null = null,
-  seat: SeatStart | null = null, bau = false): string {
+  seat: SeatStart | null = null, bau = false, startDatei: string | null = null): string {
   const claude = /^claude(\s|$)/.test(BASE_CMD);
   // THE START ASPECTS (server/session-start.ts): permission mode, classifier environment, compaction and
   // the brief line, for every claude session whose role the spawn knows; null role = the line of before
@@ -561,7 +561,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
   // the owner's ambient /model default. Single-quoted: `claude-opus-5[1m]` is an unmatched glob
   // and zsh (tmux default-shell) aborts the pane on it; MODEL_RE forbids `'`, so the wrap is closed.
   if (claude) {
-    if (HABITS_PROMPT_ENABLED) cmd += ` --append-system-prompt-file ${shellSingleQuote(HABITS_PROMPT_PATH)}`;
+    // one file only: of two --append-system-prompt-file flags claude reads the last (probe 2.1.309), so a start file carries the habits itself
+    if (HABITS_PROMPT_ENABLED && !startDatei) cmd += ` --append-system-prompt-file ${shellSingleQuote(HABITS_PROMPT_PATH)}`;
     cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
     // `--effort <level>` only when the slot pins one — with no flag claude keeps its own default.
     // Single-quoted for the same discipline as the model; the real boundary is upstream (effortOf
@@ -602,6 +603,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const anhang = [rechte ? rechteSatz(rechte) : null, agentMd ? agentMdBlock(agentMd) : null, seat?.text || null];
     if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, ...anhang].filter(Boolean).join("\n"))}`;
     else if (anhang.some(Boolean)) cmd += ` --append-system-prompt ${shellSingleQuote(anhang.filter(Boolean).join("\n\n"))}`;
+    // ...and the Orchestratorin's start (orchestratorStartDatei): too large for the line, so a file beside it
+    if (startDatei) cmd += ` --append-system-prompt-file ${shellSingleQuote(startDatei)}`;
     const tools = listRole ? startTools(listRole, bau) : null;
     if (tools) cmd += ` --tools ${shellSingleQuote(tools.join(","))}`;
     // THE SETUP'S NOTEBOOK (server/notizbuch.ts): its own directory, off for a lane (Z3,
@@ -787,7 +790,9 @@ interface Harness {
     // Fleet's library for a seat without a standing role (server/sitz-wissen.ts); claude alone reads it
     seat?: SeatStart | null;
     // a seat that builds (isBauCwd): its own tools (.fleet/sitz-werkzeuge.json) and excludes; claude alone reads it
-    bau?: boolean }): string;
+    bau?: boolean;
+    // the Orchestratorin's start as a system-prompt file (orchestratorStartDatei); claude alone reads it
+    startDatei?: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1032,7 +1037,7 @@ const CLAUDE_READY_FRAME = /^❯|^ {2}⏵⏵ |^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\
 // and ensureSlot must not record one it never passed.
 const CLAUDE_HARNESS: Harness = {
   id: "claude",
-  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false),
+  spawnCmd: (o) => slotCmd(o.sessionId, o.resume, o.model, o.effort, o.browserMcp, o.rulebookRole, o.packMcp ?? [], o.listRole ?? null, o.handoverOn ?? false, o.remoteName, o.rechte ?? null, o.agentMd ?? null, o.notizbuch ?? null, o.seat ?? null, o.bau ?? false, o.startDatei ?? null),
   // The worker line, verbatim what summaryViaSession built for itself before this member existed —
   // this is the whole of the byte-equality claim, and it is checkable by reading two strings rather
   // than by trusting a refactor. `claude` LITERAL, not BASE_CMD and not agentCmd: the worker tier
@@ -10224,6 +10229,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         } catch (e) { logError("ensureSlot:seat-library", e); }
         if (!current()) return;
       }
+      // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
+      const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd) : null;
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
@@ -10244,7 +10251,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch,
-          seat, bau })}`);
+          seat, bau, startDatei })}`);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -14605,7 +14612,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // Keine Box und kein Ankerblock mehr: der Start ist genau die acht Dateien.
   const orchStart = orchestrator ? readOrchestratorStartParts(predecessor.cwd) : null;
   const ritual = orchestrator && orchStart
-    ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry)
+    ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry, orchestratorStartImSystemprompt(harness))
     : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
@@ -21178,8 +21185,8 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
 // (Fleet-URL, tmux-Socket, Hub) bleiben draußen, der Hash hängt am Inhalt und nicht am Ort. Nicht im Hash: `autoCompactEnabled`, das am
 // Slot hängt (Übergabe-Schwelle), nicht an der Rolle.
 function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | null,
-  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false): { zusatz: FassungAbschnittEingang; darf: FassungAbschnittEingang[] } {
-  if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), darf: [] };
+  mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false): { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
+  if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), start: null, darf: [] };
   const aspects = startAspects({ role: listRole, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS });
   const flags = claudeMcpFlags(mcp.browserMcp, mcp.packMcp);
   const cut = sessionListCut(listRole === "generic" ? "main" : listRole);
@@ -21188,6 +21195,10 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
   const werkzeuge = startTools(listRole, bau)?.join(",") ?? "alle eingebauten";
   return {
     zusatz: textAbschnitt("systemzusatz", "server.ts#sessionListCut · server/session-start.ts#AUTO_MODE_BRIEF", zusatz, false),
+    // the Orchestratorin's start rides beside the line as a file (orchestratorStartDatei); its texts stand under Richtung, Rolle and Wissen
+    start: listRole === "orchestrator" && IS_CLAUDE ? textAbschnitt("systemzusatz", "server.ts#orchestratorStartDatei",
+      "--append-system-prompt-file: Richtung, Rolle, Systemkonzept und die vier Packs, wie unter „Richtung“, „Rolle“ und „Wissen“ gezeigt. "
+        + "Der erste Brief trägt sie nicht mehr, nur die Übergabe und den Zeiger auf die Owner-Korrekturen.", false) : null,
     darf: [
       textAbschnitt("modus", "server/session-start.ts#PERMISSION_MODE", aspects.mode, false),
       textAbschnitt("werkzeuge", bau ? ".fleet/sitz-werkzeuge.json#bau · server.ts#sessionListCut" : "server.ts#SESSION_TOOLS · #sessionListCut", `--tools ${werkzeuge}\n--disallowedTools ${cut?.disallowed || "keine"}`, false),
@@ -21220,6 +21231,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     liest: [
       ...fassungRolleKarte(o.rolle, o.repoRoot),
       fleet.zusatz,
+      ...(fleet.start ? [fleet.start] : []),
       ...fassungProjektregelnAus(o.repoRoot, o.harness, rulebookRole, null, o.rolle === "orchestrator"),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
@@ -21313,6 +21325,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const liest: FassungAbschnittEingang[] = [
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
+    ...(fleet.start ? [fleet.start] : []),
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungRulebookRole(cwd, rolle, s.worktree), s.sessionId,
       rolle === "orchestrator", bau),
     ...(await fassungWissen(s, rolle, cwd)),
@@ -43871,21 +43884,43 @@ const ORCHESTRATOR_LABEL_RE = /(^|[^\p{L}])orchestrator/iu;
 const isOrchestratorLabel = (label: string | null | undefined): boolean =>
   !!label && (label.includes("🎛") || ORCHESTRATOR_LABEL_RE.test(label));
 
-function buildOrchestratorSpawnBrief(start: OrchestratorStartTeile): string {
+// DER START DER ORCHESTRATORIN STEHT IM SYSTEMPROMPT (Stück 1b, Sitz-Aufbau-Prüfung 23.10.). Als Brief hatte er 32 441 B an der
+// Paste-Grenze (PASTE_MAX_BYTES); darüber kommt nur ein Datei-Zeiger an, und 3 von 13 Nachfolgen kamen so ohne Rolle. Auf der Zeile
+// selbst geht er nicht: tmux lehnt ein Kommando über 16 KiB ab („command too long“). Also eine Datei, nach ihrem Inhalt benannt, die
+// auch ein Neustart des Servers nicht wegnimmt. Ein anderer Harness hat keinen Systemprompt von Fleet und bekommt den Start im Brief.
+const ORCHESTRATOR_START_ROOT = `${STATE_DIR}/orchestrator-start`;
+const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
+function orchestratorStartDatei(cwd: string): string {
+  const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
+  const text = [renderOrchestratorStartParts(readOrchestratorStartParts(cwd)),
+    habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null].filter(Boolean).join("\n\n");
+  const pfad = `${ORCHESTRATOR_START_ROOT}/${sha256Of(text).slice(0, 32)}.md`;
+  if (!existsSync(pfad)) {
+    mkdirSync(ORCHESTRATOR_START_ROOT, { recursive: true });
+    writeFileSync(`${pfad}.${process.pid}`, text);
+    renameSync(`${pfad}.${process.pid}`, pfad);
+  }
+  return pfad;
+}
+const ORCHESTRATOR_START_IM_PROMPT = "Dein Start — Richtung, Rolle, Systemkonzept und vier Packs — steht in deinem Systemprompt.";
+
+function buildOrchestratorSpawnBrief(start: OrchestratorStartTeile, imSystemprompt = false): string {
   // THE OWNER'S CORRECTIONS STAY A MECHANISM, NOT A ROLE TEXT: the server binds the reader to the
   // session's position when it delivers this pointer (ownerKorrekturenPointer), for every harness.
-  return [renderOrchestratorStartParts(start), ownerKorrekturenPointer()].join("\n\n");
+  return [imSystemprompt ? `[fleet Orchestrator start] ${ORCHESTRATOR_START_IM_PROMPT}` : renderOrchestratorStartParts(start),
+    ownerKorrekturenPointer()].join("\n\n");
 }
 
-// The succession twin: the SAME five texts, in front of them the line record and the optional carry.
+// The succession twin: the SAME start, in front of it the line record and the optional carry.
 // The card's own UEBERGABE/Handing over block names the record as the one handover channel; this
 // brief adds no second one.
 function buildOrchestratorSuccessionBrief(start: OrchestratorStartTeile, lineageId: string, lineage: HandoverFacts,
-  carry: string | null): string {
+  carry: string | null, imSystemprompt = false): string {
   const head = `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineageId} (GET /api/self, Feld \`lineage\`).`;
   const next = carry ? [`Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
   // the same position-bound reader pointer as the opening: succession is still a start
-  return [head, ...handoverLines(lineage), ...next, renderOrchestratorStartParts(start), ownerKorrekturenPointer()].join("\n\n");
+  return [head, ...handoverLines(lineage), ...next, imSystemprompt ? ORCHESTRATOR_START_IM_PROMPT : renderOrchestratorStartParts(start),
+    ownerKorrekturenPointer()].join("\n\n");
 }
 
 type OrchestratorFoundingContext = {
@@ -43949,7 +43984,7 @@ async function deliverOrchestratorSpawnCard(s: Slot, acc?: AcceptedFoundingPlan)
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { delivered: false, reason: readiness.reason };
   const start = readOrchestratorStartParts(s.cwd!);
-  const brief = buildOrchestratorSpawnBrief(start);
+  const brief = buildOrchestratorSpawnBrief(start, orchestratorStartImSystemprompt(s.harness));
   if (!stillCurrent()) return { delivered: false, reason: "the slot changed before the card was sent" };
   try {
     await sendText(s, brief, true, { path: "founding" });
@@ -55874,6 +55909,6 @@ if (process.stdout.isTTY) {
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
-  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, buildLaneSuccessionBrief,
+  fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };

@@ -236,7 +236,9 @@ describe("die Fassung und die Zeile des Spawns", () => {
         for (const [listRole, bau] of [["lane", false], ["main", false], ["orchestrator", false], ["generic", false], ["generic", true]])
           for (const rechte of rechteWahl) for (const packMcp of mcpWahl) for (const browserMcp of [true, false]) {
             const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau);
-            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau);
+            // ensureSlot gibt der Orchestratorin ihren Start als Datei (server.ts#orchestratorStartDatei), keiner anderen Rolle
+            const startDatei = listRole === "orchestrator" ? "/fixture/orchestrator-start.md" : null;
+            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau, startDatei);
             faelle.push({ listRole, bau, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
           }
         await Bun.write(${JSON.stringify(out)}, JSON.stringify(faelle));
@@ -245,7 +247,7 @@ describe("die Fassung und die Zeile des Spawns", () => {
       const r = await runServer(script, dir, env);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
       type Fall = { listRole: string; bau: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
-        fleet: { zusatz: { text: string | null }; darf: { id: string; text: string | null }[] } };
+        fleet: { zusatz: { text: string | null }; start: { text: string | null } | null; darf: { id: string; text: string | null }[] } };
       const faelle = JSON.parse(readFileSync(out, "utf8")) as Fall[];
       expect(faelle).toHaveLength(60);
       for (const f of faelle) {
@@ -281,6 +283,7 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const config = f.packMcp ? mcp.split("\n").slice(1).join("\n") : null;
         gleich(config === null ? tokens.includes("--mcp-config") : f.zeile.includes(config), config !== null);
         gleich((flag("--append-system-prompt") ?? "").startsWith(f.fleet.zusatz.text ?? "(kein Systemzusatz)"), true);
+        gleich(f.fleet.start !== null, flag("--append-system-prompt-file") !== null);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

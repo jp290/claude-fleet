@@ -8,7 +8,7 @@ import { PERF_ROTATE_BYTES, type FieldRow, type PerfRecord } from "../src/protoc
 // when it is done. That also makes the "a new bundle reaches the client" check a real swap
 // rather than a claim about a file nobody touched.
 import { writeFileSync, readFileSync, existsSync, unlinkSync, statSync } from "node:fs";
-import { BASE, IP, ROOT, TOKEN, REPO, check, get, paneEnv, post, wsUrl } from "./harness";
+import { BASE, IP, ROOT, TOKEN, REPO, check, get, paneEnv, post, wsUrl, ownerWs } from "./harness";
 
 interface Ledger {
   totals: { httpBytes: number; httpRequests: number; gzipSaved: number; wsBytes: number; wsMessages: number; wsConnections: number; wsOpen: number };
@@ -120,7 +120,7 @@ export async function run(): Promise<void> {
     // --- ws.send: what a real socket receives must equal what the ledger says was sent ---
     const wsBefore = await ledger();
     const seed = await new Promise<number>((resolve) => {
-      const w = new WebSocket(wsUrl(1));
+      const w = ownerWs(wsUrl(1));
       let got = 0;
       w.onmessage = (e) => { got += (e.data as ArrayBuffer).byteLength; };
       setTimeout(() => { w.close(); resolve(got); }, 2500);

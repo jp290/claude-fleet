@@ -5,7 +5,7 @@
 import { el } from "./k15-haupt";
 import { alle, type Position } from "./k15-entwurf-modell";
 import { RECHTE_BEFEHLE, RECHTE_STUFEN, rechteAlsSatz } from "../session-rechte";
-import { render, speichereKonst, toast, type St } from "./k15-zustand";
+import { gibFrei, render, speichereKonst, toast, type St } from "./k15-zustand";
 import { rechteGedeckelt, type PersoenlichPlatz, type SitzDarf } from "./sitz";
 
 // WAS DIESE SESSION DARF (session-rechte.ts), am Sitz gesetzt: die Tür bekommt es beim Start, ein Export trägt es in sitz.darf. „Nicht gesetzt“
@@ -31,7 +31,7 @@ export function darfWahl(s: St, q: Position): HTMLElement {
 }
 
 // DIE RECHTE AUS DER DATEI: was sie erlaubt, was der Deckel davon sperrt, und die Freigabe des Owners hier (src/sitz.ts#rechteGedeckelt)
-function darfZeile(s: St, wer: string, d: SitzDarf): HTMLElement {
+function darfZeile(s: St, wer: string, pos: string, d: SitzDarf): HTMLElement {
   const z = el("div", "k15mitz");
   z.append(el("span", "k15mitk", "Darf"));
   if (!d.rechte) { z.append("keine Rechte aus der Datei; es gelten die des Agenten"); return z; }
@@ -41,9 +41,11 @@ function darfZeile(s: St, wer: string, d: SitzDarf): HTMLElement {
   z.append(d.bestaetigt ? `von dir freigegeben: ${rechteAlsSatz(d.rechte)}`
     : `Die Datei erlaubt auch ${wort}. Das gibt eine fremde Datei nicht weiter: ${wer} startet mit „${RECHTE_STUFEN.find((x) => x.id === rechte.stufe)?.wort ?? rechte.stufe}“, bis du es freigibst.`);
   const b = el("button", "k15ghost", d.bestaetigt ? "Freigabe zurücknehmen" : `${wort} freigeben`) as HTMLButtonElement;
+  // freigeben geht an die eigene Tür des Servers (k15-zustand.ts#gibFrei); zurücknehmen ist ein Sichern ohne die Freigabe
   b.onclick = () => {
-    if (d.bestaetigt) delete d.bestaetigt; else d.bestaetigt = true;
-    void speichereKonst(s, s.k.id, s.k).then((ok) => { if (ok) toast(d.bestaetigt ? `${wer} darf jetzt auch ${wort}.` : `${wer} ist wieder gedeckelt.`); render(); });
+    if (!d.bestaetigt) { void gibFrei(s, s.k, pos, d).then((ok) => { if (ok) toast(`${wer} darf jetzt auch ${wort}.`); render(); }); return; }
+    delete d.bestaetigt;
+    void speichereKonst(s, s.k.id, s.k).then((ok) => { if (ok) toast(`${wer} ist wieder gedeckelt.`); render(); });
   };
   z.append(" ", b);
   return z;
@@ -87,7 +89,7 @@ export function mitgereistTeil(s: St): HTMLElement | null {
     const sitz = el("div", "k15mitsitz");
     sitz.append(el("b", "", q.name),
       zeile("Liest", z.liest.length ? z.liest.map((p) => `${p.id} (${p.weg === "start" ? "im Start" : "als Skill"})`).join(", ") : "keine Packs aus der Datei"),
-      darfZeile(s, q.name, z.darf),
+      darfZeile(s, q.name, q.id, z.darf),
       zeile("Notizbuch", z.notizbuch ? `${zahl(z.notizbuch.notizen.length, "Notiz", "Notizen")}${z.notizbuch.daheim ? `; ${z.notizbuch.daheim} über den Absender blieben dort` : ""}` : "keins"));
     for (const pl of z.persoenlich) sitz.append(platz(s, q.name, pl));
     box.append(sitz);

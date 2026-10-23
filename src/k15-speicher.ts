@@ -9,6 +9,9 @@
 export const SPEICHER_ROUTE = "/api/k15/eigenes";
 // die Datei dazu im Zustandsverzeichnis
 export const SPEICHER_DATEI = "k15-eigenes.json";
+// die Freigabe der Rechte eines mitgereisten Sitzes über den Deckel (src/sitz.ts#sitzRechte): POST { konst, pos }. Ein PUT des Speichers bringt sie
+// nie mit, er behält nur eine, die hier gegeben wurde (server/k15-speicher.ts)
+export const FREIGABE_ROUTE = "/api/k15/freigabe";
 // feste Fassungen je Konstellation (server/konst-fassungen.ts): …/:id/fassungen, …/:id/fassungen/:hash, …/:id/diff?von=&zu=, PUT …/:id/aktiv
 export const KONST_ROUTE = "/api/k15/konst";
 // jeder Start einer Session, neueste zuerst (server/start-historie.ts)

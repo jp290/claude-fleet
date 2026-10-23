@@ -5,8 +5,8 @@ Prinzipal-/Scope-Regeln (wer welche Route bekommt, 409-Semantik) und die Diszipl
 `CLAUDE.md`; hier liegen Feldformen, Deckel, Ablehnungen und die curl-Beispiele. Bei Widerspruch
 gilt der Code.
 
-Owner-Credentials behalten ihre Berechtigung unabhängig vom Audit-Actor: Cookie oder `?token=`
-werden als `{kind:"owner"}` erfasst; ein Owner-Bearer mit gültigem `x-fleet-self-token` derselben
+Owner-Credentials behalten ihre Berechtigung unabhängig vom Audit-Actor: ein Cookie wird als
+`{kind:"owner"}` erfasst (`?token=` in der Adresse gilt nur für den Login auf `/`, keine API-Route nimmt es); ein Owner-Bearer mit gültigem `x-fleet-self-token` derselben
 Anfrage als `{kind:"session",slot,openedAt,role,label,via:"owner-bearer"}`. `label` ist der Klartext
 zum Zeitpunkt der Anfrage, `role` bleibt `lane|main|generic`. Ohne gültigen Self-Token steht der
 Owner-Bearer als `{kind:„[Zitat entfernt]“}` im Ledger und bleibt voll berechtigt. Die Self-Türen prüfen
@@ -6176,7 +6176,7 @@ Aktor-KLASSE überhaupt zu benennen.
 
 - `{kind:"owner", via:"cookie"|"bearer"|"query", suspect?}` — `via` ist der Token-KANAL, den
   `tokenFrom` ohnehin schon gelesen und dann weggeworfen hat: das Board schickt das Cookie, ein
-  Skript Bearer, eine getippte URL `?token=`.
+  Skript Bearer. `query` kommt nicht mehr vor: das Token in der Adresse gilt nur für den Login auf `/`.
 - `{kind:"main", slot, program, task, sessionIdMatch}` — die Self-Route. `sessionIdMatch` wird hier
   BERICHTET, obwohl die Route auf dem exakten Triple GATET: die Note ist ein Record, und ein Record,
   der die Tatsache fallen liesse, zwänge eine spätere Prüfung, sie aus einem inzwischen recycelten

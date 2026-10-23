@@ -159,7 +159,9 @@ muss(ok.every(Boolean), "B unterscheidet sich von A nicht nur im persönlichen P
 
 console.log("B: persönlichen Platz mit demselben Text füllen, Sitze neu starten");
 console.log("  … und B's Owner gibt das Landen des Bauers frei");
-const kidB2 = importiere(B, datei, EIGENES_A, (k) => { const z = k.wurzeln[0]?.sitz; if (z) z.darf.bestaetigt = true; });
+const kidB2 = importiere(B, datei, EIGENES_A);
+// die Freigabe hat ihre eigene Tür (server/k15-speicher.ts#k15Freigabe): ein PUT des Speichers bringt sie nicht mit
+muss(probe(B, "POST", "/api/k15/freigabe", { konst: kidB2, pos: JSON.parse(datei).positionen[0].id }).status === 200, "Freigabe auf B");
 const b2 = starteUndMiss(B, kidB2);
 for (const [i, name] of ["Bauer", "Prüferin"].entries()) console.log(`  ${name}: A ${a[i]!.hash.slice(0, 12)} · B ${b2[i]!.hash.slice(0, 12)} · gleich ${a[i]!.hash === b2[i]!.hash}`);
 muss(b2.every((x, i) => x.hash === a[i]!.hash), "mit demselben persönlichen Text ist der Hash auf B nicht der von A");

@@ -1049,10 +1049,15 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       if (rows.length > before) { row = rows[rows.length - 1]; break; }
       await Bun.sleep(20);
     }
+    // the owner token in the URL query is the login redirect's alone (server/auth.ts#tokenFrom): on an API route it is no credential
+    if (credential.name === "query") {
+      check("§3 owner token in the URL query does not reach the owner action", response.status === 401 && !row, `${response.status} ${JSON.stringify(row?.actor)}`);
+      continue;
+    }
     check(`§3 owner actor fixture: ${credential.name} reaches the same owner action`, response.status === 200, String(response.status));
     ownerActors.push({ name: credential.name, actor: row?.actor });
   }
-  for (const name of ["cookie", "query"]) {
+  for (const name of ["cookie"]) {
     const actor = ownerActors.find((r) => r.name === name)?.actor;
     check(`§3 owner ${name} is audited as owner even beside a Self-Token`,
       JSON.stringify(actor) === JSON.stringify({ kind: "owner" }), JSON.stringify(actor));

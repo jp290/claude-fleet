@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, ownerWs, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
@@ -592,7 +592,7 @@ export async function run(): Promise<void> {
     const marker = "OLD-OWNER-WS-MUST-NOT-REACH-B";
     let socket: WebSocket | null = null;
     const connected = await new Promise<boolean>((resolveConnected) => {
-      const ws = new WebSocket(wsUrl(3));
+      const ws = ownerWs(wsUrl(3));
       socket = ws;
       const timeout = setTimeout(() => resolveConnected(false), 3000);
       ws.onmessage = () => { clearTimeout(timeout); resolveConnected(true); };
@@ -1205,7 +1205,7 @@ export async function run(): Promise<void> {
   }
   const replay = await new Promise<{ n: number; text: string }>((resolve) => {
     let n = 0, text = "";
-    const ws = new WebSocket(wsUrl(1));
+    const ws = ownerWs(wsUrl(1));
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => {
       n += (e.data as ArrayBuffer).byteLength;
@@ -1230,7 +1230,7 @@ export async function run(): Promise<void> {
   const reseedCols = 55, reseedRows = 38;
   const seedText = await new Promise<string>((resolve) => {
     let first = "";
-    const ws = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}`);
+    const ws = ownerWs(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => { if (!first) first = new TextDecoder().decode(e.data as ArrayBuffer); };
     ws.onopen = () => setTimeout(() => { ws.close(); resolve(first); }, 800);
@@ -1280,7 +1280,7 @@ export async function run(): Promise<void> {
     const marks = (text: string) => [...text.matchAll(/T2MARK-(\d+)\b/g)].map((m) => Number(m[1]));
     const complete = (values: number[]) => values.length === 50
       && values.every((n, i) => n === i + 1);
-    const first = new WebSocket(wsUrl(2));
+    const first = ownerWs(wsUrl(2));
     first.binaryType = "arraybuffer";
     let firstText = "", secondText = "", secondSeed = "";
     let firstReady = false, firstError = false, secondError = false;
@@ -1303,7 +1303,7 @@ export async function run(): Promise<void> {
     const flowing = await waitFor(() => marks(firstText).length >= 12 || firstError, 10000);
     check("resize reseed fixture: live markers flow before second socket opens",
       flowing && marks(firstText).length >= 12 && !firstError, `${marks(firstText).length} marks`);
-    const second = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1`);
+    const second = ownerWs(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1`);
     second.binaryType = "arraybuffer";
     second.onmessage = (e) => {
       const frame = new TextDecoder().decode(e.data as ArrayBuffer);
@@ -1337,7 +1337,7 @@ export async function run(): Promise<void> {
     const seedFrame = (slot: number, target: number, timeoutMs: number): Promise<{ bytes: number; seed: string; all: string }> =>
       new Promise((resolve) => {
         let bytes = 0, seed = "", all = "";
-        const ws = new WebSocket(wsUrl(slot)); // deliberately no cols/rows: the owner-reseed path
+        const ws = ownerWs(wsUrl(slot)); // deliberately no cols/rows: the owner-reseed path
         ws.binaryType = "arraybuffer";
         const fin = () => { clearTimeout(timer); ws.close(); resolve({ bytes, seed, all }); };
         const timer = setTimeout(fin, timeoutMs);
@@ -1421,7 +1421,7 @@ export async function run(): Promise<void> {
   // live output, which would make the comparison a race instead of a measurement
   const seedFrame = (q: string): Promise<number> => new Promise((resolve) => {
     let first = -1;
-    const ws = new WebSocket(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1${q}`);
+    const ws = ownerWs(`${wsUrl(2)}&cols=${reseedCols}&rows=${reseedRows}&force=1${q}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => { if (first < 0) first = (e.data as ArrayBuffer).byteLength; };
     ws.onopen = () => setTimeout(() => { ws.close(); resolve(first); }, 1500);
@@ -3556,7 +3556,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("WS rejected without token", wsNoTok);
 
   await new Promise<void>((resolve) => {
-    const ws = new WebSocket(wsUrl(1));
+    const ws = ownerWs(wsUrl(1));
     ws.onopen = () => {
       ws.send("hello-fleet-typing");
       setTimeout(() => { ws.close(); resolve(); }, 800);
@@ -3820,7 +3820,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // ): a pane socket that asked on connect (push=1) gets the count of complete
       // lines as a text frame once seeded and again when it moves; one that did not ask gets terminal bytes only
       const heard: number[] = [], plainText: string[] = [];
-      const asking = new WebSocket(`${wsUrl(qFree)}&push=1`), plain = new WebSocket(wsUrl(qFree));
+      const asking = ownerWs(`${wsUrl(qFree)}&push=1`), plain = ownerWs(wsUrl(qFree));
       asking.binaryType = "arraybuffer";
       plain.binaryType = "arraybuffer";
       asking.onmessage = (e) => { if (typeof e.data === "string") heard.push((JSON.parse(e.data) as { lines: number }).lines); };

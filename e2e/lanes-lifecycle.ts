@@ -237,7 +237,8 @@ cpSync(src, dst, { recursive: true, filter: (path) => {
       check(`snapshot mirror: ${path} refuses with named 409`, refused({ status: response.status, refusal: data.refusal }));
     }
     const input = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
-      const ws = new WebSocket(`ws://${host}:${port}/ws/1?token=${encodeURIComponent(token)}`);
+      const ws = new (WebSocket as unknown as new (u: string, o: { headers: Record<string, string> }) => WebSocket)(`ws://${host}:${port}/ws/1`,
+        { headers: { authorization: `Bearer ${token}` } });
       const timer = setTimeout(() => { ws.close(); reject(new Error("snapshot WebSocket input was not refused")); }, 10000);
       ws.onopen = () => ws.send("mirror input canary\n");
       ws.onclose = (event) => { clearTimeout(timer); resolve({ code: event.code, reason: event.reason }); };

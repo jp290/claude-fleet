@@ -26,12 +26,12 @@ export function cookieToken(req: Request): string | null {
   return legacy ? legacy[1] : null;
 }
 
+// Bearer or cookie, never the URL query: a token in an address ends up in history, a pasted link or a proxy log. Only the login
+// redirect (`/?token=…` in server.ts) reads the query, sets the cookie and sends the browser on to a clean URL (Sicherheitsprüfung Lauf 2, F6)
 export function tokenFrom(req: Request): string | null {
   const auth = req.headers.get("authorization");
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  const cookie = cookieToken(req);
-  if (cookie) return cookie;
-  return new URL(req.url).searchParams.get("token");
+  return cookieToken(req);
 }
 
 export function secretEq(a: string, b: string): boolean {
@@ -118,17 +118,32 @@ function shareAuthed(req: Request, sh: Share): boolean {
   const m = cookie ? new RegExp(`(?:^|;\\s*)share_${sh.id}=([^;]+)`).exec(cookie) : null;
   return !!m && secretEq(m[1], sh.secret);
 }
-export const authFails = new Map<string, { count: number; resetAt: number }>();
-export function failStrike(id: string): boolean {
+// The lock counts per share AND source (Sicherheitsprüfung Lauf 2, F7): one counter per share let 51 wrong guesses from anywhere lock
+// the share for the hour for every guest who knows the password. A source is the address Cloudflare names for a guest coming through
+// the tunnel (there the peer is always the tunnel itself), else the peer. A share-wide ceiling keeps a guesser with many sources
+// bounded: a locked source adds nothing more, so the ceiling takes SHARE_STRIKES / SOURCE_STRIKES sources to reach.
+const SOURCE_STRIKES = 50, SHARE_STRIKES = 500, STRIKE_WINDOW_MS = 3600_000;
+const authFails = new Map<string, { count: number; resetAt: number }>();
+const sourceKey = (id: string, source: string): string => `${id}@${source}`;
+export const shareSource = (req: Request, peer: string): string => req.headers.get("cf-connecting-ip")?.trim() || peer;
+const over = (key: string, limit: number): boolean => {
+  const f = authFails.get(key);
+  return !!f && Date.now() <= f.resetAt && f.count > limit;
+};
+export const shareLocked = (id: string, source: string): boolean =>
+  over(sourceKey(id, source), SOURCE_STRIKES) || over(id, SHARE_STRIKES);
+function bump(key: string): void {
   const now = Date.now();
-  const f = authFails.get(id);
-  if (!f || now > f.resetAt) {
-    authFails.set(id, { count: 1, resetAt: now + 3600_000 });
-    return false;
-  }
-  f.count++;
-  return f.count > 50; // locked for the rest of the hour
+  const f = authFails.get(key);
+  if (!f || now > f.resetAt) authFails.set(key, { count: 1, resetAt: now + STRIKE_WINDOW_MS });
+  else f.count++;
 }
+export function failStrike(id: string, source: string): boolean {
+  bump(sourceKey(id, source));
+  bump(id);
+  return shareLocked(id, source); // locked for the rest of the hour
+}
+export const strikesCleared = (id: string, source: string): boolean => authFails.delete(sourceKey(id, source));
 // A wrong share COOKIE is a password guess like any other. /s/<id>/auth throttles every guess
 // (400ms flat) and locks the share after 50, but the cookie path used to answer an unlimited
 // number of guesses at full request rate — the same secret, a cheaper oracle, no lockout. Since
@@ -146,10 +161,10 @@ function shareCookieOffered(req: Request, sh: Share): boolean {
   const cookie = req.headers.get("cookie");
   return !!cookie && new RegExp(`(?:^|;\\s*)share_${sh.id}=`).test(cookie); // id is [a-z0-9], regex-safe
 }
-export async function shareGate(req: Request, sh: Share): Promise<Response | null> {
+export async function shareGate(req: Request, sh: Share, source: string): Promise<Response | null> {
   if (shareAuthed(req, sh)) return null;
   if (!shareCookieOffered(req, sh)) return json({ error: "unauthorized" }, 401);
-  const locked = failStrike(sh.id);
+  const locked = failStrike(sh.id, source);
   audit(locked ? "share_auth_lock" : "share_auth_fail", sh.slot); // never the guessed secret
   await Bun.sleep(400); // flat cost per wrong guess, same as /auth
   return json({ error: locked ? "too many attempts — try again later" : "unauthorized" }, locked ? 429 : 401);

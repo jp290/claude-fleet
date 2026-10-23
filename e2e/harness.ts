@@ -340,10 +340,13 @@ export async function waitForBoundAgent(opts: BoundAgentWait): Promise<BoundAgen
   }
 }
 
-export const wsUrl = (slot: number): string => `ws://${IP}:${PORT}/ws/${slot}?token=${TOKEN}`;
+// the owner token never rides in the URL (server/auth.ts#tokenFrom): an owner socket sends it as a bearer (ownerWs). The URL ends in "?",
+// so a caller appends "&cols=…" as before
+export const wsUrl = (slot: number): string => `ws://${IP}:${PORT}/ws/${slot}?`;
 // Bun's WebSocket client accepts { headers } as a second arg — the DOM lib types don't
 export const wsWithHeaders = (url: string, headers: Record<string, string>): WebSocket =>
   new (WebSocket as unknown as new (u: string, opts: { headers: Record<string, string> }) => WebSocket)(url, { headers });
+export const ownerWs = (url: string): WebSocket => wsWithHeaders(url, { authorization: `Bearer ${TOKEN}` });
 
 // how many times the 🔍 review stand-in ran WITH THIS cwd — it appends its working directory
 // (the reviewed lane's worktree) per spawn, so "the cache served it" / "auto-③ fired once" /

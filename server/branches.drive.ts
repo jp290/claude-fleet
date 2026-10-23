@@ -9,7 +9,9 @@ import { join } from "node:path";
 
 // `self`: der Self-Token einer Session, als x-fleet-self-token neben (oder mit token: null statt) dem Owner-Bearer
 // `cookie`: das Owner-Token als Cookie des Boards (auth.ts#cookieName) statt als Bearer — so fragt ein Browser
-interface Step { method: "GET" | "POST"; path: string; body?: unknown; token?: string | null; self?: string; cookie?: true }
+// `ip`: die Peer-Adresse dieser Anfrage (sonst keine); `headers`: weitere Kopfzeilen, etwa das Cookie eines Gastes
+interface Step { method: "GET" | "POST" | "PUT"; path: string; body?: unknown; token?: string | null; self?: string; cookie?: true; ip?: string;
+  headers?: Record<string, string> }
 // `until`: warten, bis die Datei da ist, höchstens `ms` — was der Server nach einer Antwort im Hintergrund
 // anstößt (der Code-Graph nach einem Land), endet sonst mit diesem Leben; Antwort 200, oder 408 nach `ms`
 interface Until { until: string; ms: number }
@@ -40,7 +42,8 @@ if (!arg) throw new Error("keine Schritte");
 // sobald das Leben endet. `touch`: legt eine leere Datei an (das `.release` eines Test-Riegels), Antwort 200
 interface Background { background: Step }
 interface Touch { touch: string }
-const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | "end" | "save")[];
+// "abwarten": bis jede `background`-Anfrage geantwortet hat, Antwort 200
+const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | "end" | "save" | "abwarten")[];
 
 const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom }
   = await import("../server");
@@ -68,10 +71,14 @@ async function call(step: Step): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = { host: `127.0.0.1:${port}`,
     ...(auth ? (step.cookie ? { cookie: `fleet_${port}=${auth}` } : { authorization: `Bearer ${auth}` }) : {}),
     ...(step.self ? { "x-fleet-self-token": step.self } : {}),
-    ...(step.body === undefined ? {} : { "content-type": "application/json" }) };
-  const res = await handle.call(server, new Request(`http://127.0.0.1:${port}${step.path}`,
-    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(earlier(step.body)) }) }), server);
+    ...(step.body === undefined ? {} : { "content-type": "application/json" }), ...step.headers };
+  const peer = step.ip ? { requestIP: () => ({ address: step.ip, family: "IPv4", port: 40000 }) } as unknown as typeof server : server;
+  const res = await handle.call(peer, new Request(`http://127.0.0.1:${port}${step.path}`,
+    { method: step.method, headers, ...(step.body === undefined ? {} : { body: JSON.stringify(earlier(step.body)) }) }), peer);
   if (!res) throw new Error(`${step.path}: der Handler gab keine Antwort`);
+  // eine Antwort ohne JSON (die Weiterleitung des Logins): wohin, und ob sie ein Cookie setzt
+  if (!(res.headers.get("content-type") ?? "").includes("json"))
+    return { status: res.status, body: { location: res.headers.get("location"), setCookie: res.headers.get("set-cookie")?.split("=")[0] ?? null } };
   return { status: res.status, body: await res.json() };
 }
 const pending: Promise<void>[] = [];
@@ -83,6 +90,7 @@ for (const step of steps) {
     continue;
   }
   if (typeof step === "object" && "touch" in step) { writeFileSync(step.touch, ""); out.push({ status: 200, body: { touch: step.touch } }); continue; }
+  if (step === "abwarten") { await Promise.all(pending); out.push({ status: 200, body: { abgewartet: pending.length } }); continue; }
   if (step === "end") { out.push({ status: 200, body: await endLandedBranchesNow() }); continue; }
   if ("datei" in step) { writeFileSync(step.datei, step.text); await Bun.sleep(step.ms); out.push({ status: 200, body: { datei: step.datei } }); continue; }
   if ("ausgabe" in step) {

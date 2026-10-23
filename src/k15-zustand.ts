@@ -16,11 +16,12 @@ import { fassungenImport, type TextFassung } from "./k15-wortlaut";
 import { agentVon, agentWort, passtEffort, passtModell, standardAgent, type Katalog } from "./k15-agent";
 import { packsImport, type PackEntwurf } from "./k15-kontextpack";
 import { MAX_FASSUNGEN, MAX_PACKS, MAX_PROFILE, importKonst, profilAus } from "./k15-import";
-import { MAX_KONSTELLATIONEN, SPEICHER_ROUTE } from "./k15-speicher";
+import { FREIGABE_ROUTE, MAX_KONSTELLATIONEN, SPEICHER_ROUTE } from "./k15-speicher";
 import type { Ablauf } from "./k15-agentmd";
 import type { Eingang } from "./k15-lader";
 import type { StartStand } from "./k15-start";
 import type { SitzStand } from "./sitzung";
+import type { SitzDarf } from "./sitz";
 
 export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
 // DER DETAILGRAD (Owner 12:3x) zeigt die Gruppen zu oder auf; was sonst erst beim Darüberfahren erscheint, zeigt „[Zitat entfernt]“
@@ -253,6 +254,25 @@ export async function speichereKonst(s: St, id: string, k: Konst | null): Promis
   const ok = await speichereEigenes(s);
   if (!ok) { if (vorher) s.konstGespeichert.set(id, vorher); else s.konstGespeichert.delete(id); }
   return ok;
+}
+
+// DIE FREIGABE ÜBER DEN DECKEL hat ihre eigene Tür (FREIGABE_ROUTE), ein Sichern des Speichers bringt sie nicht mit: erst wird der Stand gesichert,
+// den sie freigibt, dann gibt der Server ihn frei. Danach trägt der gespeicherte Stand sie, damit das nächste Sichern sie behält
+export async function gibFrei(s: St, k: Konst, pos: string, d: SitzDarf): Promise<boolean> {
+  if (!(await speichereKonst(s, k.id, k))) return false;
+  const p = reihe.then(async () => {
+    const res = await api(FREIGABE_ROUTE, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ konst: k.id, pos }) });
+    const j: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(j && typeof j === "object" && "error" in j && typeof j.error === "string" ? j.error : `Antwort ${res.status}`);
+    d.bestaetigt = true;
+    s.konstGespeichert.set(k.id, konstForm(s, k));
+    return true;
+  }).catch((e: unknown) => {
+    if (S === s) toast(`Der Server hat die Freigabe nicht gespeichert (${grundVon(e)}).`);
+    return false;
+  });
+  reihe = p;
+  return p;
 }
 
 // SICHERN: true erst, wenn der Server bestätigt hat; erst dann sagt der Aufrufer „gesichert“. Schlägt es fehl, sagt das ein Satz, und

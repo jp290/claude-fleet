@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, stopSrv, tmuxOut, until, waitForBoundAgent, wsUrl } from "./harness";
+import { BASE, IP, PORT, ROOT, SOCK, TOKEN, BoundAgentError, UntilTimeout, check, get, plogRead, post, readText, restartSrv, stopSrv, tmuxOut, until, waitForBoundAgent, wsUrl, ownerWs } from "./harness";
 import type { AgentBinding, BoundAgentObservation, BoundAgentWait } from "./harness";
 import type { Ctx } from "./ctx";
 import { MERGE_IDLE_MS, landedAsOne, settleForMerge } from "./lane-helpers";
@@ -1390,7 +1390,7 @@ export async function run(ctx: Ctx): Promise<void> {
   }
   const replay2 = await new Promise<{ n: number; text: string }>((resolve) => {
     let n = 0, text = "";
-    const ws = new WebSocket(wsUrl(2));
+    const ws = ownerWs(wsUrl(2));
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => {
       n += (e.data as ArrayBuffer).byteLength;

@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SOCK as SERVER_SOCK } from "../server/tmux";
-import { ROOT, SOCK, check, post, restartSrv, tmuxOut, until, wsUrl } from "./harness";
+import { ROOT, SOCK, check, post, restartSrv, tmuxOut, until, wsUrl, ownerWs } from "./harness";
 
 interface Probe {
   created: { code: number; timedOut: boolean; out: string };
@@ -141,7 +141,7 @@ try {
           check(`tmux-locale: ${locale.name} /send really pastes into the pane`, true);
         }
         const connected = await new Promise<boolean>((resolve) => {
-          const ws = new WebSocket(wsUrl(14));
+          const ws = ownerWs(wsUrl(14));
           const timer = setTimeout(() => { ws.close(); resolve(false); }, 5000);
           ws.onopen = () => { clearTimeout(timer); ws.close(); resolve(true); };
           ws.onerror = () => { clearTimeout(timer); resolve(false); };

@@ -34,7 +34,9 @@ the **comment thread** — text you read in the share dialog and act on yourself
 ## Mechanics / security
 
 - Per-share cookie (`share_<id>`, HttpOnly, SameSite=Lax, 7 days), checked with
-  `timingSafeEqual`. Wrong guesses cost 400 ms; >50/hour locks the share for the hour.
+  `timingSafeEqual`. Wrong guesses cost 400 ms; >50/hour from one source locks that source for
+  the hour (behind the tunnel the source is `cf-connecting-ip`), >500/hour from all sources locks
+  the share. Every attempt counts before the password is compared.
 - Guest input is dropped **server-side** and unconditionally (`server.ts` WS message
   handler: `if (ws.data.share) return;`), not just hidden in the UI — and there is no
   send route to reach either. Two independent locks, neither of which reads a mode.

@@ -182,3 +182,25 @@ describe("Rechte an einer Position kommen nur aus dem eigenen Speicher", () => {
     expect([JSON.stringify(geteilt).includes("deployen"), JSON.stringify(gespeichert).includes("deployen")]).toEqual([false, true]);
   });
 });
+
+// Sicherheitsprüfung Lauf 2, F3 (beweise/r2f3.sh): eine importierte Session mit dem Profil der Orchestratorin lief in bypassPermissions
+describe("ein Import startet nie als Orchestratorin", () => {
+  const orch = PROFILE0.find((p) => p.id === "orchestratorin")!;
+  test.each([
+    ["ein mitgereistes Profil mit der Rolle", { ...orch, id: "fremde-orchestratorin", name: "Fremde" }],
+    ["ein Verweis auf das Profil dieser Fleet", "orchestratorin@2"],
+  ])("%s kommt ohne Rolle an, mit einem Satz dazu", (_, profil) => {
+    const r = imp(k([{ id: "o", name: "Leitung", profil }, { id: "o2", name: "Zweite", profil }]));
+    if (typeof r === "string") throw new Error(r);
+    const ids = alle(r.k.wurzeln).map((q) => q.profil);
+    const p = [...PROFILE0, ...r.neueProfile].find((x) => x.id === ids[0]);
+    expect([p?.rolle, p?.schiene, ids[1]]).toEqual(["nur-ordner", "session", ids[0]]);
+    expect(r.neueProfile.filter((x) => x.rolle === "orchestratorin")).toEqual([]);
+    expect(r.hinweise.some((h) => h.startsWith("Leitung kam als") && h.includes("nie in bypassPermissions"))).toBe(true);
+  });
+  test("das eigene Laden (behalte) behält die Rolle", () => {
+    const r = importKonst(JSON.stringify(k([{ id: "o", profil: "orchestratorin@2" }])), PROFILE0, 7, "eigen1");
+    if (typeof r === "string") throw new Error(r);
+    expect(alle(r.k.wurzeln)[0]?.profil).toBe("orchestratorin");
+  });
+});

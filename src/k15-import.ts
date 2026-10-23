@@ -167,16 +167,34 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   const neueProfile: Profil[] = [];
   const hinweise: string[] = [];
   const bekannt = (id: string) => [...profile, ...neueProfile].find((p) => p.id === id);
+  // EIN IMPORT STARTET NIE ALS ORCHESTRATORIN (docs/start/system-concept.md: „never in bypass, until its owner has looked at it“; Sicherheitsprüfung
+  // Lauf 2, F3): ihre Rolle läuft in bypassPermissions. Eine Session, deren Profil sie trägt, kommt ohne Rolle an, bis der Owner sie ihr gibt.
+  // Nur das eigene Laden (behalte) behält sie
+  const gestutzt = new Map<string, string>();
+  const ohneBypass = (p: Profil, wer: string): Profil => {
+    if (behalte || p.rolle !== "orchestratorin") return p;
+    hinweise.push(`${wer} kam als ${p.name}: ein Import startet nie in bypassPermissions, die Session startet ohne Rolle, bis du ihr eine gibst`);
+    return { ...p, rolle: "nur-ordner", schiene: "session" };
+  };
   const profilFuer = (v: unknown, wer: string): string | { id: string } => {
     if (typeof v === "string") {
       const [id, ver] = v.split("@");
       const da = bekannt(id);
       if (!da) return `${wer}: das Profil „${id.slice(0, 60)}“ gibt es hier nicht; exportier vollständig, dann reist es mit`;
       if (ver && Number(ver) !== da.v) hinweise.push(`${wer} nimmt ${da.name} v${da.v}, exportiert war v${ver}`);
-      return { id: da.id };
+      const ohne = ohneBypass(da, wer);
+      if (ohne === da) return { id: da.id };
+      const schon = gestutzt.get(da.id);
+      if (schon) return { id: schon };
+      if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: zu viele Profile`;
+      const neu: Profil = { ...ohne, id: `${da.id}-i${jetzt}-${neueProfile.length}`, name: `${da.name} (importiert)`, nativ: null };
+      neueProfile.push(neu);
+      gestutzt.set(da.id, neu.id);
+      return { id: neu.id };
     }
-    const p = profilAus(v);
-    if (!p) return `${wer}: das mitgereiste Profil ist unvollständig`;
+    const roh = profilAus(v);
+    if (!roh) return `${wer}: das mitgereiste Profil ist unvollständig`;
+    const p = ohneBypass(roh, wer);
     const da = bekannt(p.id);
     if (da && kern(da) === kern(p)) return { id: da.id };
     if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: zu viele Profile`;

@@ -217,7 +217,7 @@ import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, F
   TREE_CAP, fileWritePath, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
-import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, authFails, failStrike,
+import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, failStrike, shareLocked, shareSource, strikesCleared,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KonzeptOp, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
@@ -245,7 +245,7 @@ import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choi
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
-import { k15Speicher } from "./server/k15-speicher";
+import { k15Freigabe, k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
 import { bindePosition, k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht, type LaufServer } from "./server/laeufe";
 import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
@@ -260,7 +260,7 @@ import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderS
   seatSkillsVerwaist, bibliothekQuelle, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
 import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
-import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
+import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
 
@@ -8798,7 +8798,11 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   if (!rt.ok) return json({ error: rt.error }, 400);
   const am = await agentMdDerTuer(body, h.id, STATE_DIR);
   if (!am.ok) return json({ error: am.error }, 400);
-  const sd = await sitzDerTuer(body, h.id, STATE_DIR, null, isOrchestratorLabel, eigeneKonst, opener === "self");
+  // der Board-Name wird das Label der Session: trägt er eine Rolle, startet kein Sitz aus einer Datei darunter (Sicherheitsprüfung Lauf 3, F3)
+  const ro = await branchRepoOf(body.repo);
+  if (!ro.ok) return json({ error: ro.error }, 400);
+  const record = findBranch(branchBook, ro.repo, body.branch);
+  const sd = await sitzDerTuer(body, h.id, STATE_DIR, record?.name ?? null, isOrchestratorLabel, eigeneKonst, opener === "self");
   if (!sd.ok) return json({ error: sd.error }, 400);
   const agentMd = am.agentMd ?? sd.agentMd;
   // DER AUFTRAG EINES SITZES ist seine eigene Datei: ein anderes Ziel daneben gäbe ihm ein Setup, das nicht in der Datei steht
@@ -8815,9 +8819,6 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   if (!wr.ok) return json({ error: wr.error }, 409);
   const bib = bibliothekDerTuer(body, null, opener);
   if (!bib.ok) return json({ error: bib.error }, 400);
-  const ro = await branchRepoOf(body.repo);
-  if (!ro.ok) return json({ error: ro.error }, 400);
-  const record = findBranch(branchBook, ro.repo, body.branch);
   if (!record?.name || !(await branchExists(ro.repo, body.branch)))
     return json({ error: `${body.branch} is no board branch here — open it with POST /api/branches first` }, 404);
   let path = (await listWorktrees(ro.repo)).find((w) => w.branch === body.branch)?.path ?? null;
@@ -36518,8 +36519,9 @@ async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise
 // so opening the page from the board costs nothing — and every other credential pays the same flat
 // 400 ms the owner gate pays, with no escalating lockout for the same reason it has none.
 async function helperAuthed(req: Request, url: URL): Promise<boolean> {
+  // the owner's token counts only from his cookie or bearer (server/auth.ts#tokenFrom); the query carries the helper's own link token
+  if (tokenOk(tokenFrom(req))) return true;
   const given = req.headers.get("x-fleet-helper-token") ?? url.searchParams.get("token") ?? tokenFrom(req) ?? "";
-  if (given && tokenOk(given)) return true;
   if (given && helperToken && secretEq(given, helperToken)) return true;
   await Bun.sleep(400);
   audit("helper_auth_fail"); // never the attempted token itself
@@ -51672,19 +51674,24 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const sh = shareBy(shareApi[1]);
       if (!sh) return json({ error: "unknown or revoked share" }, 404);
       const s = slots[sh.slot - 1];
+      const guest = shareSource(req, server.requestIP(req)?.address ?? "");
       if (shareApi[2] === "auth" && req.method === "POST") {
-        if (authFails.get(sh.id) && authFails.get(sh.id)!.count > 50 && Date.now() < authFails.get(sh.id)!.resetAt)
+        if (shareLocked(sh.id, guest)) return json({ error: "too many attempts — try again later" }, 429);
+        // every attempt counts BEFORE the body is read and compared: counted after the compare, a burst of guesses all passed the check
+        // above before the first one was counted, and each was compared (Sicherheitsprüfung Lauf 3, F1). A right password clears it
+        if (failStrike(sh.id, guest)) {
+          audit("share_auth_lock", sh.slot);
           return json({ error: "too many attempts — try again later" }, 429);
+        }
         const body = await readJson(req);
         if (!body || typeof body.password !== "string") return json({ error: "expected password" }, 400);
         if (!secretEq(body.password, sh.secret)) {
-          const locked = failStrike(sh.id);
-          audit(locked ? "share_auth_lock" : "share_auth_fail", sh.slot); // never the guessed password
+          audit("share_auth_fail", sh.slot); // never the guessed password
           await Bun.sleep(400); // flat cost per wrong guess
-          return json({ error: locked ? "too many attempts — try again later" : "wrong password" }, locked ? 429 : 401);
+          return json({ error: "wrong password" }, 401);
         }
         audit("share_auth_ok", sh.slot);
-        authFails.delete(sh.id);
+        strikesCleared(sh.id, guest);
         return new Response(JSON.stringify({ ok: true }), {
           headers: {
             "content-type": "application/json",
@@ -51693,7 +51700,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           },
         });
       }
-      const shGate = await shareGate(req, sh);
+      const shGate = await shareGate(req, sh, guest);
       if (shGate) return shGate;
       if (shareApi[2] === "info") {
         // live pane size, never the cache alone: the guest builds its whole terminal
@@ -51789,7 +51796,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!sh) return json({ error: "unauthorized" }, 401);
       // same one counter as the HTTP share surfaces — a socket handshake is the cheapest
       // guess oracle of all if it is left out (no body to send, no response to parse)
-      const wsGate = await shareGate(req, sh);
+      const wsGate = await shareGate(req, sh, shareSource(req, server.requestIP(req)?.address ?? ""));
       if (wsGate) return wsGate;
       const s = slots[sh.slot - 1];
       if (!s.cwd) return json({ error: "session gone" }, 404);
@@ -51822,6 +51829,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
 
     // K15: eigene Profile, Fassungen und Packs des Fensters „Neue Session“, eine Datei im Zustandsverzeichnis (server/k15-speicher.ts)
     if (url.pathname === K15_SPEICHER_ROUTE) return await k15Speicher(req, STATE_DIR);
+    if (url.pathname === K15_FREIGABE_ROUTE) return await k15Freigabe(req, STATE_DIR);
     const dateiMatch = req.method === "GET" ? new RegExp(`^${K15_KONST_ROUTE}/([^/]{1,80})/datei$`).exec(url.pathname) : null;
     if (dateiMatch) return await konstDatei(decodeURIComponent(dateiMatch[1]!), url.searchParams.get("repo"));
     if (url.pathname.startsWith(`${K15_KONST_ROUTE}/`)) return await konstFassungen(req, url, STATE_DIR);

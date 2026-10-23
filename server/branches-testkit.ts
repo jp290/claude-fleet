@@ -2,7 +2,7 @@
 // server/branches-charge.test.ts). Jedes `life` ist ein Leben des Servers in einem eigenen Prozess
 // (server/branches.drive.ts): Zustand laden, Boot-Umschlüsselung, Anfragen; zwei Leben nacheinander
 // sind ein Neustart. Ein Kit je Testdatei, mit eigenem Temp-Ordner, den `cleanup` wieder nimmt.
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -46,6 +46,29 @@ export function rowsOf(a: Answer, repo: string): { branches: BranchRow[]; others
 export const persisted = (f: Fixture): Record<string, unknown> =>
   JSON.parse(readFileSync(join(f.state, "fleet.json"), "utf8")) as Record<string, unknown>;
 
+// Ein Testlauf, den eine Zeitgrenze mit SIGKILL beendet, kommt nie zu `cleanup`; seine tmux-Server halten je Fixture
+// rund 22 Prozesse, bis der Mac am Prozess-Limit steht (23.10.: 46 Server, 1328 von 1333, der Neustart nach dem
+// Deploy scheiterte). Darum trägt der Socket-Ordner die pid des Laufs, und jedes neue Kit räumt die Ordner toter Läufe.
+const SOCKET_ROOT = "/tmp";
+const SOCKET_PREFIX = "fbr-";
+function lebt(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+export function raeumeToteLaeufe(root = SOCKET_ROOT): string[] {
+  const weg: string[] = [];
+  for (const name of readdirSync(root)) {
+    const m = /^fbr-(\d+)-/.exec(name);
+    if (!m || lebt(Number(m[1]))) continue;
+    const dir = join(root, name);
+    const tmuxDir = join(dir, `tmux-${process.getuid?.() ?? 0}`);
+    if (existsSync(tmuxDir))
+      for (const sock of readdirSync(tmuxDir)) Bun.spawnSync(["tmux", "-L", sock, "kill-server"], { env: { ...process.env, TMUX_TMPDIR: dir } });
+    rmSync(dir, { recursive: true, force: true });
+    weg.push(dir);
+  }
+  return weg;
+}
+
 export function branchTestkit() {
   const TMP = realpathSync(mkdtempSync(join(tmpdir(), "fleet-branches-")));
   // Eine Pane startet hier nie einen Agenten: `claude` ist ein Ersatz in TMP/bin, der nur wartet, und
@@ -59,7 +82,8 @@ export function branchTestkit() {
   const TOOLS = ["git", "tmux"].map((tool) => Bun.which(tool)).map((found) => (found ? dirname(found) : null));
   const PANE_PATH = [BIN, ...new Set(TOOLS.filter((d): d is string => d !== null)), "/usr/bin", "/bin"].join(":");
   if (Bun.which("claude", { PATH: PANE_PATH }) !== join(BIN, "claude")) throw new Error(`PATH der Panes fände ein echtes claude: ${PANE_PATH}`);
-  const SOCKETS = mkdtempSync("/tmp/fbr-");
+  raeumeToteLaeufe();
+  const SOCKETS = mkdtempSync(join(SOCKET_ROOT, `${SOCKET_PREFIX}${process.pid}-`));
   const sockets: string[] = [];
   let fixtures = 0;
   // ein Repo mit einem Commit auf main, ein leeres Zustandsverzeichnis, ein Owner-Token

@@ -8,6 +8,14 @@ FLEET_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The server bakes ITS OWN PATH into every pane command, so what's missing here is
 # missing inside every new claude session too.
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# launchd may restart this loop while the user is out of processes (23.10.: fork failed, FLEET_DIR came out empty
+# and every respawn wrote to /server.log for good). A loop without its folder or tmux exits, and KeepAlive brings
+# a fresh one once forking works again.
+if [ -z "$FLEET_DIR" ] || [ ! -f "$FLEET_DIR/server.ts" ] || ! command -v tmux >/dev/null 2>&1; then
+  echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] start without FLEET_DIR or tmux — exit, launchd starts a fresh loop" >&2
+  sleep 10
+  exit 1
+fi
 # everything this LOOP creates stays owner-only. Note what that is and is not: it does NOT
 # cover the srv pane or anything the server writes. The pane's shell is a child of the tmux
 # SERVER, not of this loop, so it inherits neither this umask nor this PATH — the same

@@ -6,6 +6,7 @@
 // Nachrichten, Ende und Ergebnis kommen als weitere Zeilen dazu (4b, 4c). server.ts hängt die Route hinter das Owner-Tor.
 import { join } from "node:path";
 import { aufgabeAus, type Aufgabe } from "../src/aufgabe";
+import { modellAbschnittAus, type ModellAbschnitt } from "../src/modell-verlauf";
 import { LAEUFE_ROUTE } from "../src/k15-speicher";
 import { json } from "./json";
 import { fassungsHash, fassungVon } from "./konst-fassungen";
@@ -18,8 +19,10 @@ export const LAEUFE_DATEI = "k15-laeufe.jsonl";
 // was der Slot trägt: an welchem Lauf, auf welcher Position
 export interface LaufBindung { id: string; pos: string }
 // folgtAuf: das openedAt der Vorgängerin, wenn diese Belegung eine Nachfolge auf derselben Position ist; cwd, branch, repo: wo sie arbeitet
-// (das Ergebnis liest dort die Commits); zu: wann ihre Session geschlossen wurde
-export interface LaufPosition { pos: string; slot: number; openedAt: number; at: number; folgtAuf?: number; cwd?: string; branch?: string; repo?: string; zu?: number }
+// (das Ergebnis liest dort die Commits); zu: wann ihre Session geschlossen wurde; modelle: welches Modell ihr wirklich antwortete, beim Schließen
+// aus ihrem Transkript gelesen (src/modell-verlauf.ts), null = nicht lesbar
+export interface LaufPosition { pos: string; slot: number; openedAt: number; at: number; folgtAuf?: number; cwd?: string; branch?: string; repo?: string; zu?: number;
+  modelle?: ModellAbschnitt[] | null }
 // wie ein Lauf endete: von Hand, oder weil alle seine Sessions zu sind
 export interface LaufEnde { at: number; wie: "hand" | "zu" }
 export interface Lauf {
@@ -60,7 +63,10 @@ export async function liesLaeufe(dir: string): Promise<Lauf[]> {
           ...ortZeile({ cwd: text(r.cwd), branch: text(r.branch), repo: text(r.repo) }) }] });
     } else if (r.art === "zu") {
       const l = laeufe.get(id), slot = zahl(r.slot), openedAt = zahl(r.openedAt), at = zahl(r.at);
-      if (l && at !== null) laeufe.set(id, { ...l, positionen: l.positionen.map((p) => p.slot === slot && p.openedAt === openedAt ? { ...p, zu: at } : p) });
+      const m = Array.isArray(r.modelle) ? r.modelle.map(modellAbschnittAus) : null;
+      const modelle = m && m.every((x): x is ModellAbschnitt => x !== null) ? m : r.modelle === null ? null : undefined;
+      if (l && at !== null) laeufe.set(id, { ...l, positionen: l.positionen.map((p) => p.slot === slot && p.openedAt === openedAt
+        ? { ...p, zu: at, ...(modelle !== undefined ? { modelle } : {}) } : p) });
     } else if (r.art === "ende") {
       const l = laeufe.get(id), at = zahl(r.at);
       if (l && at !== null && !l.ende) laeufe.set(id, { ...l, ende: { at, wie: "hand" } });
@@ -136,8 +142,9 @@ export async function liesLaufNachrichten(dir: string, id: string): Promise<{ na
 
 // DAS ENDE EINER BELEGUNG IM LAUF (server.ts#teardownSlotOccupant, auch die Vorgängerin einer Nachfolge): ihre Session ist zu. Sind alle zu,
 // ist der Lauf zu Ende (liesLaeufe). Am besten bemüht wie jedes Ereignisprotokoll: ein Schließen scheitert nie an seinem Lauf
-export function laufZu(b: LaufBindung, slot: number, openedAt: number, dir: string, jetzt = Date.now()): Promise<void> {
-  return binnenGrenze(appendEvent(join(dir, LAEUFE_DATEI), { art: "zu", id: b.id, pos: b.pos, slot, openedAt, at: jetzt }));
+// `modelle`: was das Transkript der Belegung über ihre Modelle sagt; undefined = Fleet liest bei diesem Harness keins
+export function laufZu(b: LaufBindung, slot: number, openedAt: number, dir: string, jetzt = Date.now(), modelle?: ModellAbschnitt[] | null): Promise<void> {
+  return binnenGrenze(appendEvent(join(dir, LAEUFE_DATEI), { art: "zu", id: b.id, pos: b.pos, slot, openedAt, at: jetzt, ...(modelle !== undefined ? { modelle } : {}) }));
 }
 
 // DAS ERGEBNIS EINES LAUFS (4c, harness-2-0-antwort.md Lücke 3: „Ergebnisse (Reports, Commits, Dateien) … und Ende“): je Branch seiner
@@ -235,25 +242,36 @@ export async function k15Laeufe(req: Request, url: URL, server: LaufServer, dir:
     return json({ error: "erwartet { konst, pos, slot, openedAt?, lauf?, aufgabe? }" }, 400);
   const aufgabe = o.aufgabe === undefined ? null : aufgabeAus(o.aufgabe);
   if (typeof aufgabe === "string") return json({ error: aufgabe }, 400);
+  const r = await bindePosition({ konst: o.konst, pos: o.pos, slot: Number(o.slot), openedAt: zahl(o.openedAt), lauf: typeof o.lauf === "string" ? o.lauf : null, aufgabe },
+    server, dir, jetzt());
+  return json(r.body, r.status);
+}
+
+// EINE POSITION AN EINEN LAUF BINDEN: ohne `lauf` ein neuer auf der gespeicherten Fassung, sonst eine weitere Position in ihm. Das Fenster tut
+// es nach einem Start (POST LAEUFE_ROUTE), die Self-Tür für einen Sitz, den ein Sitz desselben Laufs öffnet (server.ts#openBoardBranch)
+export interface Bindung { konst: string; pos: string; slot: number; openedAt: number | null; lauf: string | null; aufgabe: Aufgabe | null }
+export async function bindePosition(o: Bindung, server: LaufServer, dir: string, at: number): Promise<{ status: number; body: Record<string, unknown> }> {
+  const datei = join(dir, LAEUFE_DATEI);
+  const fehler = (status: number, error: string) => ({ status, body: { error } });
+  const aufgabe = o.aufgabe;
   const alle = await liesLaeufe(dir);
   const da = typeof o.lauf === "string" ? alle.find((x) => x.id === o.lauf) : undefined;
-  if (typeof o.lauf === "string" && !da) return json({ error: `kein Lauf „${o.lauf.slice(0, 40)}“` }, 404);
-  if (da && da.konst !== o.konst) return json({ error: `der Lauf gehört zu „${da.name}“, nicht zu dieser Konstellation` }, 409);
-  if (da?.ende) return json({ error: "der Lauf ist zu Ende; ein neuer Start beginnt einen neuen" }, 409);
-  if (da && aufgabe) return json({ error: "ein laufender Lauf hat seine Aufgabe schon" }, 400);
+  if (typeof o.lauf === "string" && !da) return fehler(404, `kein Lauf „${o.lauf.slice(0, 40)}“`);
+  if (da && da.konst !== o.konst) return fehler(409, `der Lauf gehört zu „${da.name}“, nicht zu dieser Konstellation`);
+  if (da?.ende) return fehler(409, "der Lauf ist zu Ende; ein neuer Start beginnt einen neuen");
+  if (da && aufgabe) return fehler(400, "ein laufender Lauf hat seine Aufgabe schon");
   // die Fassung, auf der der Lauf steht: seine eigene, oder für einen neuen die gespeicherte, mit der gestartet wird
   const f = da ? await fassungVon(o.konst, da.hash, dir)
     : await fassungVon(o.konst, await gespeicherterHash(o.konst, dir), dir) ?? await fassungVon(o.konst, null, dir);
-  if (!f) return json({ error: "diese Konstellation hat keine gespeicherte Fassung; erst speichern, dann starten" }, 404);
+  if (!f) return fehler(404, "diese Konstellation hat keine gespeicherte Fassung; erst speichern, dann starten");
   const positionen = Array.isArray(f.form.positionen) ? f.form.positionen : [];
   if (!positionen.some((p: unknown) => !!p && typeof p === "object" && (p as Record<string, unknown>).id === o.pos))
-    return json({ error: `„${o.pos.slice(0, 40)}“ ist keine Position der Fassung ${f.hash.slice(0, 8)}` }, 400);
-  if (da?.positionen.some((p) => p.pos === o.pos && p.slot === o.slot)) return json({ error: "diese Position sitzt schon auf diesem Slot" }, 409);
+    return fehler(400, `„${o.pos.slice(0, 40)}“ ist keine Position der Fassung ${f.hash.slice(0, 8)}`);
+  if (da?.positionen.some((p) => p.pos === o.pos && p.slot === o.slot)) return fehler(409, "diese Position sitzt schon auf diesem Slot");
   const id = da?.id ?? `l${crypto.getRandomValues(new Uint8Array(6)).reduce((t, x) => t + x.toString(16).padStart(2, "0"), "")}`;
-  const sitz = server.binde(Number(o.slot), zahl(o.openedAt), { id, pos: o.pos });
-  if (!sitz) return json({ error: `Slot ${String(o.slot)} ist nicht (mehr) diese Session` }, 409);
-  const ort = sitz.branch ? sitz : { ...sitz, ...await ortAusHistorie(Number(o.slot), sitz.openedAt, dir) };
-  const at = jetzt();
+  const sitz = server.binde(o.slot, o.openedAt, { id, pos: o.pos });
+  if (!sitz) return fehler(409, `Slot ${String(o.slot)} ist nicht (mehr) diese Session`);
+  const ort = sitz.branch ? sitz : { ...sitz, ...await ortAusHistorie(o.slot, sitz.openedAt, dir) };
   if (!da) {
     const pr = f.form.protokoll;
     await appendEventStrict(datei, { art: "lauf", id, konst: o.konst, hash: f.hash, name: f.name, version: f.version, at, aufgabe,
@@ -261,7 +279,7 @@ export async function k15Laeufe(req: Request, url: URL, server: LaufServer, dir:
   }
   await appendEventStrict(datei, { art: "position", id, pos: o.pos, slot: o.slot, openedAt: sitz.openedAt, at, ...ortZeile(ort) });
   // die Historie zeigt den Start mit seinem Lauf
-  await merkeNachtrag(Number(o.slot), sitz.openedAt, { lauf: { id, pos: o.pos, posName: posName(f.form, o.pos), konst: o.konst, name: f.name, version: f.version, hash: f.hash } }, dir);
+  await merkeNachtrag(o.slot, sitz.openedAt, { lauf: { id, pos: o.pos, posName: posName(f.form, o.pos), konst: o.konst, name: f.name, version: f.version, hash: f.hash } }, dir);
   const lauf = (await liesLaeufe(dir)).find((x) => x.id === id);
-  return json({ lauf }, da ? 200 : 201);
+  return { status: da ? 200 : 201, body: { lauf } };
 }

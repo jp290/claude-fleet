@@ -14,7 +14,8 @@ import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./serv
 import { halteFassung, holeFassung, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
-import { dateiFuer, leerePlaetze, liesNotizbuch, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
+import { modellVerlauf } from "./src/modell-verlauf";
+import { dateiFuer, geschwister, leerePlaetze, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
 import { notizbuchFuer, notizbuchSettings, type Notizbuch } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -246,7 +247,7 @@ import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
-import { k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht } from "./server/laeufe";
+import { bindePosition, k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht, type LaufServer } from "./server/laeufe";
 import { merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
 import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR_CONTEXT_LINE_CODEX,
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
@@ -256,7 +257,7 @@ import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
 import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatPacks, seatSkillFiles, seatSkillsDir,
-  seatSkillsVerwaist, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
+  seatSkillsVerwaist, bibliothekQuelle, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
 import { aufgabeAlsText, aufgabeAus } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE } from "./src/k15-speicher";
@@ -7341,6 +7342,10 @@ async function gitCommonDirOf(repoRoot: string): Promise<string | null> {
 }
 const FLEET_GIT_COMMON: string | null = FLEET_REPO_ROOT === null
   ? null : await gitCommonDirOf(FLEET_REPO_ROOT);
+// where a seat's library is read (server/sitz-wissen.ts#bibliothekQuelle): Fleet's own folder, or for a copy without git the repo it came from
+const BIBLIOTHEK = bibliothekQuelle(FLEET_REPO_ROOT, { repo: process.env.FLEET_LIBRARY_REPO, head: process.env.FLEET_LIBRARY_HEAD });
+const BIBLIOTHEK_GIT_COMMON: string | null = BIBLIOTHEK === null ? null : BIBLIOTHEK.root === FLEET_REPO_ROOT ? FLEET_GIT_COMMON
+  : await gitCommonDirOf(BIBLIOTHEK.root);
 
 interface MainAnchorCandidate extends LaneAnchor { lastOutput: number }
 // The fallback choice is pure and independent of slot iteration order. Activity wins; a tie goes
@@ -8732,15 +8737,46 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
   return json({ ok: true, repo, branch, path, created: !existed, name: done.record.name, text: done.record.text,
     rev: done.record.rev }, existed ? 200 : 201);
 }
+// WAS DIE LÄUFE VOM SERVER BRAUCHEN (server/laeufe.ts#LaufServer): die Route des Fensters und die Self-Tür, die einen Sitz an den Lauf seiner Öffnerin bindet
+const laufServer: LaufServer = {
+  binde: (id, openedAt, b) => {
+    const s = slotFrom(id);
+    if (!s?.cwd || (openedAt !== null && s.openedAt !== openedAt)) return null;
+    s.lauf = b;
+    saveState();
+    return { openedAt: s.openedAt, cwd: s.cwd, branch: s.worktree?.branch ?? null, repo: s.worktree?.repo ?? null };
+  },
+  // ein Lauf, der von Hand endet, gibt seine Sessions frei: sie laufen weiter, schreiben aber nicht mehr in sein Protokoll
+  loese: (id) => {
+    for (const s of slots) if (s.lauf?.id === id) s.lauf = null;
+    saveState();
+  },
+  // die Commits über der Basis des Branches, wie sie der Board-Diff zeigt (/api/branches/diff)
+  commits: async (repo, branch) => {
+    const base = findBranch(branchBook, repo, branch)?.base ?? await integrationBranch(repo);
+    if (!base) return null;
+    const log = await gitRead(repo, "log", "-n", "200", "--format=%H%x00%ct%x00%s", `${base}..refs/heads/${branch}`);
+    if (log.code !== 0) return null;
+    return log.out.split("\n").filter(Boolean).map((line) => {
+      const [sha = "", ct = "0", subject = ""] = line.split("\0");
+      return { sha, at: Number(ct) * 1000, subject };
+    });
+  },
+};
 // a SESSION on a board branch (POST /api/branches/open, and its self door): a session without a role (like "Nur Ordner")
 // in the branch's worktree, labelled with its Board-Name; a branch without a worktree is checked out first. It continues the
 // worktree's newest conversation unless `fresh`; `goal` becomes its first message. A branch whose worktree a session
 // already holds answers 409 with that slot. `by` is the opener the postfach pairs with the new session (K13); `opener`
 // says through which door it came — a session's own goal names it in its first line.
-async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | null, opener: "owner" | "self"): Promise<Response> {
-  if (!body || typeof body.branch !== "string" || (body.goal !== undefined && typeof body.goal !== "string")
-    || (body.fresh !== undefined && typeof body.fresh !== "boolean"))
-    return json({ error: "expected { repo, branch, goal?, aufgabe?, fresh?, model?, effort?, harness?, rechte?, profil? }" }, 400);
+async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | null, opener: "owner" | "self"): Promise<Response> {
+  if (!roh || typeof roh.branch !== "string" || (roh.goal !== undefined && typeof roh.goal !== "string")
+    || (roh.fresh !== undefined && typeof roh.fresh !== "boolean"))
+    return json({ error: "expected { repo, branch, goal?, aufgabe?, fresh?, model?, effort?, harness?, rechte?, profil?, sitz? }" }, 400);
+  // ein Sitz aus einer Datei bringt Agent, Modell und Effort mit; an der Self-Tür reicht seine Kennung in der Konstellation der Öffnerin
+  const eigeneKonst = opener === "self" && by?.sitz ? by.sitz.konst : null;
+  const mitSitz = await mitSitzWerten(roh, STATE_DIR, eigeneKonst, opener === "self");
+  if (!mitSitz.ok) return json({ error: mitSitz.error }, 400);
+  const body: Record<string, unknown> & { branch: string } = { ...mitSitz.body, branch: roh.branch };
   // die Aufgabe (src/aufgabe.ts) ist das Ziel mit Grenze, fertig wenn, Beleg und Rückweg; ihr Text wird die erste Nachricht
   if (body.goal !== undefined && body.aufgabe !== undefined) return json({ error: "goal oder aufgabe, nicht beides" }, 400);
   const aufgabe = body.aufgabe === undefined ? null : aufgabeAus(body.aufgabe);
@@ -8762,8 +8798,18 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
   if (!rt.ok) return json({ error: rt.error }, 400);
   const am = await agentMdDerTuer(body, h.id, STATE_DIR);
   if (!am.ok) return json({ error: am.error }, 400);
-  const sd = await sitzDerTuer(body, h.id, STATE_DIR, null, isOrchestratorLabel);
+  const sd = await sitzDerTuer(body, h.id, STATE_DIR, null, isOrchestratorLabel, eigeneKonst, opener === "self");
   if (!sd.ok) return json({ error: sd.error }, 400);
+  const agentMd = am.agentMd ?? sd.agentMd;
+  // DER AUFTRAG EINES SITZES ist seine eigene Datei: ein anderes Ziel daneben gäbe ihm ein Setup, das nicht in der Datei steht
+  const auftrag = sd.sitz?.auftrag ?? null;
+  if (auftrag && goal && goal !== auftrag.text.trim() && !auftrag.text.startsWith(`${goal}\n\n`))
+    return json({ error: `sitz „${sd.sitz!.pos}“ brings its own file „${auftrag.titel}“ as its goal — send no goal, or exactly that text` }, 400);
+  // ...und ein Ziel, das der Brief eines anderen Sitzes der eigenen Konstellation ist, öffnet diesen Sitz ohne sein Setup (Schritt 5, Lauf 2)
+  if (!sd.sitz && goal && eigeneKonst) {
+    const gemeint = (await geschwister(STATE_DIR, eigeneKonst, by!.sitz!.pos)).find((x) => x.auftrag?.trim() === goal);
+    if (gemeint) return json({ error: `this goal is the own file of seat „${gemeint.id}“ of your constellation — open it with "sitz": "${gemeint.id}" and no goal, so it starts with its whole setup from the file` }, 400);
+  }
   // an der Self-Tür ist auch das Darf aus der Datei nie weiter als die Öffnerin (server/sitz-reise.ts#rechteAnDerTuer, Befund F4)
   const wr = rechteAnDerTuer(rt.rechte, sd.rechte, h.id, opener === "self" && by ? oeffnerinOf(by) : null);
   if (!wr.ok) return json({ error: wr.error }, 409);
@@ -8786,9 +8832,9 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
     attachBusy.add(path);
     try {
       const resumeId = body.fresh === true ? null : lastConversationIn(path);
-      if (sd.notizbuch) await saeSitzNotizbuch(path, am.agentMd, sd.notizbuch);
+      if (sd.notizbuch) await saeSitzNotizbuch(path, agentMd, sd.notizbuch);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
-        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, am.agentMd,
+        null, false, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, agentMd,
         null, bib.wahl, undefined, sd.sitz);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
@@ -8807,16 +8853,23 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
         await saveStateNow();
       }
       void tickGit().catch(() => {});
+      // a seat that a seat of the same run opens sits in that run too (server/laeufe.ts#bindePosition): otherwise the run knew only the opener
+      const lauf = opener === "self" && by?.lauf && sd.sitz && by.sitz?.konst === sd.sitz.konst
+        ? await bindePosition({ konst: sd.sitz.konst, pos: sd.sitz.pos, slot: free.id, openedAt: free.openedAt, lauf: by.lauf.id, aufgabe: null },
+          laufServer, STATE_DIR, Date.now()).catch((e: unknown) => ({ status: 500, body: { error: e instanceof Error ? e.message : String(e) } }))
+        : null;
+      if (lauf && lauf.status >= 300) logError("sitz-lauf", new Error(`slot ${free.id}: ${String(lauf.body.error)}`));
       // the goal follows once the pane is ready — the board has its slot at once; a goal that is
       // held or uncertain is a server error the owner sees, never a silent loss
       // a session's goal says who opened the branch: the head names the path, not a credential
-      const said = goal && by && opener === "self"
-        ? `[geöffnet von der Session in Slot ${by.id} über ihren Self-Token — sie ist dein Gegenüber im Postfach] ${goal}` : goal;
-      if (goal) void deliverBranchGoal(free, said).then((d) => {
+      const vorn = by && opener === "self" ? `[geöffnet von der Session in Slot ${by.id} über ihren Self-Token — sie ist dein Gegenüber im Postfach]` : null;
+      const said = auftrag && sd.sitz ? await sitzAuftragNachricht(sd.sitz, vorn) : goal && vorn ? `${vorn} ${goal}` : goal;
+      if (said) void deliverBranchGoal(free, said, auftrag ? "sitz-auftrag" : "branch-goal").then((d) => {
         if (!d.delivered) logError("branch-goal", new Error(`slot ${free.id} (${record.name}): ${d.reason ?? "not delivered"}`));
       });
       return json({ ok: true, slot: free.id, openedAt: free.openedAt, cwd: free.cwd, label: free.label,
-        resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: goal ? "follows" : null,
+        resumed: resumeId !== null && free.sessionId === resumeId ? resumeId : null, goal: said ? "follows" : null,
+        ...(lauf ? lauf.status < 300 ? { lauf: { id: by!.lauf!.id, pos: sd.sitz!.pos } } : { laufFehler: String(lauf.body.error) } : {}),
         ...(free.rechte ? { rechte: free.rechte } : {}), ...(free.agentMd ? { agentMd: { profil: free.agentMd.profil, titel: free.agentMd.titel, sha256: free.agentMd.sha256 } } : {}) });
     } finally {
       attachBusy.delete(path);
@@ -8828,7 +8881,19 @@ async function openBoardBranch(body: Record<string, unknown> | null, by: Slot | 
     laneSpawn.delete(free.id);
   }
 }
-async function deliverBranchGoal(s: Slot, text: string): Promise<{ delivered: boolean; reason?: string }> {
+// DIE ERSTE NACHRICHT EINES SITZES AUS EINER DATEI: seine eigene Datei, davor ein Kopf, der sagt, was er ist und wie er die anderen Sitze seiner
+// Konstellation öffnet, so dass sie ihr ganzes Setup aus der Datei bekommen (Schritt 5: der Prover öffnete den Finder ohne dessen Agent-MD).
+// `vorn`: was davor steht, etwa wer die Session öffnete
+async function sitzAuftragNachricht(sitz: SitzStart, vorn: string | null): Promise<string> {
+  const andere = await geschwister(STATE_DIR, sitz.konst, sitz.pos);
+  const kopf = `[Fleet: du bist der Sitz „${sitz.pos}“ einer importierten Konstellation, und das ist deine eigene Datei „${sitz.auftrag?.titel ?? ""}“.${andere.length
+    ? ` Ihre anderen Sitze öffnest du mit "sitz": "<id>" an POST /api/self/branches/open und ohne goal: Agent, Modell, Effort, Agent-MD und ihre eigene Datei kommen dann aus der Datei. Sitze: ${andere.map((x) => `${x.id} (${x.name})`).join(", ")}.`
+    : ""}]`;
+  return [vorn, kopf].filter(Boolean).join(" ") + `
+
+${sitz.auftrag?.text ?? ""}`;
+}
+async function deliverBranchGoal(s: Slot, text: string, path: "branch-goal" | "sitz-auftrag" = "branch-goal"): Promise<{ delivered: boolean; reason?: string }> {
   const openedAt = s.openedAt;
   const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
@@ -8838,7 +8903,7 @@ async function deliverBranchGoal(s: Slot, text: string): Promise<{ delivered: bo
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { delivered: false, reason: readiness.reason };
   try {
-    await sendText(s, text, true, { path: "branch-goal" });
+    await sendText(s, text, true, { path });
   } catch (e) {
     logPrompt(s, text, "auto", Date.now(), undefined, "uncertain");
     return { delivered: false, reason: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}` };
@@ -10756,7 +10821,12 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   closeProgramLineageForOccupant(s.id, s.openedAt, Date.now());
   // ...and its run learns that this session is closed (server/laeufe.ts). Queued here, before openedAt is cleared, but awaited at the end:
   // whoever reads the run after the door of the close has answered finds the close in it
-  const laufEnde = s.lauf ? laufZu(s.lauf, s.id, s.openedAt, STATE_DIR) : null;
+  // ...with the models that really answered it (src/modell-verlauf.ts; step 5, run 2: Claude Code moved the prover to another model and the
+  // run did not know): the path is read now, while cwd and sessionId still name this occupancy; a harness without such a transcript says nothing
+  const laufBelegung = s.lauf ? { b: s.lauf, slot: s.id, openedAt: s.openedAt, at: Date.now(),
+    transkript: harnessFamilie(harnessOf(s.harness).id) !== "claude" ? undefined : s.cwd && s.sessionId ? `${projDir(s.cwd)}/${s.sessionId}.jsonl` : null } : null;
+  const laufEnde = laufBelegung ? (async () => laufZu(laufBelegung.b, laufBelegung.slot, laufBelegung.openedAt, STATE_DIR, laufBelegung.at,
+    typeof laufBelegung.transkript === "string" ? await Bun.file(laufBelegung.transkript).text().then(modellVerlauf, () => null) : laufBelegung.transkript))() : null;
   // ...and its library skills go with it (seatSkillsDir: one folder per occupancy)
   seatSkillsRemove(seatSkillsDir(SEAT_SKILLS_ROOT, s.id, s.openedAt));
   s.label = null;
@@ -11262,6 +11332,7 @@ type SendPath =
   | "brief"             // a task's founding brief into a fresh lane (briefAndSend)
   | "founding"          // a Program-MAIN / orchestrator founding or bind brief
   | "branch-goal"       // the goal a branch session gets at its start (POST /api/branches/open, Neuaufbau K5)
+  | "sitz-auftrag"      // the own file of a seat from an imported file, at its start (POST /api/slots/:id/open with sitz)
   | "succession"        // the successor's founding brief on POST /api/self/succeed
   | "lane-harness"      // the continuation brief after the owner switched a live lane's harness
   | "auto"              // a scheduled check-in firing (tickAutos)
@@ -11319,6 +11390,7 @@ const DELIVERY_SOURCE: Record<SendPath, string | null> = {
   "brief": "Gruendungs-Brief einer Lane",
   "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
   "branch-goal": "Ziel eines Branches (vom Öffner, POST /api/branches/open)",
+  "sitz-auftrag": "eigene Datei eines Sitzes aus einer importierten Datei (POST /api/slots/:id/open mit sitz)",
   "succession": "Nachfolge-Brief",
   "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
   "auto": "geplanter Check-in",
@@ -11349,6 +11421,7 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
   "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
   "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
   "branch-goal": "naechster Schritt: arbeite am Ziel dieses Branches · Grenze: sein Worktree und Branch",
+  "sitz-auftrag": "naechster Schritt: arbeite an deiner eigenen Datei · Grenze: was sie und deine Rechte sagen",
   "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
   "lane-harness": "naechster Schritt: setze die Lane-Arbeit auf dem neuen Harness fort · Grenze: derselbe Auftrag und Worktree",
   "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
@@ -21289,6 +21362,8 @@ async function fassungAufgabe(s: Slot, rolle: FassungRolle, repoRoot: string): P
       : [unknownAbschnitt("aufgabe", "kein aktives Program an diese MAIN gebunden")];
   }
   if (rolle === "orchestrator") return fassungOrchestratorAufgabe(repoRoot);
+  // ein Sitz aus einer importierten Datei: seine eigene Datei ist sein Auftrag, schon vor der ersten Nachricht, die ihn bringt (server/sitz-reise.ts)
+  if (s.sitz?.auftrag) return [textAbschnitt("aufgabe", `Slot.sitz (${s.sitz.konst}/${s.sitz.pos}, Datei „${s.sitz.auftrag.titel}“)`, s.sitz.auftrag.text, true)];
   const prompt = s.history.find((entry) => entry.source === "owner")?.text ?? s.history[0]?.text ?? null;
   return prompt ? [textAbschnitt("aufgabe", "Slot.history (erster Prompt dieser Session)", prompt, true)]
     : [unknownAbschnitt("aufgabe", "freie Session ohne Karte, Program oder stehende Rolle und ohne überlieferten Prompt")];
@@ -41984,15 +42059,16 @@ async function repoManifestContextPlan(repoRoot: string, head: string,
 // Größe je Pack wird am Kopf gemessen, nicht aus `estimatedBytes` übernommen.
 async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = false): Promise<{ knowledge: SeatKnowledge;
   plan: ContextPlan; blobShas: ReadonlyMap<string, string>; blobModes: ReadonlyMap<string, string> }> {
-  if (!FLEET_REPO_ROOT) throw new Error("Fleets eigener Ordner ist kein git-Repo (etwa die Kopie einer Testinstanz): kein Register an einem Commit");
-  const headRead = await gitRead(FLEET_REPO_ROOT, "rev-parse", "--verify", "HEAD");
-  if (headRead.code !== 0 || !headRead.out) throw new Error(`the HEAD of ${basename(FLEET_REPO_ROOT)} could not be read`);
-  const head = headRead.out;
+  if (!BIBLIOTHEK) throw new Error("Fleets eigener Ordner ist kein git-Repo (etwa die Kopie einer Testinstanz ohne FLEET_LIBRARY_REPO): kein Register an einem Commit");
+  const fleetRoot = BIBLIOTHEK.root;
+  const headRead = BIBLIOTHEK.head ? null : await gitRead(fleetRoot, "rev-parse", "--verify", "HEAD");
+  if (headRead && (headRead.code !== 0 || !headRead.out)) throw new Error(`the HEAD of ${basename(fleetRoot)} could not be read`);
+  const head = BIBLIOTHEK.head ?? headRead!.out;
   const tree = await seatTreeOf(cwd);
-  const { repoPlan: plan, blobShas, blobModes } = await repoManifestContextPlan(FLEET_REPO_ROOT, head, seatContextFacts(tree, harness, borrow));
+  const { repoPlan: plan, blobShas, blobModes } = await repoManifestContextPlan(fleetRoot, head, seatContextFacts(tree, harness, borrow));
   // each source once and side by side (Abnahme 22.10. (b): read one after the other, a spawn waited for every read in turn);
   // raw, as the borrow door reads it (contextBorrowRoute): the size here is what a borrow delivers
-  const root = FLEET_REPO_ROOT;
+  const root = fleetRoot;
   const paths = [...new Set(plan.selected.flatMap((pack) => Array.isArray(pack.sources) ? pack.sources.map((source) => source.path) : []))];
   const texts = new Map(await Promise.all(paths.map(async (path): Promise<[string, string | null]> => {
     const size = await gitRead(root, "cat-file", "-s", `${head}:${path}`);
@@ -42015,12 +42091,12 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
     packs.push({ id: pack.id, useWhen: pack.useWhen ?? null,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: unread ? null : sections.join("\n") });
   }
-  return { knowledge: { tree, repoRoot: FLEET_REPO_ROOT, head, packs }, plan, blobShas, blobModes };
+  return { knowledge: { tree, repoRoot: fleetRoot, head, packs }, plan, blobShas, blobModes };
 }
 // in Fleet's own repo is a seat whose tree shares Fleet's object store (a worktree of Fleet counts); a folder without git is foreign
 async function seatTreeOf(cwd: string): Promise<SeatTree> {
   const seatRoot = await repoRootOf(cwd).catch(() => null);
-  return seatRoot !== null && FLEET_GIT_COMMON !== null && await gitCommonDirOf(seatRoot) === FLEET_GIT_COMMON ? "fleet" : "foreign";
+  return seatRoot !== null && BIBLIOTHEK_GIT_COMMON !== null && await gitCommonDirOf(seatRoot) === BIBLIOTHEK_GIT_COMMON ? "fleet" : "foreign";
 }
 // WHO GETS THE LIBRARY (Owner 22.10. über Slot 16: „[Zitat entfernt]“; runde4 §3): every seat without a standing role, in
 // every repo, unless it was switched off at its opening (Slot.bibliothek). What a seat in another repo gets is only what
@@ -42081,7 +42157,7 @@ async function loadStateAndReap(file: string): Promise<void> {
 // `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
   sitz: SitzStart | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
-  const knowledge = sitz ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
+  const knowledge = sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
     : (await seatKnowledgeFor(cwd, harness)).knowledge;
   const files = seatSkillFiles(knowledge);
   const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
@@ -42141,9 +42217,11 @@ async function foundingPlanOf(repo: string, harness: string | null,
   }
   // The commit the plan AND the later receipt assert — the integration tip, the same choice the
   // dispatch seam and preflightProgramMain make, so no seam invents its own head rule.
-  const head = await integrationHead(repoRoot);
-  if (!head) return { ok: false, error: "could not read the repository's integration HEAD" };
+  // a checkout on a detached HEAD (`git worktree add --detach`, step 5 run 2) has no integration branch: it plans at the commit it stands on
   const branchRead = await gitRead(repoRoot, "symbolic-ref", "--short", "HEAD");
+  const detached = branchRead.code !== 0 ? await gitRead(repoRoot, "rev-parse", "--verify", "HEAD") : null;
+  const head = await integrationHead(repoRoot) ?? (detached?.code === 0 && detached.out ? detached.out : null);
+  if (!head) return { ok: false, error: "could not read the repository's integration HEAD" };
   // THE ONE CLASSIFIER, shared with dispatch: which tree this founding is about, derived from the
   // git toplevel comparison dispatchSourceTree owns — never declared, never re-classified here.
   const sourceTree = await dispatchSourceTree(repoRoot);
@@ -42328,7 +42406,7 @@ async function notizbuchFuerStart(cwd: string, rolle: SessionSpawnRole | null, p
 // DIE DATEI EINER GESPEICHERTEN KONSTELLATION (server/sitz-reise.ts#dateiFuer): was ihre Sitze lesen, aus Fleets Bibliothek im Repo `repo` (sonst
 // Fleets eigenem), ihre Notizbücher dort, ihre Läufe aus dem Laufbuch; der Mode ist der eines Sitzes ohne Rolle (session-start.ts#PERMISSION_MODE)
 async function konstDatei(id: string, repoRaw: string | null): Promise<Response> {
-  const repo = repoRaw ? resolve(expandCwd(repoRaw)) : FLEET_REPO_ROOT ?? import.meta.dir;
+  const repo = repoRaw ? resolve(expandCwd(repoRaw)) : BIBLIOTHEK?.root ?? import.meta.dir;
   if (!existsSync(repo) || !statSync(repo).isDirectory()) return json({ error: `repo ${repoRaw} is no directory here` }, 400);
   const gespeichert: unknown = await Bun.file(`${STATE_DIR}/${K15_SPEICHER_DATEI}`).json().catch(() => null);
   const liste = gespeichert && typeof gespeichert === "object" && "konstellationen" in gespeichert && Array.isArray(gespeichert.konstellationen) ? gespeichert.konstellationen : [];
@@ -42788,7 +42866,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
       fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { cwd: resolve(expandCwd(repo)),
         label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
-        rechte: wr.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch }), anlass: "neu" };
+        rechte: wr.rechte, agentMd: am.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch }), anlass: "neu" };
     } else {
       fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
         effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
@@ -51026,8 +51104,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const record = typeof asked.body.branch === "string" ? findBranch(branchBook, String(asked.body.repo), asked.body.branch) : undefined;
       if (record?.name && roleLabelOf(record.name))
         return json({ error: "this branch's Board-Name is a role label — the owner opens it" }, 409);
+      // a seat from an imported file brings its own harness, model and effort, judged by the same rule as a body's (server/sitz-reise.ts)
+      const mitSitz = await mitSitzWerten(asked.body, STATE_DIR, s.sitz?.konst ?? null, true);
+      if (!mitSitz.ok) return json({ error: mitSitz.error }, 400);
       // the child is never wider than its opener (server/kind-weite.ts, Befund F4)
-      const kind = kindNieWeiter(oeffnerinOf(s), asked.body);
+      const kind = kindNieWeiter(oeffnerinOf(s), mitSitz.body);
       if (!kind.ok) return json({ error: kind.error }, 409);
       return await openBoardBranch(kind.body, s, "self");
     }
@@ -51745,31 +51826,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (dateiMatch) return await konstDatei(decodeURIComponent(dateiMatch[1]!), url.searchParams.get("repo"));
     if (url.pathname.startsWith(`${K15_KONST_ROUTE}/`)) return await konstFassungen(req, url, STATE_DIR);
     if (url.pathname === K15_HISTORIE_ROUTE) return await startHistorie(req, url, STATE_DIR);
-    if (url.pathname === K15_LAEUFE_ROUTE || url.pathname.startsWith(`${K15_LAEUFE_ROUTE}/`)) return await k15Laeufe(req, url, {
-      binde: (id, openedAt, b) => {
-        const s = slotFrom(id);
-        if (!s?.cwd || (openedAt !== null && s.openedAt !== openedAt)) return null;
-        s.lauf = b;
-        saveState();
-        return { openedAt: s.openedAt, cwd: s.cwd, branch: s.worktree?.branch ?? null, repo: s.worktree?.repo ?? null };
-      },
-      // ein Lauf, der von Hand endet, gibt seine Sessions frei: sie laufen weiter, schreiben aber nicht mehr in sein Protokoll
-      loese: (id) => {
-        for (const s of slots) if (s.lauf?.id === id) s.lauf = null;
-        saveState();
-      },
-      // die Commits über der Basis des Branches, wie sie der Board-Diff zeigt (/api/branches/diff)
-      commits: async (repo, branch) => {
-        const base = findBranch(branchBook, repo, branch)?.base ?? await integrationBranch(repo);
-        if (!base) return null;
-        const log = await gitRead(repo, "log", "-n", "200", "--format=%H%x00%ct%x00%s", `${base}..refs/heads/${branch}`);
-        if (log.code !== 0) return null;
-        return log.out.split("\n").filter(Boolean).map((line) => {
-          const [sha = "", ct = "0", subject = ""] = line.split("\0");
-          return { sha, at: Number(ct) * 1000, subject };
-        });
-      },
-    }, STATE_DIR);
+    if (url.pathname === K15_LAEUFE_ROUTE || url.pathname.startsWith(`${K15_LAEUFE_ROUTE}/`)) return await k15Laeufe(req, url, laufServer, STATE_DIR);
 
     if (url.pathname === "/api/worktrees" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
@@ -54264,9 +54321,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // `mode` may be left out once `role` names the founding; `ort` defaults from role and mode.
     if (url.pathname === "/api/founding-plan" && req.method === "GET") {
       const q = url.searchParams;
+      // a seat from an imported file: harness, model and effort from the file where the address names none, as its door takes them
+      const gesetzt = Object.fromEntries((["harness", "model", "effort"] as const).flatMap((k) => { const v = q.get(k); return v === null ? [] : [[k, v]]; }));
+      const ms = await mitSitzWerten({ ...gesetzt, ...(q.get("sitz") ? { sitz: q.get("sitz") } : {}) }, STATE_DIR, null);
+      if (!ms.ok) return json({ error: ms.error }, 400);
+      const feld = (k: string): string | undefined => typeof ms.body[k] === "string" ? String(ms.body[k]) : undefined;
       const answer = await foundingPlanAnswer({ repo: q.get("repo") ?? "", role: q.get("role"), ort: q.get("ort"),
-        mode: q.get("mode"), harness: q.get("harness") ?? undefined, model: q.get("model") ?? undefined,
-        effort: q.get("effort") ?? undefined, bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts"),
+        mode: q.get("mode"), harness: feld("harness"), model: feld("model"),
+        effort: feld("effort"), bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts"),
         anlass: q.get("anlass"), start: startVonAdresse(q) });
       return answer.ok ? json(answer.body) : json({ error: answer.error }, answer.status);
     }
@@ -55301,9 +55363,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (slotMatch[2] === "lane-harness") return await switchLaneHarness(s, req);
       if (slotMatch[2] === "open") {
         const guard = slotOpeningGuard(s);
-        const body = await readJson(req);
+        const roh = await readJson(req);
         guard();
-        if (!body) return json({ error: "expected application/json" }, 400);
+        if (!roh) return json({ error: "expected application/json" }, 400);
+        // ein Sitz aus einer Datei bringt Agent, Modell und Effort mit, wo der Body keine nennt (server/sitz-reise.ts#mitSitzWerten)
+        const mitSitz = await mitSitzWerten(roh, STATE_DIR, null);
+        guard();
+        if (!mitSitz.ok) return json({ error: mitSitz.error }, 400);
+        const body = mitSitz.body;
         // harness FIRST — it is what the model and the effort are judged by
         const ho = harnessIdOf(body);
         if (!ho.ok) return json({ error: `unknown harness (one of: ${HARNESSES.map((h) => h.id).join(", ")})` }, 400);
@@ -55334,6 +55401,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (!sd.ok) return json({ error: sd.error }, 400);
         const wr = rechteAnDerTuer(rt.rechte, sd.rechte, hh.id, null);
         if (!wr.ok) return json({ error: wr.error }, 409);
+        // die Agent-MD: die eines hier gespeicherten Profils (`profil`), sonst die, die mit dem Sitz in der Datei kam
+        const agentMd = am.agentMd ?? sd.agentMd;
         // optional label AT SPAWN (same validation as /rename): the pane's env is fixed the
         // moment tmux creates it, so a label-keyed export (FLEET_STEWARD_TOKEN) can only be
         // baked in by naming the slot here — open-then-rename is always too late.
@@ -55366,17 +55435,17 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // the plan's MCP servers ride the spawn: the accepted plan's delivered packs, or the owner's chosen ones
         const packMcp = acc ? acceptedPlanMcp(acc) : founding ? planMcpServers({ selected: chosen }) : [];
         const gezeigt = await fassungGezeigtPruefung(body, s, { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
-          harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd: am.agentMd, bibliothek: bib.wahl, packMcp,
+          harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd, bibliothek: bib.wahl, packMcp,
           sitz: sd.sitz, notizbuch: sd.notizbuch });
         guard();
         if (gezeigt) return json(gezeigt.body, gezeigt.status);
         if (fassungTestHaken.nachPruefung) await fassungTestHaken.nachPruefung();
         let modelSupport: CodexModelSupport | null = null;
         try {
-          if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), am.agentMd, sd.notizbuch);
+          if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), agentMd, sd.notizbuch);
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            packMcp, undefined, wr.rechte, am.agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz);
+            packMcp, undefined, wr.rechte, agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;
@@ -55429,7 +55498,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             await writePlanReceipt(s, acc, planBlock);
           }
         }
-        return json({ ok: true, cwd: s.cwd, label: s.label, plan: planBlock, ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256 } } : {}), ...(roleCard ? { roleCard } : {}),
+        // die eigene Datei eines Sitzes aus einer Datei folgt als erste Nachricht, sobald die Pane bereit ist (wie das Ziel einer Branch-Session)
+        const auftrag = s.sitz?.auftrag ? await sitzAuftragNachricht(s.sitz, null) : null;
+        if (auftrag) void deliverBranchGoal(s, auftrag, "sitz-auftrag").then((d) => {
+          if (!d.delivered) logError("sitz-auftrag", new Error(`slot ${s.id}: ${d.reason ?? "not delivered"}`));
+        });
+        return json({ ok: true, cwd: s.cwd, label: s.label, plan: planBlock, ...(auftrag ? { auftrag: "follows" } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), ...(s.remote ? { remote: true } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256 } } : {}), ...(roleCard ? { roleCard } : {}),
           ...roleConflictFor(s),
           ...(modelSupport ? { modelSupport } : {}),
           ...(packsResult ? packsResult : {}),

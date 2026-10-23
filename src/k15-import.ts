@@ -126,11 +126,14 @@ export function profilAus(v: unknown): Profil | null {
     ...(kv ? { kopieVon: { name: kv.split("@")[0], v: Number(kv.split("@")[1]) || 1 } } : kopie && typeof kopie.name === "string" ? { kopieVon: { name: kopie.name, v: zahl(kopie.v) ?? 1 } } : {}) };
 }
 
-// DAS PROTOKOLL (k15-entwurf-modell.ts#Protokoll): je Teil Text, eine ganze Zahl ab 1 oder null; sonst null für „passt nicht“
+// DAS PROTOKOLL (k15-entwurf-modell.ts#Protokoll): je Teil Text, eine ganze Zahl ab 1 oder null; sonst null für „passt nicht“. Ein Text über
+// MAX_PROTOKOLL_TEXT passt nicht, statt still gekürzt zu werden (eine Prüfregel mit einem Satz über Modellwechsel hatte mehr als 300 Zeichen)
+export const MAX_PROTOKOLL_TEXT = 1000;
 function protokollAus(v: unknown): Protokoll | null {
   const o = obj(v);
   if (!o) return null;
-  const text = (x: unknown): string | null | false => x === null || x === undefined ? null : typeof x === "string" && x.trim() ? x.trim().slice(0, 300) : false;
+  const text = (x: unknown): string | null | false => x === null || x === undefined ? null
+    : typeof x === "string" && x.trim() && x.trim().length <= MAX_PROTOKOLL_TEXT ? x.trim() : false;
   const ende = text(o.ende), regel = text(o.regel);
   const runden = o.runden === null || o.runden === undefined ? null : Number.isInteger(o.runden) && Number(o.runden) >= 1 && Number(o.runden) <= 99 ? Number(o.runden) : false;
   return ende === false || regel === false || runden === false ? null : { ende, runden, regel };

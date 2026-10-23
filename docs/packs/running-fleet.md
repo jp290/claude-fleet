@@ -33,6 +33,9 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   run with `--repair`, even a green one, and the board door `POST /api/branches/check` has no such flag. The branch
   that carries the fix is checked by hand: `bun ci/merge-check.ts <branch> --base main --repair`; every other branch
   waits for the next green audit.
+- **The board door runs the checkout's runner, not the branch's.** `POST /api/branches/check` starts
+  `<repo>/ci/merge-check.ts` from the checkout the body names. A branch that changes the runner is checked from its
+  own worktree, `bun ci/merge-check.ts <branch> --base main`, or its first check runs the old runner.
 - **The merge check runs only what the footprint owes; the audit runs everything.** A change that alters a
   behaviour (a door that now answers 409) can pass its check and turn the audit red where another module pins the
   old answer. Before a land that changes a door, grep `e2e/` for the old answer. One module runs locally with

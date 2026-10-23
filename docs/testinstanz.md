@@ -191,6 +191,24 @@ Eine Anfrage an die Instanz DIESES Worktrees, mit ihrem eigenen Ausweis: `owner`
 Ausweis. Gelesen wird beides in bun, nie in einer Kommandozeile, und gedruckt werden nur `HTTP <status>`
 und der Body. Ohne eigene laufende Instanz endet `probe` mit exit 2; den Live-Server erreicht es nie.
 
+## Eine Aufgabe aus einer Datei — Bibliothek und Sitz-Repo
+
+Die Kopie einer Instanz hat kein `.git`. Fleets Bibliothek liest sie deshalb im Worktree, aus dem sie kopiert wurde, an dem
+Commit, auf dem er bei `up` oder `refresh` stand (`FLEET_LIBRARY_REPO`, `FLEET_LIBRARY_HEAD`, gesetzt in `ti_serve`). Ohne das
+starteten ihre Sitze ohne Packs, und ein Export trug leere Sitz-Blöcke (Schritt 5, Lauf 2).
+
+Wer eine Aufgabe aus einer Datei auf einer Instanz nachfährt, gibt ihren Sitzen ein Repo, das die früheren Läufe nicht kennt:
+
+    bun tools/sitz-repo.ts "$DIR/sitz-repo" --aufgabe docs/aufgaben/<datei>.fleet.json --in ~/fleet-testinstanz-repo [--commit <rev>]
+
+Das ergibt einen Commit ohne Vorfahren auf einem eigenen Branch `sitz/…`. Die Datei steht darin ohne `laeufe`, und es fehlt jede
+Datei, die ein Lauf nennt und die dort liegt, wo die Datei ihre Beweise hinlegt (`beweise/<n>.sh`). `$DIR/sitz-repo` ist ein Worktree
+des blinden Haupt-Repos `~/fleet-testinstanz-repo`. Der Owner hat diesen Pfad am 22.10. einmal vertraut („[Zitat entfernt]“
+); ein echter claude fragt in seinen Worktrees deshalb nicht nach Vertrauen. Das Haupt-Repo kennt nur Sitz-Branches, also zeigt
+`git log --all` einem Sitz keine Geschichte von claude-fleet. Die Sitze eines Laufs committen dorthin; die nächste Instanz lehnt das
+Werkzeug ab, bis deren Arbeit geerntet ist und `--alte-zweige-weg` sie wegnimmt. `down` räumt den Worktree ab. Im Fenster wählt man
+ihn über „Repo hinzufügen“. Ohne `--in` entsteht ein frisches Repo, in dem ein echter claude nach Vertrauen fragt.
+
 ## Echte Sitze — `up --real-seats`
 
 Owner 22.10.: „[Zitat entfernt]“

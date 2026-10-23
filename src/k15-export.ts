@@ -193,8 +193,10 @@ function nimmRoh(s: St, name: string, text: string): void {
     const satz = `${k.name} v${k.v} importiert: ${plural(alle(k.wurzeln).length, "Session", "Sessions")}${dazu ? `, dazu ${dazu}` : ""}. Sie ist jetzt deine eigene und auf dem Server gespeichert; was sie erlaubt, steht im Aufbau.${platzSatz(k)}${r0.hinweise.length ? ` ${r0.hinweise.slice(0, 3).join("; ")}${r0.hinweise.length > 3 ? " …" : ""}.` : ""}`;
     // eine importierte Konstellation ist gleich gespeichert (Konstellation Stück 1): Hineinziehen ist schon die Entscheidung, sie zu behalten
     // gespeichert, liest die Ansicht ihre Fassungen neu (wie nach jedem Speichern, k15-spalte2.ts): vorher fragte sie zu früh und sah keine
+    // ...und ihre Pläne: einer mit `sitz` fragte vor dem Speichern und hörte „no saved constellations to read“ (server/sitz-reise.ts)
     void speichereKonst(s, k.id, k).then((ok) => {
       if (ok) fassungenNeu(k.id);
+      if (ok) for (const url of [...s.plaene.keys()]) if (new URLSearchParams(url.split("?")[1] ?? "").get("sitz")?.startsWith(`${k.id}/`)) s.plaene.delete(url);
       if (ok && S === s) { toast(satz); render(); } else if (S === s) { s.konstNeu.add(k.id); render(); }
     });
     gehe(1, 1);

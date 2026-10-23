@@ -26,6 +26,16 @@ import type { SpawnBibliothek } from "./session-start";
 
 export type SeatTree = "fleet" | "foreign";
 
+// WO FLEETS REGISTER LIEGT: in Fleets eigenem Ordner an seinem HEAD (`head` null = jedes Mal lesen); ein Ordner ohne git (die Kopie einer
+// Testinstanz) liest es im Repo, aus dem er kopiert wurde, an dem Commit, auf dem es beim Kopieren stand (testinstanz.sh setzt beide). Ohne
+// das hatte eine Testinstanz keine Bibliothek: ihre Sitze starteten ohne Packs, und ihr Export trug leere Sitz-Blöcke (Schritt 5, Lauf 2)
+export interface BibliothekQuelle { root: string; head: string | null }
+export function bibliothekQuelle(eigen: string | null, kopie: { repo?: string; head?: string }): BibliothekQuelle | null {
+  if (eigen) return { root: eigen, head: null };
+  const repo = kopie.repo?.trim(), head = kopie.head?.trim();
+  return repo && head && /^[0-9a-f]{40,64}$/.test(head) ? { root: repo, head } : null;
+}
+
 export const SEAT_TRIGGERS: Readonly<Record<SeatTree, readonly ContextPackTrigger[]>> = {
   fleet: ["seat-start", "seat-start-any-repo"],
   foreign: ["seat-start-any-repo"],

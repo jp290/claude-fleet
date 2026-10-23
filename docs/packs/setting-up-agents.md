@@ -53,6 +53,8 @@ It never says how to do the work.
 - Say what the agent may decide on its own. Without that sentence, a good agent asks instead of building.
 - Write for the model that gets it. A weaker or less familiar model needs more about the situation and more
   material, not more prohibitions.
+- Ask for a report that carries its evidence: file and line, a short excerpt, the command and its result. A claim
+  without them sends whoever receives it back to search.
 - Ask it to say at the end, in one sentence, what was missing from its start.
 - Say what it does after its report. If the work ends there, write "then stop and wait"; a seat that isn't told
   goes looking for more. Never forbid a handover: when Fleet says its context is due, it hands over its open work,

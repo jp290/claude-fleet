@@ -520,10 +520,12 @@ export const rollenStandardGelesen = (s: St, p: Profil): boolean => !!s.repo && 
 // liest den Block; die Tür der MAIN und der Lane nehmen es noch nicht. Hier statt im Start, weil auch die Vorschau das Profil mitrechnet.
 export const agentMdKommt = (s: St, p: Profil, q: Position | null): boolean =>
   !!p.datei && s.speicher === "da" && (p.schiene === "bau" || (p.rolle !== "lane" && p.rolle !== "main")) && wahlVon(s, p, q, "agent").wert === "claude";
-// was aus einer importierten Datei an einem Sitz hängt und die Tür nimmt (server/sitz-reise.ts#sitzDerTuer): nur aus dem Speicher, nur Claude Code, nur
-// ohne Rolle. Hier statt im Start, weil auch die Vorschau es mitrechnet (der gezeigte Hash ist der des Starts).
+// was an einer Position einer gespeicherten Konstellation hängt und die Tür nimmt (server/sitz-reise.ts#sitzDerTuer): ihr Sitz-Block, ihre eigene
+// Datei als Auftrag und die Agent-MD ihres Profils, so wie der Server sie gespeichert hat; nur Claude Code, nur ohne Rolle. Jede solche Position
+// startet als ihr Sitz, auch ohne Block: so kennt der Slot seine Konstellation und öffnet ihre anderen Sitze an der Self-Tür mit ihrem Setup.
+// Hier statt im Start, weil auch die Vorschau es mitrechnet (der gezeigte Hash ist der des Starts).
 export const sitzKommt = (s: St, p: Profil, q: Position): boolean =>
-  !!q.sitz && s.konstGespeichert.has(s.k.id) && !s.konstNeu.has(s.k.id) && p.rolle === "nur-ordner" && wahlVon(s, p, q, "agent").wert === "claude";
+  s.konstGespeichert.has(s.k.id) && !s.konstNeu.has(s.k.id) && p.rolle === "nur-ordner" && wahlVon(s, p, q, "agent").wert === "claude";
 // was die Vorschau einer Position außer dem Plan mitnimmt, wie ihr Start es an die Tür schickt (k15-start.ts#auftrag): Profil, Sitz und die Rechte der Position
 export const dazuDerPosition = (s: St, p: Profil, q: Position | null): Dazu => ({ ...(agentMdKommt(s, p, q) ? { profil: p.id } : {}),
   ...(q && sitzKommt(s, p, q) ? { sitz: `${s.k.id}/${q.id}` } : {}), ...(q?.rechte ? { rechte: q.rechte } : {}) });

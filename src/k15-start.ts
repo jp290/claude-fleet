@@ -12,7 +12,7 @@ import type { Auftrag, ProgZeile } from "./start-tuer";
 import type { BranchOtherView } from "./protocol";
 import type { Eingang } from "./k15-lader";
 import { S, agentMdKommt, antwort, sitzKommt, dreier, info, lage, render, rollenStandardGelesen, schwelleWahl, wahlVon, type Lage, type St } from "./k15-zustand";
-import { PROFILE0, alle, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
+import { PROFILE0, alle, aspekt, aspektName, eltern, type Position, type Profil } from "./k15-entwurf-modell";
 import { eigeneVon } from "./k15-wortlaut-ui";
 import { bindeLauf, laufSatz } from "./k15-lauf";
 import { agentVon, agentWort, standardAgent } from "./k15-agent";
@@ -76,17 +76,28 @@ function nichtMit(s: St, p: Profil, q: Position, l: Lage, a: Answer): string[] {
   const t = tuerVon(p);
   if ((t === "main" || t === "branch") && Object.keys(l.sch).length)
     out.push(`geänderte Bausteine (die Tür ${t === "main" ? "der MAIN" : "der Branch-Session"} nimmt keinen Plan)`);
-  // die Datei der Session ist oft die des Profils (k15-agentmd.ts speichert beide): dann kommt sie mit dem Profil (Partner 20.10.)
-  if (q.datei && !(agentMdKommt(s, p, q) && JSON.stringify(q.datei) === JSON.stringify(p.datei))) out.push(`die Datei ${q.datei.titel}`);
-  // die Agent-MD eines gespeicherten Profils nimmt die Tür über `profil` mit (server/agentmd.ts), bei Claude Code und außer bei MAIN und Lane
-  if (p.datei && !agentMdKommt(s, p, q)) out.push(`die Agent-MD ${p.datei.titel}`);
+  // die Datei der Session ist oft die des Profils (k15-agentmd.ts speichert beide): dann kommt sie mit dem Profil (Partner 20.10.); als Sitz einer
+  // gespeicherten Konstellation kommt sie als sein Auftrag (server/sitz-reise.ts#sitzDerTuer)
+  const alsSitz = sitzKommt(s, p, q);
+  if (q.datei && !alsSitz && !(agentMdKommt(s, p, q) && JSON.stringify(q.datei) === JSON.stringify(p.datei))) out.push(`die Datei ${q.datei.titel}`);
+  // ...und dann ist sie das Ziel der Branch-Session: ein getipptes Ziel daneben nimmt die Tür nicht (server.ts#openBoardBranch)
+  if (q.datei && alsSitz && tuerVon(p) === "branch" && s.start.branch.ziel.trim()) out.push("dein Ziel neben ihrer eigenen Datei");
+  // die Agent-MD eines gespeicherten Profils nimmt die Tür über `profil` mit (server/agentmd.ts), bei Claude Code und außer bei MAIN und Lane;
+  // die eines Sitzes kommt mit ihm aus der gespeicherten Konstellation
+  if (p.datei && !agentMdKommt(s, p, q) && !alsSitz) out.push(`die Agent-MD ${p.datei.titel}`);
   else if (!p.datei && p.id === "eigen") out.push("deine Agent-MD");
   if (p.autonomie) out.push("deine Fassung der Autonomie");
   // die Rechte nehmen nur /open und die Branch-Tür, und nur für Claude Code (server/rechte.ts#rechteDerTuer)
   if (q.rechte && (!(tuerVon(p) === "open" || tuerVon(p) === "branch") || wahlVon(s, p, q, "agent").wert !== "claude")) out.push("die Rechte");
   if (q.sitz && !sitzKommt(s, p, q)) out.push(s.konstNeu.has(s.k.id) || !s.konstGespeichert.has(s.k.id) ? "was mit ihr reiste (erst speichern)" : "was mit ihr reiste");
   const fleet = PROFILE0.find((x) => x.id === p.id)?.werte ?? {};
-  const werte = [...Object.keys(q.werteAbw ?? {}), ...Object.keys(p.werte).filter((k) => JSON.stringify(p.werte[k]) !== JSON.stringify(fleet[k]))];
+  // ein Profil, das Fleet nicht kennt (eins aus einer Datei), nennt oft nur Fleets eigenen Wert: ohne Rolle kommt der Standard des Aspekts an
+  // (permission-mode auto, server/session-start.ts#PERMISSION_MODE); eine Bitte, die im Brief steht, bringt ein Sitz in seinem Auftrag mit
+  // (server/sitz-reise.ts#erbeteneZeilen)
+  const wieFleet = (k: string): unknown => k in fleet ? fleet[k] : p.rolle === "nur-ordner" ? aspekt(k)?.standard : undefined;
+  const imAuftrag = (k: string): boolean => alsSitz && !!q.datei && aspekt(k)?.wirkung.wo === "brief";
+  const werte = [...Object.keys(q.werteAbw ?? {}).filter((k) => !imAuftrag(k)),
+    ...Object.keys(p.werte).filter((k) => JSON.stringify(p.werte[k]) !== JSON.stringify(wieFleet(k)) && !imAuftrag(k))];
   if (werte.length) out.push([...new Set(werte)].map(aspektName).join(", "));
   // die Schwelle setzt das Fenster nach dem Start über die Owner-Tür des Slots (PATCH …/handover); das Band gibt es nur für Claude Code
   if ((typeof q.abw?.schwelle === "number" || typeof p.schwelle === "number") && wahlVon(s, p, q, "agent").wert !== "claude") out.push("die Succession-Schwelle");

@@ -4,17 +4,24 @@
 //   Probe sucht vor der Antwort jeden persönlichen Text in der Datei; findet sie einen, gibt es keine Datei.
 // - DIE TÜR (`sitz: "<konst>/<position>"` an /api/slots/:id/open und /api/branches/open): ein Sitz einer importierten Konstellation startet
 //   mit dem, was mitreiste, statt mit dieser Fleet Bibliothek; seine Rechte kommen mit, und sein Notizbuch wird gesät, wenn es noch leer ist.
+//   Die Position braucht keinen Sitz-Block (eine Datei von vor Schritt 3 hat keinen; dann liest sie diese Fleet Bibliothek): ihre eigene
+//   Datei ist ihr Auftrag, die Agent-MD ihres Profils kommt aus der Datei, nicht aus einem hier gespeicherten Profil, und Agent, Modell und
+//   Effort aus der Datei gelten, wo die Tür keine bekommt (Schritt 5, Lauf 2: der Finder kam ohne seine Agent-MD, der Prover ohne seinen
+//   Brief). An der Self-Tür reicht die Kennung der Position: sie gilt in der Konstellation der Öffnerin.
 // - DER START (seatStartFor in server.ts): die Packs des Sitzes, die persönlichen Plätze gefüllt mit dem Eigenen dessen, der importiert hat.
 // server.ts reicht, was nur es kennt (Bibliothek, Notizbuch-Ordner, Läufe), als Funktionen herein.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
+import { aspekt } from "../src/k15-entwurf-modell";
 import { laufBerichteAus, MAX_LAEUFE, type LaufBericht } from "../src/lauf-bericht";
+import type { ModellAbschnitt } from "../src/modell-verlauf";
 import {
   istPersoenlich, notizbuchZumTeilen, persoenlichIn, sitzAus, sitzRechte, sitzZumTeilen, type PersoenlichPlatz, type Sitz, type SitzNotizbuch, type SitzPack,
 } from "../src/sitz";
 import { rechteAus, type Rechte } from "../session-rechte";
+import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
 import { fassungsHash } from "./konst-fassungen";
 import { kindNieWeiter, type Oeffnerin } from "./kind-weite";
 import type { Lauf } from "./laeufe";
@@ -22,15 +29,24 @@ import { seatPacks, type SeatKnowledge, type SeatPack } from "./sitz-wissen";
 
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
 
-// WAS DER SLOT TRÄGT (Slot.sitz, persistiert wie Slot.agentMd): woher, und was er liest; Rechte und Notizbuch hat die Tür schon gesetzt
-export interface SitzStart { konst: string; pos: string; herkunft: string | null; liest: SitzPack[]; persoenlich: PersoenlichPlatz[] }
+// WAS DER SLOT TRÄGT (Slot.sitz, persistiert wie Slot.agentMd): woher, und was er liest; Rechte und Notizbuch hat die Tür schon gesetzt.
+// `block`: die Position trug einen Sitz-Block; ohne ihn liest der Sitz diese Fleet Bibliothek. `auftrag`: ihre eigene Datei, die Aufgabe
+// seiner Fassung und seine erste Nachricht
+export interface SitzAuftrag { titel: string; text: string }
+export interface SitzStart { konst: string; pos: string; herkunft: string | null; liest: SitzPack[]; persoenlich: PersoenlichPlatz[]; block: boolean; auftrag: SitzAuftrag | null }
 
+const auftragAus = (v: unknown): SitzAuftrag | null => {
+  const r = rec(v);
+  return r && typeof r.titel === "string" && typeof r.text === "string" && r.text ? { titel: r.titel, text: r.text } : null;
+};
 export function sitzStartGeladen(raw: unknown, harness: string): SitzStart | null {
   const r = rec(raw);
   if (harness !== "claude" || !r || typeof r.konst !== "string" || typeof r.pos !== "string") return null;
   const s = sitzAus({ liest: r.liest, persoenlich: r.persoenlich, darf: {}, notizbuch: null });
   if (typeof s === "string") return null;
-  return { konst: r.konst, pos: r.pos, herkunft: typeof r.herkunft === "string" ? r.herkunft : null, liest: s.liest, persoenlich: s.persoenlich };
+  // ein Slot von vor dem Auftrag hatte immer einen Block (die Tür verlangte ihn)
+  return { konst: r.konst, pos: r.pos, herkunft: typeof r.herkunft === "string" ? r.herkunft : null, liest: s.liest, persoenlich: s.persoenlich,
+    block: r.block !== false, auftrag: auftragAus(r.auftrag) };
 }
 
 const alsSeatPack = (p: SitzPack): SeatPack => ({ id: p.id, useWhen: p.wofuer, sources: p.quellen.map((q) => ({ path: q.pfad, anchor: q.anker })),
@@ -49,28 +65,96 @@ export function sitzWissen(s: SitzStart, eigene: SeatKnowledge | null): SeatKnow
 export const leerePlaetze = (s: SitzStart, eigene: SeatKnowledge | null): string[] =>
   s.persoenlich.filter((p) => !p.text && !eigene?.packs.some((x) => x.id === p.id && x.text !== null)).map((p) => p.id);
 
-// DIE TÜR: `sitz` fehlt → nichts; sonst "<konst>/<position>" einer gespeicherten Konstellation, deren Position einen Sitz-Block trägt
-export async function sitzDerTuer(body: Record<string, unknown> | null, harness: string, dir: string, label: string | null, orchLabel: (l: string) => boolean):
-  Promise<{ ok: true; sitz: SitzStart | null; rechte: Rechte | null; notizbuch: SitzNotizbuch | null } | { ok: false; error: string }> {
+// DIE POSITION HINTER `sitz`: "<konst>/<position>" einer gespeicherten Konstellation, oder an der Self-Tür nur "<position>" in der Konstellation
+// der Öffnerin (`eigene`, ihr Slot.sitz.konst)
+type Gefunden = { konst: string; form: Record<string, unknown>; pos: Record<string, unknown> };
+// `selbst`: die Self-Tür; dort öffnet eine Session nur Sitze ihrer eigenen Konstellation (die Owner-Tür jede gespeicherte)
+async function sitzPosition(v: unknown, dir: string, eigene: string | null, selbst = false): Promise<Gefunden | { error: string }> {
+  const m = typeof v === "string" ? /^(?:([^/]{1,80})\/)?([^/]{1,60})$/.exec(v) : null;
+  if (!m) return { error: "sitz must be \"<constellation id>/<position id>\" of a saved constellation" };
+  if (selbst && (!eigene || (m[1] !== undefined && m[1] !== eigene)))
+    return { error: "at the self door a session opens only seats of its own imported constellation — the owner door opens any" };
+  const konst = m[1] ?? eigene;
+  if (!konst) return { error: "sitz without a constellation (\"<position id>\" alone) works only for a seat of an imported constellation, at its self door" };
+  let gespeichert: unknown;
+  try { gespeichert = await Bun.file(join(dir, SPEICHER_DATEI)).json(); } catch { return { error: "no saved constellations to read" }; }
+  const liste = rec(gespeichert)?.konstellationen;
+  const form = Array.isArray(liste) ? liste.map(rec).find((k) => k?.id === konst) : undefined;
+  if (!form) return { error: `no saved constellation „${konst}“` };
+  const pos = Array.isArray(form.positionen) ? form.positionen.map(rec).find((p) => p?.id === m[2]) : undefined;
+  if (!pos) return { error: `„${konst}“ has no position „${m[2]}“` };
+  return { konst, form, pos };
+}
+const profilVon = (pos: Record<string, unknown>): Record<string, unknown> | null => rec(pos.profil);
+// WAS DIE DATEI ERBITTET UND IM BRIEF STEHT (src/k15-entwurf-modell.ts#ASPEKTE, wirkung „brief“, etwa „Subagenten: nur lesende.“): Werte der Position
+// vor denen ihres Profils, als die Sätze, die das Modell für sie nennt
+export function erbeteneZeilen(pos: Record<string, unknown>): string[] {
+  const werte = { ...rec(profilVon(pos)?.werte), ...rec(pos.werteAbw) };
+  return Object.entries(werte).flatMap(([k, v]) => {
+    const w = aspekt(k)?.wirkung;
+    return w?.wo === "brief" && (typeof v === "string" || typeof v === "number") ? [w.satz.replace(`{{${k.split(".")[0]}}}`, String(v))] : [];
+  });
+}
+
+// WAS DIE DATEI FÜR AGENT, MODELL UND EFFORT SAGT, in die Felder des Bodys, wo der Body keine hat; `sitz` steht danach voll da
+// ("<konst>/<position>"), damit jede weitere Lesung dieselbe Position trifft. Ohne `sitz` bleibt der Body, wie er ist
+export async function mitSitzWerten(body: Record<string, unknown>, dir: string, eigene: string | null, selbst = false):
+  Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; error: string }> {
+  if (body.sitz === undefined || body.sitz === null) return { ok: true, body };
+  const g = await sitzPosition(body.sitz, dir, eigene, selbst);
+  if ("error" in g) return { ok: false, error: g.error };
+  const p = profilVon(g.pos), abw = rec(g.pos.abweichend);
+  const wert = (feld: "agent" | "modell" | "effort"): string | undefined => {
+    const v = abw?.[feld] ?? p?.[feld];
+    return typeof v === "string" && v ? v : undefined;
+  };
+  const harness = wert("agent"), model = wert("modell"), effort = wert("effort");
+  return { ok: true, body: { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...body, sitz: `${g.konst}/${String(g.pos.id)}` } };
+}
+
+// DIE TÜR: `sitz` fehlt → nichts; sonst eine Position einer gespeicherten Konstellation (sitzPosition). Was sie trägt: ihren Sitz-Block (Lesestoff,
+// gedeckeltes Darf, Notizbuch), ihre eigene Datei als Auftrag und die Agent-MD ihres Profils
+export async function sitzDerTuer(body: Record<string, unknown> | null, harness: string, dir: string, label: string | null, orchLabel: (l: string) => boolean,
+  eigene: string | null = null, selbst = false):
+  Promise<{ ok: true; sitz: SitzStart | null; rechte: Rechte | null; notizbuch: SitzNotizbuch | null; agentMd: AgentMd | null } | { ok: false; error: string }> {
   const v = body?.sitz;
-  if (v === undefined || v === null) return { ok: true, sitz: null, rechte: null, notizbuch: null };
-  const m = typeof v === "string" ? /^([^/]{1,80})\/([^/]{1,60})$/.exec(v) : null;
-  if (!m) return { ok: false, error: "sitz must be \"<constellation id>/<position id>\" of a saved constellation" };
+  if (v === undefined || v === null) return { ok: true, sitz: null, rechte: null, notizbuch: null, agentMd: null };
   if (harness !== "claude") return { ok: false, error: `harness ${harness} takes no sitz — what it reads goes into Claude Code's start` };
   // ein importierter Aufbau startet nie in bypass (system-concept.md: „never in bypass, until its owner has looked at it“); die Orchestratorin tut es
   if (label && orchLabel(label)) return { ok: false, error: "an imported seat never starts as the orchestrator — she runs in bypassPermissions" };
-  let gespeichert: unknown;
-  try { gespeichert = await Bun.file(join(dir, SPEICHER_DATEI)).json(); } catch { return { ok: false, error: "no saved constellations to read" }; }
-  const liste = rec(gespeichert)?.konstellationen;
-  const form = Array.isArray(liste) ? liste.map(rec).find((k) => k?.id === m[1]) : undefined;
-  if (!form) return { ok: false, error: `no saved constellation „${m[1]}“` };
-  const pos = Array.isArray(form.positionen) ? form.positionen.map(rec).find((p) => p?.id === m[2]) : undefined;
-  if (!pos?.sitz) return { ok: false, error: `position „${m[2]}“ of „${m[1]}“ carries no sitz` };
-  const s = sitzAus(pos.sitz);
-  if (typeof s === "string") return { ok: false, error: `sitz of „${m[2]}“: ${s}` };
-  const herkunft = typeof form.abgeleitetVon === "string" ? form.abgeleitetVon : null;
+  const g = await sitzPosition(v, dir, eigene, selbst);
+  if ("error" in g) return { ok: false, error: g.error };
+  const posId = String(g.pos.id);
+  const s = g.pos.sitz === undefined || g.pos.sitz === null ? null : sitzAus(g.pos.sitz);
+  if (typeof s === "string") return { ok: false, error: `sitz of „${posId}“: ${s}` };
+  const herkunft = typeof g.form.abgeleitetVon === "string" ? g.form.abgeleitetVon : null;
+  const p = profilVon(g.pos);
+  const md = p?.datei === undefined ? null : agentMdText(p.datei);
+  // ist die eigene Datei die des Profils (das Fenster speichert beide, k15-agentmd.ts), kommt sie einmal: als Agent-MD
+  const roh = g.pos.eigeneDatei === undefined ? null : agentMdText(g.pos.eigeneDatei);
+  if (g.pos.eigeneDatei !== undefined && !roh) return { ok: false, error: `the own file of „${posId}“ was only named in the file, not given` };
+  const brief = roh && roh.text !== md?.text ? roh : null;
+  const bitten = erbeteneZeilen(g.pos);
+  const datei = brief && bitten.length ? { titel: brief.titel, text: `${brief.text}\n\n${bitten.join("\n")}` } : brief;
+  if (datei && new TextEncoder().encode(datei.text).length > MAX_AGENTMD_BYTES) return { ok: false, error: `the own file of „${posId}“ is larger than ${MAX_AGENTMD_BYTES / 1000} KB` };
+  if (md && new TextEncoder().encode(md.text).length > MAX_AGENTMD_BYTES) return { ok: false, error: `the Agent-MD of „${posId}“ is larger than ${MAX_AGENTMD_BYTES / 1000} KB` };
+  const profilId = typeof p?.id === "string" ? p.id : posId;
+  const agentMd: AgentMd | null = md ? { profil: profilId, titel: md.titel, text: md.text, sha256: new Bun.CryptoHasher("sha256").update(md.text).digest("hex"),
+    ...(typeof p?.name === "string" ? { name: p.name } : {}) } : null;
   // die Rechte aus der Datei gedeckelt, außer der Owner hier hat sie bestätigt (src/sitz.ts#sitzRechte)
-  return { ok: true, sitz: { konst: m[1]!, pos: m[2]!, herkunft, liest: s.liest, persoenlich: s.persoenlich }, rechte: sitzRechte(s.darf), notizbuch: s.notizbuch };
+  return { ok: true, sitz: { konst: g.konst, pos: posId, herkunft, liest: s?.liest ?? [], persoenlich: s?.persoenlich ?? [], block: s !== null, auftrag: datei },
+    rechte: s ? sitzRechte(s.darf) : null, notizbuch: s?.notizbuch ?? null, agentMd };
+}
+
+// DIE ANDEREN SITZE DERSELBEN KONSTELLATION mit ihrem Auftrag: so nennt Fleet einem Sitz, wen er öffnen kann, und erkennt ein Ziel, das der
+// Brief eines anderen ist
+export async function geschwister(dir: string, konst: string, ohne: string): Promise<{ id: string; name: string; auftrag: string | null }[]> {
+  const gespeichert: unknown = await Bun.file(join(dir, SPEICHER_DATEI)).json().catch(() => null);
+  const liste = rec(gespeichert)?.konstellationen;
+  const form = Array.isArray(liste) ? liste.map(rec).find((k) => k?.id === konst) : undefined;
+  const ps = form && Array.isArray(form.positionen) ? form.positionen.map(rec) : [];
+  return ps.flatMap((p) => p && typeof p.id === "string" && p.id !== ohne
+    ? [{ id: p.id, name: typeof p.name === "string" ? p.name : p.id, auftrag: p.eigeneDatei === undefined ? null : agentMdText(p.eigeneDatei)?.text ?? null }] : []);
 }
 
 // WAS DER SITZ AN DER TÜR DARF: die Rechte des Bodys, sonst die aus seinem Sitz-Block (schon gedeckelt, sitzDerTuer). An der Self-Tür
@@ -110,8 +194,14 @@ export function laufAlsBericht(l: Lauf, positionen: readonly string[]): LaufBeri
   const je = new Map<string, number>();
   for (const p of l.positionen) if (positionen.includes(p.pos)) je.set(p.pos, (je.get(p.pos) ?? 0) + 1);
   if (!je.size) return null;
+  // welches Modell wirklich antwortete, Belegung für Belegung (eine Nachfolge ist eine weitere); fehlt es einer, ist es nicht nachgesehen
+  const modelle = (pos: string): ModellAbschnitt[] | null => {
+    const bel = l.positionen.filter((p) => p.pos === pos).sort((a, b) => a.at - b.at);
+    return bel.every((p) => Array.isArray(p.modelle)) ? bel.flatMap((p) => p.modelle ?? []) : null;
+  };
   return { fassung: l.hash, quelle: `Laufbuch einer Fleet, Lauf ${l.id}`, start: new Date(l.at).toISOString(), ende: new Date(l.ende.at).toISOString(),
-    sitze: [...je].map(([pos, n]) => ({ pos, wie: n === 1 ? "eine Session" : `${n} Sessions nacheinander (Nachfolge)`, ablehnungen: null, zahlen: { sessions: n } })),
+    sitze: [...je].map(([pos, n]) => ({ pos, wie: n === 1 ? "eine Session" : `${n} Sessions nacheinander (Nachfolge)`, ablehnungen: null, zahlen: { sessions: n },
+      modelle: modelle(pos) })),
     nachrichten: [], befunde: [], ohneBefund: [], kosten: "nicht gemessen",
     grenzen: [`endete ${l.ende.wie === "hand" ? "von Hand" : "mit der letzten Session"}; Nachrichten, Befunde und Kosten trägt nur ein Bericht, den jemand schreibt`] };
 }

@@ -2,10 +2,13 @@
 // docs/konstellation/restplan.md T12): ein gefahrener Lauf, so aufgeschrieben, dass eine andere Fleet ihn lesen und dieselben Sitze auf
 // dieselbe Aufgabe setzen kann. Er steht neben der Konstellation unter `laeufe` und zählt nicht in ihre Fassung: er nennt sie mit `fassung`.
 // Der Import prüft ihn und zeigt ihn an; er startet nichts und schreibt nichts in die eigenen Läufe (server/laeufe.ts), denn Slots und
-// Commits sind die der fremden Fleet. Server und Fenster lesen beide hier; kein DOM, keine Importe.
+// Commits sind die der fremden Fleet. Server und Fenster lesen beide hier; kein DOM, nur src/modell-verlauf.ts als Import.
+import { modellAbschnittAus, type ModellAbschnitt } from "./modell-verlauf";
 
-// ablehnungen: was der Klassifizierer dem Sitz verweigert hat, je ein Satz; null = nicht nachgesehen. zahlen: was gemessen ist, je Name
-export interface LaufSitz { pos: string; wie: string; ablehnungen: string[] | null; zahlen: Record<string, number> }
+// ablehnungen: was der Klassifizierer dem Sitz verweigert hat, je ein Satz; null = nicht nachgesehen. zahlen: was gemessen ist, je Name.
+// modelle: welches Modell wirklich antwortete, je Abschnitt ab einem Zeitpunkt, mit dem Grund jedes Wechsels (src/modell-verlauf.ts); null =
+// nicht nachgesehen, fehlt in Läufen von davor. Ein Wechsel macht den Lauf nicht ungültig; er steht da, damit niemand „dasselbe Setup“ annimmt
+export interface LaufSitz { pos: string; wie: string; ablehnungen: string[] | null; zahlen: Record<string, number>; modelle?: ModellAbschnitt[] | null }
 export interface BerichtNachricht { von: string; an: string; was: string; text: string }
 export type Urteil = "bestaetigt" | "plausibel" | "verworfen" | "nicht verfolgt";
 export interface Befund { titel: string; urteil: Urteil; schwere: string | null; beleg: string }
@@ -28,7 +31,9 @@ function sitzAus(v: unknown): LaufSitz | null {
   const ablehnungen = o.ablehnungen === null ? null : texte(o.ablehnungen);
   const z = o.zahlen === undefined ? {} : obj(o.zahlen);
   if ((o.ablehnungen !== null && !ablehnungen) || !z || Object.values(z).some((x) => typeof x !== "number" || !Number.isFinite(x))) return null;
-  return { pos, wie, ablehnungen, zahlen: Object.fromEntries(Object.entries(z).map(([k, x]) => [k, Number(x)])) };
+  const modelle = o.modelle === undefined || o.modelle === null ? o.modelle : liste(o.modelle, modellAbschnittAus);
+  if (o.modelle !== undefined && o.modelle !== null && !modelle) return null;
+  return { pos, wie, ablehnungen, zahlen: Object.fromEntries(Object.entries(z).map(([k, x]) => [k, Number(x)])), ...(modelle !== undefined ? { modelle } : {}) };
 }
 function nachrichtAus(v: unknown): BerichtNachricht | null {
   const o = obj(v), von = text(o?.von), an = text(o?.an), was = text(o?.was), t = text(o?.text);

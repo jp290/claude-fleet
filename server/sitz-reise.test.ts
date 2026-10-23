@@ -53,7 +53,7 @@ function ankunft(text: string, pos: string): SitzStart {
   if (typeof imp === "string") throw new Error(imp);
   const q = [...imp.k.wurzeln, ...imp.k.wurzeln.flatMap((x) => x.kids ?? [])].find((x) => x.id === pos);
   if (!q?.sitz) throw new Error(`${pos} hat keinen Sitz`);
-  return { konst: imp.k.id, pos, herkunft: imp.k.abgeleitetVon ?? null, liest: q.sitz.liest, persoenlich: q.sitz.persoenlich };
+  return { konst: imp.k.id, pos, herkunft: imp.k.abgeleitetVon ?? null, liest: q.sitz.liest, persoenlich: q.sitz.persoenlich, block: true, auftrag: null };
 }
 // die Fassung, soweit sie am Wissen hängt: alle anderen Teile gleich, also misst der Hash genau das
 const fassungMit = (k: SeatKnowledge): string => baueFassung({ slot: 1, anlass: "neu", wer: [], aufgabe: [], darf: [], arbeitet: [],

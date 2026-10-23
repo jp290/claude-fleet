@@ -394,6 +394,15 @@ ti_serve() {
   if [ "${TI_REAL:-}" = 1 ]; then
     for TI_V in $(ti_real_env); do set -- "$@" "$TI_V"; echo "${TI_V%%=*}" >> "$DIR/env-names"; done
   fi
+  # THE LIBRARY OF THE COPY: the copy has no .git, so Fleet's register is read in the worktree it came from, at the commit
+  # that worktree stood on (server/sitz-wissen.ts#bibliothekQuelle). Without it no seat of an instance got a pack, and an
+  # export from an instance carried empty seat blocks (step 5, run 2)
+  TI_LIB_HEAD=$(git -C "$SRC" rev-parse --verify -q HEAD 2>/dev/null || true)
+  if [ -n "$TI_LIB_HEAD" ]; then
+    set -- "$@" "FLEET_LIBRARY_REPO=$SRC" "FLEET_LIBRARY_HEAD=$TI_LIB_HEAD"
+    echo FLEET_LIBRARY_REPO >> "$DIR/env-names"
+    echo FLEET_LIBRARY_HEAD >> "$DIR/env-names"
+  fi
   for TI_V in LANG FLEET_HOST FLEET_PORT FLEET_SOCK FLEET_CMD FLEET_INSTANCE FLEET_INSTANCES \
               FLEET_INSTANCE_SOURCE FLEET_LANE_SUCCEED_MAX FLEET_SNAPSHOT_MIRROR FLEET_TOKEN FLEET_KONZEPT_ROOT FLEET_MIGRATE_PCT; do
     echo "$TI_V" >> "$DIR/env-names"

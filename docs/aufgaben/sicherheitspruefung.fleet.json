@@ -2,13 +2,13 @@
   "format": 1,
   "fleet": "konstellation",
   "name": "Finder and prover: security review of Fleet",
-  "version": 1,
+  "version": 2,
   "satz": "a finder reviews Fleet's doors, an independent prover proves each finding on a test instance",
   "autor": "du",
   "protokoll": {
     "ende": "Every finding has the prover's verdict.",
     "runden": 2,
-    "regel": "A finding counts only when the prover reproduces it on a fresh test instance of the reviewed commit, with a probe anyone can rerun that shows the safe answer next to the observed one, and names the file and line of the cause."
+    "regel": "A finding counts only when the prover reproduces it on a fresh test instance of the reviewed commit, with a probe anyone can rerun that shows the safe answer next to the observed one, and names the file and line of the cause. When the model a seat runs on changes during the run (Claude Code's safeguard fallback, for one), the run records for that seat which model answered from when, and why; the switch does not make the run invalid."
   },
   "aufgabe": {
     "ziel": "A security review of Fleet itself at one commit: who can make the server do what, with which credential. One seat finds problems, an independent seat proves each one against a test instance of the same commit.",
@@ -209,6 +209,132 @@
         "The test instance ran the mixed fixtures; slot numbers in the proofs are those of a fresh mixed instance.",
         "The transcripts do not travel: they hold local paths. Counts are taken from them; neither seat met a classifier denial."
       ]
+    },
+    {
+      "fassung": "364ceeec5f2721053a0ed9b10fb6e147c29431903fce3468fd89d15e2a6cc1cc",
+      "quelle": "Recorded by the prover right after the run, from the run itself: the finder's start (its brief from this file, word for word, as the goal of its branch session), its report as it arrived in the prover's mailbox in five parts (joined here unchanged), and the proof. Both seats were Fleet sessions on their own branches at d94c78206. Line numbers refer to that commit. The finder wrote the owner token's query parameter with its equals sign; here the sign is dropped (written \"?token\") so the file holds no token pattern; nothing else in the texts is changed. The step 5 run on a second instance: that instance was started from a git worktree of a repository nobody prepared for the task, at d94c78206, with real Claude seats; this file was imported there through the window's own Import and the seats' own transcripts there were read afterwards. What the orchestrator of step 5 corrected or added from those transcripts: the two seat descriptions, the numbers per seat, the model fallback, the cost and the last five limits. The findings, the verdicts and the proof texts are the prover's, unchanged; its confirmed proofs beweise/r2f6.sh and r2f1.sh were rerun by the orchestrator on a separate fresh instance of the same commit with the same answers.",
+      "start": "2026-10-23T04:03:50+02:00",
+      "ende": "2026-10-23T04:31:09+02:00",
+      "sitze": [
+        {
+          "pos": "beweiser",
+          "wie": "Fleet session on a free slot of the second instance, in a git worktree of the repository under review, Claude Code, effort high, permission mode auto. Started with the fields the window's Start would send (model Opus 5.5 with 1M context, effort high, and the five-part start hash the window showed beforehand, bee0796b, which is the hash the session then ran with); the window itself refused this start (\"the file prover-brief.md would not arrive\"), so the orchestrator opened the slot through the owner door and sent the brief from this file word for word as the first message. Opus 5.5's safeguards flagged the session as cyber content once, 34 calls in (about eleven minutes after the start); Claude Code switched the rest of the session to Opus 4.8 (46 calls), so the proofs and the run record were written by Opus 4.8. It opened the finder through POST /api/self/branches and /api/self/branches/open with the finder brief as the goal, model and effort from the file's finder profile and without the profile id, read the report with GET /api/self/messages, and proved on its own test instance (up mixed, FLEET_CMD=true, no agent in any pane) with ./testinstanz.sh probe and the scripts beweise/r2f1.sh, r2f2.sh, r2f3.sh, r2f6.sh, each rerun on a fresh instance (down, then up). The instance ran on an override port/socket/dir triple, because the worktree it was started in already held the second instance itself. It also read the project's AGENTS.md and its operator's private global instructions, which this record does not carry.",
+          "ablehnungen": [],
+          "zahlen": {
+            "ms": 1634000,
+            "apiAufrufe": 80,
+            "eingabeTokens": 162,
+            "cacheSchreibTokens": 251928,
+            "cacheLeseTokens": 9962439,
+            "ausgabeTokens": 72369,
+            "opus55Aufrufe": 34,
+            "opus55EingabeInklCache": 2985887,
+            "opus55AusgabeTokens": 12211,
+            "opus48Aufrufe": 46,
+            "opus48EingabeInklCache": 7228642,
+            "opus48AusgabeTokens": 60158
+          }
+        },
+        {
+          "pos": "finder",
+          "wie": "Fleet session on its own branch in a worktree of the same repository at the same commit, Claude Code, Sonnet 5.5, effort high, fresh, permission mode auto; opened by the prover with its finder brief from this file word for word as the goal. Its Agent-MD from this file (reviewer.md, carried in the finder profile) did not arrive: the prover opened it without the profile id. Its start hash on the branch door was a65e26c7; on the open door the same seat shows 5e1253e1 without the profile id and 5c38388a with it, so the Agent-MD is part of the hash and was missing from this start. Nine minutes from its branch open to its five-part report; it reported through the mailbox and stopped. It read the first 9000 characters of this file once, which end before the findings of the earlier run, and it saw in git log and git show --stat the commit message of the first run (five findings, two proved, three plausible, files beweise/1.sh, 4.sh, 5.sh) and the subject of the repair of finding F4; it opened none of the earlier findings' texts.",
+          "ablehnungen": [],
+          "zahlen": {
+            "ms": 551000,
+            "apiAufrufe": 79,
+            "eingabeTokens": 158,
+            "cacheSchreibTokens": 287755,
+            "cacheLeseTokens": 16156228,
+            "ausgabeTokens": 50957
+          }
+        }
+      ],
+      "nachrichten": [
+        {
+          "von": "beweiser",
+          "an": "finder",
+          "was": "start",
+          "text": "Why: Fleet runs agent sessions for its owner and lets them, and guests, reach its server with different credentials. Nobody has reviewed who can make the server do what. You are the first reviewer; an independent prover checks every finding you report against a running test instance, so a finding without a way to show it does not count.\n\nGoal: a ranked list of at most eight security defects in this repository at the commit your branch stands on, most severe first. Each one: what an attacker holds (no credential, a share password, a session's self token, an imported setup), what they send, what the server does that it should not, file:line of the cause, and the probe you would use: method, path, credential, body, and the answer a safe server gives. An empty list is a valid answer.\n\nWhere to look: the HTTP doors in server.ts and server/*.ts and the credential each accepts; the guarantees the docs state: a share is a window, never a hand (SHARING.md); a self token cannot act as the owner (docs/self-api.md); a snapshot instance refuses every write and no live value reaches a test instance (docs/testinstanz.md); an imported setup starts with the classifier on (docs/start/system-concept.md, Sharing). Path handling in file routes, and text that reaches a shell or a pane.\n\nLimit: read-only. Read, grep, git, and bun test on single files. No servers, no test instance (the prover has one), no edits, no commits, nothing outside this repository.\n\nStop: when the list is ranked, or after about 45 minutes of reading. Then report what you have and name what you did not read.\n\nBack to: the prover, through the mailbox ({kind:\"session\", slot} of the session that opened you). End with one sentence on what was missing from this brief."
+        },
+        {
+          "von": "finder",
+          "an": "beweiser",
+          "was": "bericht",
+          "text": "FINDER REPORT 1/4 (commit d94c78206, read-only, ranked). Not run: nothing was executed, every probe below is from reading.\nF1 [High] Share lockout does not lock the cookie path: unlimited password guesses, and a correct guess is accepted while \"locked\".\n Holds: a share link (id), no password. Sends: GET /s/<id>/info (also GET /ws-share/<id>) with header \"Cookie: share_<id>=<guess>\", many in parallel.\n Server does: server/auth.ts:150 shareAuthed() runs FIRST and returns null (= in) on a right guess; failStrike (auth.ts:152) only turns the answer of a WRONG guess into 429. Nothing refuses to evaluate the next guess; the 400 ms sleep (auth.ts:155) is per request, so parallel requests do not queue. SHARING.md says \">50/hour locks the share for the hour\".\n Second hole, POST /s/<id>/auth: server.ts:51495 checks the lock BEFORE `await readJson(req)` (51497) and counts after (51500). A burst of N requests that all pass the check before the first counter bump are all compared with secretEq (51499). Password floor is 8 chars (server.ts:55065), owner-chosen.\n Probe: create share with password \"hunter22x\" (POST /api/slots/<n>/share, owner). 60x wrong cookie on /s/<id>/info: expect 401 x50 then 429. Then the RIGHT cookie on /s/<id>/info. Safe server: 429 (locked). This server: 200 with the slot info. Also: right password on POST /s/<id>/auth is 429 while locked (that path is fine), the cookie path is the hole.\n Impact: live terminal + scrollback + diff + transcript of the owner's session for whoever guesses a weak password.\n\nFINDER REPORT 2/4.\nF2 [High, needs a live Claude pane to show the last step] Session text is pasted into other sessions' panes byte for byte, so a session can end the bracketed paste and type keys, e.g. \"!<cmd>\" (Claude Code bash mode, no classifier).\n Holds: a session's self token (a prompt-injected lane or branch child). Sends: POST /api/self/messages {to:{kind:\"session\",slot:<opener or child>}, payload:{kind:\"text\",text:\"hi\\u001b[201~\\u0015!id\\r\"}, idempotencyKey:\"k1\"} (allowed to the branch counterpart, server.ts:17815, SESSION_COUNTERPART; the Orchestratorin also).\n Server does: server/types.ts loadMessagePayload (~l.1408) checks only type and length 2000. server/postfach-zustellen.ts:60 postfachEntryText wraps it unchanged. server.ts:12397-12415 tmux load-buffer <text>, then paste-buffer -p. No ESC/C0 filtering anywhere on the path (grep for x1b/201~ in server.ts and server/*.ts finds none on a send path). Same path carries branch goals (server.ts:8700 openBoardBranch goal -> deliverBranchGoal), clarification/report/decision texts.\n Probe (bytes level, stand-in pane is enough): send the text above to a seat whose pane runs `cat`; capture-pane shows the injected ESC[201~ (^[[201~) and the Ctrl-U. Safe server: 400 \"control characters not allowed\" or the bytes stripped; observed: delivered. The step \"Claude Code runs !id unclassified\" I have NOT shown.\n Why it matters: auto-mode seats (classifier on) are reached by their opener/child; AUTO-MODE brief says a block is an answer, this skips it.\n\nFINDER REPORT 3/4.\nF3 [Medium-High, owner must click start] An imported setup can start the Orchestratorin in bypassPermissions with imported Agent-MD text labelled as owner-set. docs/start/system-concept.md says imports start with the classifier on, never in bypass.\n Holds: a setup file the owner imports (src/k15-import.ts importKonst). profilAus accepts rolle \"orchestratorin\" (k15-import.ts:43 ROLLEN) and a `datei` (Agent-MD). importKonst strips only `rechte` and sitz.darf (k15-import.ts, the `sitz`/`rechte` lines near the end of the position loop).\n Server does: the only bypass guard is server/sitz-reise.ts:61, and it fires only when body.sitz is set; dateiFuer (sitz-reise.ts, `profil.rolle !== \"nur-ordner\"` branch) drops sitz for any non-\"nur-ordner\" profile, so an orchestratorin profile never carries one. The start sends label \"Orchestrator\" (src/k15-start.ts:199) plus profil:<id>; server.ts:55232 sitzDerTuer(...) passes with no sitz; mode comes from the label alone: server/session-start.ts:25 orchestrator:\"bypassPermissions\", used at session-start.ts:76 and server.ts:529/546 (--permission-mode). server/agentmd.ts:55 puts the file's text into --append-system-prompt as \"AGENT-MD ... beim Start vom Owner gesetzt\".\n Probe: owner credential, PUT a profile {rolle:\"orchestratorin\", datei:{...}} to the K15 store (K15_SPEICHER_ROUTE, server.ts:51643), then GET /api/founding-plan?role=orchestratorin&anlass=neu&repo=<r>&profil=<id> and read the start line in `fassung`. Safe: --permission-mode auto. Observed (by reading): bypassPermissions + the AGENT-MD block. Caveat: the line is only built when FLEET_CMD is claude (server.ts:526); an instance with FLEET_CMD=true may not show it.\n\nFINDER REPORT 4/4 (a).\nF4 [Medium] A session answers another seat's Claude Code permission dialog: POST /api/self/rueckfrage {slot,kennung,wahl:\"freigeben\"} types \"1\" (server.ts:48519; right check 48477-48481: opener of the seat, or the Orchestratorin for any seat that has an opener). Holds: a self token of an opener. A compromised opener sets the child's goal, the child hits a classifier block, the opener approves it. Owner-worded (22.10. 08:30), but it is an owner act done by a session, against docs/self-api.md \"a self token cannot act as the owner\". Probe: pane printing a dialog text, GET then POST as opener; safe server for a compromised-opener threat model: refuse or require owner; observed: key typed.\nF5 [Low-Medium] Guest-triggered model run: POST /s/<id>/summary (server.ts:51578) starts a Claude worker on the owner's account; the prompt carries transcriptTail(s,30,40000) (server.ts:25624) and the answer goes to the guest, not through the guest reduction of /transcript (thinking dropped, tool_result cut to 400, server.ts:51566-51576). Cached per git state, so spend is bounded; whether the tail holds thinking/tool_result I did not read. Probe: guest cookie, POST summary, compare with the same text in /transcript.\nF6 [Low] Owner token is accepted from ?token on every route (server/auth.ts:35-40; helper door also url token, server.ts:36368), cookie Max-Age one year, no Secure (server.ts:51476). Share cookie value IS the password, 7 days, no Secure (server.ts:51511). Anyone who sees a URL or proxy log holds the credential.\nF7 [Low] Anonymous lockout of new guests: 51 requests with a wrong share cookie lock POST /s/<id>/auth for an hour (auth.ts:149-156; id is 4 random bytes, server.ts:55069).\n\nFINDER REPORT 4/4 (b).\nNOT READ: handleStewardRoute (49731), helperClaim/helperResult bodies, the owner-gated routes 52000-55700 except /api/file, share.html/share.js, konzept-ledger, k15-speicher validation, GET routes that write (snapshot fence is only for non-GET, 49964), testinstanz.sh, whether tmux 3.8 filters ESC in paste-buffer -p. Checked and found sound: self door F4 fix (kind-weite.ts), label to role escalation (14421, 43832), land \"passt\" (branch-land.ts:65, markSeen only 53226), guest WS input drop (55805), share host allowlist (49981), snapshot write fence order (49964, 55801, 12212).\nMISSING FROM THE BRIEF: which tmux/Claude Code build the prover's instance has, and whether real-seat panes (not stand-ins) are allowed, since F2's last step and F3's start line need one."
+        },
+        {
+          "von": "beweiser",
+          "an": "owner",
+          "was": "beweis",
+          "text": "Proof at d94c78206, seven findings. F1 (claimed High) REJECTED: the share cookie path shares one lockout counter and locks at 50 (beweise/r2f1.sh: wrong cookie #51 -> 429); the valid-cookie-while-locked answer is a documented deliberate asymmetry. F6 CONFIRMED (low): the owner token works from the URL query on API routes (beweise/r2f6.sh: ?token -> 200, safe 401). F7 CONFIRMED (low): the same share lock refuses even a correct password on /auth for the hour, per share not per source (beweise/r2f1.sh). F2 PLAUSIBLE (medium): the server stores a message whose text carries ESC, [201~, Ctrl-U and CR unfiltered (beweise/r2f2.sh), but the bytes reaching a live pane and running keys needs a live agent pane the instance has none of. F3 PLAUSIBLE (medium): an imported orchestratorin maps to bypassPermissions in the default role mapping (beweise/r2f3.sh), but FLEET_CMD=true shows no start line and FLEET_NO_BYPASS (which the live fleet sets) closes it. F4 PLAUSIBLE (medium): a session answers another seat's permission dialog — the documented Owner decision of 22.10, needs a live dialog pane to show. F5 PLAUSIBLE (low): a guest summary starts a model the instance does not run. F3/F4/F5 re-find round 1's findings 1/—/2; F6/F7 re-find round 1's findings 5/3. The owner decides what is fixed."
+        }
+      ],
+      "befunde": [
+        {
+          "titel": "F1 (claimed High): the share COOKIE path is not an unlimited password oracle — it shares one counter with /auth and locks after 50",
+          "urteil": "verworfen",
+          "schwere": null,
+          "beleg": "beweise/r2f1.sh on a fresh instance of d94c78206: /s/<id>/info with no cookie 401 (absent cookie is not a strike), wrong cookie #1 401, #50 401, #51 429 (locked). The cookie path is NOT the unlimited oracle F1 claimed: shareGate routes every non-/auth share surface through failStrike, one counter shared with /auth (server/auth.ts:148-156, 122-131). A valid cookie answered 200 while locked is the documented deliberate asymmetry (auth.ts:146-147: a lockout silences guessers without evicting the authenticated guest). The one real sub-claim, a race on POST /s/<id>/auth (the lock is checked before readJson at server.ts:51495 and counted after), lets a concurrent burst slip a few extra guesses past a single window; marginal against the 8-char password floor and not an unlimited oracle. Rejected."
+        },
+        {
+          "titel": "F2: message text reaches the delivery/paste path with no control-character filter (terminal-injection shape)",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Input half confirmed on instance (beweise/r2f2.sh on a fresh instance of d94c78206): a self:2 -> Orchestrator message whose text carries ESC, the bracketed-paste close [201~, Ctrl-U and CR is accepted and stored verbatim, HTTP 200; safe answer 400 (control characters rejected or stripped). Cause: loadMessagePayload checks only kind and length (server/types.ts:2771-2780), postfachEntryText wraps the text unchanged (server/postfach-zustellen.ts:55), and the paste path adds no filter (server.ts:12397-12415, tmux load-buffer then paste-buffer -p). NOT reproduced: the bytes reaching a live pane and breaking out of the bracketed paste to run keys (e.g. a Claude Code bash line) — that needs a live agent pane; the instance runs FLEET_CMD=true, and the prover did not inject into the live seats' panes. Plausible."
+        },
+        {
+          "titel": "F3: an imported orchestratorin profile reaches the bypassPermissions start path, against the import-vs-classifier promise (gated by FLEET_NO_BYPASS)",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Repo functions (beweise/r2f3.sh): importKonst keeps rolle orchestratorin (src/k15-import.ts:43); PERMISSION_MODE.orchestrator = bypassPermissions (server/session-start.ts:24-25); the guard server/sitz-reise.ts:62 fires only when body.sitz is set, which an orchestratorin start (label + profil, src/k15-start.ts:199) does not carry; server/agentmd.ts:55 stamps the imported file as beim Start vom Owner gesetzt. NOT shown on instance: FLEET_CMD=true builds no claude --permission-mode line (server.ts:504-507). Caveat for the owner: startAspects with noBypass returns auto (server/session-start.ts:76); the live fleet runs FLEET_NO_BYPASS=1, which closes the gap in that deployment — the gap is in the default mapping. Re-finds round 1 finding 1. Plausible."
+        },
+        {
+          "titel": "F4: a session answers another seat's Claude Code permission dialog (a session doing an owner act) — the documented Owner decision of 22.10",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Read in the code: POST /api/self/rueckfrage types exactly one key into the named seat's pane (server.ts:48519, RUECKFRAGE_TASTE), only for the seat's opener or the Orchestratorin for a seat that has an opener (rueckfrageRecht, server.ts:48478-48484), bound to the exact on-screen dialog by its kennung. The finder frames it against docs/self-api.md (a self token cannot act as the owner); the code and its comment record it as the deliberate Owner decision of 22.10 08:30. NOT reproduced: it needs a live pane showing a permission dialog, which a FLEET_CMD=true instance never has. The threat (a compromised opener approving its child's classifier blocks) is the owner's to weigh. Plausible."
+        },
+        {
+          "titel": "F5: a guest triggers a model run (POST /s/<id>/summary) fed from a transcript tail wider than the guest's own transcript view",
+          "urteil": "plausibel",
+          "schwere": "low",
+          "beleg": "Read: the guest summary route starts a Claude worker, single-flight per slot and cached on the git state (server.ts:51578, summaryResponse(s, POST)); its prompt comes from transcriptTail via viewEntry (server.ts:25624), which keeps thinking and longer tool_result than the guest /transcript route, which drops thinking and cuts tool_result to 400 (server.ts:51566-51576). NOT reproduced: a summary starts a real model; the instance runs none (FLEET_SUMMARY_CMD is not in its environment, FLEET_CMD=true). Re-finds round 1 finding 2. Plausible."
+        },
+        {
+          "titel": "F6: the owner token is accepted from the URL query on every API route, not only by the login redirect",
+          "urteil": "bestaetigt",
+          "schwere": "low",
+          "beleg": "beweise/r2f6.sh on a fresh instance of d94c78206: GET /api/sessions with no credential 401; the same with the owner token in the URL query (written ?token here, without its sign) 200, safe answer 401. Cause: tokenFrom falls back to the query on every request (server/auth.ts:35-40); only the path / with the query token sets the cookie and redirects to a clean URL (server.ts:51470-51479). Possibly an intended channel (docs/self-api.md names a typed URL query token). Re-finds round 1 finding 5. Confirmed."
+        },
+        {
+          "titel": "F7: 51 wrong attempts lock the share for the hour for every guest without a cookie — the counter is per share, not per source",
+          "urteil": "bestaetigt",
+          "schwere": "low",
+          "beleg": "beweise/r2f1.sh on a fresh instance of d94c78206 (the same lock F1 triggers): after 51 wrong cookie strikes, POST /s/<id>/auth with the CORRECT password returns 429 for the rest of the hour (safe answer 200, or a lock scoped per source IP). Cause: failStrike counts per share id (server/auth.ts:122-131); the /auth pre-check refuses even a right password while locked (server.ts:51495-51496). A new guest who knows the password cannot log in during the lock. Whether a per-share throttle is a defect or an intended protection is the owner's call. Re-finds round 1 finding 3 (left plausible there because the probe is a denial of service the limit forbids; here it falls out of the F1 lock at no extra cost). Confirmed."
+        }
+      ],
+      "ohneBefund": [
+        "the self door F4 fix of round 1 — a child is no wider than its opener (server/kind-weite.ts)",
+        "label-to-role escalation refused on succession and on Board-Names (server.ts:14421, 43832)",
+        "a self land only on the tip the owner marked as seen (server/branch-land.ts:65, markSeen server.ts:53226)",
+        "guest input on the socket dropped (server.ts:55805)",
+        "the share host allowlist (server.ts:49981) and the snapshot write fence order (server.ts:49964, 55801, 12212)"
+      ],
+      "kosten": "Claude Max subscription, so no dollar figure. Measured from the seats' transcripts on the second instance, input counted with cache writes and reads, output separately. Prover: 80 calls, 10,214,529 input and 72,369 output tokens in about 27 minutes; of these Opus 5.5 34 calls, 2,985,887 input, 12,211 output, and Opus 4.8 after the fallback 46 calls, 7,228,642 input, 60,158 output. Finder (Sonnet 5.5): 79 calls, 16,444,141 input and 50,957 output tokens in about nine minutes. Together 26.7 million input and 123,326 output tokens for two seats and seven findings.",
+      "grenzen": [
+        "The finder read about half the doors and named what it left out: handleStewardRoute, the helper claim/result bodies, the owner-gated routes 52000-55700 except /api/file, share.html and share.js, the konzept ledger, k15-speicher validation, GET routes that write, and whether tmux filters ESC in paste-buffer -p.",
+        "Four of seven findings carry an instance probe: F1 rejected, F6 and F7 confirmed, and F2's input half; three stay plausible because the instance runs no model (F5), has no live agent pane (F3, F4) and builds no claude start line under FLEET_CMD=true (F3).",
+        "F2's terminal-injection impact and F3's/F4's start-line and dialog steps need a live agent pane, which a FLEET_CMD=true instance does not provide; the prover did not inject into the live seats' panes.",
+        "F3's bypass is gated by FLEET_NO_BYPASS, which the live fleet sets; the gap is in the default role mapping, not in that deployment.",
+        "The negative results are the finder's alone; the prover did not re-read them.",
+        "The test instance ran the mixed fixtures on an override port triple, because this worktree's default instance triple is held by the fleet-under-construction server itself; slot numbers in the proofs are those of a fresh mixed instance.",
+        "The window refused to start the prover from this file: its brief is a file of the position, not of the profile, and no door carries it; the profile id of the prover is not saved on a second instance because only profiles with their own file are. The orchestrator started it through the owner door and sent the brief by hand.",
+        "The finder came without its Agent-MD (reviewer.md) because the prover's brief does not tell it to pass the profile id; model, effort and brief matched the file; the Agent-MD, which changes the five-part start hash, did not arrive.",
+        "An export of this setup from the second instance carries empty Sitz blocks (no packs read, no notebook) because that instance's own folder is no git repository, so it has no library to read; this file therefore keeps the positions as imported and only adds the line it derives from.",
+        "The run is not in the second instance's own run book: the seats were not started through the window, which is what binds a started slot to a run.",
+        "The repository the instance was started from already contains this file with the first run. The prover read the earlier findings (it names one as a re-find). The finder did not open them, but it saw the first run's commit message and the F4 repair subject, and four of its seven findings (F3, F5, F6, F7) are four of the five findings of the first run, so this run does not show that a finder with no knowledge of the first run finds them."
+      ]
     }
-  ]
+  ],
+  "abgeleitetVon": "364ceeec5f2721053a0ed9b10fb6e147c29431903fce3468fd89d15e2a6cc1cc"
 }

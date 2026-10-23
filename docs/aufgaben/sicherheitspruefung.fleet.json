@@ -334,6 +334,131 @@
         "The run is not in the second instance's own run book: the seats were not started through the window, which is what binds a started slot to a run.",
         "The repository the instance was started from already contains this file with the first run. The prover read the earlier findings (it names one as a re-find). The finder did not open them, but it saw the first run's commit message and the F4 repair subject, and four of its seven findings (F3, F5, F6, F7) are four of the five findings of the first run, so this run does not show that a finder with no knowledge of the first run finds them."
       ]
+    },
+    {
+      "fassung": "39cb3bf9d18a7f69221b5bfd293386bdd5c17b41e2be412d47e687eb6643beaa",
+      "quelle": "Schritt 5, Lauf 3, auf Testinstanz B (Worktree branch/schritt-5-lauf-3 bei 57bae485f, echte Sitze unter dem Konto des Owners). Abgeleitet von 39cb3bf9, der Fassung, die B für diese Datei rechnete (das Fenster zeigt „aktiv v2 · 39cb3bf9“). Die Datei wurde im Fenster von B importiert, der Prover aus dem Fenster gestartet, der Finder vom Prover als Sitz „finder“ geöffnet. Dieser Eintrag ist von Hand geschrieben: aus den Transkripten beider Sitze und aus der API von B, nicht aus dem Fenster exportiert.",
+      "start": "2026-10-23T15:53:18+02:00",
+      "ende": "2026-10-23T16:34:33+02:00",
+      "sitze": [
+        {
+          "pos": "beweiser",
+          "wie": "Prover, Sitz im Fenster von B, Claude Code, effort high, Permission-Mode auto. Gestartet aus dem Fenster (Prover starten, 15:53), der Brief kam aus der Datei (prover-brief.md, 1305 Zeichen). Die Fassung auf B für ihn: 377ba8a1 (fünf Teile, laufend). Er öffnete den Finder mit POST /api/self/branches/open und „sitz“: „finder“.",
+          "ablehnungen": [
+            "Am 23.10. um 14:03:43Z (Aufruf 26) stoppten die Safeguards von Opus 5.5 die Antwort („cyber“). Claude Code pausierte die Sitzung und bot „Switch to Opus 4.8“ oder „Edit prompt and retry“ an. Die Pause löste ein Handgriff: die Orchestratorin bestätigte um 14:13:12Z die erste Wahl mit einem Enter. Der Wechsel steht in modelle."
+          ],
+          "zahlen": {
+            "apiAufrufe": 95,
+            "opus55Aufrufe": 25,
+            "opus55EingabeInklCache": 1951789,
+            "opus55AusgabeTokens": 8693,
+            "opus48Aufrufe": 70,
+            "opus48EingabeInklCache": 11292905,
+            "opus48AusgabeTokens": 80078
+          },
+          "modelle": [
+            {
+              "modell": "claude-opus-5-5",
+              "ab": "2026-10-23T13:53:29.053Z",
+              "aufrufe": 25,
+              "grund": null
+            },
+            {
+              "modell": "claude-opus-4-8",
+              "ab": "2026-10-23T14:13:12.210Z",
+              "aufrufe": 70,
+              "grund": "Claude Code stellte nach einer Meldung seiner Sicherung („cyber“) von claude-opus-5-5[1m] auf claude-opus-4-8 um (model_refusal_fallback)"
+            }
+          ]
+        },
+        {
+          "pos": "finder",
+          "wie": "Finder, Sitz der Datei, vom Prover als Sitz „finder“ geöffnet (13:53:58Z), Claude Code, Sonnet 5.5, effort high, Permission-Mode auto. Mit seiner Agent-MD (reviewer.md, 1590 Zeichen, im Start; in Lauf 2 fehlte sie). Fassung auf B: f7254895 (fünf Teile, laufend).",
+          "ablehnungen": [],
+          "zahlen": {
+            "apiAufrufe": 75,
+            "eingabeInklCache": 10568985,
+            "ausgabeTokens": 40675
+          },
+          "modelle": [
+            {
+              "modell": "claude-sonnet-5-5",
+              "ab": "2026-10-23T13:54:07.994Z",
+              "aufrufe": 75,
+              "grund": null
+            }
+          ]
+        }
+      ],
+      "nachrichten": [
+        {
+          "von": "beweiser",
+          "an": "finder",
+          "was": "start",
+          "text": "Der Brief des Finders aus der Datei (finder-brief.md), wörtlich, als Ziel seines Branches. Der Prover öffnete den Finder damit. Der Brief steht in der Datei."
+        },
+        {
+          "von": "finder",
+          "an": "beweiser",
+          "was": "befunde",
+          "text": "Vier Nachrichten mit sieben Befunden F1 bis F7, je mit Schwere und Belegstelle. Der Inhalt steht unten in befunde, mit den Urteilen des Provers."
+        }
+      ],
+      "befunde": [
+        {
+          "titel": "F1: Die Passwort-Sperre der Share-Tür zählt erst nach dem Vergleich (Race)",
+          "urteil": "plausibel",
+          "schwere": "high",
+          "beleg": "Halter: nur der Share-Link, ohne Zugangsdaten. Die Sperre wird vor dem Lesen des Body geprüft und nach dem Vergleich gezählt (server.ts:51679–51686). Prover: nicht nachgefahren. Ein nebenläufiger Schub ist die Probe, und die Grenze der Aufgabe schließt sie aus."
+        },
+        {
+          "titel": "F2: Die Gast-Zusammenfassung ist breiter als das Gastfenster",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Halter: das Share-Passwort. POST /s/<id>/summary (server.ts:51762) startet eine Claude-Arbeitskraft auf dem Konto des Owners mit einem Transkript-Auszug. Prover: nicht nachgefahren; die Probe braucht einen lebenden Worker."
+        },
+        {
+          "titel": "F3: Ein importierter Sitz startet als Orchestratorin in bypassPermissions über die Owner-Tür",
+          "urteil": "bestaetigt",
+          "schwere": "medium",
+          "beleg": "Halter: das Owner-Credential. Probe beweise/f3.sh auf frischer Instanz (14:28Z). Sichere Antwort: die Self-Tür, POST /api/self/branches mit „Orchestrator via self“, liefert 409. Beobachtet: die Owner-Tür, POST /api/branches mit demselben Namen, liefert 201; POST /api/branches/open liefert 200 mit Label „Orchestrator probe“; GET /api/slots/<n>/fassung zeigt darf/modus „bypassPermissions“. Ursache: server/sitz-reise.ts:124 greift nicht, weil openBoardBranch sitzDerTuer mit label=null aufruft (server.ts:8801), und die Owner-Tür (server.ts:8686) Rollennamen nicht ablehnt."
+        },
+        {
+          "titel": "F4: Eine Lane führt Jobs über den Helfer aus, die ihr Klassifizierer nicht sieht",
+          "urteil": "plausibel",
+          "schwere": "medium",
+          "beleg": "Halter: jedes Self-Token. POST /api/self/jobs (server.ts ~51346) nimmt einen erlaubten Befehl an. Prover: die Annahme ist am Code belegt; die Ausführung braucht einen laufenden Helfer. Nicht nachgefahren."
+        },
+        {
+          "titel": "F5: Keine Grenze für die Körpergröße vor der Passwort-Prüfung",
+          "urteil": "nicht verfolgt",
+          "schwere": "low",
+          "beleg": "Der Prover hat den Befund beiseitegelegt: der einzige Beweis wäre eine Denial-of-Service-Probe, und die verbietet die Aufgabe. Nach Angabe des Provers greift Buns Standard von 128 MiB (server.ts:50117; /s/<id>/auth liest den Body vor der Passwort-Prüfung, server.ts:41828)."
+        },
+        {
+          "titel": "F6: Der Rechte-Deckel sitzt nur im Browser-Import, der Server nimmt darf.bestaetigt an",
+          "urteil": "bestaetigt",
+          "schwere": "low",
+          "beleg": "Halter: das Owner-Credential. Probe beweise/f6.sh auf frischer Instanz (14:21Z). Der Server speichert eine Konstellation mit darf.rechte „deployen“ und bestaetigt true über PUT /api/k15/eigenes unverändert. Ein Sitz daraus öffnet mit der Stufe „deployen“ (rechte.stufe in der Antwort von POST /api/branches/open), und seine Regeln erlauben POST /api/deploy und worktrees/discard. Ursache: der Deckel fällt im Browser-Import weg (src/k15-import.ts:208), im Server nicht (src/sitz.ts, rechteGedeckelt)."
+        },
+        {
+          "titel": "F7: Der Paste-Pfad streicht kein ESC und kein Bracketed-Paste-Ende",
+          "urteil": "plausibel",
+          "schwere": "low",
+          "beleg": "Halter: jede Session mit Self-Token, als Nachricht an eine Session. Die Nachricht mit ESC und dem Ende ESC[201~ wird gespeichert und mit tmux paste-buffer -p eingefügt (server.ts:12322–12527). Prover: nicht nachgefahren; die Probe braucht eine lebende Pane."
+        }
+      ],
+      "ohneBefund": [],
+      "kosten": "Claude-Max-Abo, kein Dollarbetrag. Gemessen aus den Transkripten bis 14:34:33Z. Prover: 95 Aufrufe in 41 Minuten, davon Opus 5.5 mit 25 Aufrufen (1 951 789 Eingabe inkl. Cache, 8 693 Ausgabe) und Opus 4.8 mit 70 Aufrufen (11 292 905 Eingabe inkl. Cache, 80 078 Ausgabe). Finder: Sonnet 5.5, 75 Aufrufe in 9 Minuten, 10 568 985 Eingabe inkl. Cache, 40 675 Ausgabe.",
+      "grenzen": [
+        "Nicht ohne Hand: Die Pause des Provers bei Aufruf 26 (14:03:43Z, Safeguard „cyber“) löste die Orchestratorin mit einem Enter auf „Switch to Opus 4.8“ (14:13:12Z). Ohne den Handgriff stand der Prover bis zum Ende im Dialog.",
+        "Die Stopp-Nachricht des Owners (nach 16:30 lokal) steht nicht im Transkript des Provers. Er beendete den Lauf um 16:34 mit Urteilen zu allen sieben Befunden und baute seine Instanz ab.",
+        "Die Fassungen der Sitze auf B (Prover 377ba8a1, Finder f7254895) stimmen nicht mit den Hashes überein, die laeufe[1] nennt (Prover bee0796b; Finder 5e1253e1 ohne, 5c38388a mit Profil-Id, a65e26c7 am Branch-Tor). Lauf 2 lief bei d94c78206, dieser bei 57bae485f. Die Ursache ist nicht geprüft.",
+        "Die Proben beweise/f3.sh und beweise/f6.sh liegen im Sitz-Repo des Provers, nicht in diesem Branch. Ich habe sie nicht selbst nachgefahren; belegt ist, was ihr Transkript zeigt.",
+        "Der Finder hat den Code nur gelesen (grep, sed, git) und keine Probe gefahren. Die Türen, die er nicht erreicht hat, sind nicht geprüft.",
+        "Kein Land, kein Push, kein Fix. Die Befunde sind Befunde, ihre Behebung entscheidet der Owner.",
+        "Die Mängel 125 (Erbe des Owners: AGENTS.md ausgeschlossen? nein) und 126 (Safeguard-Pause nicht erkannt) stehen in docs/neuaufbau/maengel.md."
+      ]
     }
   ],
   "abgeleitetVon": "364ceeec5f2721053a0ed9b10fb6e147c29431903fce3468fd89d15e2a6cc1cc"

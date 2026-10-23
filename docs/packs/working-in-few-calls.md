@@ -43,6 +43,10 @@ for an answer small enough to keep.
   decides (a ledger entry, a file, an exit code), with a timeout. An answer of "still running" costs a full call and
   tells you nothing.
 - **Send suite and test output to a log file and read the tail or the FAIL lines.**
+  A command that runs longer than the shell's time limit, or in the background, writes to the file and never
+  through `| tail` or `| head`: those print nothing until the end, and a killed run leaves no output and no cleanup.
+- **Load Monitor before you need it.** It is a deferred tool: fetch its schema with ToolSearch first, or the first
+  call fails and costs a turn.
 
 ## Reporting
 

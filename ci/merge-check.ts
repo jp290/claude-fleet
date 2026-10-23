@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
-// Merge-Check (docs/neuaufbau/plan.md K2): ein Urteil VOR dem Merge, am Branch sichtbar, in höchstens
-// 5 min. Geprüft wird der Baum, den main nach dem Merge hätte: main plus die Commits <base>..<branch>,
+// Merge-Check (docs/neuaufbau/plan.md K2): ein Urteil VOR dem Merge, am Branch sichtbar, in
+// ~5 min ohne große Units, ~20 min mit allen vier Audit-Shards. Geprüft wird der Baum, den main nach dem Merge hätte: main plus die Commits <base>..<branch>,
 // ohne Checkout per `git merge-tree` nachgebaut (so wie die Bauleitung per Rebase/Cherry-Pick merged).
-// Die Suiten laufen parallel auf dem Helfer (ci/merge-check-run.sh); die großen Units laufen nachts
-// und vor jedem Deploy. Solange main bekannt rot ist, meldet er nie „mergebar“.
+// Die Suiten laufen parallel auf dem Helfer (ci/merge-check-run.sh), mit den Audit-Shards, die die großen
+// Units tragen, die der Kandidat schuldet (ci/big-units.ts); das Urteil nennt sie und warum. Solange main bekannt rot ist,
+// meldet er nie „mergebar“.
 //
 //   bun ci/merge-check.ts <branch> [--base <ref>] [--repair]
 //
@@ -16,6 +17,7 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { ADJUDICATION_CLEARS_RED } from "../server/adjudication";
+import { BIG_UNITS, bigUnitsFor, bigUnitsLine, type BigUnitSelection } from "./big-units";
 
 const RUNNER = join(import.meta.dir, "merge-check-run.sh");
 const REPO_DIR = join(import.meta.dir, "..");
@@ -119,8 +121,53 @@ export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: 
   return { red: false, why: `main grün: Audit ${sha} vom ${at}${verdict ? ` (rot, Urteil ${verdict})` : ""}` };
 }
 
-async function runOnHelper(host: string, sha: string): Promise<{ exit: number; out: string }> {
-  const p = Bun.spawn(["ssh", host, "sh", "-s", "--", sha], { stdin: Bun.file(RUNNER), stdout: "pipe", stderr: "inherit" });
+// die großen Units, die der Kandidat schuldet: der Diff main..Kandidat gegen den Kandidaten-Baum. Die
+// .ts- und .sh-Dateien kommen in einem `cat-file --batch` (ein git je Datei kostete am vollen Mac 20 s)
+export function bigUnitsOf(main: string, cand: string, dir = REPO_DIR): BigUnitSelection {
+  const paths = mustGit(["diff", "--name-only", "--no-renames", main, cand], undefined, dir).split("\n").filter(Boolean);
+  const blobs = new Map<string, string>();
+  for (const l of mustGit(["ls-tree", "-r", "--full-tree", cand], undefined, dir).split("\n")) {
+    const m = /^\d+ blob (\w+)\t(.+)$/.exec(l);
+    if (m) blobs.set(m[2]!, m[1]!);
+  }
+  const want = [...blobs].filter(([p]) => /\.(?:ts|tsx|sh)$/.test(p));
+  const out = Bun.spawnSync(["git", "-C", dir, "cat-file", "--batch"],
+    { stdin: Buffer.from(want.map(([, sha]) => sha).join("\n") + "\n") }).stdout;
+  const text = new Map<string, string>();
+  let at = 0;
+  for (const [p] of want) {
+    const nl = out.indexOf(10, at);
+    const size = Number(out.subarray(at, nl).toString().split(" ")[2]);
+    text.set(p, out.subarray(nl + 1, nl + 1 + size).toString());
+    at = nl + 1 + size + 1;
+  }
+  return bigUnitsFor(paths, (p) => {
+    if (text.has(p)) return text.get(p)!;
+    if (!blobs.has(p)) return null;
+    const r = Bun.spawnSync(["git", "-C", dir, "cat-file", "blob", blobs.get(p)!], { stderr: "ignore" });
+    return r.exitCode === 0 ? r.stdout.toString() : null;
+  });
+}
+
+// `unit,…` für den Helfer, der daraus die Audit-Shards wählt, die sie tragen (merge-check-run.sh#SHARDS)
+export function bigUnitsArg(big: readonly string[]): string {
+  return big.join(",") || "-";
+}
+
+// was der Helfer statt der Units fuhr: die Audit-Shards (`audit-shard <k>/<n> <units>`), mit den großen
+// Units darin, auch denen, die nur mitfahren, weil sie den Shard mit einer geschuldeten teilen
+export function auditShardsLine(out: string, big: readonly string[]): string | null {
+  const shards = [...out.matchAll(/^audit-shard (\d+)\/(\d+) (\S+)$/gm)]
+    .map((m) => ({ k: m[1]!, n: Number(m[2]), units: m[3]!.split(",").filter((u) => BIG_UNITS.some((b) => b === u)) }));
+  if (!shards.length) return null;
+  const along = shards.flatMap((s) => s.units.filter((u) => !big.includes(u)).map((u) => `${u} fährt mit (teilt ${s.k}/${s.n})`));
+  return `gefahren als Audit-Shards ${shards.map((s) => `${s.k}/${s.n} (${s.units.join(", ")})`).join(", ")}`
+    + (along.length ? `; ${along.join("; ")}` : "")
+    + (shards.length === shards[0]!.n ? "; sie tragen jede kleine Unit, s1–s3 entfallen" : "");
+}
+
+async function runOnHelper(host: string, sha: string, big: readonly string[]): Promise<{ exit: number; out: string }> {
+  const p = Bun.spawn(["ssh", host, "sh", "-s", "--", sha, bigUnitsArg(big)], { stdin: Bun.file(RUNNER), stdout: "pipe", stderr: "inherit" });
   let out = "";
   const dec = new TextDecoder();
   for await (const chunk of p.stdout) {
@@ -149,8 +196,10 @@ async function main(): Promise<number> {
       `merge-check ${verdict} · ${mergeable ? "mergebar" : "nicht mergebar"} · ${Math.round((Date.now() - t0) / 1000)} s · ${new Date(t0).toISOString()}\n`
       + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}\n${why}`
       + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
-      + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : ""), tip]);
-    console.log(`\nmerge-check ${verdict} ${branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`);
+      + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : "")
+      + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""), tip]);
+    console.log(`\nmerge-check ${verdict} ${branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`
+      + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""));
     return code;
   };
 
@@ -162,14 +211,28 @@ async function main(): Promise<number> {
   if (!pushCandidate(host, cand.sha)) return finish("error", false, `Kandidat ließ sich nicht zum Helfer ${host} schieben`, 3);
   const state = mainState(mainSha);
   row.mainState = state.why;
+  const big = bigUnitsOf(mainSha, cand.sha);
+  Object.assign(row, { bigUnits: big.run, bigUnitsWhy: big.why, bigUnitsLine: bigUnitsLine(big) });
 
-  const run = await runOnHelper(host, cand.sha);
+  const run = await runOnHelper(host, cand.sha, big.run);
   const jobs: Job[] = [...run.out.matchAll(/^job (\S+) rc=(\d+) ms=(\d+)$/gm)].map((m) => ({ name: m[1]!, rc: Number(m[2]), ms: Number(m[3]) }));
   const modules: Record<string, number> = {};
-  for (const m of run.out.matchAll(/^s\d module (\S+) (\d+) ms$/gm)) modules[m[1]!] = Number(m[2]);
+  for (const m of run.out.matchAll(/^[sa]\d module (\S+) (\d+) ms$/gm)) modules[m[1]!] = Number(m[2]);
+  const units: Record<string, number> = {};
+  for (const m of run.out.matchAll(/^[sa]\d shard-unit (\S+) (\d+) ms$/gm)) units[m[1]!] = Number(m[2]);
+  const shards = auditShardsLine(run.out, big.run);
+  if (shards) row.bigUnitsLine = `${String(row.bigUnitsLine)} · ${shards}`;
+  // die Handlauf-Bänder 5/6 nimmt der Helfer nur, wenn sie frei sind; fehlten sie, sagt die Zeile, warum es länger dauerte
+  const bands = /^bands ([\d ]+) busy=(\S+)$/m.exec(run.out);
+  if (bands) {
+    const got = bands[1]!.trim().split(" ").map(Number);
+    row.bands = got;
+    if (bands[2] !== "-")
+      row.bigUnitsLine = `${String(row.bigUnitsLine)} · Handlauf-Band ${bands[2]} belegt: die Audit-Shards liefen auf ${got.length} Bändern, darum länger`;
+  }
   const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(run.out);
   const notApplicable = [...run.out.matchAll(/^na (\S+) — (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`);
-  Object.assign(row, { jobs, modules, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
+  Object.assign(row, { jobs, modules, units, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
     run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
   if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (ssh exit ${run.exit})`, 3);
   const verdict = runLine[1] === "green" ? "green" : "red";

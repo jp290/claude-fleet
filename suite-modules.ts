@@ -575,7 +575,7 @@ const resolveSpec = (read: TreeReader, p: string): string | null => {
 
 // e2e-stage.sh#_stage_closure, import-ANCHORED for the reason it gives (a bare "../../escape" is
 // test DATA in fleet-e2e-security.ts). Per line, as grep reads it: [ \t] never crosses a newline.
-const stageClosure = (read: TreeReader, entries: readonly string[]): string[] | null => {
+export const stageClosure = (read: TreeReader, entries: readonly string[]): string[] | null => {
   const seen = new Set<string>();
   const pending = [...entries];
   while (pending.length) {
@@ -607,13 +607,16 @@ const sourceMentions = (code: string, files: Set<string>, dirs: Set<string>): vo
   for (const m of code.matchAll(/(?<=[\/"'`])(src|public)\/?(?=\$\{|["'`])/g)) dirs.add(`${m[1]}/`);
 };
 
-const footprintOf = (read: TreeReader, suite: (typeof GATE_SUITES)[number]): GateSuiteFootprint | null => {
-  const text = read(suite.wrapper);
+// what a wrapper stages: its stage_instance entries, its STAGE_EXTRA paths (into `files`, or `dirs`
+// for a directory) and the src/ and public/ paths it reads straight out of $SRC; null when unparseable
+export interface WrapperStage { entries: string[]; files: Set<string>; dirs: Set<string> }
+export const wrapperStage = (read: TreeReader, wrapper: string): WrapperStage | null => {
+  const text = read(wrapper);
   if (text === null) return null;
   const lines = text.split("\n").filter((l) => !/^\s*#/.test(l));
   const entries = new Set<string>();
   const extras: string[] = [];
-  const files = new Set<string>(), dirs = new Set<string>(["public/"]);
+  const files = new Set<string>(), dirs = new Set<string>();
   for (const line of lines) {
     if (/\bstage_instance\b/.test(line) && !/^\s*stage_instance\(\)/.test(line)) {
       const m = /^\s*stage_instance "\$SRC" "\$\w+" ((?:[\w./-]+ ?)+?)\s*\|\| exit 1\s*$/.exec(line);
@@ -636,8 +639,12 @@ const footprintOf = (read: TreeReader, suite: (typeof GATE_SUITES)[number]): Gat
     if (!p || p.startsWith("..")) return null;
     if (read(p) !== null) files.add(p); else dirs.add(`${p}/`);
   }
-  const closure = stageClosure(read, [...entries]);
-  if (closure === null) return null;
+  return { entries: [...entries], files, dirs };
+};
+
+// the src/ and public/ paths the staged files of `closure` reach, into `files` and `dirs`; false when
+// a file that names node_modules cannot be transpiled
+export const symlinkReads = (read: TreeReader, closure: readonly string[], files: Set<string>, dirs: Set<string>): boolean => {
   for (const f of closure) {
     if (isSourcePath(f)) { files.add(f); continue; }
     // only a file that resolves THROUGH the node_modules symlink can see past the instance; every
@@ -645,9 +652,19 @@ const footprintOf = (read: TreeReader, suite: (typeof GATE_SUITES)[number]): Gat
     const raw = read(f) ?? "";
     if (!raw.includes("node_modules")) continue;
     const code = executable(raw);
-    if (code === null) return null;
+    if (code === null) return false;
     if (/(?:realpath|readlink)\w*\([^)]*node_modules/.test(code)) sourceMentions(code, files, dirs);
   }
+  return true;
+};
+
+const footprintOf = (read: TreeReader, suite: (typeof GATE_SUITES)[number]): GateSuiteFootprint | null => {
+  const stage = wrapperStage(read, suite.wrapper);
+  if (stage === null) return null;
+  const { files, dirs } = stage;
+  dirs.add("public/");
+  const closure = stageClosure(read, stage.entries);
+  if (closure === null || !symlinkReads(read, closure, files, dirs)) return null;
   return {
     step: suite.step,
     files: [...files].filter(isSourcePath).sort(),

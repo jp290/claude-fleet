@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { candidateOf, decide, mainVerdict } from "./merge-check";
+import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, mainVerdict } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -160,5 +160,40 @@ describe("candidateOf: der Baum nach dem Merge", () => {
     const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
     rmSync(dir, { recursive: true, force: true });
     expect("conflict" in c).toBe(true);
+  });
+});
+
+// Owner 22.10.: 993b4e90 bestand seinen Merge-Check und machte main erst im Audit rot (e2e/programs.ts);
+// gelesen aus der Geschichte dieses Repos, wie der Merge-Check den Kandidaten liest
+describe("bigUnitsOf: die großen Units eines Kandidaten aus git", () => {
+  test("993b4e90 auf seinem Vorgänger schuldet programs, aber nie dom", () => {
+    const s = bigUnitsOf("f6ab5749c", "993b4e90f");
+    expect(s.run).toEqual(["core", "core-tasks", "programs", "lanes", "watch"]);
+    expect(s.why.programs).toContain("docs/packs/who-it-is-for.md");
+  });
+  test("ein reiner Doku-Commit schuldet keine (6db27d15: docs/messungen)", () => {
+    expect(bigUnitsOf("6db27d15c^", "6db27d15c").run).toEqual([]);
+  });
+  test("der Helfer bekommt die Units als Liste, „-“ für keine", () => {
+    expect(bigUnitsArg([])).toBe("-");
+    expect(bigUnitsArg(["programs", "watch"])).toBe("programs,watch");
+  });
+});
+
+// Layout 3 (23.10.): der Helfer fährt die Audit-Shards, die eine geschuldete Unit tragen; das Urteil sagt welche
+describe("auditShardsLine: was das Urteil über die gefahrenen Audit-Shards sagt", () => {
+  const out = (...l: string[]): string => ["run x wait=0", ...l, "merge-check green 1"].join("\n");
+  test("eine große Unit, die nur mitfährt, wird genannt, mit dem Shard, den sie teilt", () => {
+    expect(auditShardsLine(out("audit-shard 4/4 lanes,watch"), ["lanes"]))
+      .toBe("gefahren als Audit-Shards 4/4 (lanes, watch); watch fährt mit (teilt 4/4)");
+  });
+  test("kleine Units erscheinen nicht; alle vier Shards heißt ohne s1–s3", () => {
+    const l = auditShardsLine(out("audit-shard 1/4 core,attention", "audit-shard 2/4 pure,core-tasks",
+      "audit-shard 3/4 bytes,programs", "audit-shard 4/4 lanes,watch"), ["core", "core-tasks", "programs", "lanes", "watch"]);
+    expect(l).toBe("gefahren als Audit-Shards 1/4 (core), 2/4 (core-tasks), 3/4 (programs), 4/4 (lanes, watch); "
+      + "sie tragen jede kleine Unit, s1–s3 entfallen");
+  });
+  test("ohne audit-shard-Zeile (Doku-Änderung) keine Zeile", () => {
+    expect(auditShardsLine(out(), [])).toBeNull();
   });
 });

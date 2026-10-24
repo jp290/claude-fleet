@@ -13184,9 +13184,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               && n.sess.glyphs.every((g) => g.title.length > 12 && g.text === "") && !/\b(Rename|Share…|Export…)/.test(n.bodyText);
             const keys = n.sess.kv.map((r) => r.k);
             // THE SESSION STAYS SIMPLE (owner 2026-10-08: „[Zitat entfernt]“
-            // ): branch, target and checks are the lane's row under Arbeitsorte now
-            claims[`${it}the session's values are Context · Belongs to — no Branch, no Lands in, no Check, no Land`] =
-              JSON.stringify(keys) === JSON.stringify(["Context", "Belongs to"]);
+            // ): branch, target and checks are the lane's row under Arbeitsorte now. Delivery is the
+            // Postfach's switch, one row since 844372d2c (src/board.ts#deliveryRow)
+            claims[`${it}the session's values are Context · Delivery · Belongs to — no Branch, no Lands in, no Check, no Land`] =
+              JSON.stringify(keys) === JSON.stringify(["Context", "Delivery", "Belongs to"]);
             const kon = n.sess.kv.find((r) => r.k === "Context");
             // K9 S3, Mangel 76 (owner 15.10.: „[Zitat entfernt]“
             // ): the line shows where Fleet nudges the lane, 40, and while its cache is warm the cap 45 it has;

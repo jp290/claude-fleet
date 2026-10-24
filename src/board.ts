@@ -1912,8 +1912,8 @@ function deliveryRow(s: SlotInfo, slot: number): HTMLElement {
   b.type = "button";
   b.dataset.uk = "zustellung";
   b.append(document.createTextNode(bundling ? "Bundled" : "Direct"), icon("chevron"));
-  b.title = `${bundling ? "Postfach messages wait in the bundle and arrive there with their full text"
-    : "Postfach messages arrive after about a minute with their full text"} — ${source}. Click for ${next === "gebuendelt" ? "bundled" : "direct"}.`;
+  b.title = `${bundling ? "Inbox messages wait in the bundle and arrive there with their full text"
+    : "Inbox messages arrive after about a minute with their full text"} — ${source}. Click for ${next === "gebuendelt" ? "bundled" : "direct"}.`;
   b.setAttribute("aria-label", `Delivery: ${bundling ? "bundled" : "direct"} (${source}). Switch to ${next === "gebuendelt" ? "bundled" : "direct"}.`);
   b.onclick = async () => {
     b.disabled = true;

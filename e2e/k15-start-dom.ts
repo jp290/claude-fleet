@@ -20,6 +20,9 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 export interface K15StartDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
+class K15VerdictIn extends Error {
+  constructor(readonly results: K15StartDomResult[]) { super("k15 start DOM: the mutant's claim has its verdict"); }
+}
 export interface K15StartMutant {
   name: string; claim: string;
   file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts" | "src/k15-repo.ts"
@@ -98,8 +101,9 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     needle: "if (r.bewegt) s.plaene.clear();", with: "" },
   { name: "an unreadable plan reads as loading", claim: C.unreadable, file: "src/k15-start.ts",
     needle: "if (typeof l.plan === \"object\" && \"fehler\" in l.plan) return `Der Plan für diesen Start ist nicht lesbar: ${l.plan.fehler}`;", with: "" },
+  // the line as 4f7acbefc left it: a seat's own file travels as its brief and an Agent-MD that comes anyway is not counted twice
   { name: "a session's own file is not counted", claim: C.datei, file: "src/k15-start.ts",
-    needle: "if (q.datei) out.push(`die Datei ${q.datei.titel}`);", with: "" },
+    needle: "if (q.datei && !alsSitz && !(agentMdKommt(s, p, q) && JSON.stringify(q.datei) === JSON.stringify(p.datei))) out.push(`die Datei ${q.datei.titel}`);", with: "" },
   { name: "the button does not name the session", claim: C.eine, file: "src/k15-start.ts",
     needle: "go.textContent = s.start.busy ? \"Startet …\" : z ? `${z.q.name} starten` : \"Starten\";", with: "go.textContent = s.start.busy ? \"Startet …\" : \"Starten\";" },
   { name: "the sentence does not say only one starts", claim: C.eine, file: "src/k15-start.ts",
@@ -126,8 +130,10 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     needle: "t.stand !== \"aus\" ? \"drin\" : t.schalter ? \"aus\" : \"nv\";", with: "t.stand !== \"aus\" ? \"drin\" : \"aus\";" },
   { name: "the start drops the rights", claim: C.rechte, file: "src/sitzung.ts",
     needle: "const rechte = ag === \"claude\" ? { rechte: z.rechte } : {};", with: "const rechte = {};" },
+  // the start's own line: since 8780cd386 the same expression stands first in dazuVon (the preview's hash), and a needle
+  // replaced at its first occurrence mutated the preview instead of the start
   { name: "the rights go to every agent", claim: C.rechte, file: "src/sitzung.ts",
-    needle: "ag === \"claude\" ? { rechte: z.rechte } : {}", with: "{ rechte: z.rechte }" },
+    needle: "const rechte = ag === \"claude\" ? { rechte: z.rechte } : {};", with: "const rechte = { rechte: z.rechte };" },
   { name: "a level is not taken", claim: C.rechte, file: "src/sitzung-links.ts",
     needle: "() => { z.rechte = { stufe: st.id, an: [], aus: [] }; z.rechteWahl = \"zu\"; render(); }", with: "() => { z.rechteWahl = \"zu\"; render(); }" },
 ];
@@ -164,6 +170,12 @@ const NATIV = [["/fixture/home/.claude/CLAUDE.md", 3000], ["/fixture/home/.claud
 const fileText = (pfad: string): string => Array.from({ length: 40 }, (_, i) => `${pfad} · Zeile ${i + 1}`).join("\n");
 // what the /open door gives a free session although its plan says „aus“ (server.ts#planDoorVerdict), in the window's words
 const ORDNER_TROTZDEM = "Agent · Modell · Effort, Rückweg";
+// The dragged „Nur Ordner“ is a SAVED constellation, so its one position starts as its seat: the body names it as
+// `sitz: "<constellation>/o1"` (d94c78206, src/k15-zustand.ts#sitzKommt: „Jede solche Position startet als ihr Sitz, auch
+// ohne Block“), and the foot says which run the start goes into (4f7acbefc, src/k15-lauf.ts#laufSatz).
+const LAUF_NEU = "Startet einen neuen Lauf auf der gespeicherten Fassung.";
+const alsSitz = (body: unknown): boolean => /^[^/]+\/o1$/.test(String((body as { sitz?: unknown } | null)?.sitz ?? ""));
+const ohneSitz = (body: unknown): unknown => { const { sitz: _sitz, ...rest } = (body ?? {}) as Record<string, unknown>; return rest; };
 const hash = (s: string): string => {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
@@ -488,6 +500,11 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       // every claim of this width starts red: a case that throws leaves its claim false, never absent
       const claims: Record<string, boolean> = Object.fromEntries(Object.values(C).filter((c) => PHONE.has(c) === phone).map((c) => [c, false]));
       const facts: Record<string, unknown> = {};
+      // A MUTANT ENDS WITH ITS OWN VERDICT: every claim is assigned exactly once, so the walk stops after the case that
+      // assigned the mutated claim (K15VerdictIn), and every case before it ran as in the whole walk. A whole walk took
+      // ~74 s per mutant on the Workhorse (38 mutants, 2 797 s, hand run 1024041054-nd-main).
+      const assigned = new Set<string>();
+      const verdicts = new Proxy(claims, { set: (t, k, v) => { t[String(k)] = v; assigned.add(String(k)); return true; } });
       // ONE CASE, A FRESH PAGE: the fixture's state, the recorded requests and the window's module state start empty
       const fresh = async (set: Partial<Fx> = {}) => {
         fx = { ...fx0(), ...set };
@@ -534,8 +551,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       // a press on a blocked start: what the foot said before it
       const goBlocked = async () => { const f = await foot(); await click(GO); await idle(); return f; };
       const caseOf = async (name: string, run: () => Promise<void>) => {
-        try { await run(); } catch (e) { facts[`${name}:error`] = e instanceof Error ? e.message : String(e); }
+        try { await run(); } catch (e) { if (e instanceof K15VerdictIn) throw e; facts[`${name}:error`] = e instanceof Error ? e.message : String(e); }
         if (artifacts) await shot(`k15-start-${width}-${name}`).catch(() => undefined);
+        if (only.mutate && assigned.has(only.mutate.claim)) throw new K15VerdictIn([...results, { width, height, claims, facts }]);
       };
 
       if (phone) {
@@ -550,7 +568,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           const ok = await wait(`!!document.querySelector('#shell-found.k15.k15sitz .ksgo')`, 10000);
           const seen = await evaluate<{ h2: string | null; old: number }>(`({ h2: ${WIN}?.querySelector('h2')?.textContent ?? null, old: document.querySelectorAll('.fdgo, .fdkind').length })`);
           facts.openPhone = { ok, ...seen };
-          claims[C.openPhone] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0;
+          verdicts[C.openPhone] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0;
           // 19 · the three tabs, each with its own column
           await idle();
           const sicht = () => evaluate<{ tabs: string[]; an: string | null; zu: string[] }>(`(() => { const sieht = (q) => { const e = ${WIN}?.querySelector(q);
@@ -565,7 +583,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           await tab("Agent.md"); await idle();
           const txt = await sicht();
           facts.reiter = { auf, ueb, txt };
-          claims[C.reiter] = JSON.stringify(auf.tabs) === JSON.stringify(["Aufsetzen", "Übersicht", "Agent.md"])
+          verdicts[C.reiter] = JSON.stringify(auf.tabs) === JSON.stringify(["Aufsetzen", "Übersicht", "Agent.md"])
             && auf.an === "Aufsetzen" && JSON.stringify(auf.zu) === JSON.stringify([".kslinks"])
             && ueb.an === "Übersicht" && JSON.stringify(ueb.zu) === JSON.stringify([".ksindex"])
             && txt.an === "Agent.md" && JSON.stringify(txt.zu) === JSON.stringify([".kstext"]);
@@ -582,24 +600,24 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const seen = await evaluate<{ h2: string | null; old: number; go: string | null }>(`({ h2: ${WIN}?.querySelector('h2')?.textContent ?? null,
           old: document.querySelectorAll('.fdgo, .fdkind').length, go: ${WIN}?.querySelector('.ksgo')?.textContent ?? null })`);
         facts.open = { ok, ...seen };
-        claims[C.open] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0 && seen.go === "Session starten";
+        verdicts[C.open] = ok && !!seen.h2?.startsWith("Neue Session in") && seen.old === 0 && seen.go === "Session starten";
         await idle();
         await zumAufbau();
         await goReady();
         const f = await foot();
         facts.eine = f;
-        claims[C.eine] = f.go === "Lane 1 starten" && f.disabled === false && !f.warn && !!f.satz?.startsWith("Startet nur Lane 1")
+        verdicts[C.eine] = f.go === "Lane 1 starten" && f.disabled === false && !f.warn && !!f.satz?.startsWith("Startet nur Lane 1")
           && f.satz.includes("mehrere Sessions als Einheit startet Fleet noch nicht");
         const d = std("lane");
         const h = hashFor("lane", d);
         const read = reads("lane", d).length > 0;
         const s = await go();
         facts.lane = { read, posts: s, expectHash: h };
-        claims[C.lane] = read && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open-worktree`
+        verdicts[C.lane] = read && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open-worktree`
           && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
         const z = { open: await open(), shown: await shown() };
         facts.zu = { ...z, started };
-        claims[C.zu] = s.length === 1 && started !== null && !z.open && z.shown === String(started);
+        verdicts[C.zu] = s.length === 1 && started !== null && !z.open && z.shown === String(started);
       });
 
       // 3 · model and effort changed at the session
@@ -615,7 +633,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await goReady();
         const s = await go();
         facts.wahl = { read, posts: s, reads: planReads.slice(-4) };
-        claims[C.wahl] = read && s.length === 1 && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
+        verdicts[C.wahl] = read && s.length === 1 && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
       });
 
       // 4 · ⎇+ under the session in slot 1
@@ -634,7 +652,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const h = hashFor("lane", d);
         const s = await go();
         facts.quick = { blocked, sentBlocked, posts: s };
-        claims[C.quick] = blocked.disabled === true && blocked.warn && !!blocked.satz?.includes("⎇+") && sentBlocked === 0
+        verdicts[C.quick] = blocked.disabled === true && blocked.warn && !!blocked.satz?.includes("⎇+") && sentBlocked === 0
           && s.length === 1 && s[0]!.url === "/api/lanes" && !("slot" in (s[0]!.body as object))
           && canon(s[0]!.body) === canon({ repo: REPO, parent: { slot: 1, openedAt: 1000 }, branch: "", ...d, plan: { hash: h, role: "lane" } });
       });
@@ -651,7 +669,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const h = hashFor("lane", d);
         const s = await go();
         facts.plus = { posts: s };
-        claims[C.plus] = s.length === 1 && s[0]!.url === "/api/lanes" && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
+        verdicts[C.plus] = s.length === 1 && s[0]!.url === "/api/lanes" && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
       });
 
       // 6 · the Orchestratorin, then one already running
@@ -678,7 +696,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await idle();
         const z = { open: await open(), shown: await shown() };
         facts.orchRunning = { foot: f, sent, ...z, posts: starts() };
-        claims[C.orch] = orchStart && f.disabled === true && f.warn && f.satz === "Die Orchestratorin läuft schon auf Slot 2."
+        verdicts[C.orch] = orchStart && f.disabled === true && f.warn && f.satz === "Die Orchestratorin läuft schon auf Slot 2."
           && sent === 0 && !z.open && z.shown === "2" && starts().length === 0;
       });
 
@@ -701,8 +719,8 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const s = await go();
         ordnerOhne = { foot: f, posts: s };
         ordnerOhneOk = f.disabled === false && !f.warn
-          && f.satz === `Startet ohne Plan über die bestehende Tür; sie gibt heute trotzdem ${ORDNER_TROTZDEM} mit.`
-          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && canon(s[0]!.body) === canon({ cwd: REPO });
+          && f.satz === `Startet ohne Plan über die bestehende Tür; sie gibt heute trotzdem ${ORDNER_TROTZDEM} mit. ${LAUF_NEU}`
+          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && alsSitz(s[0]!.body) && canon(ohneSitz(s[0]!.body)) === canon({ cwd: REPO });
       });
       await caseOf("ordner-startbar", async () => {
         await fresh({ ordnerStartbar: true });
@@ -713,8 +731,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const h = hashFor("nur-ordner", {});
         const s = await go();
         facts.ordner = { ohne: ordnerOhne, mit: { foot: f, posts: s } };
-        claims[C.ordner] = ordnerOhneOk && f.disabled === false && !(f.satz ?? "").includes("ohne Plan")
-          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && canon(s[0]!.body) === canon({ cwd: REPO, plan: { hash: h, role: "nur-ordner" } });
+        verdicts[C.ordner] = ordnerOhneOk && f.disabled === false && !(f.satz ?? "").includes("ohne Plan")
+          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && alsSitz(s[0]!.body)
+          && canon(ohneSitz(s[0]!.body)) === canon({ cwd: REPO, plan: { hash: h, role: "nur-ordner" } });
       });
 
       // 8 · a MAIN: the Programs, the start, the three answers that found nothing, Programs that cannot be read
@@ -774,7 +793,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         mainChecks.push(f.disabled === true && f.warn && f.satz === "Die Programs sind nicht lesbar (Antwort 500). Ohne sie wird keine MAIN gegründet."
           && listed.length === 0 && starts().length === 0);
       });
-      claims[C.main] = mainChecks.length === 5 && mainChecks.every(Boolean);
+      verdicts[C.main] = mainChecks.length === 5 && mainChecks.every(Boolean);
       facts.mainChecks = mainChecks;
 
       // 9 · a Branch-Session: no name, Neu, then a name another branch already carries
@@ -820,7 +839,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           && sent === 1 && s.length === 2 && canon(s[1]) === canon({ url: "/api/branches/open", body: { repo: REPO, branch: "bau/uhr-alt", goal: "Die Uhr steht rechts." } })
           && (await shown()) === "2");
       });
-      claims[C.branch] = branchChecks.length === 2 && branchChecks.every(Boolean);
+      verdicts[C.branch] = branchChecks.length === 2 && branchChecks.every(Boolean);
 
       // 10 · the plan moved between the preview and the start
       await caseOf("stale", async () => {
@@ -837,7 +856,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const after = hashFor("lane", d, "fixture-head-moved");
         const s = await go();
         facts.stale = { foot: f, between, posts: s, before, after };
-        claims[C.stale] = f.warn && !!f.satz?.startsWith("Der Plan hat sich seit der Vorschau bewegt — nichts gestartet.") && between.open && between.occupied === 0
+        verdicts[C.stale] = f.warn && !!f.satz?.startsWith("Der Plan hat sich seit der Vorschau bewegt — nichts gestartet.") && between.open && between.occupied === 0
           && s.length === 2 && (s[0]!.body as { plan?: { hash?: string } }).plan?.hash === before
           && (s[1]!.body as { plan?: { hash?: string } }).plan?.hash === after && before !== after;
       });
@@ -859,7 +878,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
             && f.disabled === true && f.warn && !!f.satz?.startsWith("Der Plan für diesen Start ist nicht lesbar:") && starts().length === 0);
         });
       }
-      claims[C.unreadable] = unreadable.length === 3 && unreadable.every(Boolean);
+      verdicts[C.unreadable] = unreadable.length === 3 && unreadable.every(Boolean);
 
       // 12 · Lane 2 with her own file
       await caseOf("datei", async () => {
@@ -868,7 +887,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await toSession("l2");
         const f = await goBlocked();
         facts.datei = { foot: f, posts: starts() };
-        claims[C.datei] = f.disabled === true && f.warn && !!f.satz?.includes("die Datei review-regeln.md") && starts().length === 0;
+        verdicts[C.datei] = f.disabled === true && f.warn && !!f.satz?.includes("die Datei review-regeln.md") && starts().length === 0;
       });
 
       // 15–18, 20–22 · THE VIEW „EINE SESSION“ ITSELF
@@ -896,7 +915,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
             index: ${kapitel(".ksindex .kskap", "kap")}, text: ${kapitel(".kstext .kskapitel", "kapitelT")} }; })()`);
         facts.spalten = v;
         const [l, m, r] = v.cols;
-        claims[C.spalten] = v.cols.length === 3 && v.cols.every((c) => c[3] && c[2] >= 200) && l![1] < m![1] && m![1] < r![1] && !v.reiter
+        verdicts[C.spalten] = v.cols.length === 3 && v.cols.every((c) => c[3] && c[2] >= 200) && l![1] < m![1] && m![1] < r![1] && !v.reiter
           && JSON.stringify(v.index) === JSON.stringify(FRAGEN) && JSON.stringify(v.text) === JSON.stringify(FRAGEN);
       });
 
@@ -920,7 +939,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await textRuht();
         const nach = await lage();
         facts.sprung = { vor, nach };
-        claims[C.sprung] = !!vor && !!nach && vor.oben >= vor.hoehe && nach.oben >= 0 && nach.oben < nach.hoehe - 40 && nach.scroll > 0;
+        verdicts[C.sprung] = !!vor && !!nach && vor.oben >= vor.hoehe && nach.oben >= 0 && nach.oben < nach.hoehe - 40 && nach.scroll > 0;
       });
 
       // 17 · a switch in the Übersicht: the fixture's one row a free session may switch, with a door that starts the plan
@@ -947,7 +966,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         facts.schalter = { vor, nach, gelesen, posts: s, expectHash: h };
         // 840 bytes at the window's 2,1 bytes per token (sitzung-modell.ts#fleetJe without startSumme), each sum rounded on its own
         const mehr = (a: number, b: number) => b - a >= 399 && b - a <= 401;
-        claims[C.schalter] = vor.zu && !nach.zu && nach.wort.startsWith("Lesehilfe: kommt in den Start") && gelesen
+        verdicts[C.schalter] = vor.zu && !nach.zu && nach.wort.startsWith("Lesehilfe: kommt in den Start") && gelesen
           && mehr(vor.index, nach.index) && mehr(vor.text, nach.text) && mehr(vor.fuss, nach.fuss)
           && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open`
           && canon(s[0]!.body) === canon({ cwd: REPO, plan: { hash: h, role: "nur-ordner", bausteine: "lesehilfe=an" },
@@ -966,7 +985,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           while (k && !k.classList.contains('kskapitel')) k = k.previousElementSibling;
           return [id, zeile, k?.dataset.kapitelT ?? null]; })`);
         facts.frage = ist;
-        claims[C.frage] = ist.length === soll.length && ist.every(([id, zeile, block], i) => id === soll[i]![0] && zeile === soll[i]![1] && block === soll[i]![1]);
+        verdicts[C.frage] = ist.length === soll.length && ist.every(([id, zeile, block], i) => id === soll[i]![0] && zeile === soll[i]![1] && block === soll[i]![1]);
       });
 
       // 20 · the Übersicht opens folded and unfolds one question at a time
@@ -986,7 +1005,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await idle();
         const wieder = await blick();
         facts.kapitel = { zu, auf, wieder };
-        claims[C.kapitel] = JSON.stringify(zu.kap.map((k) => k[0])) === JSON.stringify(FRAGEN) && zu.sichtbar === 0 && zu.kap.every((k) => !k[4])
+        verdicts[C.kapitel] = JSON.stringify(zu.kap.map((k) => k[0])) === JSON.stringify(FRAGEN) && zu.sichtbar === 0 && zu.kap.every((k) => !k[4])
           && zu.kap.some((k) => /\d/.test(k[1]) && k[2] && /^\d+ im Start$/.test(k[3]))
           && auf.sichtbar > 0 && auf.kap.filter((k) => k[4]).map((k) => k[0]).join() === "hintergrund"
           && wieder.sichtbar === 0 && wieder.kap.every((k) => !k[4]);
@@ -1012,7 +1031,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await idle();
         const detail = await blick();
         facts.nv = { kap, zu, auf, detail };
-        claims[C.nv] = zu.n > 0 && zu.sichtbar === 0 && zu.zeile === `${zu.n} ${zu.n === 1 ? "weiterer" : "weitere"} hier nicht verfügbar`
+        verdicts[C.nv] = zu.n > 0 && zu.sichtbar === 0 && zu.zeile === `${zu.n} ${zu.n === 1 ? "weiterer" : "weitere"} hier nicht verfügbar`
           && auf.sichtbar === zu.n && detail.detail.includes("Warum nicht");
       });
 
@@ -1044,7 +1063,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         });
         facts.rechte = { standard, gewaehlt, satz, codex, fremd };
         const eins = (xs: { url: string; rechte: unknown }[], r: unknown) => xs.length === 1 && xs[0]!.url === `/api/slots/${FREE}/open` && canon(xs[0]!.rechte) === canon(r);
-        claims[C.rechte] = eins(standard, { stufe: "bauen", an: [], aus: [] }) && eins(gewaehlt, { stufe: "lesen", an: ["landen"], aus: [] })
+        verdicts[C.rechte] = eins(standard, { stufe: "bauen", an: [], aus: [] }) && eins(gewaehlt, { stufe: "lesen", an: ["landen"], aus: [] })
           && satz === "Stufe „Nur lesen“Er darf seine Arbeit selbst übernehmen. Dateien ändern, Fleet neu aufspielen und Arbeitskopien wegwerfen machst du."
           && eins(codex, null) && codex[0]!.harness === "codex" && fremd.includes("nur für Claude Code");
       });
@@ -1052,6 +1071,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       results.push({ width, height, claims, facts });
     }
     return results;
+  } catch (e) {
+    if (e instanceof K15VerdictIn) return e.results;
+    throw e;
   } finally {
     socket?.close();
     browser.kill();

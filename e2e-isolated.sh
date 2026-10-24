@@ -256,6 +256,19 @@ static char display_mode[32] = "normal";
 static int blackout_done = 0;
 static int zai_footer = 0;
 static char turn_id[25] = "none";
+/* BRACKETED PASTE, as the real TUIs ask for it: the stand-in turns the mode on at start
+   (ESC[?2004h), so tmux's `paste-buffer -p` (server.ts#sendText) wraps Fleet's paste in
+   ESC[200~ … ESC[201~, and a line break inside it is TEXT, not Enter. Without it every pasted line
+   was submitted on its own: a two-event bundle arrived as five turns, its composer never held the
+   whole payload, and each bundle sat out the full 3 s arrival window as "unobservable" — 4.5 s on
+   the receiver under suite load (merge check 1024100528-bb69cdaf). A real claude pane took a bundle of
+   the same shape as one turn, observed after 1.6 s (test instance, 2026-10-24). Any other ESC sequence goes
+   on into the buffer byte for byte, as before. */
+#define PASTE_OPEN "\033[200~"
+#define PASTE_CLOSE "\033[201~"
+static int in_paste = 0;
+static char esc[8];
+static size_t esc_len = 0;
 static const char *mode_path(void) { return getenv("FLEET_E2E_COMPOSER_MODE"); }
 static const char *state_path(void) { return getenv("FLEET_E2E_COMPOSER_STATE"); }
 static long long now_ms(void) {
@@ -358,6 +371,7 @@ int main(int argc, char **argv) {
     t.c_lflag &= ~(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &t);
   }
+  fputs("\033[?2004h", stdout);
   read_mode();
   save_state("ready");
   composer();
@@ -386,7 +400,26 @@ int main(int argc, char **argv) {
     // unobservable falsifier remove the composer before sendText's post-paste read can authorize
     // rollback from a stale visible frame.
     read_mode();
-    if (c == '\r' || c == '\n') {
+    if (c == 0x1b || esc_len > 0) {
+      size_t i;
+      esc[esc_len++] = (char)c;
+      esc[esc_len] = '\0';
+      if (!strcmp(esc, PASTE_OPEN) || !strcmp(esc, PASTE_CLOSE)) {
+        in_paste = esc[4] == '0';
+        esc_len = 0;
+        if (pending()) continue;
+        if (!in_paste) save_state("typing");
+        composer();
+        continue;
+      }
+      if (!strncmp(PASTE_OPEN, esc, esc_len) || !strncmp(PASTE_CLOSE, esc, esc_len)) continue;
+      /* not a paste marker: the bytes before this one are ordinary input, this one is read below */
+      esc_len--;
+      for (i = 0; i < esc_len && len < sizeof buf - 1; i++) buf[len++] = esc[i];
+      esc_len = 0;
+      if (c == 0x1b) { esc[esc_len++] = (char)c; esc[esc_len] = '\0'; continue; }
+    }
+    if (!in_paste && (c == '\r' || c == '\n')) {
       char *event_id;
       buf[len] = '\0';
       event_id = strstr(buf, "[event ");

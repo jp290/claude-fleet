@@ -68,6 +68,7 @@ import {
 // the list-on-the-left / thing-in-full-on-the-right window shared by review, picker, queue and
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
+import { GRUPPE, type SetupDatei } from "./fassung-umfeld-zeilen";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
 import { flotteNeu, openAttrappe, openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
@@ -5308,6 +5309,56 @@ export function openPacks(setup: BriefSetup, want?: string): void {
   }
 }
 
+// THE SETUP WINDOW (owner 2026-10-23: each point of the setup leads to where it is set): the Claude Code files a session reads
+// besides Fleet's start line, the repo's and the owner's own, grouped as the Setup block groups them (src/fassung-umfeld-zeilen.ts).
+// A file opens as itself, at the line that sets the point; a repo file is editable with the session's slot, the owner's own are read
+// here and changed where the entry says. Plugins and MCP servers have no file of their own to show: their text stands instead.
+let setupShell: Shell | null = null;
+export function openSetupFiles(slot: number, eintraege: readonly SetupDatei[], want?: string, finde?: string): void {
+  setupShell?.close();
+  const shell = openShell({ id: "setup", title: "Setup files", listWidth: 280,
+    subtitle: "what Claude Code reads for this session, besides Fleet's start line",
+    detailHint: "Pick a file on the left.", onClose: () => { setupShell = null; },
+    onSelect: (_r, i) => { const d = eintraege[i]; if (d) show(d); } });
+  setupShell = shell;
+  const show = (d: SetupDatei, find?: string) => {
+    if (d.pfad) {
+      showFileView(shell, { path: d.pfad, label: d.name, source: d.aendern, find: find ?? d.finde,
+        ...(d.gruppe === "repo" ? { edit: { slot } } : {}) });
+      return;
+    }
+    shell.detail.replaceChildren();
+    shell.detail.appendChild(el("div", "rvhead", d.name));
+    shell.detail.appendChild(el("div", "fvsource", d.aendern));
+    if (d.text) shell.detail.appendChild(el("div", "fvtext", d.text));
+    const auch = d.auch;
+    if (auch) {
+      const b = el("button", "rgbtn link", `Open ${auch.label}`) as HTMLButtonElement;
+      b.onclick = () => showFileView(shell, { path: auch.pfad, label: auch.pfad.split("/").pop() ?? auch.pfad, source: d.aendern,
+        find: auch.finde, back: { label: d.name, go: () => show(d) } });
+      shell.detail.appendChild(b);
+    }
+    if (isMobile()) shell.showDetail(true);
+  };
+  const rows: ShellRow[] = [];
+  let kopf = "";
+  for (const d of eintraege) {
+    if (d.gruppe !== kopf) { kopf = d.gruppe; shell.list.appendChild(el("div", "cpkhead", GRUPPE[d.gruppe].kopf)); }
+    const r = el("button", "cpkrow") as HTMLButtonElement;
+    r.appendChild(el("span", "cpkid", d.name));
+    r.appendChild(el("span", "cpkn", d.art));
+    r.title = d.pfad ?? d.aendern;
+    r.onclick = () => { shell.select(rows.findIndex((x) => x.el === r), false, false); show(d); shell.showDetail(true); };
+    shell.list.appendChild(r);
+    rows.push({ el: r, open: () => show(d) });
+  }
+  shell.setRows(rows);
+  if (!eintraege.length) { shell.detail.replaceChildren(el("div", "hint shellhint", "This session reads no Claude Code files besides Fleet's start line.")); return; }
+  const i = Math.max(0, want ? eintraege.findIndex((d) => d.key === want) : 0);
+  shell.select(i, true, false);
+  show(eintraege[i]!, finde);
+}
+
 function focusPane(index: number) {
   const changed = focused !== index;
   focused = index;
@@ -6285,6 +6336,8 @@ interface FileViewOpts {
   // passes it — there is no editing a revision — so the gesture cannot appear where it is a lie.
   edit?: { slot: number };
   line?: number;
+  // without a line: scroll to the first line that contains this text (the setup window opens settings.json at "hooks")
+  find?: string;
   back?: { label: string; go: () => void };
   // a caller that draws its OWN head passes it here, and the default block (‹ back, label, path,
   // source) is not drawn: the explorer's tree stays beside the file, so ‹ back has nowhere to go
@@ -6397,9 +6450,11 @@ function renderFileBody(shell: Shell, body: HTMLElement, o: FileViewOpts, r: Fil
     box.append(gut, pre);
     body.appendChild(box);
   } else body.appendChild(pre);
-  if (o.line) requestAnimationFrame(() => {
+  const found = o.find ? text.split("\n").findIndex((z) => z.includes(o.find!)) + 1 : 0;
+  const line = o.line ?? (found || undefined);
+  if (line) requestAnimationFrame(() => {
     const height = parseFloat(getComputedStyle(pre).lineHeight);
-    if (Number.isFinite(height)) shell.detail.scrollTop = pre.offsetTop + (o.line! - 1) * height - shell.detail.clientHeight / 3;
+    if (Number.isFinite(height)) shell.detail.scrollTop = pre.offsetTop + (line - 1) * height - shell.detail.clientHeight / 3;
   });
   const facts: string[] = [];
   if (typeof r.size === "number") facts.push(`${(r.size / 1024).toFixed(1)} KB`);

@@ -3237,9 +3237,17 @@
   #board .bsec .bsval { flex: 1; min-width: 0; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink2);
     overflow-wrap: anywhere; }
   #board .bsetup .bspacks .bsval { display: flex; flex-wrap: wrap; gap: 3px; }
-  /* what shapes the seat besides Fleet's line (src/fassung-umfeld-zeilen.ts); the owner's own parts say so */
+  /* what shapes the seat besides Fleet's line (src/fassung-umfeld-zeilen.ts): one head per origin with its sentence, and
+     every row that has a place where it is set is a button to that place */
   #board .bsetup .bsumfeld .bsval { white-space: normal; overflow-wrap: anywhere; }
-  #board .bsetup .bseigen { color: var(--b-ink3); font-family: inherit; font-style: italic; }
+  #board .bsetup .bsgruppe { display: block; margin: 10px 0 3px; }
+  #board .bsetup .bsgkopf { display: block; font-size: 11.5px; color: var(--b-ink2); }
+  #board .bsetup .bsgsatz { display: block; font-size: 11px; line-height: 1.4; color: var(--b-ink3); }
+  #board .bsetup .bsgo { width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none;
+    color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
+  #board .bsetup .bsgo:hover { background: var(--chat-raised); }
+  #board .bsetup .bsgo:hover .bsval { color: var(--chat-ink); }
+  #board .bsetup .bsgopfeil { flex: none; font-size: 12px; color: var(--b-ink3); }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
     font-size: 10.5px; color: var(--b-ink2); }
   #board .bsetup .bspack { cursor: pointer; }
@@ -3266,6 +3274,15 @@
   .rgbtn.link:hover:not(:disabled) { background: none; color: var(--chat-ink); text-decoration-color: var(--chat-mute); }
 
   /* the context-packs window: a pack is a pointer list, and its sources open the file itself */
+  /* the setup window (src/client.ts#openSetupFiles) lists its files like the packs window */
+  #shell-setup .cpkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px;
+    background: none; color: #e6e6e6; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
+  #shell-setup .cpkrow:hover { background: var(--chat-raised); }
+  #shell-setup .cpkrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-setup .cpkid { flex: 1; min-width: 0; font-family: var(--chat-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-setup .cpkn { flex: none; font-size: 10.5px; color: var(--chat-mute); }
+  #shell-setup .cpkhead { margin: 12px 10px 4px; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--chat-faint); }
+  #shell-setup .rgbtn.link { margin-top: 12px; }
   #shell-packs .cpkrow, #shell-packs .cpksrc { border: 0; background: none; font: inherit; color: inherit;
     text-align: left; -webkit-appearance: none; appearance: none; }
   #shell-packs .cpkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px;

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { baueFassung, fuehreNach, textAbschnitt, type FassungEingang } from "./fassung";
 import { leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, warmhaltenAbschnitt, type SchwelleFakten, type WarmFakten } from "./fassung-umfeld";
-import { EIGEN_WORT, umfeldZeilen } from "../src/fassung-umfeld-zeilen";
+import { setupDateien, umfeldZeilen } from "../src/fassung-umfeld-zeilen";
 
 const ordner: string[] = [];
 afterEach(() => { for (const d of ordner.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -152,8 +152,10 @@ describe("das übrige Eigene in ~/.claude", () => {
   test("ein geänderter eigener Agent ändert den Hash", () => {
     expect(fassung(welt({ agent: "---\nname: pruefer\n---\nPrüft streng.\n" })).hash).not.toBe(fassung(welt()).hash);
   });
-  test("das Board zählt es je Art", () => {
-    expect(umfeldZeilen(fassung(welt()).teile).find((z) => z.label === "Eigenes")).toMatchObject({ wert: "1 Agenten · 2 Skills · 1 Befehle · 1 Regeln · 1 MCP", eigen: true });
+  test("das Board nennt es je Art mit Zahl und Namen", () => {
+    const zeilen = umfeldZeilen(fassung(welt()).teile).filter((z) => z.gruppe === "eigen");
+    expect(["Agents", "Skills", "Commands", "Rules", "MCP"].map((l) => zeilen.find((z) => z.label === l)?.wert))
+      .toEqual(["1 · pruefer", "2 · eins, zwei", "1 · los", "1 · ts", "1 · suche"]);
   });
 });
 
@@ -169,17 +171,34 @@ describe("was dem Owner gehört", () => {
     expect(["hooks-eigene", "cc-einstellungen-eigene", "plugins"].map((id) => abschnitt(f, id).eigentum)).toEqual(["owner", "owner", "owner"]);
     expect(["hooks", "cc-einstellungen", "schwelle", "warmhalten"].map((id) => abschnitt(f, id).eigentum)).toEqual([undefined, undefined, undefined, undefined]);
   });
-  test("das Board sagt es an jeder Zeile, die Eigenes trägt", () => {
+  test("das Board sagt je Zeile, woher sie kommt", () => {
     const zeilen = umfeldZeilen(fassung(welt()).teile);
-    expect(zeilen.map((z) => [z.label, z.wert, z.eigen])).toEqual([
-      ["Übergabe", "Übergabe ab 35 % · fällig ab 45 % · an der Schwelle: Hinweis · Hinweis an", false],
-      ["Warmhalten", "aus", false],
-      ["Hooks", "1 vom Repo · 2 eigene", true],
-      ["Plugins", "p1", true],
-      ["Einstellungen", expect.stringMatching(/^~\/\.claude\/settings\.json \d+ B$/), true],
-      ["Eigenes", "1 Agenten · 2 Skills · 1 Befehle · 1 Regeln · 1 MCP", true],
+    expect(zeilen.map((z) => [z.gruppe, z.label])).toEqual([
+      ["fleet", "Succession"], ["repo", "Hooks"], ["repo", "Settings"], ["repo", "MCP"],
+      ["eigen", "Hooks"], ["eigen", "Plugins"], ["eigen", "Settings"], ["eigen", "Agents"], ["eigen", "Skills"], ["eigen", "Commands"],
+      ["eigen", "Rules"], ["eigen", "MCP"],
     ]);
-    expect(EIGEN_WORT).toBe("deins, reist nicht mit");
+    expect(zeilen[0]!.wert).toBe("hand over at 35 %, due at 45 % · cache not kept warm");
+  });
+  test("jede Zeile führt dahin, wo sie gesetzt wird", () => {
+    const w = welt(), teile = fassung(w).teile;
+    const zeilen = umfeldZeilen(teile, w.cwd), dateien = setupDateien(teile, w.cwd);
+    const ziel = (gruppe: string, label: string) => {
+      const z = zeilen.find((x) => x.gruppe === gruppe && x.label === label)?.ziel;
+      if (z?.art !== "datei") return z?.art ?? null;
+      const d = dateien.find((x) => x.key === z.key);
+      return d ? d.pfad ?? `Text: ${d.name}` : "kein Eintrag";
+    };
+    expect(ziel("fleet", "Succession")).toBe("nachfolge");
+    expect(ziel("repo", "Hooks")).toBe(join(w.cwd, ".claude", "settings.json"));
+    expect(ziel("eigen", "Hooks")).toBe("~/.claude/settings.json");
+    expect(ziel("eigen", "Agents")).toBe("~/.claude/agents/pruefer.md");
+    expect(ziel("eigen", "Plugins")).toBe("Text: Plugins");
+    expect(dateien.find((d) => d.key === "eigen:plugins")?.auch?.pfad).toBe("~/.claude/settings.json");
+  });
+  test("ohne Hooks führt die Zeile nirgends hin", () => {
+    const w = welt({ ownerSettings: { model: "opus" } });
+    expect(umfeldZeilen(fassung(w).teile, w.cwd).find((z) => z.gruppe === "eigen" && z.label === "Hooks")).toMatchObject({ wert: "none", ziel: null });
   });
 });
 

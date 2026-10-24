@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { popover } from "./popover";
@@ -25,7 +25,7 @@ import { perfRebuild } from "./perfmarks";
 import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 import { fassungKurz } from "./fassung-zeile";
-import { EIGEN_WORT, umfeldZeilen, type UmfeldTeil, type UmfeldZeile } from "./fassung-umfeld-zeilen";
+import { GRUPPE, setupDateien, umfeldZeilen, type SetupDatei, type UmfeldGruppe, type UmfeldTeil, type UmfeldZeile } from "./fassung-umfeld-zeilen";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
 // poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
@@ -2419,44 +2419,59 @@ function moreSection(c: BoardCtx): HTMLElement {
 // nach FASSUNG_FRISCH_MS neu, denn Schwelle und Warmhalten kann der Owner nach dem Start ändern (die Route führt sie nach). Das Fenster zeigt
 // vor dem Start dieselben acht Zeichen; null = die Antwort kam nicht, dann steht keine Zeile. Darunter, was den Sitz außer Fleets Zeile formt
 // (src/fassung-umfeld-zeilen.ts).
-interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; nachgefuehrt: string[]; at: number }
+interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; dateien: SetupDatei[]; nachgefuehrt: string[]; at: number }
 const FASSUNG_FRISCH_MS = 15_000;
 const fassungLaeuft = new Map<string, FassungGelesen | null>(), fassungImFlug = new Set<string>();
-function fassungLesen(slot: number, openedAt: number, wohin: HTMLElement | null): void {
-  const key = `${slot}:${openedAt}`;
+function fassungLesen(c: BoardCtx, openedAt: number, wohin: HTMLElement | null): void {
+  const slot = c.slot, key = `${slot}:${openedAt}`;
   if (fassungImFlug.has(key)) return;
   fassungImFlug.add(key);
   void api(`/api/slots/${slot}/fassung?anlass=laufend`).then(async (r) => {
     const j: unknown = r.ok ? await r.json().catch(() => null) : null;
     const o = j && typeof j === "object" ? j as { hash?: unknown; teile?: unknown; festgehalten?: { nachgefuehrt?: unknown } | null } : null;
     const h = typeof o?.hash === "string" ? o.hash : null;
-    const gelesen = h ? { hash: h, zeilen: Array.isArray(o?.teile) ? umfeldZeilen(o.teile as UmfeldTeil[]) : [],
+    const teile = Array.isArray(o?.teile) ? o.teile as UmfeldTeil[] : [];
+    const gelesen = h ? { hash: h, zeilen: umfeldZeilen(teile, c.s.cwd ?? null), dateien: setupDateien(teile, c.s.cwd ?? null),
       nachgefuehrt: Array.isArray(o?.festgehalten?.nachgefuehrt) ? o.festgehalten.nachgefuehrt.map(String) : [], at: Date.now() } : null;
     // eine Neulesung, die scheitert, nimmt die alte Antwort nicht weg
     if (gelesen || !fassungLaeuft.get(key)) fassungLaeuft.set(key, gelesen);
     fassungImFlug.delete(key);
     if (!wohin?.isConnected) return;
-    if (gelesen) fassungZeigen(wohin, gelesen); else wohin.closest(".bsrow")?.remove();
+    if (gelesen) fassungZeigen(wohin, gelesen, c); else wohin.closest(".bsrow")?.remove();
   }).catch(() => { if (!fassungLaeuft.get(key)) fassungLaeuft.set(key, null); fassungImFlug.delete(key); wohin?.closest(".bsrow")?.remove(); });
 }
 const FASSUNG_TITLE = "what this session was started with, as a short hash — the start window shows the same one before the start";
-function fassungZeigen(v: HTMLElement, f: FassungGelesen): void {
+function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
   v.textContent = fassungKurz(f.hash);
   const r = v.closest(".bsrow") as HTMLElement | null;
   if (r) r.title = f.nachgefuehrt.length ? `${f.hash}\nseit dem Start geändert: ${f.nachgefuehrt.join(", ")}` : f.hash;
   // die Zeilen darunter stehen genau einmal: eine Neulesung ersetzt sie
   let n = r?.nextElementSibling ?? null;
   while (n?.classList.contains("bsumfeld")) { const weg = n; n = n.nextElementSibling; weg.remove(); }
-  let nach: Element | null = r;
+  // je Herkunft ein Kopf mit einem Satz, darunter ihre Zeilen; eine Zeile mit Ziel ist ein Knopf dorthin
+  let nach: Element | null = r, gruppe: UmfeldGruppe | null = null;
+  const setze = (e: HTMLElement) => { nach?.after(e); nach = e; };
   for (const z of f.zeilen) {
-    const zr = el("div", "bsrow bsumfeld");
+    if (z.gruppe !== gruppe) {
+      gruppe = z.gruppe;
+      const k = el("div", "bsumfeld bsgruppe");
+      k.append(el("span", "bsgkopf", GRUPPE[gruppe].kopf), el("span", "bsgsatz", GRUPPE[gruppe].satz));
+      setze(k);
+    }
+    const ziel = z.ziel;
+    const nachfolge = ziel?.art === "nachfolge" && !!successionOf(c);
+    const geht = nachfolge || ziel?.art === "datei";
+    const zr = el(geht ? "button" : "div", `bsrow bsumfeld${geht ? " bsgo" : ""}`);
     zr.appendChild(el("span", "bskey", z.label));
-    const zv = el("span", "bsval", z.wert);
-    if (z.eigen) zv.appendChild(el("span", "bseigen", ` · ${EIGEN_WORT}`));
-    zr.appendChild(zv);
+    zr.appendChild(el("span", "bsval", z.wert));
+    if (geht) zr.appendChild(el("span", "bsgopfeil", "›"));
     zr.title = z.titel;
-    nach?.after(zr);
-    nach = zr;
+    if (ziel?.art === "datei") zr.onclick = () => openSetupFiles(c.slot, f.dateien, ziel.key, ziel.finde);
+    else if (nachfolge) zr.onclick = () => {
+      if (!handoverOpenOn(c)) toggleHandover(c, false);
+      document.getElementById(`bueb-${c.slot}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+    setze(zr);
   }
 }
 function setupBody(c: BoardCtx, su: HTMLElement): void {
@@ -2482,8 +2497,8 @@ function setupBody(c: BoardCtx, su: HTMLElement): void {
     const key = `${slot}:${s.openedAt}`, gehalten = fassungLaeuft.get(key);
     if (gehalten !== null) {
       const v = row("Fassung", "…", FASSUNG_TITLE);
-      if (gehalten) fassungZeigen(v, gehalten);
-      if (!gehalten || Date.now() - gehalten.at > FASSUNG_FRISCH_MS) fassungLesen(slot, s.openedAt, v);
+      if (gehalten) fassungZeigen(v, gehalten, c);
+      if (!gehalten || Date.now() - gehalten.at > FASSUNG_FRISCH_MS) fassungLesen(c, s.openedAt, v);
     }
   }
   if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");

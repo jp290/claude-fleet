@@ -442,3 +442,32 @@ describe("Worktree ohne Regelbuch: die Session lädt die AGENTS.md ihres Branche
     expect(scaffold(path)).toEqual({ claudeMd: false, env: true, agentsMd: true });
   }, LIFE_DEADLINE_MS * 3);
 });
+
+// EIN ANGEHEFTETES REPO IST EIN WORKPLACE (Slot 1 für das Startfenster, 24.10.): ohne laufende Session bot es kein „Branch & land“, weil die
+// Branch-Tür es nicht kannte. Angeheftet nimmt sie es; ein angehefteter Ordner ohne git bleibt draußen, abgeheftet ist es wieder fremd.
+describe("angeheftete Repos sind Workplaces", () => {
+  test("ein angeheftetes Repo ohne Session: Branch anlegen und in GET /api/branches; ohne Pin und als Ordner ohne git nicht", async () => {
+    const f = fixture();
+    const angeheftet = join(TMP, `pin-repo-${Date.now()}`);
+    mkdirSync(angeheftet, { recursive: true });
+    sh(angeheftet, "init", "-q", "-b", "main");
+    commitIn(angeheftet, "README", "start");
+    const ordner = join(TMP, `pin-ordner-${Date.now()}`);
+    mkdirSync(ordner, { recursive: true });
+    const [vorher, pin, pinOrdner, made, liste, ab, nachher] = await life(f, [
+      post("/api/branches", { repo: angeheftet, name: "Vor dem Pin" }),
+      post("/api/pins", { path: angeheftet }), post("/api/pins", { path: ordner }),
+      post("/api/branches", { repo: angeheftet, name: "Pin Probe" }), get("/api/branches"),
+      post("/api/pins", { path: angeheftet, on: false }), post("/api/branches", { repo: angeheftet, name: "Nach dem Pin" })]);
+    expect(vorher?.status).toBe(400);
+    expect(String(vorher?.body.error)).toContain("not a workplace repo");
+    expect([pin?.status, pinOrdner?.status]).toEqual([200, 200]);
+    expect(made?.status).toBe(201);
+    const repos = (liste?.body.repos as { repo: string }[]).map((r) => r.repo);
+    expect(repos.some((r) => r.endsWith(angeheftet.split("/").at(-1)!))).toBe(true);
+    expect(repos.some((r) => r.endsWith(ordner.split("/").at(-1)!))).toBe(false);
+    expect(rowsOf(liste!, repos.find((r) => r.endsWith(angeheftet.split("/").at(-1)!))!).branches.map((b) => b.name)).toContain("Pin Probe");
+    expect(ab?.status).toBe(200);
+    expect(nachher?.status).toBe(400);
+  }, LIFE_DEADLINE_MS * 2);
+});

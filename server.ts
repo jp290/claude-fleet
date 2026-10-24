@@ -8311,8 +8311,12 @@ async function workplaceStands(repos: WorkplaceRepo[], measuredAt: number): Prom
 }
 // the repos GET /api/worktrees lists — also the repos POST /api/worktrees may create a place in,
 // so a place it creates is never one the list cannot show
+// THE OWNER'S PINNED FOLDERS ARE WORKPLACES TOO (Slot 1 for the start window, 24.10.: a pinned repo without a running session had no
+// „[Zitat entfernt]“, POST /api/branches answered „[Zitat entfernt]“). A pin that is a git checkout joins as its primary checkout, as a
+// session's folder does (knownRepos); a pinned plain folder stays out, it has no branches to show.
+const pinnedRepos = (): string[] => pins.map((p) => resolve(expandCwd(p))).filter((p) => existsSync(`${p}/.git`)).map(primaryCheckoutOf);
 function workplaceRepoList(): string[] {
-  const allRepos = [...new Set([...knownRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
+  const allRepos = [...new Set([...knownRepos(), ...pinnedRepos(), REPO_DIR, ...(HELPER_UPDATE_REPO ? [HELPER_UPDATE_REPO] : [])].map((r) => { try { return realpathSync(r); } catch { return r; } }))];
   // THE COPY IS NOT A WORKPLACE OF ITSELF (owner, 2026-10-06): on a test instance the server's own
   // directory is the snapshot copy — no .git, so its only possible repo row is an unreadable
   // placeholder the owner reads as a second Arbeitsort the fleet works in. It leaves the list with

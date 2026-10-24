@@ -28,6 +28,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { sendFailureMessage, sendFailureToastMs } from "../src/pendingsend";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { holdCeiling } from "./hold-ceiling";
 
 const composerByteDetail = (text: string, expected: string) => {
   const got = Buffer.from(text);
@@ -1762,21 +1763,26 @@ export async function run(): Promise<void> {
 
       // THE CEILING IS THE PROMISE: a composer that clears is probed again within
       // HOLD_BACKOFF_MAX_MS, so the row above is delivered EXACTLY ONCE inside that window and the
-      // hold closes with one `end` row carrying the totals. The measured bound is generous by one
-      // BSpace round-trip and one poll interval — what it must exclude is a backoff that grew past
-      // its cap, which is the one way a bounded retry turns into permanent silence.
+      // hold closes with one `end` row carrying the totals. The bound is read from the server's
+      // own rows (e2e/hold-ceiling.ts): the promised probe lies within the ceiling of the release,
+      // no refusal follows it, and the end comes one send after it — or after whatever else Fleet
+      // typed into this pane first. What it must exclude is a backoff that grew past its cap,
+      // which is the one way a bounded retry turns into permanent silence.
       const livingHoldRows = holdRowsFor(livingEvent?.id ?? "x");
+      const ceiling = holdCeiling({ rows: auditRows(), eventId: livingEvent?.id ?? "x", receiverSlot: uId,
+        releaseAt, capMs: HOLD_BACKOFF_MAX_MS, slackMs: AUTOS_TICK_MS * 4 + 2000 });
       const livingEnd = livingHoldRows.filter((r) => r.phase === "end");
       if (releaseReady && counterIntact && subjectsSubscribed)
         check("held backoff: the cleared composer is probed again within the documented ceiling and the hold ends exactly once",
           deliveredLiving?.status === "delivered"
-          && deliveredAfterReleaseMs <= HOLD_BACKOFF_MAX_MS + AUTOS_TICK_MS * 4 + 2000
+          && ceiling.ok
           && livingEnd.length === 1
           && livingEnd[0]?.holds === livingHoldRows.filter((r) => r.phase !== "end").length
           && (livingEnd[0]?.holds ?? 0) >= heldCount
           && livingHoldRows.at(-1)?.phase === "end"
           && (livingEnd[0]?.detail ?? "").includes("typed into it"),
           JSON.stringify({ afterReleaseMs: deliveredAfterReleaseMs, ceilingMs: HOLD_BACKOFF_MAX_MS,
+            ceiling: { ...ceiling, releaseAt },
             probesAtRelease: heldCount, end: livingEnd.map((r) => [r.holds, r.heldMs]),
             rows: livingHoldRows.map((r) => [r.phase, r.holds]) }));
 

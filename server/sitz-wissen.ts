@@ -137,17 +137,48 @@ export function seatSkillsVerwaist(names: readonly string[], belegt: readonly { 
   return names.filter((name) => !lebt.has(name));
 }
 
-/** DIE WAHL AN EINER TÜR: `bibliothek` true | false, oder die Zeile „bibliothek“ eines angenommenen Plans; null heißt, die
- *  Voreinstellung gilt (an, server.ts#seatLibraryOn). Ein Plan ohne diese Zeile wählt nichts. An der Selbst-Tür kann eine
- *  Session für eine andere nur abschalten, nie über die Voreinstellung hinaus anschalten (Abnahme 22.10. 2/2). */
+/** DIE WAHL DER BIBLIOTHEK: ganz an, ganz aus, oder nur diese Packs (Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“
+ *  ) — die Ids in der Reihenfolge der Tür, je eine einmal. Eine Liste schaltet die Bibliothek an und lässt jeden anderen Pack weg. */
+export type BibliothekWahl = boolean | readonly string[];
+const PACK_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const PACKS_MAX = 64;
+/** Eine Liste aus einem Body oder dem Stand: lauter Pack-Ids, je eine einmal; sonst null. Leer ist „keine Packs“, also aus. Rein. */
+export function packAuswahlVon(v: unknown): readonly string[] | false | null {
+  if (!Array.isArray(v) || v.length > PACKS_MAX || !v.every((id): id is string => typeof id === "string" && PACK_ID.test(id))
+    || new Set(v).size !== v.length) return null;
+  return v.length ? [...v] : false;
+}
+/** Die Wahl aus dem Stand: ein Boolean oder eine gültige Liste; alles andere ist keine Wahl. Rein. */
+export function bibliothekWahlGeladen(v: unknown): BibliothekWahl | null {
+  return typeof v === "boolean" ? v : Array.isArray(v) ? packAuswahlVon(v) : null;
+}
+
+/** DIE WAHL AN EINER TÜR: `bibliothek` true | false | [Pack-Ids], oder die Zeile „bibliothek“ eines angenommenen Plans; null heißt,
+ *  die Voreinstellung gilt (an, server.ts#seatLibraryOn). Ein Plan ohne diese Zeile wählt nichts. An der Selbst-Tür kann eine
+ *  Session für eine andere nur abschalten, nie über die Voreinstellung hinaus anschalten (Abnahme 22.10. 2/2): eine Liste
+ *  schaltet an, darum gilt dort die Voreinstellung. Ob jede Id in Fleets Bibliothek steht, prüft der Server am Register
+ *  (packAuswahlFehlt). */
 export function bibliothekDerTuer(body: Readonly<Record<string, unknown>>, plan: readonly { readonly id: string; readonly zustand: string }[] | null,
-  tuer: "owner" | "self"): { ok: true; wahl: boolean | null } | { ok: false; error: string } {
-  if (body.bibliothek !== undefined && typeof body.bibliothek !== "boolean") return { ok: false, error: "bibliothek must be true or false" };
+  tuer: "owner" | "self"): { ok: true; wahl: BibliothekWahl | null } | { ok: false; error: string } {
+  const liste = Array.isArray(body.bibliothek) ? packAuswahlVon(body.bibliothek) : null;
+  if (body.bibliothek !== undefined && typeof body.bibliothek !== "boolean" && liste === null)
+    return { ok: false, error: `bibliothek must be true, false or a list of distinct pack ids (at most ${PACKS_MAX})` };
   if (plan && body.bibliothek !== undefined)
     return { ok: false, error: "bibliothek and plan together are two choices — switch it in the plan as bausteine bibliothek=an|aus" };
   const zeile = plan?.find((row) => row.id === "bibliothek")?.zustand;
-  const wahl = zeile !== undefined ? zeile === "an" : typeof body.bibliothek === "boolean" ? body.bibliothek : null;
-  return { ok: true, wahl: tuer === "self" && wahl === true ? null : wahl };
+  const wahl = zeile !== undefined ? zeile === "an" : typeof body.bibliothek === "boolean" ? body.bibliothek : liste;
+  return { ok: true, wahl: tuer === "self" && (wahl === true || Array.isArray(wahl)) ? null : wahl };
+}
+/** Die Ids einer Liste, die Fleets Bibliothek für diesen Sitz nicht hat; leer = alle da. Rein. */
+export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge): string[] {
+  const da = new Set(k.packs.map((pack) => pack.id));
+  return Array.isArray(wahl) ? wahl.filter((id) => !da.has(id)) : [];
+}
+/** Die Bibliothek eines Sitzes, wie seine Wahl sie lässt: bei einer Liste nur ihre Packs, in der Reihenfolge des Registers. Rein. */
+export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null): SeatKnowledge {
+  if (!Array.isArray(wahl)) return k;
+  const ids = new Set(wahl);
+  return { ...k, packs: k.packs.filter((pack) => ids.has(pack.id)) };
 }
 
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste

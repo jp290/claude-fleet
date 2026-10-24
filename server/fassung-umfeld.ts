@@ -289,7 +289,7 @@ export const umfeldOhneClaude = (): { darf: FassungAbschnittEingang[]; arbeitet:
 // Fassung nach (server.ts, GET /api/slots/:id/fassung). Hier steht nur die Form; die Werte rechnet server.ts mit denselben Funktionen
 // wie der Takt, der sie anwendet.
 export interface SchwelleFakten {
-  readonly art: string; readonly basePct: number; readonly capPct: number; readonly von: "session" | "env" | "fleet";
+  readonly art: string; readonly basePct: number; readonly capPct: number; readonly von: "session" | "env" | "fleet" | "setup";
   /** die Env-Zeile der Schiene (FLEET_MIGRATE_PCT oder FLEET_LANE_MIGRATE_PCT) */
   readonly envName: string;
   /** warum keine Schwelle wirkt (Steward, Harness, Fleet-Schalter, 0 %), null = sie wirkt */
@@ -298,7 +298,7 @@ export interface SchwelleFakten {
 const WAHL_WORT = { hint: "Hinweis", compact: "Compact", succeed: "neue Session" } as const;
 export function schwelleAbschnitt(f: SchwelleFakten): FassungAbschnittEingang {
   const quelle = f.von === "session" ? "Slot.handover (für diese Session gesetzt)" : f.von === "env" ? `${f.envName} (.env)`
-    : `server/succession.ts#FLEET_BASE_PCT (${f.art})`;
+    : f.von === "setup" ? "server/succession.ts#thresholdOf (eigenes Setup)" : `server/succession.ts#FLEET_BASE_PCT (${f.art})`;
   return textAbschnitt("schwelle", quelle, f.aus ? `Übergabe-Schwelle aus: ${f.aus}`
     : `Übergabe ab ${f.basePct} % · fällig ab ${f.capPct} % · an der Schwelle: ${WAHL_WORT[f.wahl]} · Hinweis ${f.hinweis ? "an" : "aus"}`, true);
 }

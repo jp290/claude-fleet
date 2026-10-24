@@ -71,7 +71,7 @@ export interface BriefSuccession {
   rail: "lane" | "standard-main" | "game-maker-main" | "handoff";
   fill: { usedTokens: number; windowTokens: number; pct: number } | null;
   thresholdPct: number | null;
-  thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | null;
+  thresholdOff: "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | "setup" | null;
   nudges: number; nudgedAt: number | null; gaveUp: boolean; maxNudges: number;
   // the fill the newest ask was written at (server.ts#successionFacts), an older server sends none
   nudgedPct?: number | null;
@@ -97,7 +97,7 @@ export interface BriefSuccession {
   // K9 S3 (server.ts#successionFacts): the kind of session, the cap where Fleet's action is due, where the
   // base comes from, the choice at the threshold and the newest act — an older server sends none
   kind?: "orchestrator" | "program-main" | "bau" | "lane" | "session"; capPct?: number | null;
-  thresholdFrom?: "session" | "env" | "fleet";
+  thresholdFrom?: "session" | "env" | "fleet" | "setup";
   atThreshold?: "hint" | "compact" | "succeed"; choices?: ("hint" | "compact" | "succeed")[];
   // K9 S3b-2: the fleet's value for this session (since 18.10. the hint for every kind); a server before S3b-2 sends none
   fleetChoice?: "hint" | "compact" | "succeed";

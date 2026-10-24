@@ -291,15 +291,17 @@ export function warmTextInput(v: unknown, fleetText: string, credentials: readon
 export type SessionKind = "orchestrator" | "program-main" | "bau" | "lane" | "session";
 const FLEET_BASE_PCT: Record<SessionKind, number> = { orchestrator: 45, "program-main": 40, bau: 40, lane: 37, session: 40 };
 export const CAP_GAP_PCT = 5;
-export interface Threshold { kind: SessionKind; basePct: number; capPct: number; from: "session" | "env" | "fleet" }
+export interface Threshold { kind: SessionKind; basePct: number; capPct: number; from: "session" | "env" | "fleet" | "setup" }
 // `envPct`: der Env-Wert der Schiene, null = nicht gesetzt; 0 schaltet die Schiene ab (basePct 0).
 // `ownPct`: der eigene Wert der Session (HandoverSetting.thresholdPct), null = keiner; 0 = „Aus“ für diese Session
 // (K9 S3c, Owner 14.10.: „[Zitat entfernt]“): Basis 0, also weder Hinweis noch Handlung.
-export function thresholdOf(kind: SessionKind, envPct: number | null, ownPct: number | null): Threshold {
+// `eigenesSetup`: die Session startete im eigenen Setup (server/eigenes-setup.ts#eigenesSetup). Dort ist die Übergabe aus, bis
+// die Tür eine Schwelle wählt (Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“) — kein Hinweis in die Pane.
+export function thresholdOf(kind: SessionKind, envPct: number | null, ownPct: number | null, eigenesSetup = false): Threshold {
   const env = kind === "orchestrator" ? null : envPct;
-  const basePct = ownPct ?? env ?? FLEET_BASE_PCT[kind];
+  const basePct = ownPct ?? (eigenesSetup ? 0 : env ?? FLEET_BASE_PCT[kind]);
   return { kind, basePct, capPct: basePct > 0 ? basePct + CAP_GAP_PCT : 0,
-    from: ownPct !== null ? "session" : env !== null ? "env" : "fleet" };
+    from: ownPct !== null ? "session" : eigenesSetup ? "setup" : env !== null ? "env" : "fleet" };
 }
 // "below": nichts; "hint": zwischen Basis und Obergrenze bei warmem Cache, die Session wählt den Punkt;
 // "due": an der Obergrenze oder kalt über der Basis, die Handlung ist fällig. `cooling`: Der Cache ist noch

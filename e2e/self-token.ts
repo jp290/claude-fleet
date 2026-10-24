@@ -4,7 +4,7 @@
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, get, paneEnv, paneProbeDiag, plantScreen, plogRead, post, redactPaneText, restartSrv, results, stopSrv, tmuxOut } from "./harness";
+import { BASE, H, IP, PORT, REPO, REPO2, REPO3, ROOT, SOCK, TOKEN, check, fleetSeatDir, get, paneEnv, paneProbeDiag, plantScreen, plogRead, post, redactPaneText, restartSrv, results, stopSrv, tmuxOut } from "./harness";
 import { MERGE_IDLE_MS } from "./lane-helpers";
 import type { Ctx } from "./ctx";
 import { LOCAL_PROOF_STEPS, localProofFor, verificationProportionFor } from "../verify-proportion";
@@ -1975,8 +1975,10 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     return { slot, tok: token ?? "", openedAt };
   };
   const repoP = mkRepo("owner-program-repo", true);
-  const repoF = mkRepo("owner-fresh-repo", false);
-  const repoT = mkRepo("owner-stale-repo", false);
+  // the two plain sessions stand on Fleet's rail (44/49): in Fleet's repo, where no own setup turns it off (harness.ts#fleetSeatDir)
+  const repoF = fleetSeatDir("owner-fresh");
+  const repoT = fleetSeatDir("owner-stale");
+  repos.push(repoF, repoT);
   const repoG = mkRepo("owner-gamemaker-repo", true);
   const P = await openFree(repoP, "owner-program-main");
   const F = await openFree(repoF, "owner-fresh-handover");

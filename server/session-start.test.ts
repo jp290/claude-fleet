@@ -137,6 +137,9 @@ describe("Bauleitung 16.10.: welche Werkzeuge eine laufende MAIN wirklich hat ‚Ä
 
   test("a malformed record loads as none", () => {
     expect(slotSpawnFrom(undefined, 1)).toBeNull();
+    // eigenes Setup: nur ein Sitz ohne Rolle tr√§gt es
+    expect(slotSpawnFrom({ role: "generic", openedAt: 1, eigen: true }, 1)).toEqual({ role: "generic", openedAt: 1, eigen: true });
+    expect(slotSpawnFrom({ role: "lane", openedAt: 1, eigen: true }, 1)).toEqual({ role: "lane", openedAt: 1 });
     expect(slotSpawnFrom(null, 1)).toBeNull();
     expect(slotSpawnFrom("main", 1)).toBeNull();
     expect(slotSpawnFrom({ role: "bau", openedAt: 1 }, 1)).toBeNull();

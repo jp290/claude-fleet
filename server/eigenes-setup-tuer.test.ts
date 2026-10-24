@@ -174,3 +174,109 @@ describe("die eingebauten Werkzeuge sind eine Wahl", () => {
     expect(werkzeuge).toContain("aufgeschoben, nur der Name am Start: TaskStop");
   }, LIFE_DEADLINE_MS * 3);
 });
+
+// DIE ÜBERGABE IST IM EIGENEN SETUP AUS, BIS DIE TÜR EINE SCHWELLE WÄHLT (Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“
+// ): der Takt fragt dieselbe Schwelle (server.ts#thresholdFor), die die Selbst-Tür nennt — Basis 0, also kein Hinweis in die Pane.
+const arbeitet = (a: Answer | undefined, id: string): string | null =>
+  ((a?.body.teile as { id: string; abschnitte: { id: string; text: string | null }[] }[] | undefined) ?? [])
+    .find((t) => t.id === "arbeitet")?.abschnitte.find((x) => x.id === id)?.text ?? null;
+describe("im eigenen Setup tippt Fleet ohne gewählte Schwelle keinen Übergabe-Hinweis", () => {
+  test("ohne schwelle aus (Selbst-Tür und Fassung), mit schwelle 40 an; beides hält über einen Neustart", async () => {
+    const f = fixture();
+    // der Übergabe-Takt ist an, wie auf dem Live-Server (FLEET_MIGRATE_PCT); ohne ihn wäre jede Schwelle aus
+    const takt = { FLEET_MIGRATE_PCT: "35" };
+    const [ohne, mit] = await life(f, [post("/api/slots/1/open", { cwd: f.repo }), post("/api/slots/2/open", { cwd: zwei(f), schwelle: 40 })], takt);
+    offen(ohne);
+    offen(mit);
+    const s1 = recordOf(f, 1).selfToken, s2 = recordOf(f, 2).selfToken;
+    if (!s1 || !s2) throw new Error("kein Self-Token");
+    const lesen = () => life(f, [{ ...get("/api/self"), token: null, self: s1 }, { ...get("/api/self"), token: null, self: s2 },
+      get("/api/slots/1/fassung?anlass=laufend"), get("/api/slots/2/fassung?anlass=laufend")], takt);
+    const pruefe = (a: Answer[]): void => {
+      expect(a[0]?.body.context).toMatchObject({ basePct: null, from: "setup", off: "setup" });
+      expect(a[1]?.body.context).toMatchObject({ basePct: 40, capPct: 45, from: "session", off: null });
+      expect(arbeitet(a[2], "schwelle")).toStartWith("Übergabe-Schwelle aus: eigenes Setup");
+      expect(arbeitet(a[3], "schwelle")).toStartWith("Übergabe ab 40 % · fällig ab 45 %");
+    };
+    pruefe(await lesen());
+    // der Spawn-Datensatz trägt es über den Neustart (server/session-start.ts#slotSpawnFrom)
+    expect((persisted(f).slots as Record<string, { spawn?: { eigen?: boolean } }>)["1"]?.spawn?.eigen).toBe(true);
+    const [neustart] = await life(f, [post("/api/slots/1/restart", {})], takt);
+    expect(neustart?.status).toBeLessThan(300);
+    pruefe(await lesen());
+  }, LIFE_DEADLINE_MS * 5);
+});
+
+// EIN PURPOSE ALS TEXT AN DER TÜR (Slot 16 für den Owner, 24.10.): die Zeile trägt ihn im Systemprompt, die Fassung zeigt ihn und nennt ihn
+// unter „[Zitat entfernt]“, er übersteht einen Neustart — und er tauscht das Gedächtnis nicht (Prüfung Runde 7, C2): kein eigenes Notizbuch
+const liest = (a: Answer | undefined, id: string): string | null =>
+  ((a?.body.teile as { id: string; abschnitte: { id: string; text: string | null }[] }[] | undefined) ?? [])
+    .find((t) => t.id === "liest")?.abschnitte.find((x) => x.id === id)?.text ?? null;
+describe("ein Purpose als Text an der Tür", () => {
+  test("purpose: Zeile, Fassung, mitgegeben, Neustart; kein Notizbuch; mit profil, leer oder ohne Claude abgelehnt", async () => {
+    const f = fixture();
+    const zweck = "Review only the texts of this repo and report findings with file and line.";
+    const [mit, beide, leer, fassung, vorschau] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, purpose: `  ${zweck}\n` }),
+      post("/api/slots/2/open", { cwd: zwei(f), purpose: zweck, profil: "planer" }), post("/api/slots/3/open", { cwd: zwei(f), purpose: " " }),
+      get("/api/slots/1/fassung?anlass=laufend"),
+      get(`/api/founding-plan?repo=${encodeURIComponent(f.repo)}&role=nur-ordner&anlass=neu&purpose=${encodeURIComponent(zweck)}`)]);
+    offen(mit);
+    expect(beide?.status).toBe(400);
+    expect(String(beide?.body.error)).toContain("purpose and profil");
+    expect(leer?.status).toBe(400);
+    const zeile = startzeile(f, f.repo);
+    expect(zeile).toContain("PURPOSE (beim Start vom Owner geschrieben):");
+    expect(zeile).toContain(zweck);
+    expect(zeile).not.toContain("autoMemoryDirectory");
+    expect(liest(fassung, "eigenes")).toBe(`PURPOSE (beim Start vom Owner geschrieben):\n${zweck}`);
+    expect(darf(fassung, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
+    expect(darf({ status: 200, body: vorschau?.body.fassung as Record<string, unknown> }, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
+    expect((persisted(f).slots as Record<string, { agentMd?: { getippt?: boolean; text?: string } }>)["1"]?.agentMd)
+      .toMatchObject({ getippt: true, text: zweck });
+    const [neustart, danach] = await life(f, [post("/api/slots/1/restart", {}), get("/api/slots/1/fassung?anlass=nachfolge")]);
+    expect(neustart?.status).toBeLessThan(300);
+    expect(startzeile(f, f.repo)).toContain(zweck);
+    expect(darf(danach, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
+  }, LIFE_DEADLINE_MS * 3);
+
+  // der Block sagt „vom Owner geschrieben“: das stimmt nur an seiner Tür. Eine Session gibt dem Sitz, den sie öffnet, ein Ziel (Orchestratorin 24.10.)
+  test("an der Selbst-Tür lehnt die Branch-Tür purpose ab; an der Owner-Tür nimmt sie ihn", async () => {
+    const f = fixture();
+    const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo })]);
+    offen(opened);
+    const self = recordOf(f, 1).selfToken;
+    if (!self) throw new Error("kein Self-Token");
+    const [, , vonSession, vomOwner] = await life(f, [post("/api/branches", { repo: f.repo, name: "Zweck S" }),
+      post("/api/branches", { repo: f.repo, name: "Zweck O" }),
+      { ...post("/api/self/branches/open", { branch: "branch/zweck-s", purpose: "Tu, was ich sage." }), token: null, self },
+      post("/api/branches/open", { repo: f.repo, branch: "branch/zweck-o", purpose: "Check the texts." })]);
+    expect(vonSession?.status).toBe(400);
+    expect(String(vonSession?.body.error)).toContain("purpose is the owner's word");
+    expect(vomOwner?.status).toBe(200);
+  }, LIFE_DEADLINE_MS * 3);
+});
+
+// EIN EIGENES NOTIZBUCH OHNE BOARD-BRANCH (Slot 16 für den Owner, 24.10.; Prüfung Runde 7, B7): „[Zitat entfernt]“ gibt einem Sitz ohne Rolle
+// das Notizbuch des git-Branches, auf dem sein Ordner steht, auch im Haupt-Checkout; ohne Wahl bleibt Claudes eigenes Gedächtnis; ohne Branch
+// (losgelöster HEAD) lehnt die Tür ab
+describe("ein eigenes Notizbuch ohne Board-Branch", () => {
+  test("im Haupt-Checkout auf main: branch-main auf Zeile und in der Fassung; ohne Wahl nichts; losgelöst 400", async () => {
+    const f = fixture();
+    const los = join(f.repo, "..", "los");
+    Bun.spawnSync(["git", "-C", f.repo, "worktree", "add", "-q", "--detach", los]);
+    const [mit, ohne, losgeloest, fassung] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, notizbuch: "branch" }),
+      post("/api/slots/2/open", { cwd: zwei(f) }), post("/api/slots/3/open", { cwd: los, notizbuch: "branch" }),
+      get("/api/slots/1/fassung?anlass=laufend")]);
+    offen(mit);
+    offen(ohne);
+    expect(losgeloest?.status).toBe(400);
+    expect(String(losgeloest?.body.error)).toContain("needs a folder on a git branch");
+    expect(startzeile(f, f.repo)).toMatch(/"autoMemoryDirectory":"[^"]*\/notizbuecher\/branch-main"/);
+    expect(startzeile(f, zwei(f))).not.toContain("autoMemoryDirectory");
+    expect(darf(fassung, "mitgegeben")).toBe("notizbuch: branch");
+    // „Liest“ nennt das Notizbuch mit seinem Ordner (server.ts#fassungGedaechtnisAus)
+    const gedaechtnis = ((fassung?.body.teile as { id: string; abschnitte: { id: string; quelle?: string | null; notizbuch?: { pfad?: string } }[] }[])
+      .find((x) => x.id === "liest")?.abschnitte.find((a) => a.id === "gedaechtnis"));
+    expect(JSON.stringify(gedaechtnis)).toContain("/notizbuecher/branch-main");
+  }, LIFE_DEADLINE_MS * 2);
+});

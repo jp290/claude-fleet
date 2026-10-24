@@ -1,7 +1,7 @@
 // Shared plumbing for the split e2e suite (fleet-e2e.ts is the runner; every check module
 // imports from here). Everything in this file is infrastructure — no checks live here.
 import { join, resolve } from "node:path";
-import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { installPhaseProbes, timed, TRAIL_DIR, TRAIL_RUN, writeTrailRow } from "./trail-emit";
 import { lineDetail, spillTo } from "./fail-detail";
@@ -45,6 +45,18 @@ installPhaseProbes();
 export const ROOT = resolve(import.meta.dir, "..");
 // the throwaway git repo the worktree/dispatch checks spawn lanes from
 export const REPO = process.env.FLEET_E2E_REPO ?? "";
+// A PLAIN SEAT ON FLEET'S RAIL. A seat without a standing role in another repo starts in its own setup, and there Fleet's succession is
+// off until a threshold is chosen (server/succession.ts#thresholdOf, Slot 16 for the owner 24.10.: „[Zitat entfernt]“).
+// A check about the rail's own value (FLEET_MIGRATE_PCT, which a seat cannot choose: a door takes multiples of 5) seats its plain session
+// in Fleet's repo instead: a detached worktree of this instance, so it is Fleet's tree (server.ts#fleetBaumVon) and no board branch.
+export function fleetSeatDir(name: string): string {
+  const dir = join(resolve(ROOT, ".."), `fleet-seat-${name}`);
+  Bun.spawnSync(["git", "-C", ROOT, "worktree", "remove", "--force", dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const made = Bun.spawnSync(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", dir, "HEAD"]);
+  if (made.exitCode !== 0) throw new Error(`fleetSeatDir ${name}: ${made.stderr.toString().trim()}`);
+  return realpathSync(dir);
+}
 // Two more, for the per-repo verify config only (P-7c). REPO2 has its own entry in the server's
 // FLEET_VERIFY_CMD_REPOS, REPO3 deliberately has none — the pair is what makes "each land gets ITS
 // command" separable from "everything gets the global". Empty when a wrapper does not build them,

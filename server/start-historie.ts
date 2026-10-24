@@ -31,7 +31,8 @@ export function merkeStart(s: Belegung, dir: string, jetzt = Date.now()): Promis
   if (!s.cwd) return Promise.resolve();
   return binnenGrenze(appendEvent(join(dir, HISTORIE_DATEI), { art: "start", slot: s.id, openedAt: s.openedAt, at: jetzt, cwd: s.cwd, label: s.label,
     harness: s.harness, model: s.model, effort: s.effort, branch: s.worktree?.branch ?? null, rechte: s.rechte,
-    profil: s.agentMd ? { id: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256, name: s.agentMd.name ?? null } : null,
+    profil: s.agentMd && !s.agentMd.getippt ? { id: s.agentMd.profil, titel: s.agentMd.titel, sha256: s.agentMd.sha256, name: s.agentMd.name ?? null } : null,
+    ...(s.agentMd?.getippt ? { purpose: { sha256: s.agentMd.sha256 } } : {}),
     ...(s.agent ? { agent: { id: s.agent.id, name: s.agent.name, hash: s.agent.hash } } : {}) }));
 }
 // was eine Tür erst nach dem Öffnen weiß: wer sie geöffnet hat, der Branch einer Branch-Session mit ihrem Ziel und ihrer Aufgabe

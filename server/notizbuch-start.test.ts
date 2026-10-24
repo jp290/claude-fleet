@@ -134,17 +134,18 @@ describe("das Notizbuch ist eine Wahl an der Tür", () => {
     expect(await mitgegeben(f, 1)).toBe("notizbuch: aus");
   }, LIFE_DEADLINE_MS * 3);
 
-  test("„branch“ gibt einer Branch-Session im fremden Repo das Notizbuch ihres Branches; ohne Board-Branch lehnt die Tür ab", async () => {
+  // ohne Board-Branch das des git-Branches (Slot 16 für den Owner, 24.10.; Prüfung Runde 7, B7: „[Zitat entfernt]“ im Checkout lehnte die Tür ab)
+  test("„branch“ gibt einer Branch-Session im fremden Repo das Notizbuch ihres Branches; ohne Board-Branch das des git-Branches im Checkout", async () => {
     const f = fixture();
     const [made, opened, ohneBranch, falsch] = await life(f, [post("/api/branches", { repo: f.repo, name: "Notiz W" }),
       post("/api/branches/open", { repo: f.repo, branch: "branch/notiz-w", notizbuch: "branch" }),
-      post("/api/slots/2/open", { cwd: f.repo, notizbuch: "branch" }), post("/api/slots/2/open", { cwd: f.repo, notizbuch: "an" })]);
+      post("/api/slots/2/open", { cwd: f.repo, notizbuch: "branch" }), post("/api/slots/3/open", { cwd: f.repo, notizbuch: "an" })]);
     const slot = offen(opened);
     const ordner = `${projekt(f.repo)}/notizbuecher/branch-branch%2Fnotiz-w`;
     expect(startzeile(f, String(made?.body.path))).toContain(`"autoMemoryDirectory":"${ordner}"`);
     expect(await mitgegeben(f, slot)).toBe("notizbuch: branch");
-    expect(ohneBranch?.status).toBe(400);
-    expect(String(ohneBranch?.body.error)).toContain("board branch");
+    expect(ohneBranch?.status).toBe(200);
+    expect(startzeile(f, f.repo)).toContain(`"autoMemoryDirectory":"${projekt(f.repo)}/notizbuecher/branch-main"`);
     expect(falsch?.status).toBe(400);
   }, LIFE_DEADLINE_MS * 4);
 });

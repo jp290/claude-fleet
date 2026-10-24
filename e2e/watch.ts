@@ -27,7 +27,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { sendFailureMessage, sendFailureToastMs } from "../src/pendingsend";
-import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
+import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, fleetSeatDir, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 import { holdCeiling } from "./hold-ceiling";
 
 const composerByteDetail = (text: string, expected: string) => {
@@ -7694,16 +7694,17 @@ export async function run(): Promise<void> {
   // pins no session id, so this fixture plants identities exactly as the restart/context tests do;
   // that is what makes three above-threshold controls distinguishable from ctx:null.
   {
-    const openPlain = async (label?: string): Promise<number> => {
+    // `cwd`: the plain session and its ctx:null control sit in Fleet's repo, on the rail's own value (harness.ts#fleetSeatDir)
+    const openPlain = async (label?: string, cwd = REPO): Promise<number> => {
       const id = await freeSlot();
       if (!id) return 0;
-      const r = await post(`/api/slots/${id}/open`, { cwd: REPO, ...(label ? { label } : {}) });
+      const r = await post(`/api/slots/${id}/open`, { cwd, ...(label ? { label } : {}) });
       return r.ok ? id : 0;
     };
-    const mainId = await openPlain("migrate-main");
+    const mainId = await openPlain("migrate-main", fleetSeatDir("migrate-main"));
     const lane = (await (await post("/api/lanes", { repo: REPO, harness: "claude" })).json()) as { slot: number; cwd: string; branch: string };
     const stewardId = await openPlain("⚙ steward");
-    const unknownId = await openPlain("migrate-unknown");
+    const unknownId = await openPlain("migrate-unknown", fleetSeatDir("migrate-unknown"));
     // TWO MORE CONTROLS, 2026-09-13. `boundId` is a claude MAIN the planted Program below binds, so
     // the main rail has an unbound AND a bound reader of the same 50%. `piId` is a FOREIGN harness
     // at the same fill: the stand-in `pi` makes it probe `alive`, and the restart below arms

@@ -20,11 +20,12 @@ export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, strin
   waiting: "it is waiting for you",
   unpinned: "no conversation to measure yet",
   session: "turned off for this session",
+  setup: "your own setup: off until you choose a threshold",
 };
 // a gate the owner cannot open from here: the fleet's master switch, another agent, the steward — and the two that pass
 // on their own (it waits for the owner, no conversation pinned yet)
 export const lockedGate = (sc: BriefSuccession): boolean =>
-  !!sc.thresholdOff && sc.thresholdOff !== "rail" && sc.thresholdOff !== "session";
+  !!sc.thresholdOff && sc.thresholdOff !== "rail" && sc.thresholdOff !== "session" && sc.thresholdOff !== "setup";
 
 // what Fleet does at the cap (server/succession.ts#fleetChoiceOf: since 18.10. only the nudge for every kind, a new session
 // only where it is chosen); „hint“ with the asking off leaves Fleet nothing to do at all

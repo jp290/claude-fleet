@@ -113,7 +113,9 @@ export function permissionModeDerTuer(v: unknown): { ok: true; wahl: PermissionM
 }
 export interface EigenesSetupWahl {
   readonly model: string | null; readonly effort: string | null; readonly permissionMode: PermissionModeWahl | null; readonly rechte: string | null; readonly profil: string | null;
-  readonly bibliothek: boolean; readonly notizbuch: "aus" | "branch" | null; readonly remote: boolean; readonly packMcp: readonly string[];
+  /** ein Purpose, den die Tür als Text bekam (server/agentmd.ts#purposeDerTuer) */
+  readonly purpose?: boolean;
+  readonly bibliothek: boolean | readonly string[]; readonly notizbuch: "aus" | "branch" | null; readonly remote: boolean; readonly packMcp: readonly string[];
   readonly autoModeEnvironment: boolean; readonly tools: readonly string[] | null;
 }
 
@@ -125,8 +127,9 @@ export function eigenesSetupGewaehlt(o: EigenesSetupWahl): string[] {
     o.permissionMode ? `permissionMode: ${o.permissionMode}` : null,
     o.tools ? `tools: ${o.tools.join(", ") || "keine eingebauten"}` : null,
     o.rechte ? `rechte: ${o.rechte}` : null,
-    o.bibliothek ? "bibliothek: an" : null,
+    Array.isArray(o.bibliothek) ? `bibliothek: ${o.bibliothek.join(", ")}` : o.bibliothek ? "bibliothek: an" : null,
     o.profil ? `profil: ${o.profil}` : null,
+    o.purpose ? "purpose: an der Tür geschrieben" : null,
     o.notizbuch ? `notizbuch: ${o.notizbuch}` : null,
     o.remote ? "remote: an" : null,
     o.packMcp.length ? `mcp: ${o.packMcp.join(", ")}` : null,

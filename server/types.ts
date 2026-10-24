@@ -2124,7 +2124,8 @@ interface Slot {
   sitz: import("./sitz-reise").SitzStart | null;
   // Fleets Bibliothek for this session (server.ts#seatLibraryOn), chosen at its opening: null = no choice, the place decides
   // (on in Fleet's own repo, off elsewhere). claude only; carried by a generic succession; persisted; cleared on open/kill.
-  bibliothek: boolean | null;
+  // A list is „only these packs“ (server/sitz-wissen.ts#BibliothekWahl).
+  bibliothek: import("./sitz-wissen").BibliothekWahl | null;
   // the notebook chosen at its opening (door field `notizbuch`, server/notizbuch.ts#notizbuchDerTuer): null = no choice. claude only;
   // carried by a generic succession; persisted; cleared on open/kill.
   notizbuchWahl: import("./notizbuch").NotizbuchWahl | null;

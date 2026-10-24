@@ -256,7 +256,7 @@ export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly Ag
 // und ein Agent nicht (es wäre sonst still verloren)
 export interface SlotWahlen {
   readonly harness: string | null; readonly model: string | null; readonly effort: string | null; readonly permissionMode: string | null;
-  readonly rechte: unknown; readonly tools: readonly string[] | null; readonly weglassen: unknown; readonly bibliothek: boolean | null;
+  readonly rechte: unknown; readonly tools: readonly string[] | null; readonly weglassen: unknown; readonly bibliothek: boolean | readonly string[] | null;
   readonly notizbuchWahl: string | null; readonly remote: boolean; readonly autoModeEnvironment: boolean | null; readonly schwelle: number | null;
   readonly agentMd: AgentMd | null; readonly sitz: { konst: string; pos: string } | null; readonly rolle: string | null;
   readonly packMcp: readonly string[]; readonly worktree: boolean;

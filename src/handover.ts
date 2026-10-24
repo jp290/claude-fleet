@@ -72,7 +72,7 @@ function expected(sc: BriefSuccession, body: HandoverWrite): BriefSuccession {
   if (body.thresholdPct !== undefined) {
     const own = body.thresholdPct;
     const eff = own ?? s.defaultPct;
-    const gate = lockedGate(s) ? s.thresholdOff : eff > 0 ? null : own === 0 ? "session" : "rail";
+    const gate = lockedGate(s) ? s.thresholdOff : eff > 0 ? null : own === 0 ? "session" : s.thresholdFrom === "setup" || s.thresholdOff === "setup" ? "setup" : "rail";
     s = { ...s, sessionPct: own, pctFrom: own === null ? "fleet" : "session", thresholdOff: gate, thresholdPct: gate ? null : eff,
       capPct: gate ? null : eff + CAP_GAP_PCT, thresholdFrom: own === null ? "fleet" : "session" };
   }

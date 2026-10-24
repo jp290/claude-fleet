@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sectionAt } from "../context-sections";
 import { type Answer, branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
-import { SEAT_BOX, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, seatContextFacts, seatFassungAbschnitte,
+import { SEAT_BOX, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekGewaehlt, bibliothekNichtWirksam, packAuswahlFehlt, seatContextFacts, seatFassungAbschnitte,
   seatPacks, seatSkillFiles, seatSkillsVerwaist, skillAufrufe, type SeatKnowledge } from "./sitz-wissen";
 
 const ROOT = realpathSync(join(import.meta.dir, ".."));
@@ -63,7 +63,7 @@ const skillsIn = (dirs: string[]): Map<string, string> => new Map(dirs.flatMap((
   const root = join(dir, ".claude", "skills");
   return existsSync(root) ? readdirSync(root).map((name) => [name, readFileSync(join(root, name, "SKILL.md"), "utf8")] as const) : [];
 }));
-type SlotRecord = { selfToken?: string; openedAt?: number; bibliothek?: boolean };
+type SlotRecord = { selfToken?: string; openedAt?: number; bibliothek?: boolean | string[] };
 const recordOf = (f: ReturnType<typeof fixture>, slot: number): SlotRecord =>
   (persisted(f).slots as Record<string, SlotRecord> | undefined)?.[String(slot)] ?? {};
 const tokenOf = (f: ReturnType<typeof fixture>, slot: number): string => {
@@ -145,12 +145,15 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     const [planVor, planAus] = await life(f, [plan(other), plan(other, "claude", "bibliothek=aus")]);
     expect(made?.status).toBe(201);
     expect([branch?.status, frei?.status, fleet?.status, ohne?.status]).toEqual([200, 200, 200, 200]);
-    expect(falsch).toMatchObject({ status: 400, body: { error: "bibliothek must be true or false" } });
+    expect(falsch).toMatchObject({ status: 400, body: { error: "bibliothek must be true, false or a list of distinct pack ids (at most 64)" } });
     const b = Number(branch?.body.slot);
 
     // DER START: was jeder Sitz immer braucht, wörtlich; der Rest als Skills aus dem Ordner, den --add-dir nennt —
     // mit der useWhen-Zeile als Beschreibung und dem Text am HEAD als Inhalt
     const starts = [[await startOf(b), false, b], [await startOf(12), false, 12], [await startOf(13), true, 13]] as const;
+    // ein Sitz in Fleets Repo ohne Board-Branch und ohne Wahl behält das geteilte Gedächtnis: das Branch-Notizbuch ohne Board-Branch
+    // gibt es nur auf die Wahl `notizbuch: "branch"` (server.ts#notizbuchBranchOhneBoard)
+    expect(readFileSync(join(ARGV, "slot-13"), "utf8")).not.toContain("/notizbuecher/branch-");
     // im fremden Repo ohne Wahl: kein Start-Block, kein Ordner
     const ohneWahl = await startOf(14);
     expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([false, [], false]);
@@ -364,8 +367,22 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     expect(bibliothekDerTuer({ bibliothek: false }, null, "self")).toEqual({ ok: true, wahl: false });
   });
   test("verweigert: kein Wahrheitswert, oder Plan und Feld zugleich", () => {
-    expect(bibliothekDerTuer({ bibliothek: "ja" }, null, "owner")).toEqual({ ok: false, error: "bibliothek must be true or false" });
+    expect(bibliothekDerTuer({ bibliothek: "ja" }, null, "owner")).toEqual({ ok: false, error: "bibliothek must be true, false or a list of distinct pack ids (at most 64)" });
+    expect(bibliothekDerTuer({ bibliothek: ["a", "a"] }, null, "owner").ok).toBe(false);
+    expect(bibliothekDerTuer({ bibliothek: ["A b"] }, null, "owner").ok).toBe(false);
     expect(bibliothekDerTuer({ bibliothek: false }, plan("an"), "owner").ok).toBe(false);
+  });
+  // Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“
+  test("eine Liste wählt einzelne Packs: an, nur diese, in der Reihenfolge des Registers; leer ist aus; an der Selbst-Tür die Voreinstellung", () => {
+    expect(bibliothekDerTuer({ bibliothek: ["who-it-is-for"] }, null, "owner")).toEqual({ ok: true, wahl: ["who-it-is-for"] });
+    expect(bibliothekDerTuer({ bibliothek: [] }, null, "owner")).toEqual({ ok: true, wahl: false });
+    expect(bibliothekDerTuer({ bibliothek: ["who-it-is-for"] }, null, "self")).toEqual({ ok: true, wahl: null });
+    const p = (id: string) => ({ id, useWhen: null, sources: [], text: id });
+    const k: SeatKnowledge = { tree: "foreign", repoRoot: "/f", head: "h", packs: [p("a"), p("b"), p("c")] };
+    expect(bibliothekGewaehlt(k, ["c", "a"]).packs.map((x) => x.id)).toEqual(["a", "c"]);
+    expect(bibliothekGewaehlt(k, true)).toBe(k);
+    expect(packAuswahlFehlt(["a", "zz"], k)).toEqual(["zz"]);
+    expect(packAuswahlFehlt(true, k)).toEqual([]);
   });
   test("verwaist ist, was keiner laufenden Belegung gehört — auch ein Ordner vom alten Schnitt nach Inhalt", () => {
     expect(seatSkillsVerwaist(["3-100", "3-99", "4-100", "0123456789abcdef"], [{ slot: 3, openedAt: 100 }, { slot: 5, openedAt: 1 }]))
@@ -373,4 +390,42 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     expect(seatSkillsVerwaist([], [{ slot: 1, openedAt: 1 }])).toEqual([]);
     expect(seatSkillsVerwaist(["1-1"], [])).toEqual(["1-1"]);
   });
+});
+
+// EINZELNE PACKS AN DER TÜR (Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“): die Zeile trägt nur die gewählten,
+// die Fassung zeigt jeden gewählten und nur ihn, die Wahl überlebt einen Neustart; ein Pack, den die Bibliothek nicht hat, wird abgelehnt
+describe("einzelne Packs aus Fleets Bibliothek", () => {
+  test("bibliothek: [Pack-Ids] im fremden Repo: Zeile, Fassung, mitgegeben, Neustart; eine unbekannte Id ist 400", async () => {
+    const f = fixture();
+    const other = join(TMP, "packs-repo");
+    mkdirSync(other);
+    sh(other, "init", "-q", "-b", "main");
+    writeFileSync(join(other, "README"), "anderes Repo\n");
+    sh(other, "add", "README");
+    sh(other, "commit", "-q", "-m", "start");
+    const [gewaehlt, weg] = box(false);
+    if (!gewaehlt || !weg) throw new Error(`zwei Box-Packs im fremden Repo erwartet: ${box(false).join(", ")}`);
+    const [ok, unbekannt, fassung] = await life(f, [post("/api/slots/10/open", { cwd: other, bibliothek: [gewaehlt] }),
+      post("/api/slots/11/open", { cwd: other, bibliothek: [gewaehlt, "kein-solcher-pack"] }), get("/api/slots/10/fassung?anlass=laufend")]);
+    expect([ok?.status, ok?.body.error]).toEqual([200, undefined]);
+    expect(unbekannt?.status).toBe(400);
+    expect(String(unbekannt?.body.error)).toContain("no pack kein-solcher-pack");
+    const start = await startOf(10);
+    expect(start.appended).toContain(SEAT_START_HEAD);
+    expect(start.appended).toContain(textOf(gewaehlt));
+    expect(start.appended).not.toContain(textOf(weg));
+    const gezeigt = wissenOf(fassung).map((a) => a.text ?? "");
+    expect(gezeigt.some((text) => text.includes(textOf(gewaehlt)))).toBe(true);
+    expect(gezeigt.some((text) => text.includes(textOf(weg)))).toBe(false);
+    const mitgegeben = ((fassung?.body.teile as { id: string; abschnitte: Abschnitt[] }[]).find((x) => x.id === "darf")?.abschnitte
+      .find((a) => a.id === "mitgegeben"))?.text;
+    expect(mitgegeben).toBe(`bibliothek: ${gewaehlt}`);
+    expect(recordOf(f, 10).bibliothek).toEqual([gewaehlt]);
+    rmSync(join(ARGV, "slot-10"));
+    const [neu] = await life(f, [post("/api/slots/10/restart", {})]);
+    expect(neu?.status).toBeLessThan(300);
+    const wieder = await startOf(10);
+    expect(wieder.appended).toContain(textOf(gewaehlt));
+    expect(wieder.appended).not.toContain(textOf(weg));
+  }, LIFE_DEADLINE_MS * 3);
 });

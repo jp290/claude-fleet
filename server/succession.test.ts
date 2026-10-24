@@ -175,6 +175,10 @@ describe("die Schwelle je Art", () => {
     expect(thresholdOf("program-main", 44, null)).toEqual({ kind: "program-main", basePct: 44, capPct: 49, from: "env" });
     expect(thresholdOf("bau", 44, null)).toMatchObject({ basePct: 44, capPct: 49, from: "env" });
     expect(thresholdOf("lane", 30, null)).toMatchObject({ basePct: 30, capPct: 35, from: "env" });
+    // im eigenen Setup aus, bis die Session eine eigene Schwelle hat; die Env-Zeile schaltet es nicht an
+    expect(thresholdOf("session", 44, null, true)).toEqual({ kind: "session", basePct: 0, capPct: 0, from: "setup" });
+    expect(thresholdStep(60, thresholdOf("session", null, null, true), "warm")).toBe("below");
+    expect(thresholdOf("session", 44, 40, true)).toEqual({ kind: "session", basePct: 40, capPct: 45, from: "session" });
     expect(thresholdOf("orchestrator", 40, null)).toEqual({ kind: "orchestrator", basePct: 45, capPct: 50, from: "fleet" });
   });
   test("der eigene Wert der Session ist ihre Basis und gewinnt über Env und Tabelle, auch bei der Orchestratorin", () => {

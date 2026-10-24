@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, ownerWs, wsWithHeaders, type PromptLogEntry } from "./harness";
+import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, fleetSeatDir, get, paneEnv, plantScreen, plogRead, post, restartSrv, stopSrv, tmuxOut, wsUrl, ownerWs, wsWithHeaders, type PromptLogEntry } from "./harness";
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
@@ -4932,11 +4932,13 @@ async function runThresholdAct(): Promise<void> {
     const openedAt = (await sessions()).slots.find((x) => x.id === free)?.openedAt ?? 0;
     return { slot: r?.ok ? free : 0, openedAt, cwd };
   };
-  const P = await openFree(mkRepo("act-succeed-repo"), "act-succeed");
-  const Q = await openFree(mkRepo("act-compact-repo"), "act-compact");
-  const R = await openFree(mkRepo("act-working-repo"), "act-working");
-  const O = await openFree(mkRepo("act-off-repo"), "act-off");
-  const H = await openFree(mkRepo("act-hint-repo"), "act-hint");
+  // plain sessions on Fleet's rail (44/49 from e2e-isolated.sh): in Fleet's repo, where no own setup turns the rail off (harness.ts#fleetSeatDir)
+  const seat = (name: string): string => { const dir = fleetSeatDir(name); repos.push(dir); return dir; };
+  const P = await openFree(seat("act-succeed"), "act-succeed");
+  const Q = await openFree(seat("act-compact"), "act-compact");
+  const R = await openFree(seat("act-working"), "act-working");
+  const O = await openFree(seat("act-off"), "act-off");
+  const H = await openFree(seat("act-hint"), "act-hint");
   const all = [P, Q, R, O, H];
   const statePath = `${ROOT}/fleet.json`;
   const cleanup = async (): Promise<void> => {

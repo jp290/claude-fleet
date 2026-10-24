@@ -2,6 +2,7 @@
 // kurzem Wert, nach Herkunft gruppiert (Fleet · das Repo · der Owner selbst), und je Zeile das Ziel, an dem sie gesetzt wird: der
 // Nachfolge-Block oder eine Datei im Setup-Fenster (setupDateien). Owner 2026-10-23: „[Zitat entfernt]“ war unverständlich; jede
 // Zeile führt dahin, wo sie eingestellt wird. Kein DOM; src/board.ts zeichnet die Zeilen, src/client.ts#openSetupFiles das Fenster.
+// Was diese Ansicht wahr zeigen muss (was eine Session wirklich liest, woher jede Zeile kommt, Fallen): docs/session-ui/setup-ansicht.md.
 export interface UmfeldAbschnitt {
   readonly id: string; readonly quelle: string | null; readonly text: string | null; readonly bytes: number | "unknown";
   readonly grund?: string; readonly eigentum?: "owner";

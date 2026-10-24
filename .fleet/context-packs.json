@@ -149,7 +149,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6432,
+    "estimatedBytes": 6571,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -315,6 +315,24 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 3325,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "made-with-love",
+    "useWhen": "Während du Sichtbares baust, und bevor du es zeigst: der kritische Blick aufs Ganze, wie der Owner ihn will.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "made-with-love.text", "path": "docs/packs/made-with-love.md", "anchor": "# Made with love", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 4455,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

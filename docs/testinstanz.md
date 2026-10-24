@@ -56,10 +56,11 @@ will see, and for how you get there.
   saw in the window yourself, also outside your card's surface.
 - **The bar is the owner's: AAA indie software, made with love.** Calm: it shows what counts now, the engine room
   only on request. Honest: it claims nothing and raises no false alarm, and says once and calmly what it doesn't
-  know. One voice: one language, human words, no internal jargon. Care in the small: nothing cut off, everything
-  aligned, empty states thought through, nothing waits without feedback. With character: small own details,
-  never at the cost of clarity. Equally good everywhere, desktop and phone. One agent with taste walks the board
-  about once a week and brings the owner the three things that disturb the feel most; not more rounds than that.
+  know. One voice: one language, human words, no internal jargon. Care in the small: a name may be shortened when one
+  click shows it whole, nothing else is cut off, everything aligned, empty states thought through, nothing waits
+  without feedback. With character: small own details, never at the cost of clarity. Equally good everywhere,
+  desktop and phone. One agent with taste walks the board about once a week and brings the owner the three things
+  that disturb the feel most; not more rounds than that.
 - **Pin the surface before you build.** The owner names surfaces by what he does, not by component names, and
   two panes of one window are one view to him. Find the detail in his words that fits only one surface (a noun
   that exists on one of them, a spatial word like "rechts"), say it back, then build. When his words fit two

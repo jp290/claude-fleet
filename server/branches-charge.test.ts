@@ -34,8 +34,9 @@ describe("Charge mergen ohne Merge-Check (ein Repo ohne ci/merge-check.ts)", () 
     expect(mainLog(f.repo)).toEqual(["Snappiness: messen", "start"]);
     const body = sh(f.repo, "log", "-1", "--format=%b", "main");
     expect(body).toContain(`${tip1.slice(0, 8)} Messung vorher`);
-    expect(body).toContain("(ohne Merge-Check)");
-    expect(body).toContain("passt");
+    // ein Fixture-Repo ist nicht Fleets: sein main liest englisch (Brief fremdes-repo-rund, Punkt 6)
+    expect(body).toContain("(without a check)");
+    expect(body).toContain("looks good");
     expect(filesOn(f.repo, "main")).toEqual(["README", "a.txt", "b.txt"]);
     expect(readFileSync(join(f.repo, "b.txt"), "utf8")).toBe("Messung nachher\n"); // der Haupt-Checkout zog mit
     expect(sh(f.repo, "status", "--porcelain")).toBe("");
@@ -91,7 +92,7 @@ describe("Charge mergen ohne Merge-Check (ein Repo ohne ci/merge-check.ts)", () 
     commitIn(path, "README", "README geändert");
     const [bare] = await life(f, [land(f.repo, "branch/abweisen", "ohne Wort")]);
     expect(bare?.status).toBe(409);
-    expect(String(bare?.body.error)).toContain("ohne Merge-Check");
+    expect(String(bare?.body.error)).toContain("landing without a check only explicitly");
     writeFileSync(join(f.repo, "README"), "ungesichert im Haupt-Checkout\n");
     const [dirty] = await life(f, [land(f.repo, "branch/abweisen", "trotzdem", { unchecked: true })]);
     expect(dirty?.status).toBe(409);

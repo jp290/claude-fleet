@@ -987,7 +987,12 @@ export interface BranchOtherView { branch: string; head: string; at: number; pat
 export interface BranchesRepoView {
   // integration: the branch charges land on (main), null when the repo has none readable
   repo: string; integration: string | null; branches: BranchView[]; others: BranchOtherView[]; othersTotal: number; reasons: FactReason[];
+  // how this repo checks a charge (server/pruefbefehl.ts): its own ci/merge-check.ts, the owner's check command, or none yet —
+  // and a command a session proposed, which runs only once the owner takes it
+  checkCommand?: RepoCheckView;
 }
+export interface RepoCheckView { way: "merge-check" | "command" | "none"; cmd: string | null; by: string | null; at: number | null;
+  proposal: { cmd: string; by: string; at: number } | null }
 export interface BranchesView { repos: BranchesRepoView[] }
 export interface DeployLand {
   sha: string; branch: string | null; task: string | null; at: number | null;

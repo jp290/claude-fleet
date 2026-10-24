@@ -146,8 +146,10 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     const satz = sendFailureMessage(409, r[1]?.body);
     expect(satz).toBe("Die Session wartet an einer Rechte-Frage — im Terminal beantworten (1 oder Esc); nichts wurde getippt");
     expect(sendFailureToastMs(satz)).toBe(6000);
+    // …die Vertrauensfrage ebenso (fremdes-repo-rund, Punkt 3): ihr Satz nennt die Wahl und ist am Telefon genauso lang
     expect(sendFailureToastMs(sendFailureMessage(409, { error: "gate=blocked-screen: claude trust dialog — nothing typed",
-      receipt: { delivery: "refused" } }))).toBeUndefined();
+      receipt: { delivery: "refused" } }))).toBe(6000);
+    expect(sendFailureToastMs(sendFailureMessage(400, { error: "slot not active" }))).toBeUndefined();
     expect(r[2]?.status).toBe(200);
     expect(r[5]?.status).toBe(408);
     expect(existsSync(getippt)).toBe(false);

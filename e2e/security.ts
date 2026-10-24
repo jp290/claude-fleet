@@ -151,6 +151,15 @@ const PRE_AUTH_ROUTES = [
   // not reachable from here. Its side effects are the owner door's: the check after the land is scheduled. It writes into
   // no pane and deploys nothing.
   '= /api/self/branches/land',
+  // A SESSION AND ITS REPO'S CHECK (added 2026-10-24, branch/fremdes-repo-rund; server/pruefbefehl.ts). Bounded like the
+  // land above: the principal is the token's slot, repo and branch come from its own checkout (ownBranchOf / branchRepoOf).
+  // /api/self/branch only READS its own branch as the board shows it. /api/self/branches/check starts the check of its own
+  // branch only (another branch in the body is a 403), with the command the OWNER set — a session can't name one here.
+  // /api/self/repo-check only PROPOSES a command: it is stored beside the owner's, runs nowhere, and becomes the repo's
+  // check only through the owner door POST /api/repo-check behind the owner gate; a repo with its own ci/merge-check.ts is a 409.
+  '= /api/self/branch',
+  '= /api/self/branches/check',
+  '= /api/self/repo-check',
   // The tip's audit without the owner token (bau/ohne-owner-token Schnitt 1): POST /api/repos/audit-tip's verb for the
   // Orchestratorin and a bound Program-MAIN (server.ts#selfDoorRoleOf), every other session 409. It queues the audit of
   // the server repo's integration tip at most once and moves no ref; the audit row names the role and slot that asked.

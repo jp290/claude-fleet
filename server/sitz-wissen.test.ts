@@ -161,8 +161,9 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     type PlanZeile = { id: string; zustand: string; schaltbar: { ja: boolean } };
     const zeileIn = (a: Answer | undefined, id: string) => (a?.body.plan as { bausteine: PlanZeile[] } | undefined)?.bausteine.find((z) => z.id === id);
     expect(zeileIn(planVor, "bibliothek")).toMatchObject({ zustand: "aus", schaltbar: { ja: true } });
-    // im anderen Repo bleibt seit runde4 §6 keine Skill: die Zeile ist aus, weil nichts für sie da ist
-    expect(zeileIn(planVor, "bibliothek-skills")).toMatchObject({ zustand: skills(false).length ? "an" : "aus", schaltbar: { ja: false } });
+    // im anderen Repo ist die Bibliothek ohne Wahl aus, und ihre Skills (your-seat-in-fleet) folgen ihr
+    expect(skills(false).length).toBeGreaterThan(0);
+    expect(zeileIn(planVor, "bibliothek-skills")).toMatchObject({ zustand: "aus", schaltbar: { ja: false } });
     expect(zeileIn(planAus, "bibliothek")).toMatchObject({ zustand: "aus" });
     expect(zeileIn(planAus, "bibliothek-skills")).toMatchObject({ zustand: "aus" });
 

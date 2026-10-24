@@ -99,7 +99,7 @@ describe("Eine Session landet ihren eigenen Branch selbst, nach „passt“ und 
     const [, refused, byOwner] = await life(f, [seen(f.repo, "branch/ohne", tip), ownLand(self, { subject: "Ohne: Charge" }),
       post("/api/branches/land", { repo: f.repo, branch: "branch/ohne", subject: "Ohne: Charge", unchecked: true })]);
     expect(refused?.status).toBe(409);
-    expect(String(refused?.body.error)).toContain("ohne ihn landet eine Session nicht selbst");
+    expect(String(refused?.body.error)).toContain("a session lands its branch only after a green check");
     expect(byOwner).toMatchObject({ status: 200, body: { ok: true, passt: true, checked: false } });
     expect(sh(f.repo, "rev-parse", "main^")).toBe(main0);
   }, LIFE_DEADLINE_MS * 3);

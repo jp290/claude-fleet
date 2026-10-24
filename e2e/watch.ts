@@ -26,7 +26,7 @@ import { PANE_ACK_STALE_MS, opsOpen, opsUnacked, opsPollRow, opsPollVisible, ops
 // the terminal status words, taken from the one place that defines them rather than re-listed here:
 // the retention check below counts exactly the rows pruneFleetEvents counts.
 import { FLEET_EVENT_TERMINAL } from "../server/types";
-import { sendFailureMessage, sendFailureToastMs } from "../src/pendingsend";
+import { sendFailureMessage, sendFailureToastMs, VERTRAUEN_SEND } from "../src/pendingsend";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, fleetSeatDir, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 import { holdCeiling } from "./hold-ceiling";
 
@@ -2831,7 +2831,7 @@ export async function run(): Promise<void> {
       check("owner send: blocked machine never bypasses the owner's own readiness refusal",
         blocked.status === 409 && zeroBytes(start)
           && auditRows().slice(start).some((r) => r.event === "delivery_bundle_refused" && r.reason?.startsWith("gate=blocked-screen:"))
-          && await replay(blocked, "send refused — delivery gate=blocked-screen; nothing was typed"),
+          && await replay(blocked, VERTRAUEN_SEND),
         JSON.stringify({ http: blocked.status, zeroBytes: zeroBytes(start) }));
       await post(`/api/autos/${blockedAuto}/delete`, {});
       await post(`/api/slots/${slot}/kill`, {});

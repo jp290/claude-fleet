@@ -212,6 +212,9 @@ export interface DateiQuellen {
   notizbuch: (profil: string) => Promise<{ index: string; dateien: { datei: string; text: string }[] } | null>;
   laeufe: readonly Lauf[];
   modus: string;
+  // IM EIGENEN SETUP (server/eigenes-setup.ts#eigenesSetup: ein Claude-Sitz ohne Rolle außerhalb von Fleets Repo) gibt Fleet keine Packs
+  // mit, und `modus` ist der, mit dem Claude Code dort startet; die Datei sagt, was der Sitz wirklich hatte (Brief fremdes-repo-rund, 5)
+  eigenesSetup?: boolean;
 }
 export interface Datei { datei: Record<string, unknown>; hinweise: string[] }
 
@@ -241,6 +244,7 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
     if (typeof da === "string") return `${name}: ${da}`;
     let liest: SitzPack[] = [], persoenlich: PersoenlichPlatz[] = [];
     if (da) ({ liest, persoenlich } = da);
+    else if (q.eigenesSetup) hinweise.push(`${name}: lief im eigenen Setup — Fleet gab ihm keine Packs mit; er liest, was Claude Code im Ordner selbst lädt`);
     else {
       const k = await liesBibliothek();
       if (typeof k === "string") hinweise.push(`${name}: Fleets Bibliothek ist hier nicht lesbar (${k}); er reist ohne Packs`);

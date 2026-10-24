@@ -330,3 +330,16 @@ function eigenesAbschnitt(e: Eigenes, regelnAus: string | null): FassungAbschnit
   return { ...textAbschnitt("claude-eigenes", "~/.claude (agents, skills, commands, output-styles, rules) · ~/.claude.json (mcpServers)",
     zeilen.join("\n"), true, undefined, dateien), eigentum: "owner" };
 }
+
+/** DER MODUS, MIT DEM CLAUDE CODE IM EIGENEN SETUP STARTET, wo die Tür keinen wählt: `permissions.defaultMode` aus den Einstellungen
+ *  in Claude Codes Reihenfolge (local vor project vor user, code.claude.com/docs/en/settings), sonst „default“. Für den Export eines
+ *  Sitzes (server/sitz-reise.ts), der so lief: er trägt diesen Modus, nicht Fleets `auto`. Rein bis auf das Lesen der drei Dateien. */
+export function eigenerModus(repo: string, claudeDir: string): string {
+  for (const pfad of [`${repo}/.claude/settings.local.json`, `${repo}/.claude/settings.json`, `${claudeDir}/settings.json`]) {
+    try {
+      const m = (JSON.parse(readFileSync(pfad, "utf8")) as { permissions?: { defaultMode?: unknown } }).permissions?.defaultMode;
+      if (typeof m === "string" && m) return m;
+    } catch { /* keine oder keine lesbare Datei: die nächste */ }
+  }
+  return "default";
+}

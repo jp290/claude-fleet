@@ -35,7 +35,7 @@ import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
-import { RUECKFRAGE_SATZ, sendFailureMessage, sendFailureToastMs } from "./pendingsend";
+import { RUECKFRAGE_SATZ, sendFailureMessage, sendFailureToastMs, VERTRAUEN_SATZ } from "./pendingsend";
 import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
 import { askRisk, onDialogWillOpen } from "./dialog";
 import { openKonstellation, renderKonstellation } from "./konstellation";
@@ -606,6 +606,8 @@ export interface SlotInfo {
   // Claude Code's permission question on this session's screen (server.ts#rueckfrageView): its header and question,
   // never the command. ABSENT = none. The session waits on a person: nothing sent from here answers it.
   rueckfrage?: string;
+  // Claude Code's trust question on this session's screen (server.ts#vertrauenView). ABSENT = none. Answered in the terminal
+  vertrauen?: boolean;
   // the board's last model/effort switch and what Claude Code made of it (server.ts#startModelSwitch). ABSENT = none
   modelSwitch?: ModelSwitch;
   // Codex rollout discovery is lazy and can terminally refuse ambiguity/loss. This is a typed
@@ -5617,6 +5619,7 @@ function setIsland(open: boolean): void {
 export function nowSentence(s: SlotInfo | undefined): { text: string; owner: boolean } | null {
   if (!s?.cwd) return null;
   if (s.rueckfrage) return { text: RUECKFRAGE_SATZ, owner: true };
+  if (s.vertrauen) return { text: VERTRAUEN_SATZ, owner: true };
   if (s.awaiting === "owner") return { text: "Wartet auf dich", owner: true };
   if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return { text: "Hängt — die Session antwortet nicht", owner: false };
   if (s.awaiting === "main") return { text: "Wartet auf ihre MAIN", owner: false };
@@ -6662,7 +6665,7 @@ export function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
   if (out === "bad") return out;
   // a permission question waits on a person, whatever the output's freshness says (UI-Abnahme 22.10.: the board said
   // „arbeitet“ and showed a green dot while the session stood on it)
-  if (s.rueckfrage) return "wait owner";
+  if (s.rueckfrage || s.vertrauen) return "wait owner";
   if (!s.awaiting) return out;
   return s.awaiting === "owner" ? "wait owner" : "wait";
 }
@@ -7553,15 +7556,15 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // the mark reads the output's freshness and `awaiting` itself (src/marks.ts#markFacts)
       markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
       // the permission question as a word beside the glyph, in the colour that means "waits for you"
-      if (s.rueckfrage) {
+      if (s.rueckfrage || s.vertrauen) {
         const frage = el("span", "frage", "Frage");
-        frage.title = `${RUECKFRAGE_SATZ}\n${s.rueckfrage}`;
+        frage.title = s.rueckfrage ? `${RUECKFRAGE_SATZ}\n${s.rueckfrage}` : VERTRAUEN_SATZ;
         r1.appendChild(frage);
       }
       const live = el("span", `act ${state}`);
       live.title = STATE_WORD[state] + (s.rueckfrage ? ` — Rechte-Frage: ${s.rueckfrage}` : "")
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
-        + `\nlast output ${sinceShort(serverNow - s.lastOutput)} ago · ${new Date(s.lastOutput).toLocaleString()}`;
+        + `\nlast output ${sinceShort(serverNow - s.lastOutput) === "now" ? "just now" : `${sinceShort(serverNow - s.lastOutput)} ago`} · ${new Date(s.lastOutput).toLocaleString()}`;
       if (s.codexRecovery) live.title += `\n${codexTurnLine(s)}`;
       r1.appendChild(live);
       row.appendChild(r1);

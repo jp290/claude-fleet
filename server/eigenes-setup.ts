@@ -55,7 +55,8 @@ export function eigenesSetup(f: { claude: boolean; role: ClaudeStartRole | null;
 
 // WAS FLEET IM EIGENEN SETUP NOCH SETZT, je Flag mit Grund: die Setup-Ansicht zeigt genau diese Zeilen (server.ts#fassungFleetStart)
 export const EIGENES_SETUP_MINIMUM: readonly { readonly was: string; readonly warum: string }[] = [
-  { was: "eine Terminal-Pane in deinem Ordner (tmux), mit dem PATH des Fleet-Servers", warum: "damit Fleet die Sitzung zeigen, am Leben halten und `claude` finden kann" },
+  { was: "eine Terminal-Pane in deinem Ordner (tmux), mit der Umgebung deiner Login-Shell; vorn im PATH der Ordner des `claude`, das Fleet startet",
+    warum: "damit Fleet die Sitzung zeigen, am Leben halten und `claude` finden kann, und du darin hast, was dein Terminal hat" },
   { was: "--session-id bzw. --resume", warum: "über diese ID findet Fleet das Gespräch wieder, misst den Füllstand und setzt es nach einem Neustart fort" },
   { was: "FLEET_SELF_TOKEN, FLEET_SELF_SLOT, FLEET_SELF_URL in der Umgebung", warum: "der Ausweis der Sitzung bei Fleet: Postfach, Übergabe und Rückmeldungen" },
 ];

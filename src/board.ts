@@ -4,7 +4,7 @@ import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "
 import { popover } from "./popover";
 import { openK15Entwurf } from "./k15-lader";
 import { boardBranch, boardRepo, branchBusy, branchCharge, loadBranches, lookedLine, mayCheck,
-  chooseLandForm, onPlacesChanged, restartSession, startCheck, startSession } from "./branchcard";
+  checkCommandField, chooseLandForm, onPlacesChanged, restartSession, startCheck, startSession } from "./branchcard";
 import { GS_CSS, GS_WORD, distanceLine, gitModel, gitStructure, headWords, mergeCheckLine, rowOf, sessionRepo, type GsCard, type GsHead, type GsModel, type GsWord } from "./gitstruktur";
 import type { BranchView } from "./protocol";
 import { askRisk } from "./dialog";
@@ -1780,6 +1780,12 @@ function sessionSection(c: BoardCtx): HTMLElement {
     const r = el("div", "brefusal", s.autoCloseRefusal);
     r.title = "Why closing by itself leaves this lane open";
     idsec.appendChild(r);
+  }
+  // Claude Code's trust question (server.ts#vertrauenView): a question to the person, answered in the terminal, never by Fleet
+  if (s.vertrauen) {
+    const w = el("div", "bwait owner", "Claude Code asks whether you trust this folder");
+    w.title = "Answer it in the terminal (1 = yes, trust). A goal Fleet holds for this session follows once it is answered.";
+    idsec.appendChild(w);
   }
   if (s.awaiting) {
     const w = el("div", `bwait ${s.awaiting}`, s.awaiting === "owner" ? "Waiting for you" : "Waiting for its MAIN");
@@ -4244,7 +4250,8 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
       : item?.merged ? `Landed ${bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
   } else if (at !== "lane-check") {
     if (s) {
-      const b = el("button", "gsfact", `Slot ${s.id} · ${slotWorks(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
+      const b = el("button", "gsfact", `Slot ${s.id} · ${s.vertrauen ? "Claude Code asks whether you trust this folder — answer in the terminal"
+        : slotWorks(s.id) ? "working" : s.awaiting === "owner" ? "waiting for you"
         : s.lastOutput > 0 ? `quiet for ${agoEn(Date.now() - s.lastOutput)}` : "quiet"}`) as HTMLButtonElement;
       b.type = "button";
       b.title = `Go to the session in slot ${s.id}`;
@@ -4252,7 +4259,8 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
       said.push(b);
     } else said.push("no session");
     const gate = w?.checks.gate;
-    said.push(bb ? (item?.merged ? `landed${bb.lands.at(-1)?.checked ? ", check green" : ", no check"}` : mergeCheckLine(bb.check))
+    const proposedBy = boardRepo(R.repo)?.checkCommand?.proposal?.by.replace(/^slot /, "Slot ") ?? null;
+    said.push(bb ? (item?.merged ? `landed${bb.lands.at(-1)?.checked ? ", check green" : ", no check"}` : mergeCheckLine(bb.check, proposedBy))
       : lane && w?.target?.landed === "yes" ? `landed in ${w.target.branch}`
       : gate ? `land check ${gate.state === "green" ? "green" : gate.state === "red" ? "red" : gate.state === "running" ? "running" : gate.state === "waiting" ? "waiting" : "skipped"}`
       : "no check yet");
@@ -4270,6 +4278,12 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
   if (dist) s1.appendChild(el("div", "gscap gsahead", dist));
   // 3 — THE LAND FORM in step 1 (owner Z86: „[Zitat entfernt]“): a lane's in this browser, a board
   // branch's on the server
+  // 2d — A CHECK STEP WITHOUT A CHECK: the repo's check command right where „Check“ would run it, or a session's proposal
+  const chk = boardRepo(R.repo)?.checkCommand;
+  if (dia && bb && chk && chk.way !== "merge-check" && (chk.way === "none" || chk.proposal)) {
+    const f = checkCommandField(R.repo, repaint);
+    if (f) s1.appendChild(f);
+  }
   if (!dia && words.includes("landform") && lane && w) s1.appendChild(landFormField("lane", w.path, R.repo, "On land", false));
   else if (!dia && words.includes("landform") && bb) s1.appendChild(branchLandFormField(R.repo, bb, repaint));
   // 4 — THE QUIET WORDS: what acts at once, and what opens step 2
@@ -4282,7 +4296,7 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
     b.type = "button";
     if (!acts) b.setAttribute("aria-expanded", String(open === id));
     b.disabled = (id === "pruefen" && !(bb && mayCheck(bb))) || (id === "mergen" && slot !== null && mergePending.has(slot));
-    b.title = id === "pruefen" ? (bb?.check ? `Check ${branch} against ${bb.chargeBase ?? "its base"} — the tree main would have after it` : "This repo has no merge check")
+    b.title = id === "pruefen" ? (bb?.check ? `Check ${branch} against ${bb.chargeBase ?? "its base"} — the tree main would have after it` : "This repo has no check command — set one above or in the repo's gear")
       : id === "mergen" ? `Merge ${branch} into ${w?.target?.branch ?? m.integration} — first the question with the diff` : label;
     b.onclick = (e) => {
       e.stopPropagation();
@@ -4345,6 +4359,9 @@ function gsSettings(repo: string): HTMLElement {
     hide: "Leave out what landed and has nothing new — unless a session works there" }),
   row("idle", "Without a session", { show: "Show every branch and lane, with a session or not",
     hide: "Leave out branches and lanes no session works at and where no check runs or waits" }), lf);
+  // the repo's check command (server/pruefbefehl.ts): what checks a branch before its land and main after it
+  const cmd = checkCommandField(repo, () => void renderBoard());
+  if (cmd) box.appendChild(cmd);
   return box;
 }
 

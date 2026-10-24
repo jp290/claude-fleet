@@ -174,11 +174,15 @@ export function recordLand(book: BranchBook, repo: string, branch: string, land:
 }
 // Der Commit einer Charge: der Betreff aus der Rückfrage, im Body die Commits des Branches (SHA und
 // Betreff), damit die Herkunft lesbar bleibt, und ob der Owner diesen Stand gesehen hatte.
+// `english`: der main eines fremden Repos liest englisch (Brief fremdes-repo-rund, Punkt 6) — Fleets eigener behält seine Sprache
 export function chargeMessage(subject: string, o: { branch: string; tip: string; commits: readonly { sha: string; subject: string }[];
-  passt: boolean; checked: boolean }): string {
+  passt: boolean; checked: boolean; english?: boolean }): string {
   const lines = o.commits.map((c) => `- ${c.sha.slice(0, 8)} ${c.subject}`);
-  return [subject.trim(), "", `Charge aus ${o.branch} bis ${o.tip.slice(0, 8)}${o.checked ? "" : " (ohne Merge-Check)"}:`, ...lines, "",
-    o.passt ? `Owner hat diesen Stand gesehen: passt (${o.tip.slice(0, 8)}).` : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
+  const tip = o.tip.slice(0, 8);
+  if (o.english) return [subject.trim(), "", `Batch from ${o.branch} up to ${tip}${o.checked ? "" : " (without a check)"}:`, ...lines, "",
+    o.passt ? `Looked at and marked “looks good” at ${tip}.` : "Not marked “looks good”."].join("\n");
+  return [subject.trim(), "", `Charge aus ${o.branch} bis ${tip}${o.checked ? "" : " (ohne Merge-Check)"}:`, ...lines, "",
+    o.passt ? `Owner hat diesen Stand gesehen: passt (${tip}).` : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
 }
 // Ist die jüngste Merge-Check-Zeile dieses Branches eine, auf die eine Charge bauen darf? Sie muss
 // genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen. Ihre

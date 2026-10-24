@@ -348,8 +348,10 @@ export const GS_WORD: Record<GsWord, { label: string; acts: boolean }> = {
 export interface GsHead { at: "main" | "branch" | "lane" | "branch-check" | "lane-check"; board: boolean; slot: number | null;
   hung: boolean; worktree: boolean; landed: boolean; mirror: boolean; live: boolean }
 // what a board branch's merge check says of its tip, in step 1 and on its diamond (`why` is the check's own words)
-export function mergeCheckLine(chk: BranchCheckView | null): string {
-  return !chk ? "no merge check in this repo" : chk.state === "running" ? "merge check running …"
+// …and, in step 1 of a branch, where a session's proposal waits: its “Use it” stands on the diamond, not there
+export function mergeCheckLine(chk: BranchCheckView | null, proposedBy: string | null = null): string {
+  return !chk ? (proposedBy ? `no check command yet — ${proposedBy} proposes one, “Use it” on the diamond` : "no check command in this repo")
+    : chk.state === "running" ? "merge check running …"
     : chk.state === "green" ? "merge check green" : chk.state === "red" ? `merge check red: ${chk.why ?? "no reason given"}`
     : chk.state === "stale" ? "merge check on an older state — check again" : "no merge check on this state yet";
 }

@@ -2,7 +2,7 @@
 // checkout and branch — in front of its lane, behind a branch it works on directly, under its own repo, and none at a
 // branch without a session. Owner 17.10. 12:0x: „[Zitat entfernt]“.
 import { describe, expect, test } from "bun:test";
-import { GS_LEGEND, GS_WORD, cardLines, distanceLine, gitLayout, gitModel, headWords, signOf, signsOf, tiWidth, type GsCard, type GsHead, type GsShape, type GsSign, type GsSlot, type GsWord } from "./gitstruktur";
+import { GS_LEGEND, GS_WORD, cardLines, distanceLine, gitLayout, gitModel, headWords, mergeCheckLine, signOf, signsOf, tiWidth, type GsCard, type GsHead, type GsShape, type GsSign, type GsSlot, type GsWord } from "./gitstruktur";
 import type { BranchesRepoView, BranchView, WorkplaceRepo, WorkplaceRow } from "./protocol";
 
 const R1 = "/w/testrepo", R2 = "/w/testrepo2";
@@ -500,5 +500,14 @@ describe("round 7: the gear leaves out landed heads and heads without a session"
     const k = keys({ landed: false, idle: true });
     expect(k.items).toEqual(["branch:bau/done", "branch:bau/idle", "lane:fleet/lane-i", "lane:fleet/lane-r"]);
     expect(k.next).toEqual(["bau/green"]);
+  });
+});
+
+describe("the check step of a branch without a check command", () => {
+  // a session proposed one and says „Use it“ on the board: the branch's card names who proposed it and where the button is
+  test("a waiting proposal is named with its proposer and the diamond; without one the card says there is none", () => {
+    expect(mergeCheckLine(null, "Slot 14")).toContain("Slot 14");
+    expect(mergeCheckLine(null, "Slot 14")).toContain("diamond");
+    expect(mergeCheckLine(null)).toBe("no check command in this repo");
   });
 });

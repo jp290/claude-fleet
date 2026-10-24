@@ -234,6 +234,8 @@ type AuditEvent =
   // value decides where that repo's DIFF is sent — the one setting here whose blast radius is
   // another party's servers rather than this machine. Detail names the repo, worker and path.
   | "repo_worker"
+  | "repo_check"
+  | "repo_check_proposed"
   // the owner raised or lowered how many lanes the DISPATCHER may hold open in one repo
   // (POST /api/repo-lane-cap). On the trail because it is the only owner setting that widens
   // unattended EXECUTION — every other per-repo entry changes what a lane does, this one changes

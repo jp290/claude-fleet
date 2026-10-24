@@ -77,8 +77,12 @@ export const RECHTE_FRAGE_SATZ = "Die Session wartet an einer Rechte-Frage — i
 export const RECHTE_FRAGE_TOAST_MS = 6000;
 // what the board says BEFORE a send, while the focused session stands on the question (composer, island, row tooltip)
 export const RUECKFRAGE_SATZ = "Wartet an einer Rechte-Frage — im Terminal antworten (1 oder Esc)";
+// Claude Code's TRUST QUESTION in a folder it was never trusted in (server.ts#CLAUDE_TRUST_DIALOG): Fleet never answers it, the
+// person does in the terminal; a goal Fleet holds for the session follows once it is answered (server.ts#deliverBranchGoal)
+export const VERTRAUEN_SATZ = "Claude Code asks whether you trust this folder — in the terminal choose “Yes, I trust this folder”, then Enter";
+export const VERTRAUEN_SEND = "Claude Code asks whether you trust this folder — answer it in the terminal; nothing was typed";
 export const sendFailureToastMs = (message: string): number | undefined =>
-  message === RECHTE_FRAGE_SATZ ? RECHTE_FRAGE_TOAST_MS : undefined;
+  message === RECHTE_FRAGE_SATZ || message === VERTRAUEN_SEND ? RECHTE_FRAGE_TOAST_MS : undefined;
 
 export function sendFailureMessage(status: number, body: unknown): string {
   const record = (value: unknown): Record<string, unknown> | null =>
@@ -105,6 +109,7 @@ export function sendFailureMessage(status: number, body: unknown): string {
     // the owner's input field and chat bar on a pane that waits at Claude Code's permission question (server.ts#
     // CLAUDE_PERMISSION_QUESTION): no automatic text answers it, the terminal's own keys do
     if (/^gate=blocked-screen: claude permission question — nothing typed$/.test(error)) return RECHTE_FRAGE_SATZ;
+    if (/^gate=blocked-screen: claude trust dialog — nothing typed$/.test(error)) return VERTRAUEN_SEND;
     const gate = /^gate=(kill-switch|harness|not-alive|no-agent|no-pane|blocked-screen|quiet-hours|busy)(?=:| — nothing typed$)/.exec(error)?.[1];
     if (gate) return `send refused — delivery gate=${gate}; nothing was typed`;
     return "send refused — nothing was typed; reason unavailable";

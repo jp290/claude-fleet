@@ -2,7 +2,7 @@
 // GET /api/branches, die Wahl „On land“, Session starten und neu starten, der Merge-Check und die Charge im Menü.
 import { api, el, openActivity, post, revealStartedSlot, showSlot } from "./client";
 import { askRisk } from "./dialog";
-import type { BranchesRepoView, BranchesView, BranchView } from "./protocol";
+import type { BranchesRepoView, BranchesView, BranchView, RepoCheckView } from "./protocol";
 
 const BRANCHES_EVERY_MS = 10_000;
 let view: BranchesView | null = null;
@@ -129,8 +129,22 @@ export function lookedLine(repo: string, b: BranchView, repaint: () => void): HT
   const tip = sha7(b.head), at = b.seen?.head ?? null;
   const line = el("div", "zd brc-seen");
   line.dataset.seen = at === b.head ? "tip" : at ? "older" : "none";
-  line.appendChild(el("span", "tx", at === b.head ? `Looks good at ${tip} — the session may land it`
+  // WHAT HAPPENS AFTER „LOOKS GOOD“, said as it is (brief fremdes-repo-rund, point 1): the session lands only after a green
+  // check (server/branch-land.ts), so a repo without a check command gets the owner's own land, behind a question
+  const way = boardRepo(repo)?.checkCommand?.way ?? (b.check ? "merge-check" : "none");
+  line.appendChild(el("span", "tx", at === b.head ? `Looks good at ${tip} — ${way === "none" ? "this repo has no check command, so the session cannot land it"
+    : b.check?.state === "green" ? "the session may land it" : "the session may land it after a green check"}`
     : `Not seen yet · tip ${tip}${at ? ` (you looked at ${sha7(at)})` : ""}`));
+  if (at === b.head && way === "none") {
+    const r = el("span", "r");
+    const btn = el("button", "rk-btn", "Land without a check") as HTMLButtonElement;
+    btn.type = "button";
+    btn.title = `Land ${b.branch} on main now, without any check — first a question`;
+    btn.disabled = busy.has(key);
+    btn.onclick = (e) => { e.stopPropagation(); void landUnchecked(repo, b, repaint); };
+    r.appendChild(btn);
+    line.appendChild(r);
+  }
   if (at !== b.head) {
     const r = el("span", "r");
     const btn = el("button", "rk-btn primary", "Looks good") as HTMLButtonElement;
@@ -156,6 +170,103 @@ async function markLooked(repo: string, b: BranchView, repaint: () => void): Pro
   else errs.set(key, `“Looks good” was not saved: ${j?.error ?? (r ? `answer ${r.status}` : "the server was not reachable")}`);
   loadBranches(true, repaint);
 }
+// LAND WITHOUT A CHECK, the owner's door with `unchecked: true` (server/branch-land.ts): a question first, which names what
+// lands and offers the subject of the one commit main gets
+async function landUnchecked(repo: string, b: BranchView, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch);
+  const n = b.chargeCommits ?? 0;
+  const subject = el("input", "brc-subject") as HTMLInputElement;
+  subject.type = "text";
+  subject.maxLength = 200;
+  subject.value = b.name;
+  subject.setAttribute("aria-label", "Subject of the commit on main");
+  const ok = await askRisk({ title: `Land without a check · ${b.name}`, body: [
+    el("div", "hint", `${n ? `${n} ${n === 1 ? "commit" : "commits"} of ${b.branch}` : b.branch} land on main as one commit. No check runs before — `
+      + "nothing tests what main will be. Set a check command in the repo's gear to have one."),
+    el("div", "hint", "Subject of the commit on main:"), subject],
+    buttons: [{ label: "Cancel", value: false }, { label: "Land without a check", value: true, primary: true }] });
+  const text = subject.value.trim();
+  if (!ok || !text) return;
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const r = await post("/api/branches/land", { repo, branch: b.branch, subject: text, unchecked: true }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { error?: string } | null;
+  busy.delete(key);
+  if (!r?.ok) errs.set(key, `Not landed: ${j?.error ?? (r ? `answer ${r.status}` : "the server was not reachable")}`);
+  loadBranches(true, repaint);
+  refreshPlaces();
+}
+
+// THE REPO'S CHECK COMMAND (server/pruefbefehl.ts) where the board sets it: the repo's gear, and the check step of a branch
+// while the repo has none. One line a shell runs in a copy of the tree main would have; exit 0 is green. What a session
+// proposed stands beside „Use it“ — nothing runs it before that click.
+const checkDraft = new Map<string, string>();
+export function checkCommandField(repo: string, repaint: () => void): HTMLElement | null {
+  injectCss();
+  const c: RepoCheckView | undefined = boardRepo(repo)?.checkCommand;
+  if (!c) return null;
+  const key = keyOf(repo, "\0check");
+  const box = el("div", "zd brc-cmd");
+  box.dataset.way = c.way;
+  if (c.way === "merge-check") {
+    box.appendChild(el("span", "tx", "Checks with its own ci/merge-check.ts"));
+    return box;
+  }
+  const head = el("div", "brc-cmd-k", c.cmd ? "Check command — runs before every land and after it; exit 0 is green"
+    : "No check command yet — a session lands only after a green check");
+  box.appendChild(head);
+  const row = el("div", "brc-cmd-row");
+  const input = el("input", "brc-cmd-in") as HTMLInputElement;
+  input.type = "text";
+  input.spellcheck = false;
+  input.maxLength = 500;
+  input.placeholder = "e.g. python -m pytest";
+  input.value = checkDraft.get(key) ?? c.cmd ?? "";
+  input.setAttribute("aria-label", "Check command of this repo");
+  input.oninput = () => { checkDraft.set(key, input.value); };
+  input.onclick = (e) => e.stopPropagation();
+  input.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") void saveCheck(repo, input.value, repaint); };
+  const save = el("button", "rk-btn", c.cmd ? "Save" : "Set") as HTMLButtonElement;
+  save.type = "button";
+  save.disabled = busy.has(key);
+  save.title = "Fleet runs this line with sh -c in a copy of the tree main would have";
+  save.onclick = (e) => { e.stopPropagation(); void saveCheck(repo, input.value, repaint); };
+  row.append(input, save);
+  if (c.cmd) {
+    const clear = el("button", "rk-btn quiet", "Remove") as HTMLButtonElement;
+    clear.type = "button";
+    clear.disabled = busy.has(key);
+    clear.onclick = (e) => { e.stopPropagation(); void saveCheck(repo, "", repaint); };
+    row.appendChild(clear);
+  }
+  box.appendChild(row);
+  if (c.proposal) {
+    const p = el("div", "brc-cmd-p");
+    p.append(el("span", "tx", `${c.proposal.by.replace(/^slot /, "Slot ")} proposes: `), el("code", "", c.proposal.cmd));
+    const use = el("button", "rk-btn primary", "Use it") as HTMLButtonElement;
+    use.type = "button";
+    use.disabled = busy.has(key);
+    use.title = "From now on this line is the repo's check — the proposal runs only after this click";
+    use.onclick = (e) => { e.stopPropagation(); void saveCheck(repo, c.proposal!.cmd, repaint); };
+    p.appendChild(use);
+    box.appendChild(p);
+  }
+  box.append(...said(key));
+  return box;
+}
+async function saveCheck(repo: string, cmd: string, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, "\0check");
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const r = await post("/api/repo-check", { repo, cmd: cmd.trim() }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { error?: string } | null;
+  busy.delete(key);
+  if (r?.ok) checkDraft.delete(key);
+  else errs.set(key, `The check command was not saved: ${j?.error ?? (r ? `answer ${r.status}` : "the server was not reachable")}`);
+  loadBranches(true, repaint);
+}
 export const branchBusy = (repo: string, b: BranchView): boolean => busy.has(keyOf(repo, b.branch));
 export const mayCheck = (b: BranchView): boolean => !!b.check && b.check.state !== "green" && b.check.state !== "running" && !!b.chargeCommits;
 // why the last act on this branch failed
@@ -174,6 +285,14 @@ const BRANCH_CSS = `
     cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
   .brc-open:hover, .brc-open:focus-visible { color: var(--chat-ink); text-decoration-style: solid; }
   #board .zd.brc > .brc-open { color: var(--chat-prose); white-space: normal; overflow-wrap: anywhere; }
+  .zd.brc-cmd { display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left; white-space: normal; }
+  .zd.brc-cmd .brc-cmd-k { color: var(--chat-prose); }
+  .zd.brc-cmd .brc-cmd-row, .zd.brc-cmd .brc-cmd-p { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .zd.brc-cmd .brc-cmd-in { flex: 1 1 14em; min-width: 0; font: 12px/1.4 var(--mono, ui-monospace, monospace); padding: 3px 6px;
+    border: 1px solid var(--line, #8884); border-radius: 4px; background: transparent; color: inherit; }
+  .zd.brc-cmd code { font: 12px/1.4 var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+  .zd.brc-cmd > .err { color: var(--danger); }
+  .brc-subject { width: 100%; box-sizing: border-box; font: inherit; padding: 4px 6px; margin: 4px 0 8px; }
 `;
 let cssIn = false;
 function injectCss(): void {

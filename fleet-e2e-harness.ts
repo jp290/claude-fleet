@@ -1404,6 +1404,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
         return {code:0,out:args[0] === "display-message" ? args.at(-1) === "#{pane_pipe}" ? "1" : "200 50" : ""};
       };
       const tmuxNewSession = async (...args) => {commands.push(args.at(-1)); return {code:0,out:"%1\\t@1",timedOut:false};};
+      // the login environment of a claude seat in its own setup (server/login-umgebung.ts): never read for this codex seat, so the line stays as is
+      const withPaneEnv=(env,cmd)=>env ? env.line + cmd : cmd;
       const parseTmuxTarget = () => ({paneId:"%1",windowId:"@1"}),codexRolloutForId=async()=>"/rollout";
       const CODEX_UUID_RE=/^[0-9a-f-]{36}$/, RULEBOOK_AB_RENDERS=null;
       const saveState=()=>publications.push(JSON.stringify(s.permissions)),audit=()=>{},noteSessionIdLearned=()=>{},backfillProgramMainSessionId=()=>{};

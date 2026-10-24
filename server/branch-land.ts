@@ -33,6 +33,8 @@ export interface LandDeps {
   landing: Set<string>;
   // the answer's word on a deploy, where the server runs from this repo
   deployNote(repo: string): string | null;
+  // a repo that is not Fleet's own gets its charge commit in English (chargeMessage)
+  english(repo: string): Promise<boolean>;
 }
 export interface LandAsk { repo: string; branch: string; subject: string; unchecked: boolean; squash: boolean | undefined;
   // the session's own door: „passt“ on this very tip and a merge check, or no land
@@ -47,6 +49,9 @@ export async function chargeRewritten(gitRead: LandDeps["gitRead"], repo: string
 }
 
 const refuse = (status: number, error: string): LandAnswer => ({ status, body: { error } });
+// what a session in a repo without a check hears: the way to one (server/pruefbefehl.ts), and that the owner may land without
+export const NO_CHECK_OWN = "this repo has no check command, and a session lands its branch only after a green check — propose one with "
+  + "POST /api/self/repo-check { cmd } (the owner takes it on the board), or the owner lands it without a check";
 
 export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
   const { repo, branch, subject } = a;
@@ -68,14 +73,14 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
     const base = chargeBase(record, main);
     if (!base) return refuse(400, "cannot resolve the charge's base");
     const checked = d.hasMergeCheck(repo);
-    if (a.own && !checked) return refuse(409, "dieses Repo hat keinen Merge-Check — ohne ihn landet eine Session nicht selbst");
+    if (a.own && !checked) return refuse(409, NO_CHECK_OWN);
     const form = a.squash === undefined ? record.landForm ?? "squash" : a.squash ? "squash" : "commits";
     if (form === "commits" && !checked)
       return refuse(409, "alle Commits nur mit Merge-Check — dieses Repo hat keinen; „ein Commit“ geht (squash: true)");
     const use = checked ? usableCheck(await d.mergeCheckRows(repo), { branch, base, tip, main: mainSha }) : null;
     if (use && !use.ok) return refuse(409, use.why);
     if (!checked && !a.unchecked)
-      return refuse(409, "dieses Repo hat keinen Merge-Check — mergen nur ausdrücklich „ohne Merge-Check“ (unchecked: true)");
+      return refuse(409, "this repo has no check command — landing without a check only explicitly (unchecked: true)");
     const log = await d.chargeLog(repo, use?.row.commits ?? null, base, tip, mainSha, "--format=%H%x00%s");
     const commits = log.out.split("\n").filter(Boolean).map((line) => { const [sha, s2] = line.split("\0"); return { sha: sha ?? "", subject: s2 ?? "" }; });
     if (log.code !== 0 || !commits.length) return refuse(409, `nichts zu mergen: keine Commits seit ${base.slice(0, 12)}`);
@@ -93,7 +98,8 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
     let sha: string;
     if (form === "commits" && use) sha = use.row.candidate;
     else {
-      const commit = await d.git(repo, "commit-tree", tree, "-p", mainSha, "-m", chargeMessage(subject, { branch, tip, commits, passt, checked }));
+      const commit = await d.git(repo, "commit-tree", tree, "-p", mainSha, "-m", chargeMessage(subject, { branch, tip, commits, passt, checked,
+        english: await d.english(repo) }));
       if (commit.code !== 0 || !commit.out) return refuse(409, `commit-tree: ${commit.err.slice(0, 200)}`);
       sha = commit.out;
     }

@@ -233,6 +233,8 @@ import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type Br
   dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
+import { agentDirOf, paneVars, readLoginEnv, removeEnvFile, writeEnvFile } from "./server/login-umgebung";
+import { checkCmdProblem, confirmedCheck, OWN_MERGE_CHECK, proposeCheck, readRepoChecks, repoCheckView, setCheck, type RepoChecks } from "./server/pruefbefehl";
 import { endLandedBranches, endParkedInstances, heldBy, type BranchEnd, type EndDeps, type EndHolds, type Instance } from "./server/branch-ende";
 import { landedIn, tickRounds, type RoundDeps } from "./server/runde";
 import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-blick";
@@ -249,7 +251,7 @@ import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
-import { leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
+import { eigenerModus, leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
@@ -444,6 +446,9 @@ const SESSION_TOOLS: Readonly<Record<SessionListRole, readonly string[]>> = {
 // A free session (no branch) keeps every tool: the owner talks with it about anything, and its list was never measured.
 // A missing or unreadable file, or a name outside the charset, = no --tools, every built-in tool, as before the cut.
 const SITZ_WERKZEUGE_PATH = `${import.meta.dir}/.fleet/sitz-werkzeuge.json`;
+// the runner of a repo's own check command (server/pruefbefehl-lauf.ts), up here and not in startBranchCheck: e2e/lanes-lifecycle.ts
+// compiles that region with new Function, where import.meta is a syntax error
+const PRUEFBEFEHL_LAUF_PATH = `${import.meta.dir}/server/pruefbefehl-lauf.ts`;
 const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 function bauTools(): readonly string[] | null {
   try {
@@ -584,7 +589,7 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     // one file only: of two --append-system-prompt-file flags claude reads the last (probe 2.1.309), so a start file carries the habits itself
     if (HABITS_PROMPT_ENABLED && !startDatei && !eigen) cmd += ` --append-system-prompt-file ${shellSingleQuote(HABITS_PROMPT_PATH)}`;
     // ...except in its own setup: there the user's own `model` holds unless the seat chose one
-    if (model || !eigen) cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
+    if (model || modelPinned(eigen)) cmd += ` --model '${model ?? DEFAULT_MODEL}'`;
     // `--effort <level>` only when the slot pins one — with no flag claude keeps its own default.
     // Single-quoted for the same discipline as the model; the real boundary is upstream (effortOf
     // admits only effortLevels). Both halves pinned in e2e/pins.ts. Narrativ: server-narrativ-archiv.md#agentcmd
@@ -739,6 +744,9 @@ const SLOT_MODEL_RE = DECLARED_HARNESS ? HARNESS_MODEL_RE : MODEL_RE;
 // summary worker keeps its own cheaper SUMMARY_MODEL — this is only the interactive tier.
 const DEFAULT_MODEL =
   process.env.FLEET_MODEL && MODEL_RE.test(process.env.FLEET_MODEL) ? process.env.FLEET_MODEL : FLEET_DEFAULT_MODEL;
+// a claude in its own setup keeps the user’s own model (their settings), except on a test instance with real seats: there every
+// seat runs the instance’s model (FLEET_TI_MODEL), or the owner’s settings would start the 1M Opus the instance keeps out
+function modelPinned(eigen: boolean): boolean { return !eigen || REAL_SEAT_GATE !== null; }
 
 // --- the harness REGISTRY: which agent a slot runs ------------------------------------------
 // A pane SCREEN on which a pasted prompt is consumed instead of reaching a live agent, and the
@@ -4643,6 +4651,8 @@ unknown, a row without provenance stays unknown, coverage=incomplete is not abse
 // `unknown: exit 42` forever — the watchdog's repo guard declining). Same storage, same
 // validation, same owner-only door: the value decides what gets EXECUTED over a repo's contents.
 let repoWorkers: Record<string, Record<string, string>> = {};
+// a repo's check command (server/pruefbefehl.ts): its merge check, land gate and audit where it has no ci/merge-check.ts
+let repoChecks: RepoChecks = {};
 // Only names that something actually CONSULTS may be stored. A route that accepted any
 // WorkerName would let the owner configure a worker nothing reads and see it echoed back — a
 // setting that looks applied and does nothing, which is worse than a 400.
@@ -6090,7 +6100,7 @@ function stateSnapshot(): string {
     ...(blockerObservedAt.size ? { blockerObservedAt: Object.fromEntries(blockerObservedAt) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
+    repoBases, repoWorkers, ...(Object.keys(repoChecks).length ? { repoChecks } : {}), repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -8399,7 +8409,8 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     gitRead(repo, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(committerdate:unix)", "refs/heads"),
     listWorktrees(repo), integrationBranch(repo)]);
   if (refsRead.code !== 0)
-    return { repo, integration, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }] };
+    return { repo, integration, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }],
+      checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)) };
   const refs: BranchRef[] = refsRead.out.split("\n").flatMap((line) => {
     const [ref, head, at] = line.split("\0");
     return ref?.startsWith("refs/heads/") && head && at ? [{ branch: ref.slice("refs/heads/".length), head, at: Number(at) * 1000 }] : [];
@@ -8425,7 +8436,8 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
       landForm: record.landForm ?? "squash", chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
       check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
-  return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons };
+  return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons,
+    checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)) };
 }
 async function branchesView(): Promise<BranchesView> {
   return { repos: await Promise.all((await branchRepos()).map((repo) => branchesOfRepo(repo))) };
@@ -8447,7 +8459,9 @@ async function checkoutBranchWorktree(repo: string, branch: string, harness: Har
 // tree a merge check judged (or, in a repo without ci/merge-check.ts, from the same per-commit
 // merge-tree the check does, behind the explicit „ohne Merge-Check“). main moves only through
 // advanceIntegration — ff-only in the checkout that holds it — never by a ref under a checked-out tree.
-const hasMergeCheck = (repo: string): boolean => existsSync(`${repo}/ci/merge-check.ts`);
+// a repo checks its charges with its own ci/merge-check.ts (Fleet's) or with the check command the owner set (server/pruefbefehl.ts)
+const ownMergeCheck = (repo: string): boolean => existsSync(`${repo}/ci/merge-check.ts`);
+const hasMergeCheck = (repo: string): boolean => ownMergeCheck(repo) || confirmedCheck(repoChecks, repo) !== null;
 const branchCheckRuns = new Map<string, { tip: string; startedAt: number }>();
 const branchLanding = new Set<string>(); // repos with a charge in flight: one at a time per repo
 async function mergeCheckRows(repo: string): Promise<unknown[]> {
@@ -8459,6 +8473,31 @@ async function mergeCheckRows(repo: string): Promise<unknown[]> {
       try { return [JSON.parse(line) as unknown]; } catch { return []; }
     });
   } catch { return []; } // no ledger yet: no check ran in this repo
+}
+// THE MERGE CHECK OF A CHARGE, in the background: <repo>/ci/merge-check.ts where the repo brings one (Fleet's), else the
+// owner's check command (server/pruefbefehl-lauf.ts). Both write their row to merge-checks.jsonl; GET /api/branches says
+// running, then green or red. The owner's door and the session's own (/api/self/branches/check) start it the same way.
+async function startBranchCheck(repo: string, branch: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const record = findBranch(branchBook, repo, branch);
+  if (!record?.name || !(await branchExists(repo, branch))) return { status: 404, body: { error: `${branch} is no board branch here` } };
+  const cmd = ownMergeCheck(repo) ? null : confirmedCheck(repoChecks, repo);
+  if (!ownMergeCheck(repo) && cmd === null)
+    return { status: 400, body: { error: repoChecks[repo]?.proposal
+      ? `this repo has no check command yet — „${repoChecks[repo]!.proposal!.cmd}“ waits for the owner's „Use it“ on the board`
+      : "this repo has no check command — set one on the board (the repo's gear, „Check command“)" } };
+  const key = `${repo}\n${branch}`;
+  if (branchCheckRuns.has(key)) return { status: 409, body: { error: "the check of this branch is already running" } };
+  const tip = (await gitRead(repo, "rev-parse", `refs/heads/${branch}`)).out;
+  if (await chargeRewritten(repo, record, tip)) return { status: 409, body: { error: CHARGE_REWRITTEN } };
+  const main = await integrationBranch(repo);
+  const base = chargeBase(record, main);
+  if (!base || !main) return { status: 400, body: { error: "cannot resolve the repo's integration branch" } };
+  branchCheckRuns.set(key, { tip, startedAt: Date.now() });
+  const argv = cmd === null ? [process.execPath, `${repo}/ci/merge-check.ts`, branch, "--base", base]
+    : [process.execPath, PRUEFBEFEHL_LAUF_PATH, JSON.stringify({ repo, branch, base, main, cmd })];
+  const run = Bun.spawn(argv, { cwd: repo, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  void run.exited.then(() => { branchCheckRuns.delete(key); workplacesCache = null; });
+  return { status: 202, body: { ok: true, tip, base, ...(cmd !== null ? { cmd } : {}) } };
 }
 async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base: string | null): Promise<BranchCheckView | null> {
   if (!hasMergeCheck(repo)) return null;
@@ -8595,7 +8634,7 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
     return json({ error: `no such base: ${base}` }, 400);
   let branch = wanted;
   if (!branch) {
-    const slug = taskBranchSlug(body.name) || "ohne-name";
+    const slug = taskBranchSlug(body.name) || "unnamed";
     branch = `branch/${slug}`;
     if (await branchExists(repo, branch)) branch = `branch/${slug}-${randomBytes(2).toString("hex")}`;
   }
@@ -8875,15 +8914,33 @@ function startZielDerTuer(body: Record<string, unknown>): { ok: true; ziel: stri
   if (ziel.length > BRANCH_GOAL_MAX) return { ok: false, error: `goal has ${ziel.length} characters — the cap is ${BRANCH_GOAL_MAX}` };
   return { ok: true, ziel, aufgabe };
 }
+// THE GOAL WAITS FOR THE TRUST QUESTION (brief fremdes-repo-rund, point 3): in a folder Claude Code has not been trusted in,
+// it asks first, and a goal tried once was lost to the error counter. Now the goal waits while that question is on screen
+// — the person answers it in the terminal, Fleet never does (CLAUDE_TRUST_DIALOG) — and follows the moment it is gone.
+// Bounded by the occupant and by TRUST_WAIT_MS; any other block (the permission question) still withholds it at once.
+const TRUST_WAIT_MS = Math.max(0, Number(process.env.FLEET_TRUST_WAIT_SEC ?? 6 * 3600) | 0) * 1000;
+const TRUST_POLL_MS = 1_000;
+const isTrustBlock = (why: string | undefined): boolean => why === CLAUDE_TRUST_DIALOG.why;
 async function deliverBranchGoal(s: Slot, text: string, path: "branch-goal" | "sitz-auftrag" | "start-ziel" = "branch-goal"): Promise<{ delivered: boolean; reason?: string }> {
   const openedAt = s.openedAt;
   const stillCurrent = (): boolean => !!s.cwd && s.openedAt === openedAt;
   await Bun.sleep(FOUNDING_BOOT_GRACE_MS);
   if (!stillCurrent()) return { delivered: false, reason: "the slot changed during boot" };
-  const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, killSwitch: false, quietHours: false, harness: false });
-  if (!gate.ok) return { delivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
-  const readiness = await waitForFoundingReadiness(s, stillCurrent);
-  if (!readiness.ok) return { delivered: false, reason: readiness.reason };
+  const waitFrom = Date.now();
+  for (;;) {
+    const gate = await canDeliver(s, { now: Date.now(), idleMs: 0, killSwitch: false, quietHours: false, harness: false });
+    const readiness = gate.ok ? await waitForFoundingReadiness(s, stillCurrent) : null;
+    const trust = gate.ok ? readiness?.ok === false && readiness.kind === "blocked" && isTrustBlock(readiness.screen)
+      : gate.gate === "blocked-screen" && isTrustBlock(gate.detail);
+    if (!trust) {
+      if (!gate.ok) return { delivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
+      if (readiness && !readiness.ok) return { delivered: false, reason: readiness.reason };
+      break;
+    }
+    if (Date.now() - waitFrom >= TRUST_WAIT_MS) return { delivered: false, reason: "the trust question stood unanswered — goal withheld" };
+    await Bun.sleep(TRUST_POLL_MS);
+    if (!stillCurrent()) return { delivered: false, reason: "the slot changed while the trust question stood" };
+  }
   try {
     await sendText(s, text, true, { path });
   } catch (e) {
@@ -8977,6 +9034,7 @@ const branchLandDeps: LandDeps = {
   },
   landing: branchLanding,
   deployNote: (repo) => (FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? "nötig — der Server fährt den neuen Stand erst nach einem Deploy" : null),
+  english: async (repo) => (await fleetBaumVon(repo)) === null,
 };
 
 // THE END OF A LANDED BRANCH (server/branch-ende.ts): what holds a worktree here is a slot whose cwd lies in it, an attach
@@ -10121,6 +10179,29 @@ async function waitForSlotTeardownTestLatch(occupant: SlotStreamOccupant, target
 const fleetCheckoutForSpawn = (s: Slot, occupant: SlotSpawnOccupant): boolean =>
   !s.worktree && realpathLoose(resolve(occupant.cwd)) === realpathLoose(import.meta.dir);
 
+// THE LOGIN ENVIRONMENT OF A SEAT IN ITS OWN SETUP (server/login-umgebung.ts): read once per folder and kept five minutes, so a
+// restart or a second seat costs no second login shell; FLEET_PANE_LOGIN_ENV=0 switches it off. Without it the pane starts as before.
+const PANE_LOGIN_ENV = (process.env.FLEET_PANE_LOGIN_ENV ?? "1").trim() !== "0";
+const LOGIN_ENV_MS = 5 * 60_000;
+const loginEnvCache = new Map<string, { at: number; vars: Record<string, string> }>();
+async function paneEnvFile(slot: number, openedAt: number, cwd: string): Promise<{ file: string; line: string } | null> {
+  let hit = loginEnvCache.get(cwd);
+  if (!hit || Date.now() - hit.at >= LOGIN_ENV_MS) {
+    const r = await readLoginEnv(SHELL, cwd, process.env);
+    if (!r.ok) { logError("pane:login-env", new Error(r.error)); return null; }
+    hit = { at: Date.now(), vars: r.vars };
+    loginEnvCache.set(cwd, hit);
+  }
+  try {
+    const w = writeEnvFile(`${STATE_DIR}/pane-env`, `${slot}-${openedAt}`, paneVars(hit.vars, agentDirOf(Bun.which(BASE_CMD.split(/\s+/)[0] ?? "claude"))));
+    setTimeout(() => removeEnvFile(w.file), 60_000).unref?.(); // the pane deletes it; a pane that never started does not
+    return w;
+  } catch (e) { logError("pane:login-env", e); return null; }
+}
+// the line reads the file, and the login PATH replaces the server's (paneVars keeps the agent's directory in front)
+const withPaneEnv = (env: { line: string } | null, cmd: string): string =>
+  !env ? cmd : env.line + (PATH_EXPORT && cmd.startsWith(PATH_EXPORT) ? cmd.slice(PATH_EXPORT.length) : cmd);
+
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal",
@@ -10282,12 +10363,15 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       }
       // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
       const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd) : null;
+      // A SEAT IN ITS OWN SETUP gets its user's login environment (server/login-umgebung.ts, Mangel 136): a file the pane reads and deletes
+      const paneEnv = eigen && PANE_LOGIN_ENV ? await paneEnvFile(s.id, occupant.openedAt, occupant.cwd) : null;
+      if (!current()) { if (paneEnv) removeEnvFile(paneEnv.file); return; }
       const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
       // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
       // from anything else would grant a directory the pane is not in.
-        `${selfExport}${stewardExport}${h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
+        `${selfExport}${stewardExport}${withPaneEnv(paneEnv, h.spawnCmd({ sessionId: candidate, resume, model: occupant.model,
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, fleetCheckout,
@@ -10303,7 +10387,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch,
           seat, bau, startDatei, fleetRepo, permissionMode: occupant.permissionMode,
-          weglassen: occupant.weglassen, autoModeEnvironment: occupant.autoModeEnvironment, tools: occupant.tools })}`);
+          weglassen: occupant.weglassen, autoModeEnvironment: occupant.autoModeEnvironment, tools: occupant.tools }))}`);
+      if (paneEnv && (created.code !== 0 || created.timedOut)) removeEnvFile(paneEnv.file);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
       // state commit nor blind cleanup, because the named tmux session may already be the successor's.
@@ -21343,7 +21428,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   // a seat in Fleet's repo, as ensureSlot decides it (fleetBaumVon), and a seat in its own setup outside it
   const fleetBaum = claude ? await fleetBaumVon(o.repoRoot) : null;
   const eigen = eigenesSetup({ claude, role: fassungNeueListRolle(o.rolle, o.harness), fleetRepo: fleetBaum !== null });
-  const modell = o.modell ?? (claude && !eigen ? DEFAULT_MODEL : null);
+  const modell = o.modell ?? (claude && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] }, false, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: o.modell, effort: o.effort, permissionMode: null, rechte: null, profil: null, bibliothek: false, notizbuch: null, remote: false, packMcp: [],
       autoModeEnvironment: false, tools: null }), null, null, false, null, o.rolle !== "lane" && fassungImFleetCheckout(o.repoRoot, null));
@@ -21512,7 +21597,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const fleetBaum = harnessFamilie(spawnPick.harness) === "claude" ? await fleetBaumVon(cwd) : null;
   // a seat in its own setup and a seat that builds, read as ensureSlot reads them
   const eigen = eigenesSetup({ claude: harnessFamilie(spawnPick.harness) === "claude", role: spawnRolle, fleetRepo: fleetBaum !== null });
-  const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && !eigen ? DEFAULT_MODEL : null);
+  const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const bau = spawnRolle === "generic" && !eigen && s.label !== STEWARD_LABEL && isBauCwd(cwd);
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
@@ -30074,9 +30159,15 @@ async function verifyRepoKey(repo: string): Promise<string | null> {
 // THE entry lookup, and there is exactly one. The self-land route's step 7 asks it whether this repo
 // can be measured at all, and the resolver below asks it which command that is: a route that refuses
 // a repo the gate would have measured (or the reverse) is two different answers to one question.
+// The repo's check command (server/pruefbefehl.ts) is the entry where the env map has none: the owner set it at the board,
+// and it holds without a restart. Keyed by the primary checkout, which a lane's or a linked worktree's toplevel resolves to.
 const verifyEntryFor = async (repo: string): Promise<string | null> => {
   const key = await verifyRepoKey(repo);
-  return key === null ? null : VERIFY_CMD_REPOS.get(key) ?? null;
+  const env = key === null ? null : VERIFY_CMD_REPOS.get(key) ?? null;
+  if (env !== null) return env;
+  const common = await gitCommonDirOf(repoCanon(repo));
+  const primary = common !== null && basename(common) === ".git" ? repoCanon(dirname(common)) : repoCanon(repo);
+  return confirmedCheck(repoChecks, primary);
 };
 // The resolver: the repo's own entry, else the global. `repo` is a toplevel, never a LANE worktree —
 // a lane's path is not a repo identity, and every lane of one repo would need its own entry while
@@ -31950,10 +32041,14 @@ const POSTLAND_AUDIT_CMD = process.env.FLEET_POSTLAND_AUDIT_CMD ?? null;
 // chose FOR ITSELF because every land in the entry already passed the docs-only gate. Naming it
 // rather than reporting the configured source keeps the row honest — a reader must be able to see
 // that neither the repo-worker nor the env default measured this tree.
-type AuditCmdSource = "repo-worker" | "env" | "proportional";
+// `check-command` is the repo's check command (server/pruefbefehl.ts): where the owner set no audit worker, the command
+// that checks a charge before its land also checks main after it — a repo with its own ci/merge-check.ts never has one.
+type AuditCmdSource = "repo-worker" | "check-command" | "env" | "proportional";
 function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | null {
   const own = workerCmdFor("audit", repo, null);
   if (own) return { cmd: own, source: "repo-worker" };
+  const check = confirmedCheck(repoChecks, primaryCheckoutOf(repoCanon(repo)));
+  if (check) return { cmd: check, source: "check-command" };
   if (!POSTLAND_AUDIT_CMD) return null;
   const root = repoCanon(repo);
   if (auditCmdPreconditions(POSTLAND_AUDIT_CMD).some((f) => !existsSync(`${root}/${f}`))) return null;
@@ -31963,7 +32058,8 @@ function auditCmdFor(repo: string): { cmd: string; source: AuditCmdSource } | nu
 // (the ledgers view's auditConfigured, the audit route's `configured`, the drain kick). A
 // repo-worker alone arms it — for its repo; the per-repo question is auditCmdFor's.
 const auditConfiguredAnywhere = (): boolean =>
-  POSTLAND_AUDIT_CMD !== null || Object.values(repoWorkers).some((w) => typeof w.audit === "string");
+  POSTLAND_AUDIT_CMD !== null || Object.values(repoWorkers).some((w) => typeof w.audit === "string")
+  || Object.values(repoChecks).some((c) => c.cmd !== null);
 // The WORK budget: how long the audit may spend actually measuring. Generous on purpose — the suite
 // this tier exists to run takes minutes, and NOTHING waits on it, so the only cost of a long ceiling
 // is a late row. A timeout is a failed MEASUREMENT (unknown), not a failure — see the classification
@@ -32055,7 +32151,7 @@ const entryRunsShortChain = (repo: string, covers: AuditCover[]): boolean =>
 //
 // `null` IS "a helper could take it" — the ok case is the empty one, so a new arm added here is
 // refused everywhere at once instead of silently offered by whichever door forgot it.
-type HelperClaimBar = "unconfigured" | "repo-worker" | "foreign-tree" | "short-chain";
+type HelperClaimBar = "unconfigured" | "repo-worker" | "check-command" | "foreign-tree" | "short-chain";
 // THE PRECONDITION A GUARDED AUDIT COMMAND DECLARES, read off the command itself. The live env
 // default opens with `[ -f fleet-e2e.ts ] || { … exit 42; }` (watchdog.sh#AUDIT_CMD): locally that
 // guard turns a foreign repo into a 223 ms `unknown exit 42`. The helper never runs that string — it
@@ -32080,6 +32176,7 @@ function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | nu
   // handing it a repo's OWN audit executable would measure the wrong suite and file it under the
   // right repo
   if (chosen.source === "repo-worker") return "repo-worker";
+  if (chosen.source === "check-command") return "check-command";
   // …and the tree the env default was never written for: its own guard would decline it here in
   // milliseconds, and a helper would bundle, transfer and clone the whole repo to learn the same.
   // Not offered, so the drain runs it at once and it lands as the guard's `unknown exit 42`.
@@ -32099,6 +32196,7 @@ function helperClaimBar(repo: string, covers: AuditCover[]): HelperClaimBar | nu
 const HELPER_CLAIM_BAR_REASON: Record<HelperClaimBar, string> = {
   unconfigured: "no audit command is configured for this repo — the entry is parked, not offered",
   "repo-worker": "this repo's audit is its own repo-worker command — it runs on this machine only, never offered",
+  "check-command": "this repo's audit is its own check command — it runs on this machine only, never offered",
   "foreign-tree": "this repo's tree lacks what the audit command's own guard requires (plus the package.json a helper installs from)"
     + " — the guard declines it on this machine in milliseconds, never offered",
   "short-chain": "every land in this entry passed the docs-only gate — it is audited by the short chain"
@@ -34249,8 +34347,10 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
           // 42/126/127 and timeouts are named NON-runs below; their absence is not a measured zero.
           // Every other settled process yielded complete pipes, so zero anchored result lines is the
           // exact pre-check-crash fact this field exists to preserve.
+          // …except a repo's own check command (server/pruefbefehl.ts): its output is no Fleet suite this server could count, so
+          // `checks` stays null and its exit code is the verdict, as at its merge check
           if (!killed && outputReadable && exitCode !== null && exitCode !== VERIFY_SKIP_EXIT
-            && exitCode !== 126 && exitCode !== 127)
+            && exitCode !== 126 && exitCode !== 127 && cmdSource !== "check-command")
             checks = postLandAuditChecks(completeOutput, exitCode, undefined, true);
           // parsed over the FULL output for the same reason runVerify parses it there: the lock
           // lines are printed FIRST, so on any run long enough to matter they are the first thing
@@ -42618,7 +42718,10 @@ async function konstDatei(id: string, repoRaw: string | null): Promise<Response>
   const form: unknown = liste.find((k: unknown) => !!k && typeof k === "object" && (k as Record<string, unknown>).id === id);
   if (!form || typeof form !== "object") return json({ error: `keine gespeicherte Konstellation „${id}“` }, 404);
   const laeufe = (await liesLaeufe(STATE_DIR).catch(() => [])).filter((l) => l.konst === id);
-  const d = await dateiFuer(form as Record<string, unknown>, { laeufe, modus: PERMISSION_MODE.generic,
+  // im eigenen Setup (ein Repo, das nicht Fleets ist) startet ein Sitz ohne Rolle mit dem Modus seines Nutzers, auf einer Testinstanz mit `auto`
+  const eigen = (await fleetBaumVon(repo)) === null;
+  const modus = !eigen ? PERMISSION_MODE.generic : NO_BYPASS ? "auto" : eigenerModus(repo, process.env.CLAUDE_CONFIG_DIR || `${homedir()}/.claude`);
+  const d = await dateiFuer(form as Record<string, unknown>, { laeufe, modus, eigenesSetup: eigen,
     bibliothek: async () => (await seatKnowledgeFor(repo, "claude")).knowledge,
     notizbuch: async (profil) => { const n = await notizbuchFuerStart(repo, "generic", profil); return n.art === "eigen" && n.pfad ? liesNotizbuch(n.pfad) : null; } });
   return typeof d === "string" ? json({ error: d }, 409) : json(d);
@@ -46630,6 +46733,9 @@ if (existsSync(file)) {
     // Per-repo worker overrides, RE-VALIDATED on the way in: the value gets SPAWNED, so a state
     // file must not name a worker nothing reads or a path that lost its +x. A rejected entry is
     // LOUD and then inert — the owner configured a different model and must not get a silent revert.
+    const rc = readRepoChecks((persisted as { repoChecks?: unknown }).repoChecks);
+    repoChecks = rc.checks;
+    for (const repo of rc.dropped) console.warn(`[check] fleet.json: the check command for ${repo} is unreadable — dropped`);
     const prw = (persisted as { repoWorkers?: unknown }).repoWorkers;
     if (typeof prw === "object" && prw !== null && !Array.isArray(prw))
       for (const [repo, v] of Object.entries(prw as Record<string, unknown>)) {
@@ -48853,6 +48959,14 @@ function rueckfrageView(s: Slot, now: number): string | null {
   return ep && ep.openedAt === s.openedAt && now - (warteGesehen.get(s.id) ?? 0) <= 3 * WARTE_TICK_MS ? ep.frage : null;
 }
 const warteGesehen = new Map<number, number>();
+// THE TRUST QUESTION ON THE BOARD (brief fremdes-repo-rund, point 3): a session in a folder Claude Code was never trusted in
+// stands on „Yes, I trust this folder“, and the board said only „quiet since …“. The waiting tick reads it on this occupant;
+// a look older than three ticks claims nothing, like rueckfrageView.
+const vertrauenGesehen = new Map<number, { openedAt: number; at: number }>();
+const vertrauenView = (s: Slot, now: number): boolean => {
+  const v = vertrauenGesehen.get(s.id);
+  return !!v && v.openedAt === s.openedAt && now - v.at <= 3 * WARTE_TICK_MS;
+};
 let warteTickBusy = false;
 function warteEmpfaenger(s: Slot): Slot | null {
   const by = s.openedBy;
@@ -48876,6 +48990,9 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));
       // an unreadable pane is neither a start nor an end of the episode
       if (cap.code !== 0 || slotFrom(s.id) !== s || s.openedAt !== openedAt) continue;
+      // the trust question is read on the same capture (vertrauenView); it is no permission question and starts no episode
+      if (CLAUDE_TRUST_DIALOG.re.test(cap.out)) vertrauenGesehen.set(s.id, { openedAt, at: Date.now() });
+      else vertrauenGesehen.delete(s.id);
       const receiver = warteEmpfaenger(s);
       const to = receiver ? messageAddressesFor(receiver)[0] : undefined;
       const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS, !!to);
@@ -51439,6 +51556,45 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         squash: typeof body.squash === "boolean" ? body.squash : undefined, own: true });
       return json(landed.body, landed.status);
     }
+    // A SESSION AND ITS REPO'S CHECK (server/pruefbefehl.ts): it reads its own branch as the board shows it, starts the check
+    // of its own branch with the command the owner set, and PROPOSES a command — the board shows the proposal beside
+    // „Use it“, and nothing runs it until the owner takes it (the owner door /api/repo-check)
+    if ((url.pathname === "/api/self/branch" && req.method === "GET") || (url.pathname === "/api/self/branches/check" && req.method === "POST")
+      || (url.pathname === "/api/self/repo-check" && req.method === "POST")) {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      if (url.pathname === "/api/self/repo-check") {
+        const body = await readJson(req);
+        const cmd = typeof body?.cmd === "string" ? body.cmd.trim() : "";
+        const bad = checkCmdProblem(cmd);
+        if (bad) return json({ error: `expected { cmd } — ${bad}` }, 400);
+        const ro = await branchRepoOf(s.cwd);
+        if (!ro.ok) return json({ error: ro.error }, 400);
+        if (ownMergeCheck(ro.repo)) return json({ error: OWN_MERGE_CHECK }, 409);
+        repoChecks = proposeCheck(repoChecks, ro.repo, cmd, `slot ${s.id}`, Date.now());
+        await saveStateNow();
+        audit("repo_check_proposed", s.id, `${ro.repo} check=${cmd}`);
+        workplacesCache = null;
+        const view = repoCheckView(repoChecks, ro.repo, false);
+        return json({ ok: true, repo: ro.repo, check: view,
+          said: view.cmd === cmd ? "this is already the repo's check command" : "proposed — it runs once the owner takes it on the board („Use it“)" });
+      }
+      const own = await ownBranchOf(s.cwd);
+      if (!own.ok) return json({ error: own.error }, 404);
+      if (url.pathname === "/api/self/branches/check") {
+        const body = await readJson(req);
+        if (body?.branch !== undefined && body.branch !== own.branch)
+          return json({ error: `this session checks only its own branch ${own.branch}, not ${String(body.branch)}` }, 403);
+        const started = await startBranchCheck(own.repo, own.branch);
+        return json(started.body, started.status);
+      }
+      const view = await branchesOfRepo(own.repo);
+      const b = view.branches.find((x) => x.branch === own.branch);
+      if (!b) return json({ error: `${own.branch} is no board branch` }, 404);
+      return json({ repo: own.repo, integration: view.integration, checkCommand: view.checkCommand, branch: b.branch, name: b.name, head: b.head,
+        seen: b.seen, check: b.check, chargeCommits: b.chargeCommits, landForm: b.landForm, lands: b.lands });
+    }
 
     // the lane's own drift view — read-only by construction (laneDrift never touches a working tree)
     // and no new capability: the route exists so session, board and sync path read ONE server-computed
@@ -52408,6 +52564,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(held ? { heldDeliveries: held } : {}),
             // Claude Code's permission question on screen (rueckfrageView): header and question, no command; omitted when none
             ...(() => { const frage = rueckfrageView(s, Date.now()); return frage ? { rueckfrage: frage } : {}; })(),
+            // Claude Code's trust question on screen (vertrauenView); omitted when none
+            ...(vertrauenView(s, Date.now()) ? { vertrauen: true } : {}),
             // a lane that starts WITH the Playwright MCP; omitted for the default text lane and every non-lane
             ...(s.worktree && s.browser ? { browser: true } : {}),
             ...(s.worktree && s.webSearch ? { webSearch: true } : {}),
@@ -53709,20 +53867,27 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!body || typeof body.branch !== "string") return json({ error: "expected { repo, branch }" }, 400);
       const ro = await branchRepoOf(body.repo);
       if (!ro.ok) return json({ error: ro.error }, 400);
-      const record = findBranch(branchBook, ro.repo, body.branch);
-      if (!record?.name || !(await branchExists(ro.repo, body.branch))) return json({ error: `${body.branch} is no board branch here` }, 404);
-      if (!hasMergeCheck(ro.repo)) return json({ error: "dieses Repo hat keinen Merge-Check (ci/merge-check.ts)" }, 400);
-      const key = `${ro.repo}\n${body.branch}`;
-      if (branchCheckRuns.has(key)) return json({ error: "der Merge-Check dieses Branches läuft schon" }, 409);
-      const tip = (await gitRead(ro.repo, "rev-parse", `refs/heads/${body.branch}`)).out;
-      if (await chargeRewritten(ro.repo, record, tip)) return json({ error: CHARGE_REWRITTEN }, 409);
-      const base = chargeBase(record, await integrationBranch(ro.repo));
-      if (!base) return json({ error: "cannot resolve the repo's integration branch" }, 400);
-      branchCheckRuns.set(key, { tip, startedAt: Date.now() });
-      const run = Bun.spawn([process.execPath, `${ro.repo}/ci/merge-check.ts`, body.branch, "--base", base],
-        { cwd: ro.repo, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-      void run.exited.then(() => { branchCheckRuns.delete(key); workplacesCache = null; });
-      return json({ ok: true, tip, base }, 202);
+      const started = await startBranchCheck(ro.repo, body.branch);
+      return json(started.body, started.status);
+    }
+    // A REPO'S CHECK COMMAND (server/pruefbefehl.ts), set at the board: from now on it is the repo's merge check, land
+    // gate and audit. OWNER-ONLY BY POSITION, like /api/repo-worker: the value is executed over the repo's contents, so a
+    // session's token never reaches it — a session proposes at /api/self/repo-check, and only this door makes it run.
+    // `cmd: ""` clears it. A repo with its own ci/merge-check.ts (Fleet's) keeps that and takes none.
+    if (url.pathname === "/api/repo-check" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || typeof body.cmd !== "string") return json({ error: "expected { repo, cmd }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      if (ownMergeCheck(ro.repo)) return json({ error: OWN_MERGE_CHECK }, 409);
+      const cmd = body.cmd.trim();
+      const bad = cmd ? checkCmdProblem(cmd) : null;
+      if (bad) return json({ error: bad }, 400);
+      repoChecks = setCheck(repoChecks, ro.repo, cmd || null, "owner", Date.now());
+      await saveStateNow();
+      audit("repo_check", undefined, `${ro.repo} check=${cmd || "(cleared)"}`);
+      workplacesCache = null;
+      return json({ ok: true, repo: ro.repo, check: repoCheckView(repoChecks, ro.repo, false) });
     }
     // CHARGE MERGEN through the owner's door: the commits since the last charge become ONE commit on the integration
     // branch (or, as its land form says, main fast-forwards to the merge check's candidate) — server/branch-land.ts

@@ -7,7 +7,7 @@ import { prefBool, prefSetBool } from "./prefs";
 import { popover } from "./popover";
 import { runningEffort, runningModel } from "./running";
 import { askRisk } from "./dialog";
-import { RUECKFRAGE_SATZ } from "./pendingsend";
+import { RUECKFRAGE_SATZ, VERTRAUEN_SATZ } from "./pendingsend";
 
 // --- THE ONE COMPOSER ------------------------------------------------------------------------
 // Owner 2026-09-19: the conversation view's input REPLACES the box under the terminal — there is
@@ -199,9 +199,10 @@ export function renderHeldHint(): void {
 export function renderFrageHint(): void {
   const hint = $("compfrage");
   const pane = panes[focused];
-  const frage = pane?.pastN == null ? fleet.find((x) => x.id === pane?.slot)?.rueckfrage : undefined;
+  const row = pane?.pastN == null ? fleet.find((x) => x.id === pane?.slot) : undefined;
+  const frage = row?.rueckfrage ?? (row?.vertrauen ? VERTRAUEN_SATZ : undefined);
   hint.hidden = !frage;
-  const text = frage ? RUECKFRAGE_SATZ : "";
+  const text = row?.rueckfrage ? RUECKFRAGE_SATZ : frage ?? "";
   if (hint.textContent !== text) hint.textContent = text;
   hint.title = frage ?? "";
   compEl.classList.toggle("frage", !!frage);

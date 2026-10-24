@@ -1395,7 +1395,8 @@ await import(pathToFileURL(process.argv[2]).href);
     mkdirSync(`${qRoot}/e2e/trail`, { recursive: true });
     try {
       writeFileSync(`${qRoot}/fleet.json`, "{}\n");
-      for (const f of ["harness.ts", "trail-emit.ts"]) writeFileSync(`${qRoot}/e2e/${f}`, readFileSync(`${import.meta.dir}/${f}`, "utf8"));
+      // harness.ts and every file it imports by a relative path
+      for (const f of ["harness.ts", "trail-emit.ts", "fail-detail.ts"]) writeFileSync(`${qRoot}/e2e/${f}`, readFileSync(`${import.meta.dir}/${f}`, "utf8"));
       const entry = (name: string) => ({ name, since: "2001-09-09", auditSha: "abcdef0", reason: "ctl fixture" });
       writeFileSync(`${qRoot}/e2e/quarantine.json`, JSON.stringify([entry("quarfixture flaky"), entry("quarfixture passing")]));
       writeFileSync(`${qRoot}/e2e/drive.ts`, [

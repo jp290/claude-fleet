@@ -115,7 +115,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
       // the late steps' facts first: the first steps' fill the 1500 characters on their own, and a red
       // explorer or Checks claim arrived without the facts that say why (preview 86431fe8bd67)
       const { unsettled, explorerSteps, explorer, meter, ...early } = result.facts as Record<string, unknown>;
-      const facts = JSON.stringify({ unsettled, explorerSteps, explorer, meter, ...early }).slice(0, 1500);
+      const facts = JSON.stringify({ unsettled, explorerSteps, explorer, meter, ...early });
       check(`settings DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
   } catch (error) {
@@ -128,7 +128,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   try {
     // one viewport for what reads the same (e897fa95): 1200; the phone's Sessions sheet and ➤ stay at 390
     for (const [result, claim, ok] of atOneViewport(await runComposerTargetDom(sourceRoot), 1200))
-      check(`send target DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`send target DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("send target DOM", error);
   }
@@ -139,7 +139,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   try {
     // one width (e897fa95): every claim reads the same at 1440 and 390, so 390, where ➤ stands
     for (const result of await runComposerKeepDom(sourceRoot, { widths: [390] })) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`composer keep DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -155,7 +155,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   try {
     // one width (e897fa95): every claim reads the same at 1200 and 390
     for (const result of await runBundleChatDom(sourceRoot, undefined, [1200])) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`bundle chat DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -169,7 +169,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   try {
     // one width (e897fa95): every claim reads the same at 1200 and 390
     for (const result of await runHeldDeliveriesDom(sourceRoot, undefined, [1200])) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`held bundle DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -182,7 +182,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   // taps alone. A browser that cannot run is the PROBE line — red, never a skip.
   try {
     for (const result of await runTermFindDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`terminal search DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -204,7 +204,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
     // costs one line, a layout claim it let go costs the phone.
     const layout = /\bcut\b|overflow|clip|wrap|ellips|sideways|scroll|\bpx\b|width|narrow|wide\b|overlap|runs? (?:off|out)|\bfits?\b|whole|truncat|\bline|rail|beside|under|above|\bleft\b|\bright\b|\btop\b|bottom|corner|edge|tap|touch|finger|keyboard|sheet|phone/i;
     for (const [result, claim, ok] of atOneViewport(arbeitsorte, 1200, { alsoAt: (c) => layout.test(c), group: (r) => r.state })) {
-      const facts = JSON.stringify(result.facts.focus ? { focus: result.facts.focus, ...result.facts } : result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts.focus ? { focus: result.facts.focus, ...result.facts } : result.facts);
       check(`arbeitsorte DOM ${result.width}x${result.height} ${claim}`, ok,
         claim.includes("the old cards") ? JSON.stringify(result.facts.oldCard) : facts);
     }
@@ -221,10 +221,10 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   // PROBE line — red, never a skip.
   try {
     for (const result of await runPhoneIslandDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`phone island DOM ${result.width}x${result.height}: ${claim}`, ok,
-          claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : facts);
+          claim in result.detail ? JSON.stringify(result.detail[claim]) : facts);
     }
   } catch (error) {
     probeFailed("phone island DOM", error);
@@ -238,7 +238,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   try {
     for (const result of await runStripDom(sourceRoot))
       for (const [claim, ok] of Object.entries(result.claims))
-        check(`strip DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.detail[claim] ?? result.detail.missing).slice(0, 1500));
+        check(`strip DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.detail[claim] ?? result.detail.missing));
   } catch (error) {
     probeFailed("strip DOM", error);
   }
@@ -253,7 +253,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
     for (const result of await runGlassIslandDom(sourceRoot)) {
       if (result.notRun) { console.log(`NOTE  glass island DOM ${result.engine} not run here: ${result.notRun}`); continue; }
       for (const [claim, ok] of Object.entries(result.claims))
-        check(`glass island DOM ${claim}`, ok, claim in result.detail ? JSON.stringify(result.detail[claim]).slice(0, 1500) : "");
+        check(`glass island DOM ${claim}`, ok, claim in result.detail ? JSON.stringify(result.detail[claim]) : "");
     }
   } catch (error) {
     probeFailed("glass island DOM", error);
@@ -266,7 +266,7 @@ async function slotsDom(sourceRoot: string): Promise<void> {
     // both widths stay (e897fa95 left its one-viewport verdict here): the trail saw rights claims red at
     // 1200 AND at 390, different ones at each, and a claim stays at every width it was red at
     for (const result of await runRightsDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot })) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`rights DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -354,7 +354,7 @@ async function postfachDom(sourceRoot: string): Promise<void> {
   try {
     for (const [result, claim, ok] of atOneViewport(await runPostfachDom(sourceRoot), 1200,
       { alsoAt: (c) => c.startsWith("the compact lines stay inside") }))
-      check(`postfach DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`postfach DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("postfach DOM", error);
   }
@@ -365,7 +365,7 @@ async function uebergabeDom(sourceRoot: string): Promise<void> {
   // every claim at both widths: the phone is the owner's place
   try {
     for (const [result, claim, ok] of atOneViewport(await runUebergabeDom(sourceRoot), 1200, { alsoAt: () => true }))
-      check(`uebergabe DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`uebergabe DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("uebergabe DOM", error);
   }
@@ -376,7 +376,7 @@ async function uebergabeDom(sourceRoot: string): Promise<void> {
 async function leisteDom(sourceRoot: string): Promise<void> {
   try {
     for (const [result, claim, ok] of atOneViewport(await runLeisteDom(sourceRoot), 1440, { alsoAt: () => true }))
-      check(`leiste DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`leiste DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("leiste DOM", error);
   }
@@ -388,14 +388,14 @@ async function k15StartDom(sourceRoot: string): Promise<void> {
   // PER ROLE, behind a fixture origin: which door, which body, which sentence (what the old start window's rig checked)
   try {
     for (const [result, claim, ok] of atOneViewport(await runK15StartDom(sourceRoot), 1200))
-      check(`k15 start DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`k15 start DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("k15 start DOM (fixture)", error);
   }
   // AGAINST THIS INSTANCE: the start gives a session with the chosen repo, agent, model and effort
   try {
     const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot });
-    for (const [claim, ok] of Object.entries(r.claims)) check(`k15 start DOM: ${claim}`, ok, JSON.stringify(r.facts).slice(0, 1500));
+    for (const [claim, ok] of Object.entries(r.claims)) check(`k15 start DOM: ${claim}`, ok, JSON.stringify(r.facts));
   } catch (error) {
     probeFailed("k15 start DOM", error);
   }
@@ -408,7 +408,7 @@ async function konstellationDom(sourceRoot: string): Promise<void> {
   try {
     for (const [result, claim, ok] of atOneViewport(await runKonstellationDom(sourceRoot), 1200,
       { alsoAt: (c) => c === KONST_CLAIM.aufbau || c === KONST_CLAIM.fit || c === KONST_CLAIM.click || c === KONST_CLAIM.grund || c === KONST_CLAIM.phone }))
-      check(`konstellation DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`konstellation DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("konstellation DOM", error);
   }
@@ -420,7 +420,7 @@ async function dropsDom(sourceRoot: string): Promise<void> {
   try {
     // one viewport for what reads the same (e897fa95): 1200; each width keeps its own picture size
     for (const [result, claim, ok] of atOneViewport(await runDropChatDom(sourceRoot), 1200))
-      check(`drop chat DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
+      check(`drop chat DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts));
   } catch (error) {
     probeFailed("drop chat DOM", error);
   }
@@ -430,7 +430,7 @@ async function dropsDom(sourceRoot: string): Promise<void> {
 async function timelineDom(sourceRoot: string): Promise<void> {
   try {
     for (const result of await runTimelineDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`timeline DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }
@@ -444,7 +444,7 @@ async function timelineDom(sourceRoot: string): Promise<void> {
 async function activityDom(sourceRoot: string): Promise<void> {
   try {
     for (const result of await runActivityDom(sourceRoot)) {
-      const facts = JSON.stringify(result.facts).slice(0, 1500);
+      const facts = JSON.stringify(result.facts);
       for (const [claim, ok] of Object.entries(result.claims))
         check(`activity DOM ${result.width}x${result.height}: ${claim}`, ok, facts);
     }

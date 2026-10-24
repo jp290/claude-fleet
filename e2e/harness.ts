@@ -1,9 +1,10 @@
 // Shared plumbing for the split e2e suite (fleet-e2e.ts is the runner; every check module
 // imports from here). Everything in this file is infrastructure — no checks live here.
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { installPhaseProbes, timed, writeTrailRow } from "./trail-emit";
+import { installPhaseProbes, timed, TRAIL_DIR, TRAIL_RUN, writeTrailRow } from "./trail-emit";
+import { lineDetail, spillTo } from "./fail-detail";
 // IMPORTED, not read by path: e2e-stage.sh copies an instance's files by following relative imports
 // (e2e-stage.sh#_stage_closure), so this import is what carries the list into every suite instance
 import QUARANTINE_RAW from "./quarantine.json";
@@ -115,17 +116,20 @@ export const quarantineLine = (): string =>
 // wall clock at the previous check's return — module init is suite start, so the first row
 // measures from there (see trail-emit.ts on why this is msSincePrev and not a duration)
 let prevCheck = Date.now();
+// where a red check longer than its line puts its whole detail (e2e/fail-detail.ts)
+const spill = spillTo(TRAIL_DIR ? join(TRAIL_DIR, `${TRAIL_RUN}.detail`) : null);
 
 export function check(name: string, ok: boolean, detail = ""): void {
   const ts = Date.now();
   // a PASSING quarantined check prints PASS: quarantine changes what a failure counts, never a pass
   const quar = !ok && quarantined.has(name);
-  results.push(`${ok ? "PASS" : quar ? "QUAR" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
+  const shown = lineDetail(ok, detail, spill);
+  results.push(`${ok ? "PASS" : quar ? "QUAR" : "FAIL"}  ${name}${shown ? `  (${shown})` : ""}`);
   if (quar) quarFailed.push(name);
   else if (!ok) failed++;
   // the choke point is also the trail's only emit site: every check, exactly one durable row,
   // no call site able to opt out (docs/e2e-trail.md). It never throws — see writeTrailRow.
-  writeTrailRow(name, ok, detail, ts - prevCheck, ts, quar);
+  writeTrailRow(name, ok, shown, ts - prevCheck, ts, quar);
   prevCheck = ts;
 }
 

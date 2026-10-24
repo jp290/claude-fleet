@@ -39,7 +39,7 @@ One JSON object per line, one line per `check()` call. `e2e/trail-emit.ts` owns 
 | `quarantined` | since 2026-10-10: **only** on an `ok:false` row whose exact check name stands in `e2e/quarantine.json`, and then only ever `true`; absent everywhere else |
 | `msSincePrev` | wall-clock ms since the **previous** check returned (see §4) |
 | `ts` | epoch ms |
-| `detail` | only on `ok:false`, capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
+| `detail` | only on `ok:false`, as the result line shows it: a detail over 1500 chars keeps its head and ends in `…[whole detail: <trail dir>/<run>.detail/<n>.txt]`, the file that holds it whole (`e2e/fail-detail.ts`); capped at `TRAIL_DETAIL_MAX` = 2000 chars + `…[truncated]` |
 | `phases` | since 2026-09-14: `{boot, tmux, http, sleep, rest}` ms — where `msSincePrev` went (§4a); absent in older files |
 | `phaseTop` | since 2026-09-14: per phase with any outermost call, the longest one in this row as `{ms, at}` (`at` = `path:line`) |
 | `phaseSum` | since 2026-09-14: per phase, the call site whose outermost calls in this row sum to the most, as `{ms, n, at}` |

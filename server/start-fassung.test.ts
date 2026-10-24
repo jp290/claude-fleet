@@ -256,26 +256,30 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const rechteWahl = [null, { stufe: "bauen", an: [], aus: [] }, { stufe: "lesen", an: [], aus: [] }];
         const mcpWahl = [[], [{ name: "n1", command: "bun", args: ["x.ts", "it's"] }]];
         const faelle = [];
-        for (const [listRole, bau, fleetRepo] of [["lane", false, false], ["main", false, false], ["orchestrator", false, false],
-          ["generic", false, false], ["generic", true, false], ["generic", false, true], ["generic", true, true]])
+        // jeder Zweig der Excludes (server.ts#startExcludes): Orchestratorin, Server-Checkout, Bau-Sitz, Lane und freier Sitz in Fleets Repo,
+        // eigenes Setup, und jede Rolle außerhalb von Fleets Repo
+        for (const [listRole, bau, fleetRepo, checkout] of [["lane", false, false, false], ["lane", false, true, false], ["main", false, false, false],
+          ["main", false, true, false], ["main", false, true, true], ["orchestrator", false, false, false], ["orchestrator", false, true, true],
+          ["generic", false, false, false], ["generic", true, false, false], ["generic", false, true, false], ["generic", true, true, false],
+          ["generic", false, true, true]])
           for (const rechte of rechteWahl) for (const packMcp of mcpWahl) for (const browserMcp of [true, false]) {
-            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau, fleetRepo);
+            const fleet = S.fassungFleetStart(listRole, rechte, { browserMcp, packMcp }, bau, fleetRepo, [], null, null, false, null, checkout);
             // ensureSlot gibt der Orchestratorin ihren Start als Datei (server.ts#orchestratorStartDatei), keiner anderen Rolle
             const startDatei = listRole === "orchestrator" ? "/fixture/orchestrator-start.md" : null;
-            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, null, packMcp, listRole, false, null, rechte, null, null, null, bau, startDatei, fleetRepo);
-            faelle.push({ listRole, bau, fleetRepo, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
+            const zeile = S.slotCmd("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", false, "claude-opus-5-5", null, browserMcp, checkout, packMcp, listRole, false, null, rechte, null, null, null, bau, startDatei, fleetRepo);
+            faelle.push({ listRole, bau, fleetRepo, checkout, rechte, packMcp: packMcp.length, browserMcp, fleet, zeile, home: process.env.HOME });
           }
         await Bun.write(${JSON.stringify(out)}, JSON.stringify(faelle));
         process.exit(0);
       `;
       const r = await runServer(script, dir, env);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      type Fall = { listRole: string; bau: boolean; fleetRepo: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
+      type Fall = { listRole: string; bau: boolean; fleetRepo: boolean; checkout: boolean; rechte: unknown; packMcp: number; browserMcp: boolean; zeile: string; home: string;
         fleet: { zusatz: { text: string | null }; start: { text: string | null } | null; darf: { id: string; text: string | null }[] } };
       const faelle = JSON.parse(readFileSync(out, "utf8")) as Fall[];
-      expect(faelle).toHaveLength(84);
+      expect(faelle).toHaveLength(144);
       for (const f of faelle) {
-        const wo = `${f.listRole}${f.bau ? " (baut)" : ""}${f.fleetRepo ? " (in Fleets Repo)" : ""} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
+        const wo = `${f.listRole}${f.bau ? " (baut)" : ""}${f.fleetRepo ? " (in Fleets Repo)" : ""}${f.checkout ? " (im Server-Checkout)" : ""} rechte=${JSON.stringify(f.rechte)} mcp=${f.packMcp} browser=${f.browserMcp}`;
         const gleich = (fassung: unknown, zeile: unknown): void => { expect({ wo, wert: fassung }).toEqual({ wo, wert: zeile }); };
         const tokens = zerlege(f.zeile);
         const flag = (name: string): string | null => { const i = tokens.indexOf(name); return i < 0 ? null : tokens[i + 1] ?? ""; };
@@ -296,9 +300,9 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const fassungSet = JSON.parse(darf("einstellungen")) as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment: string[] } };
         gleich(fassungSet.skillOverrides ?? {}, zeileSet.skillOverrides ?? {});
         gleich(eigen ? [zeileSet.skillOverrides, zeileSet.autoMode, f.zeile.includes("FLEET-LISTENSCHNITT")] : null, eigen ? [undefined, undefined, false] : null);
-        // die Orchestratorin zeigt ihre Excludes unter „Liest“ (fassungProjektregelnAus), eine Session ohne Rolle hier
-        if (f.listRole === "generic")
-          gleich(fassungSet.claudeMdExcludes ?? null, zeileSet.claudeMdExcludes?.map((pfad) => pfad.replace(f.home, "~")) ?? null);
+        // die Excludes jedes Zweigs, Eintrag für Eintrag (beide lesen server.ts#startExcludes). MUTATION: fassungFleetStart rechnet sie wieder
+        // selbst (`bau ? ~/AGENTS.md` plus die eigenen Regeln) ⇒ rot für die Orchestratorin (2 statt 6), den Server-Checkout und die Lane in Fleets Repo
+        gleich(fassungSet.claudeMdExcludes ?? null, zeileSet.claudeMdExcludes?.map((pfad) => pfad.replace(f.home, "~")) ?? null);
         gleich(fassungSet.permissions ?? null, zeileSet.permissions ?? null);
         const deny = (zeileSet.permissions as { deny?: string[] } | undefined)?.deny ?? [];
         gleich("FLEET_NO_BYPASS" in env ? deny.slice(-REAL_SEAT_DENY.length) : null, "FLEET_NO_BYPASS" in env ? [...REAL_SEAT_DENY] : null);
@@ -323,9 +327,10 @@ describe("die Fassung und die Zeile des Spawns", () => {
 });
 
 // EIN SITZ, DER BAUT, STARTET SCHLANK (Kostenprüfung 23.10., Paket 1): ohne die Werkzeuge, die in 62 Bau-Sessions niemand rief, ohne die
-// Codex-Fassung der globalen Regeln; seine MCP-Server bleiben (Playwright nutzen 14 von 56 Bau-Sitzen). Eine freie Session behält alles.
+// Codex-Fassung der globalen Regeln; seine MCP-Server bleiben (Playwright nutzen 14 von 56 Bau-Sitzen). Eine freie Session behält ihre Werkzeuge.
+// Die Codex-Fassung (~/AGENTS.md) lässt seit E10 jeder Sitz in Fleets Repo aus, die freie Session in einem Worktree auch (Probe 24.10.: sonst lädt sie).
 describe("ein Sitz, der baut, gegen eine freie Session", () => {
-  test("die Zeile des Bau-Sitzes nimmt sechs Werkzeuge und ~/AGENTS.md heraus, die freie Session behält beides", async () => {
+  test("die Zeile des Bau-Sitzes nimmt sechs Werkzeuge und ~/AGENTS.md heraus, die freie Session behält die Werkzeuge, nicht ~/AGENTS.md", async () => {
     const dir = mkdtempSync(join(tmpdir(), "start-fassung-bau-"));
     try {
       mkdirSync(join(dir, "state"), { recursive: true });
@@ -352,12 +357,12 @@ describe("ein Sitz, der baut, gegen eine freie Session", () => {
       expect((JSON.parse(flag(z.bau, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).toContain(`${z.home}/AGENTS.md`);
       expect(zerlege(z.bau)).not.toContain("--strict-mcp-config");
       expect(flag(z.frei, "--tools")).toBeNull();
-      expect((JSON.parse(flag(z.frei, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).not.toContain(`${z.home}/AGENTS.md`);
+      expect((JSON.parse(flag(z.frei, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes).toContain(`${z.home}/AGENTS.md`);
       expect(zerlege(z.frei)).not.toContain("--strict-mcp-config");
-      // EIN SITZ IN FLEETS REPO lässt die eigenen Regeln des Owners aus, jede Rolle
+      // EIN SITZ IN FLEETS REPO lässt die eigenen Regeln des Owners aus, ihre Codex-Fassung eingeschlossen, jede Rolle
       for (const zeile of z.fleet)
         expect((JSON.parse(flag(zeile, "--settings")!) as { claudeMdExcludes: string[] }).claudeMdExcludes)
-          .toEqual(expect.arrayContaining([`${z.home}/.claude/CLAUDE.md`, `${z.home}/.claude/rules/**`]));
+          .toEqual(expect.arrayContaining([`${z.home}/AGENTS.md`, `${z.home}/.claude/CLAUDE.md`, `${z.home}/.claude/rules/**`]));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

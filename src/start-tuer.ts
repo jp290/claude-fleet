@@ -21,11 +21,13 @@ export type Auftrag =
       // die Übergabe-Schwelle des Fensters: steht am Slot, bevor der Start seine Fassung festhält (server.ts#schwelleDerTuer)
       schwelle?: number;
       // „<konst>/<position>“: der Sitz startet mit dem, was mitreiste (server/sitz-reise.ts#sitzDerTuer)
-      sitz?: string }
+      sitz?: string;
+      // das neue Startfenster (src/start-fenster.ts): seine Wahl unter den Feldnamen der Tür (src/start-wahl.ts#tuer) oder ein Agent ganz
+      wahl?: Record<string, unknown>; agent?: string }
   | { tuer: "main"; program: string; cwd: string; dreier: Dreier }
   | { tuer: "branch"; repo: string; name: string; punkte: string[]; ziel: string; dreier: Dreier; bestehend?: string; gemacht?: string; rechte?: Rechte; profil?: string; aufgabe?: Aufgabe;
       // Fleets Bibliothek für diese Session (server.ts#seatLibraryOn); ohne Angabe entscheidet der Ort
-      bibliothek?: boolean; sitz?: string };
+      bibliothek?: boolean; sitz?: string; wahl?: Record<string, unknown>; agent?: string };
 // `bewegt`: die Antwort des Plans von jetzt (409 staleHash); `gemacht`: der Branch steht schon, nur seine Session startete nicht;
 // `vorhanden`: den Board-Namen trägt in diesem Repo schon ein anderer Branch
 export type Antwort =
@@ -47,7 +49,7 @@ export async function starte(a: Auftrag): Promise<Antwort> {
       return await tuer("/api/lanes", { repo: a.repo, attach: a.worktree, ...(a.slot !== undefined ? { slot: a.slot } : {}), ...a.dreier }, a.slot);
     return await tuer(`/api/slots/${a.slot}/open`, { cwd: a.cwd, ...(a.label ? { label: a.label } : {}), ...a.dreier, ...(a.plan ? { plan: a.plan } : {}), ...(a.fassung ? { fassung: a.fassung } : {}),
       ...(a.rechte ? { rechte: a.rechte } : {}), ...(a.profil ? { profil: a.profil } : {}), ...(a.bibliothek !== undefined ? { bibliothek: a.bibliothek } : {}),
-      ...(a.sitz ? { sitz: a.sitz } : {}), ...(a.schwelle !== undefined ? { schwelle: a.schwelle } : {}) }, a.slot);
+      ...(a.sitz ? { sitz: a.sitz } : {}), ...(a.schwelle !== undefined ? { schwelle: a.schwelle } : {}), ...a.wahl, ...(a.agent ? { agent: a.agent } : {}) }, a.slot);
   } catch (e) {
     return nichtErreichbar(e);
   }
@@ -100,7 +102,7 @@ async function oeffneBranch(a: Extract<Auftrag, { tuer: "branch" }>): Promise<An
     branch = j.branch;
   }
   const r = await post("/api/branches/open", { repo: a.repo, branch, ...(a.aufgabe ? { aufgabe: a.aufgabe } : a.ziel ? { goal: a.ziel } : {}), ...a.dreier, ...(a.rechte ? { rechte: a.rechte } : {}), ...(a.profil ? { profil: a.profil } : {}),
-    ...(a.bibliothek !== undefined ? { bibliothek: a.bibliothek } : {}), ...(a.sitz ? { sitz: a.sitz } : {}) });
+    ...(a.bibliothek !== undefined ? { bibliothek: a.bibliothek } : {}), ...(a.sitz ? { sitz: a.sitz } : {}), ...a.wahl, ...(a.agent ? { agent: a.agent } : {}) });
   const j = rec(await r.json().catch(() => null));
   if (!r.ok || typeof j?.slot !== "number")
     return { ok: false, fehler: `„${a.name}“ steht mit seinen Punkten, die Session startete nicht: ${typeof j?.error === "string" ? j.error : `Antwort ${r.status}`}`, gemacht: branch };

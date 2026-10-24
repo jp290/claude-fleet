@@ -70,7 +70,7 @@ import {
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { GRUPPE, type SetupDatei } from "./fassung-umfeld-zeilen";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
-import { flotteNeu, openAttrappe, openK15Entwurf } from "./k15-lader";
+import { flotteNeu, openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
 
 if (/Chrome\/|Chromium\//.test(navigator.userAgent) && !/CriOS\//.test(navigator.userAgent)) {
@@ -6286,6 +6286,11 @@ interface DirCommit { hash: string; ts: number; subject: string }
 export interface DirInfoResp {
   path: string; exists: boolean; git: boolean; worktree?: boolean; branch?: string | null;
   dirty?: number; ahead?: number | null; behind?: number | null;
+  files?: { st: string; pfad: string }[];
+  // its primary checkout has ci/merge-check.ts: a session on its own branch can land it (server/branch-land.ts)
+  mergeCheck?: boolean;
+  // the branch doors take this repo (server.ts#branchDoorTakes: a workplace repo, one a session works in)
+  branches?: boolean;
   last?: DirCommit | null; recent?: DirCommit[];
   entries?: { name: string; dir: boolean }[]; entryTotal?: number; hidden?: number;
   lanes?: number; error?: string;
@@ -11916,5 +11921,4 @@ void (async () => {
   // no kept place: the focused pane takes them its own way — the chat view's field, or the terminal
   if (!keysWere && (!document.activeElement || document.activeElement === document.body)) panes[focused]?.focus();
   if (location.hash.startsWith("#k15")) openK15Entwurf();
-  else if (location.hash.startsWith("#attrappe")) openAttrappe();
 })();

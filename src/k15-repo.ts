@@ -10,6 +10,7 @@ import { gehe, info, oeffneOrdner, pinne, plural, render, repoZeilen, tilde, ver
 import { schliesseAblauf } from "./k15-agentmd";
 import { packUngesichert } from "./k15-packs-ui";
 import { knopf } from "./k15-teile";
+import { startSchliesst } from "./start-fenster";
 
 const punkt = (repo: string): HTMLElement => {
   const dot = el("i", "fddot");
@@ -115,7 +116,7 @@ export function menueZu(s: St, signal: AbortSignal): void {
     if (s.ablauf) { schliesseAblauf(s); return true; }
     const wo = packUngesichert(s) ? "im Kontextpack" : s.bearbeite !== null && s.bearbeiteText !== null ? "in deiner eigenen Fassung" : null;
     if (wo && !verwirft(s, wo)) return true;
-    if (!s.repoMenu) return false;
+    if (!s.repoMenu) return startSchliesst(s);
     s.repoMenu = false;
     s.ordner = null;
     render();

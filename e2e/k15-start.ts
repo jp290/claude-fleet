@@ -1,11 +1,11 @@
-// A START FROM THE WINDOW „NEUE SESSION“ AGAINST THIS INSTANCE (K15 Runde 5, owner 17.10.: „[Zitat entfernt]“
-//  → the new window replaces the old start window, „[Zitat entfernt]“, „[Zitat entfernt]“
-// ). Done (Bauleitung, auftraege/k15-runde-5-fenster-abloesen.md): a click on „Neue Session“ opens the new
-// window, and a start there gives a session with exactly the chosen values — repo, agent, model and effort, read back at the session the
-// server made. Nothing here is stubbed: like e2e/slots.ts#runRightsDom the staged server answers every request; the probe's own part is
-// named — the bundles are built from `sourceRoot` and handed to the page in place of the served /app.js, /k15.js and /k15.css, so a
-// mutant tree is measured against the same server. The lane it starts lives on FLEET_E2E_REPO (a fixture repo, Mangel 91) and is
-// killed and its worktree removed again. Driven by e2e/dom.ts.
+// A START FROM THE START WINDOW AGAINST THIS INSTANCE (owner 24.10., src/start-fenster.ts; the build: K15 Runde 5, owner 17.10. „[Zitat entfernt]“
+// ). A click on a free place opens the start window; a start there
+// gives a session whose door took the Fassung the start brief showed (server.ts#fassungGezeigtPruefung: a hash that moved is a 409), and
+// the build over „Lanes, MAIN and constellations ›“ gives a lane with exactly the chosen repo, agent, model and effort, read back at the
+// session the server made. Nothing here is stubbed: like e2e/slots.ts#runRightsDom the staged server answers every request; the probe's
+// own part is named — the bundles are built from `sourceRoot` and handed to the page in place of the served /app.js, /k15.js, /k15.css
+// and /sitzung.css, so a mutant tree is measured against the same server. Both sessions take the same free place one after the other and
+// live on FLEET_E2E_REPO (a fixture repo, Mangel 91); each is killed again, the lane's worktree removed. Driven by e2e/dom.ts.
 import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -14,9 +14,10 @@ export interface K15StartLiveResult { claims: Record<string, boolean>; facts: Re
 export interface K15StartLiveMutant { name: string; claim: keyof typeof K15_START_LIVE_CLAIM; file: string; needle: string; with: string }
 
 export const K15_START_LIVE_CLAIM = {
-  opens: "a click on a free place of the bar opens the window „Neue Session“ (K15) in its view „Eine Session“; „Mit anderen Sessions arbeiten“ leads to the build with a lane chosen — the old start window does not open",
-  values: "„… starten“ gives a session on that place with the repo, the agent, the model and the effort chosen in the window, as the server reports them",
-  closes: "after the start the window is gone, and the place it started stands with a session",
+  opens: "a click on a free place of the bar opens the start window with the repo's own agent; „Lanes, MAIN and constellations ›“ leads to the build with a lane chosen — the old start window does not open",
+  fenster: "Start in the start window, on the fixture repo as the repo's agent with „+ Rights“, gives a session on that place in that repo: the door took the Fassung the start brief showed (no 409), and the session's held start Fassung carries the rights sentence",
+  values: "„… starten“ in the build gives a session on that place with the repo, the agent, the model and the effort chosen in the window, as the server reports them",
+  closes: "after each start the window is gone, and the place it started stands with a session",
 } as const;
 
 // each mutant must turn its claim red; a needle that left the source throws
@@ -26,6 +27,8 @@ export const K15_START_LIVE_MUTANTS: readonly K15StartLiveMutant[] = [
     with: `return await tuer(url, { repo: a.repo, ...(a.parent ? { parent: a.parent } : {}), branch: "", plan: a.plan }, a.slot);` },
   { name: "a free place opens no window", claim: "opens", file: "src/client.ts",
     needle: `row.onclick = () => openK15Entwurf({ slot: s.id });`, with: `row.onclick = () => undefined;` },
+  { name: "the start window sends a Fassung its start brief did not show", claim: "fenster", file: "src/start-fenster.ts",
+    needle: "...(a.fassungsHash && !rolle ? { fassung: a.fassungsHash } : {})", with: "...(a.fassungsHash && !rolle ? { fassung: \"0\".repeat(64) } : {})" },
 ];
 
 export async function runK15StartLiveDom(o: { base: string; token: string; repo: string; sourceRoot: string; mutate?: K15StartLiveMutant }): Promise<K15StartLiveResult> {
@@ -50,6 +53,7 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
   const appJs = await bundle("src/client.ts");
   const k15Js = await bundle("src/k15-entwurf.ts");
   const k15Css = readFileSync(resolve(o.sourceRoot, "public/k15.css"), "utf8");
+  const sitzungCss = readFileSync(resolve(o.sourceRoot, "public/sitzung.css"), "utf8");
   if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`k15 start mutant: needle not in ${m?.file}: ${m?.needle.slice(0, 80)}`); }
 
   const OH = { "content-type": "application/json", authorization: `Bearer ${o.token}` };
@@ -61,6 +65,7 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
   const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
   const claims: Record<string, boolean> = {};
   const facts: Record<string, unknown> = { mutant: m?.name ?? null };
+  // one free place: the start window's session takes it, is read back and killed, then the build's lane takes it
   const free = (await rows()).find((r) => r.id <= 16 && !r.cwd);
   if (!free) { rmSync(scratch, { recursive: true, force: true }); throw new Error("k15 start: no free band slot"); }
   facts.slot = free.id;
@@ -97,7 +102,8 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
       socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
     const served: Record<string, { body: string; type: string }> = {
-      "/app.js": { body: appJs, type: "text/javascript" }, "/k15.js": { body: k15Js, type: "text/javascript" }, "/k15.css": { body: k15Css, type: "text/css" } };
+      "/app.js": { body: appJs, type: "text/javascript" }, "/k15.js": { body: k15Js, type: "text/javascript" }, "/k15.css": { body: k15Css, type: "text/css" },
+      "/sitzung.css": { body: sitzungCss, type: "text/css" } };
     socket.onmessage = (event) => {
       const msg = JSON.parse(String(event.data)) as { id?: number; result?: Record<string, unknown>; error?: unknown; method?: string; params?: Record<string, unknown> };
       if (msg.id !== undefined) { pending.get(msg.id)?.(msg.error ? { error: msg.error } : msg.result ?? {}); pending.delete(msg.id); return; }
@@ -113,7 +119,7 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     };
     const target = await send("Target.createTarget", { url: "about:blank" });
     sessionId = String((await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
-    await send("Fetch.enable", { patterns: ["/app.js", "/k15.js", "/k15.css"].map((p) => ({ urlPattern: `${o.base}${p}*` })) });
+    await send("Fetch.enable", { patterns: ["/app.js", "/k15.js", "/k15.css", "/sitzung.css"].map((p) => ({ urlPattern: `${o.base}${p}*` })) });
     await send("Page.enable");
     await send("Runtime.enable");
     await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -135,16 +141,43 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     await send("Page.navigate", { url: `${o.base}/?token=${o.token}` });
     await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 15000);
     await evaluate(`localStorage.setItem('fleet.k15.rundgang', '1')`);
+    const repos = JSON.stringify([o.repo, real(o.repo)]);
 
-    // 1. the free place opens the window in its view „Eine Session“ (src/sitzung.ts); „Mit anderen Sessions arbeiten“ leads to the
-    // build, a lane chosen
+    // 1. the free place opens the start window; on the fixture repo the repo's agent with „+ Rights“ starts there, and the door takes the
+    // Fassung its start brief showed
     await click(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`);
-    const eine = await wait(`document.querySelector('#shell-found.k15sitz .ksgo')`, 10000);
-    if (eine) await click(`document.querySelector('#shell-found .ksrolle[data-rolle="andere"]')`);
+    const fenster = await wait(`document.querySelector('#shell-found.k15sitz .sf.s1 .sfag.repoag')`, 10000);
+    if (fenster) {
+      await click(`[...document.querySelectorAll('#shell-found .sfrepo')].find((r) => (${repos}).includes(r.dataset.repo))`);
+      await wait(`(${repos}).includes(document.querySelector('#shell-found .sfrepo.sel')?.dataset.repo) && document.querySelector('#shell-found .sfag.repoag')`, 10000);
+      await click(`document.querySelector('#shell-found .sfag.repoag')`);
+      await wait(`document.querySelector('#shell-found .sf.s2 .sfaddon[data-add="rights"]')`, 10000);
+      await click(`document.querySelector('#shell-found .sfaddon[data-add="rights"]')`);
+    }
+    const bereit = fenster && await wait(`document.querySelector('#shell-found .sftile[data-b="rights"]') && !document.querySelector('#shell-found .sfsheet.laedt')
+      && document.querySelector('#shell-found .sfgo') && !document.querySelector('#shell-found .sfgo').disabled`, 15000);
+    facts.fenster = await evaluate(`({ repo: document.querySelector('#shell-found .sfrepo.sel')?.dataset.repo ?? null,
+      banner: document.querySelector('#shell-found .sfbanner h3')?.textContent ?? null, hint: document.querySelector('#shell-found .sfhint')?.textContent ?? null })`);
+    if (bereit) await click(`document.querySelector('#shell-found .sfgo')`);
+    const fensterZu = bereit && await wait(`!document.querySelector('#shell-found')`, 20000);
+    if (!fensterZu) facts.fensterStehen = await evaluate(`document.querySelector('#shell-found .sfhint')?.textContent ?? null`);
+    const amOrt = (await rows()).find((r) => r.id === free.id);
+    const gehalten = amOrt?.cwd ? await (await own("GET", `/api/slots/${free.id}/fassung?anlass=laufend`)).json().catch(() => null) as
+      { teile?: { id: string; abschnitte: { id: string; text?: string | null }[] }[]; festgehalten?: unknown } | null : null;
+    const rechteSatz = gehalten?.teile?.find((t) => t.id === "darf")?.abschnitte.find((x) => x.id === "darf")?.text ?? null;
+    facts.fensterSlot = { cwd: amOrt?.cwd ?? null, rechteSatz: rechteSatz?.slice(0, 160) ?? null, festgehalten: !!gehalten?.festgehalten };
+    claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo) && !!rechteSatz?.startsWith("FLEET-RECHTE (Stufe „Bauen“");
+
+    // 2. the place free again: the start window, then „Lanes, MAIN and constellations ›“ leads to the build, a lane chosen
+    if (amOrt?.cwd) await own("POST", `/api/slots/${free.id}/kill`, {}).catch(() => undefined);
+    await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 20000);
+    await click(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`);
+    const eine = await wait(`document.querySelector('#shell-found.k15sitz .sfaufbau')`, 10000);
+    if (eine) await click(`document.querySelector('#shell-found .sfaufbau')`);
     const opened = eine && await wait(`document.querySelector('#shell-found.k15 .k15go')`, 10000);
     facts.opened = await evaluate(`({ k15: !!document.querySelector('#shell-found.k15'), old: !!document.querySelector('.fdgo, .fdkind'),
       knopf: document.querySelector('.k15go')?.textContent ?? null })`);
-    claims.opens = opened && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind') && /^Lane \\d+ starten$/.test(document.querySelector('.k15go')?.textContent ?? '')`);
+    claims.opens = fenster && opened && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind') && /^Lane \\d+ starten$/.test(document.querySelector('.k15go')?.textContent ?? '')`);
 
     // 2. the repo of the start is the fixture repo; then another model and another effort than the role's standard
     if (opened && real(String(await evaluate<string>(`document.querySelector('.k15wo')?.dataset.repo ?? ''`))) !== real(o.repo)) {
@@ -189,13 +222,13 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     const harnessOk = (row?.harness ?? "claude") === "claude" ? /^Claude Code/.test(agent ?? "") : (agent ?? "").toLowerCase().startsWith(String(row?.harness));
     claims.values = !!row?.cwd && !!row.worktree && real(row.worktree.repo) === real(o.repo) && harnessOk
       && model !== null && row.model === model && effort !== null && row.effort === effort;
-    claims.closes = gone && !!row?.cwd;
+    claims.closes = fensterZu && !!amOrt?.cwd && gone && !!row?.cwd;
     return { claims, facts };
   } finally {
     socket?.close();
     browser.kill();
-    // the started lane goes again: its place and its worktree on the fixture repo
-    const row = (await rows().catch(() => [])).find((r) => r.id === free.id);
+    // the started session goes again: its place, and a lane's worktree on the fixture repo
+    const row = (await rows().catch(() => [] as Row[])).find((r) => r.id === free.id);
     if (row?.cwd) {
       await own("POST", `/api/slots/${free.id}/kill`, {}).catch(() => undefined);
       if (row.worktree) Bun.spawnSync(["git", "worktree", "remove", "--force", row.cwd], { cwd: row.worktree.repo });

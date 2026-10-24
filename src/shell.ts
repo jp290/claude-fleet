@@ -199,8 +199,9 @@ export function openShell(o: ShellOpts): Shell {
 
   return {
     root, tools, list, detail, foot,
-    setTitle: (t) => { h2.textContent = t; },
-    setSubtitle: (t) => { sub.textContent = t; },
+    // a view sets them on every redraw; the same words leave the node alone (src/dom-morph.ts: change only what changed)
+    setTitle: (t) => { if (h2.textContent !== t) h2.textContent = t; },
+    setSubtitle: (t) => { if (sub.textContent !== t) sub.textContent = t; },
     setRows,
     select,
     selectedIndex: () => sel,

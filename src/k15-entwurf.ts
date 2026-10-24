@@ -32,8 +32,7 @@ import { startZahl } from "./k15-startzahl";
 import { katalogAus } from "./k15-agent";
 import { beimFuss, startKnopf, startStand0 } from "./k15-start";
 import type { Eingang } from "./k15-lader";
-import { sitzStand0, sitzungFlotteNeu, zeichneSitzung } from "./sitzung";
-export { openAttrappe } from "./attrappe";
+import { fensterStand0, startFlotteNeu, zeichneStart } from "./start-fenster";
 
 const RUNDGANG_KEY = "fleet.k15.rundgang";
 // „Alles zeigen“ bleibt im Browser wie der Detailgrad; wer vorher den Detailgrad „Text“ gewählt hatte, sieht weiter alles
@@ -47,9 +46,9 @@ function setzeAlles(s: St, an: boolean): void {
   render();
 }
 
-// das Board hat eine neue Flotte gelesen: die Ansicht „Eine Session“ prüft, ob ihr freier Platz noch stimmt
+// das Board hat eine neue Flotte gelesen: das Startfenster prüft, ob sein freier Platz noch stimmt
 export function flotteNeu(): void {
-  if (S?.ansicht === "sitzung") sitzungFlotteNeu(S);
+  if (S?.ansicht === "sitzung") startFlotteNeu(S);
 }
 
 export function openK15Entwurf(eingang?: Eingang): void {
@@ -78,9 +77,9 @@ export function openK15Entwurf(eingang?: Eingang): void {
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
     fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt", konstGespeichert: new Map(),
     eingang: eingang ?? null, start: startStand0(),
-    // EINE SESSION AUFSETZEN ist der Einstieg vom freien Platz und vom Handy (Owner 18.10.: „[Zitat entfernt]“); ein Repo-+,
-    // ⎇+ und die alten Adressen #k15… öffnen den Aufbau
-    ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau", sitz: sitzStand0() };
+    // DAS STARTFENSTER (src/start-fenster.ts, Owner 24.10.) ist der Einstieg vom freien Platz und vom Handy; ein Repo-+, ⎇+ und die alten
+    // Adressen #k15… öffnen den Aufbau
+    ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau", sitz: fensterStand0() };
   setzeS(s);
   ladeEigenes(s);
   beimZeichnen(render);
@@ -130,7 +129,7 @@ function kopf(s: St): void {
   alles.title = "Tokens, Einstellungen und Erklärungen überall zeigen, nicht erst beim Darüberfahren";
   alles.append(icon("list"), el("span", "", "Alles zeigen"));
   alles.onclick = () => setzeAlles(s, !s.alles);
-  // zurück zur Ansicht „Eine Session“ (src/sitzung.ts), aus der „Mit anderen Sessions arbeiten“ hierher führt
+  // zurück zum Startfenster (src/start-fenster.ts)
   const eine = el("button", "k15hbtn k15zursitz");
   eine.append(icon("chevron"), el("span", "", "Eine Session"));
   eine.onclick = () => { s.ansicht = "sitzung"; render(); };
@@ -178,19 +177,33 @@ function ablage(s: St, signal: AbortSignal): void {
   }, { signal });
 }
 
+// A PRESS IS NEVER LOST TO A REDRAW: an answer that arrives while a button is held down (the agents, a preview, a folder's git) would
+// replace the node under the pointer, and the release would click nothing (e2e/k15-start.ts lost its click to the repo's agent; a hand
+// loses it the same way). The redraw waits for the release, at most a second and a half.
+let gedrueckt = false, aufgeschoben = false, frei: ReturnType<typeof setTimeout> | undefined;
+const loslassen = (): void => {
+  clearTimeout(frei);
+  if (!gedrueckt) return;
+  gedrueckt = false;
+  if (aufgeschoben) { aufgeschoben = false; setTimeout(render); }
+};
+document.addEventListener("pointerdown", (e) => {
+  if (e.target instanceof Node && S?.shell.root.contains(e.target)) { gedrueckt = true; clearTimeout(frei); frei = setTimeout(loslassen, 1500); }
+}, true);
+for (const t of ["pointerup", "pointercancel"]) document.addEventListener(t, loslassen, true);
+addEventListener("blur", loslassen);
+
 function render(): void {
   const s = S;
   if (!s) return;
+  if (gedrueckt) { aufgeschoben = true; return; }
   if (!s.repo) s.repo = repos()[0] ?? null;
   s.shell.root.classList.toggle("k15sitz", s.ansicht === "sitzung");
   if (s.ansicht === "sitzung") {
     s.shell.root.querySelector(".k15menu")?.remove();
     s.shell.root.querySelector(".k15repomenu")?.remove();
     s.shell.root.querySelector(".k15tour")?.remove();
-    repoKopf(s);
-    zeichneSitzung(s);
-    const menue = repoMenue(s);
-    if (menue) legeMenue(s, menue);
+    zeichneStart(s);
     return;
   }
   s.shell.root.classList.toggle("k15alles", s.alles);

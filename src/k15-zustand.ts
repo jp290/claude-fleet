@@ -20,8 +20,9 @@ import { FREIGABE_ROUTE, MAX_KONSTELLATIONEN, SPEICHER_ROUTE } from "./k15-speic
 import type { Ablauf } from "./k15-agentmd";
 import type { Eingang } from "./k15-lader";
 import type { StartStand } from "./k15-start";
-import type { SitzStand } from "./sitzung";
+import type { FensterStand } from "./start-fenster";
 import type { SitzDarf } from "./sitz";
+import { echt } from "./start-brief";
 
 export type QuelleId = "landet" | "brief" | "packs" | "einst" | "rechte" | "wege" | "bst" | "auto";
 // DER DETAILGRAD (Owner 12:3x) zeigt die Gruppen zu oder auf; was sonst erst beim Darüberfahren erscheint, zeigt „[Zitat entfernt]“
@@ -55,8 +56,8 @@ export interface St {
   konstGespeichert: Map<string, Record<string, unknown>>;
   // woher das Fenster kam (ein freier Platz, das + eines Repos, ⎇+ an einer Session; null = #k15) und was der Start braucht
   eingang: Eingang | null; start: StartStand;
-  // welche Ansicht das Fenster zeigt: „sitzung“ (eine Session aufsetzen, src/sitzung.ts) oder „aufbau“ (die vier Spalten unten); ihr Stand
-  ansicht: "sitzung" | "aufbau"; sitz: SitzStand;
+  // welche Ansicht das Fenster zeigt: „sitzung“ (das Startfenster, src/start-fenster.ts) oder „aufbau“ (die vier Spalten unten); ihr Stand
+  ansicht: "sitzung" | "aufbau"; sitz: FensterStand;
 }
 export let S: St | null = null;
 export const setzeS = (s: St | null): void => { S = s; };
@@ -296,13 +297,15 @@ export function speichereEigenes(s: St): Promise<boolean> {
 export interface RepoZeile { repo: string; sessions: number; gepinnt: boolean }
 export function repoZeilen(s: St | null): RepoZeile[] {
   const zahl = new Map<string, number>();
-  for (const x of flotte()) if (x.cwd) zahl.set(x.repo ?? x.cwd, (zahl.get(x.repo ?? x.cwd) ?? 0) + 1);
   const pins = s?.pins ?? [];
+  // a running session names its folder by the real path (/private/tmp/…), a pin by the one it was given: one repo, one row
+  const wie = (p: string): string => pins.find((x) => echt(x) === echt(p)) ?? (s?.repo && echt(s.repo) === echt(p) ? s.repo : p);
+  for (const x of flotte()) if (x.cwd) { const r = wie(x.repo ?? x.cwd); zahl.set(r, (zahl.get(r) ?? 0) + 1); }
   const laufend = [...zahl].sort((a, b) => Number(baseName(b[0]) === "claude-fleet") - Number(baseName(a[0]) === "claude-fleet") || b[1] - a[1])
     .map(([repo, n]) => ({ repo, sessions: n, gepinnt: pins.includes(repo) }));
   const keinGit = (p: string) => { const i = s?.infos.get(p); return typeof i === "object" && "git" in i && !i.git; };
   const ohne = pins.filter((p) => !zahl.has(p) && (p === s?.repo || !keinGit(p))).map((repo) => ({ repo, sessions: 0, gepinnt: true }));
-  const gewaehlt = s?.repo && !zahl.has(s.repo) && !pins.includes(s.repo) ? [{ repo: s.repo, sessions: 0, gepinnt: false }] : [];
+  const gewaehlt = s?.repo && ![...zahl.keys(), ...pins].some((r) => echt(r) === echt(s.repo!)) ? [{ repo: s.repo, sessions: 0, gepinnt: false }] : [];
   return [...laufend, ...ohne, ...gewaehlt];
 }
 export const repos = (): string[] => repoZeilen(S).map((r) => r.repo);

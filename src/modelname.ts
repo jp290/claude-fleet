@@ -43,7 +43,7 @@ export function modelLabel(id: string): string {
   return w === null ? name : `${name} · ${fmtWindow(w)}`;
 }
 
-function modelName(id: string): string {
+export function modelName(id: string): string {
   const raw = id.trim();
   // a provider prefix (pi-zai/glm-5.3) names where the model is served, not the model
   const bare = raw.includes("/") ? raw.slice(raw.lastIndexOf("/") + 1) : raw;

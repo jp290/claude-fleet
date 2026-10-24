@@ -18,7 +18,7 @@ export type Eingang = { slot: number } | { repo: string; parent?: LaneAnchor };
 type K15 = typeof import("./k15-entwurf");
 let geladen: Promise<K15> | null = null;
 
-// das Fenster und seine Ansicht „Eine Session“ (public/sitzung.css, src/sitzung.ts)
+// das Fenster und sein Startfenster (public/sitzung.css, src/start-fenster.ts)
 function stil(datei: string): Promise<void> {
   return new Promise((fertig, fehlt) => {
     const l = document.createElement("link");
@@ -42,5 +42,3 @@ function lade(oeffne: (m: K15) => void): void {
 export const openK15Entwurf = (eingang?: Eingang): void => lade((m) => m.openK15Entwurf(eingang));
 // nach jedem Lesen der Flotte (client.ts); ein Fenster, das nie geladen wurde, lädt dafür nicht nach
 export const flotteNeu = (): void => { void geladen?.then((m) => m.flotteNeu(), () => {}); };
-// die Attrappe von „Neue Session“ und Systemansicht (src/attrappe.ts, docs/konstellation/modell.md §4), im selben Bundle
-export const openAttrappe = (): void => lade((m) => m.openAttrappe());

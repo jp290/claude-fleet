@@ -8359,12 +8359,15 @@ function branchNoteOf(repo: string, branch: string): string | null {
 const primaryOf = async (top: string): Promise<string> => repoCanon((await listWorktrees(top)).find((w) => w.primary)?.path ?? top);
 // the workplace repos by their primary checkout (a server started from a linked worktree lists that path)
 const branchRepos = async (): Promise<string[]> => [...new Set(await Promise.all(workplaceRepoList().map(primaryOf)))];
+// the branch doors take a workplace repo only, named by its primary checkout; /api/dirinfo asks the same, so the start window offers a
+// branch only where its door will take it
+const branchDoorTakes = async (primary: string): Promise<boolean> => (await branchRepos()).includes(primary);
 async function branchRepoOf(raw: unknown): Promise<{ ok: true; repo: string } | { ok: false; error: string }> {
   if (typeof raw !== "string" || !raw.trim()) return { ok: false, error: "expected repo" };
   let top: string;
   try { top = await repoRootOf(raw); } catch (e) { return { ok: false, error: e instanceof Error ? e.message : "not a git repository" }; }
   const repo = await primaryOf(top);
-  if (!(await branchRepos()).includes(repo)) return { ok: false, error: `${repo} is not a workplace repo — GET /api/branches would not show it` };
+  if (!(await branchDoorTakes(repo))) return { ok: false, error: `${repo} is not a workplace repo — GET /api/branches would not show it` };
   return { ok: true, repo };
 }
 const branchExists = async (repo: string, branch: string): Promise<boolean> =>
@@ -24269,6 +24272,12 @@ interface DirInfo {
   worktree?: boolean;               // this path is itself a lane (.git is a file)
   branch?: string | null;
   dirty?: number;                   // uncommitted entries, `git status --porcelain` lines
+  // ...and the first DIRINFO_FILES of them, so the start window shows which files are open (`st` = the porcelain code, "??" new)
+  files?: { st: string; pfad: string }[];
+  // whether a session here can land its own branch: its primary checkout has ci/merge-check.ts (server/branch-land.ts)
+  mergeCheck?: boolean;
+  // whether the branch doors (POST /api/branches, /api/branches/open) take this repo (branchDoorTakes)
+  branches?: boolean;
   ahead?: number | null;            // null = no upstream to compare against, NOT zero
   behind?: number | null;
   last?: CommitRow | null;          // recent[0], kept so a client older than this server still renders one
@@ -24356,6 +24365,7 @@ async function drainBody(req: Request): Promise<void> {
     for (;;) if ((await reader.read()).done) return;
   } catch { /* the client hung up mid-send: nothing left to discard */ }
 }
+const DIRINFO_FILES = 30;
 async function dirInfo(raw: string): Promise<DirInfo> {
   const path = resolve(expandCwd(raw));
   if (!existsSync(path) || !statSync(path).isDirectory()) return { path, exists: false, git: false };
@@ -24380,7 +24390,9 @@ async function dirInfo(raw: string): Promise<DirInfo> {
     lanes = (await readdir(`${path}.worktrees`, { withFileTypes: true })).filter((e) => e.isDirectory()).length;
   } catch { /* no lanes forked from this repo */ }
   const recent = lg.code === 0 && lg.out ? parseCommitLog(lg.out) : [];
-  const orphans = (await listWorktrees(path))
+  const wts = await listWorktrees(path);
+  const primary = repoCanon(wts.find((w) => w.primary)?.path ?? path);
+  const orphans = wts
     .filter((w) => !w.primary && existsSync(w.path) && !attachBusy.has(w.path) && !slots.some((s) => s.cwd === w.path))
     .map((w) => ({ path: w.path, branch: w.branch }));
   return {
@@ -24389,6 +24401,11 @@ async function dirInfo(raw: string): Promise<DirInfo> {
     orphans,
     branch: br.code === 0 && br.out ? br.out : null,
     dirty: st.code === 0 ? st.lines.length : 0,
+    files: st.code === 0 ? st.lines.slice(0, DIRINFO_FILES).map((l) => ({ st: l.slice(0, 2).trim(), pfad: l.slice(3) })) : [],
+    // whether a session here can land its own branch (server/branch-land.ts: without ci/merge-check.ts it does not); the land door
+    // asks the primary checkout (branchRepoOf → primaryOf), so a worktree that lacks the file still lands where the primary has it
+    mergeCheck: hasMergeCheck(primary),
+    branches: await branchDoorTakes(primary),
     behind: ok ? counts[0] : null,
     ahead: ok ? counts[1] : null,
     recent,

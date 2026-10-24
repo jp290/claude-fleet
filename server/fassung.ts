@@ -9,6 +9,7 @@
 // Abschnitt mit `unknown` und einem Grund da — nie als leere Zeile und nie weggelassen.
 import { createHash } from "node:crypto";
 import type { Notizbuch } from "./notizbuch";
+import type { AgentBezug } from "./agenten";
 
 export type FassungAnlass = "neu" | "laufend" | "nachfolge";
 export type FassungByte = number | "unknown";
@@ -66,6 +67,8 @@ export interface FassungEingang {
   readonly arbeitet: readonly FassungAbschnittEingang[];
   /** was Claude Code selbst mitbringt (claudeCodeStart); liegt NEBEN der Fassung, nicht im Hash */
   readonly claudeCode?: unknown;
+  /** der Agent, aus dem dieser Start kommt, mit dem Satz seiner Herkunft (server/agenten.ts#herkunftSatz); null/fehlt = keiner */
+  readonly agent?: (AgentBezug & { readonly satz: string }) | null;
 }
 
 export interface Fassung {
@@ -77,6 +80,9 @@ export interface Fassung {
   readonly claudeCode: unknown;
   /** sagt es ausdrücklich, damit kein Leser claudeCode versehentlich in den Hash rechnet */
   readonly hashUmfasst: "fuenf-teile";
+  /** der Agent, aus dem dieser Start kommt, mit seinem Hash und „copy of“ — neben dem Hash wie claudeCode: sein Name erreicht die Session
+   *  nicht, und was er wählt, steht schon in den Teilen. Fehlt, wenn der Start aus keinem Agenten kam. */
+  readonly agent?: AgentBezug & { readonly satz: string };
 }
 
 export const textAbschnitt = (id: string, quelle: string | null, text: string, aenderbar: boolean | "unknown" = true,
@@ -103,7 +109,7 @@ function normalisiere(a: FassungAbschnittEingang): FassungAbschnitt {
 
 // kanonisch: Schlüssel sortiert, damit derselbe Inhalt denselben Hash ergibt, unabhängig von der
 // Reihenfolge, in der ein Aufrufer seine Felder gebaut hat.
-const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
+export const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
   : v && typeof v === "object" ? Object.fromEntries(Object.entries(v)
     .filter(([, x]) => x !== undefined)
     .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, x]) => [k, kanon(x)])) : v;
@@ -154,7 +160,7 @@ export function baueFassung(e: FassungEingang): Fassung {
     teil("arbeitet", e.arbeitet),
   ];
   return { slot: e.slot, anlass: e.anlass, teile, hash: fassungsHash(teile),
-    claudeCode: e.claudeCode ?? null, hashUmfasst: "fuenf-teile" };
+    claudeCode: e.claudeCode ?? null, hashUmfasst: "fuenf-teile", ...(e.agent ? { agent: e.agent } : {}) };
 }
 
 /**

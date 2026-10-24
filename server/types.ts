@@ -2141,6 +2141,9 @@ interface Slot {
   // the built-in tools chosen at its opening (door field `tools`, server/eigenes-setup.ts#toolsDerTuer), on the line as --tools: null = no
   // choice (the role's list in Fleet's repo, every tool in its own setup). claude only; carried by a generic succession; persisted; cleared on open/kill.
   tools: readonly string[] | null;
+  // the agent it was opened from (door field `agent`, server/agenten.ts): name, hash and `kopieVon`, shown by its Fassung. null = opened
+  // without one. Carried by a generic succession; persisted; cleared on open/kill.
+  agent: import("./agenten").AgentBezug | null;
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
   // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.

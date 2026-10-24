@@ -1,0 +1,3 @@
+[test]
+# the run leaves no new file in the worktree (ci/worktree-clean.ts)
+preload = ["./ci/worktree-clean.ts"]

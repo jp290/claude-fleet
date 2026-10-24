@@ -8,13 +8,18 @@ import { NAME_RE } from "./eigenes-setup";
 // ist an claude 2.1.309 geprobt (Slot 5, Antwort 53fb9e13): CLAUDE.md und rules über `claudeMdExcludes`, Plugins über `enabledPlugins`,
 // Agenten über `--disallowedTools Agent(<name>)`, Skills und Befehle über `skillOverrides`, die Werkzeuge eines MCP-Servers über eine
 // Deny-Regel (der Server startet trotzdem), Hooks nur alle über `disableAllHooks` (das schaltet auch Statuszeile und @-Vorschlag ab).
+// EINZELNE REGELDATEIEN (Owner über 16, Runde 9 über die Orchestratorin: „[Zitat entfernt]“): `dateien` nennt Regeldateien dieses
+// Starts mit ihrem absoluten Pfad; sie gehen als exakter Pfad in `claudeMdExcludes`. Ob ein Pfad zu den Regeln dieses Starts gehört, prüft
+// der Server an der Tür (server.ts#weglassenDateienDesStarts): das hängt am Ordner, und dieses Modul liest keine Dateien.
 export interface Weglassen {
   readonly claudeMd?: true; readonly rules?: true; readonly plugins?: readonly string[]; readonly agents?: readonly string[];
-  readonly skills?: readonly string[]; readonly mcp?: readonly string[]; readonly hooks?: true;
+  readonly skills?: readonly string[]; readonly mcp?: readonly string[]; readonly hooks?: true; readonly dateien?: readonly string[];
 }
-const WEGLASSEN_LISTEN = ["plugins", "agents", "skills", "mcp"] as const;
+const WEGLASSEN_LISTEN = ["plugins", "agents", "skills", "mcp", "dateien"] as const;
 const WEGLASSEN_SCHALTER = ["claudeMd", "rules", "hooks"] as const;
 const PLUGIN_RE = /^[A-Za-z0-9._-]{1,80}@[A-Za-z0-9._-]{1,80}$/;
+// ein absoluter Pfad (oder einer unter ~/), ohne die Zeichen, die `claudeMdExcludes` als Muster liest: ein Pfad meint genau eine Datei
+const DATEI_RE = /^(\/|~\/)[^\0*?[\]{}!]{1,4000}$/;
 
 /** Die Wahl an der Tür: ein Objekt mit nur diesen Schlüsseln; die Schalter sind `true`, die Listen Namen im Zeichensatz. Leer = keine Wahl. */
 export function weglassenDerTuer(v: unknown): { ok: true; wahl: Weglassen | null } | { ok: false; error: string } {
@@ -32,9 +37,10 @@ export function weglassenDerTuer(v: unknown): { ok: true; wahl: Weglassen | null
   for (const k of WEGLASSEN_LISTEN) {
     const liste = r[k];
     if (liste === undefined) continue;
-    const re = k === "plugins" ? PLUGIN_RE : NAME_RE;
+    const re = k === "plugins" ? PLUGIN_RE : k === "dateien" ? DATEI_RE : NAME_RE;
     if (!Array.isArray(liste) || !liste.every((n) => typeof n === "string" && re.test(n)))
-      return { ok: false, error: `weglassen.${k} must be a list of names${k === "plugins" ? " <plugin>@<marketplace>" : ""}` };
+      return { ok: false, error: k === "dateien" ? "weglassen.dateien must be a list of absolute file paths (or ~/…), without * ? [ ] { } !"
+        : `weglassen.${k} must be a list of names${k === "plugins" ? " <plugin>@<marketplace>" : ""}` };
     if (liste.length) wahl[k] = [...new Set(liste as string[])];
   }
   return { ok: true, wahl: Object.keys(wahl).length ? wahl : null };
@@ -44,7 +50,7 @@ export function weglassenDerTuer(v: unknown): { ok: true; wahl: Weglassen | null
 export function weglassenStart(w: Weglassen | null, claudeDir: string): { excludes: string[]; disallowed: string[]; skillOverrides: Record<string, "off">;
   deny: string[]; settings: { enabledPlugins?: Record<string, false>; disableAllHooks?: true } } {
   return {
-    excludes: [...(w?.claudeMd ? [`${claudeDir}/CLAUDE.md`] : []), ...(w?.rules ? [`${claudeDir}/rules/**`] : [])],
+    excludes: [...(w?.claudeMd ? [`${claudeDir}/CLAUDE.md`] : []), ...(w?.rules ? [`${claudeDir}/rules/**`] : []), ...(w?.dateien ?? [])],
     disallowed: (w?.agents ?? []).map((name) => `Agent(${name})`),
     skillOverrides: Object.fromEntries((w?.skills ?? []).map((name) => [name, "off" as const])),
     deny: (w?.mcp ?? []).map((name) => `mcp__${name}`),
@@ -54,8 +60,8 @@ export function weglassenStart(w: Weglassen | null, claudeDir: string): { exclud
 }
 
 export const WEGGELASSEN_NICHTS = "nichts";
-/** Je Wegnahme eine Zeile „<teil>: <was>“ mit dem Namen aus dem Türfeld; leer = nichts weggelassen. Rein. */
-export function weglassenZeilen(w: Weglassen | null): string[] {
+/** Je Wegnahme eine Zeile „<teil>: <was>“ mit dem Namen aus dem Türfeld; leer = nichts weggelassen. `kurz` zeigt einen Pfad (etwa mit ~). Rein. */
+export function weglassenZeilen(w: Weglassen | null, kurz: (pfad: string) => string = (pfad) => pfad): string[] {
   if (!w) return [];
   return [
     w.claudeMd ? "claudeMd: ~/.claude/CLAUDE.md" : null,
@@ -65,5 +71,6 @@ export function weglassenZeilen(w: Weglassen | null): string[] {
     w.skills?.length ? `skills: ${w.skills.join(", ")}` : null,
     w.mcp?.length ? `mcp: ${w.mcp.join(", ")} (ihre Werkzeuge; der Server startet weiter)` : null,
     w.hooks ? "hooks: alle (auch Statuszeile und @-Vorschlag)" : null,
+    w.dateien?.length ? `dateien: ${w.dateien.map(kurz).join(", ")}` : null,
   ].filter((z): z is string => z !== null);
 }

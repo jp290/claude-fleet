@@ -1,7 +1,7 @@
 // Shared plumbing for the split e2e suite (fleet-e2e.ts is the runner; every check module
 // imports from here). Everything in this file is infrastructure — no checks live here.
 import { join, resolve } from "node:path";
-import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { installPhaseProbes, timed, TRAIL_DIR, TRAIL_RUN, writeTrailRow } from "./trail-emit";
 import { lineDetail, spillTo } from "./fail-detail";
@@ -154,7 +154,10 @@ export function tmuxOut(...args: string[]): Promise<{ out: string; code: number 
   });
 }
 
-const state = (await Bun.file(`${ROOT}/fleet.json`).json()) as { token?: string };
+// The suite instance has its server's fleet.json here. A rig started by hand from a worktree has none, and its
+// token comes from FLEET_TOKEN or not at all: a missing file is no state. Before, this line threw, and a "{}"
+// planted in the worktree to get past it kept two landed branches standing (24.10., ci/worktree-clean.ts).
+const state = (existsSync(`${ROOT}/fleet.json`) ? await Bun.file(`${ROOT}/fleet.json`).json() : {}) as { token?: string };
 export const TOKEN = process.env.FLEET_TOKEN ?? state.token ?? "";
 export const H = { "content-type": "application/json", authorization: `Bearer ${TOKEN}` };
 export const post = (path: string, body: unknown, headers: Record<string, string> = H): Promise<Response> =>

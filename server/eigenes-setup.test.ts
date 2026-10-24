@@ -66,6 +66,13 @@ describe("Teile aus ~/.claude weglassen", () => {
     for (const falsch of [[], "claudeMd", { claudeMd: "ja" }, { agenten: ["a"] }, { agents: ["a b"] }, { plugins: ["figma"] }, { hooks: ["x"] }])
       expect(weglassenDerTuer(falsch).ok).toBe(false);
   });
+  test("einzelne Regeldateien: absolute Pfade oder ~/…, ohne Musterzeichen; auf der Zeile als exakter Pfad", () => {
+    expect(weglassenDerTuer({ dateien: ["/r/CLAUDE.md", "/r/CLAUDE.md", "~/x/AGENTS.md"] })).toEqual({ ok: true, wahl: { dateien: ["/r/CLAUDE.md", "~/x/AGENTS.md"] } });
+    for (const falsch of [{ dateien: ["CLAUDE.md"] }, { dateien: ["/r/*.md"] }, { dateien: ["/r/[a].md"] }, { dateien: "/r/CLAUDE.md" }, { dateien: [""] }])
+      expect(weglassenDerTuer(falsch).ok).toBe(false);
+    expect(weglassenStart({ claudeMd: true, dateien: ["/r/CLAUDE.md"] }, "/h/.claude").excludes).toEqual(["/h/.claude/CLAUDE.md", "/r/CLAUDE.md"]);
+    expect(weglassenZeilen({ dateien: ["/h/r/CLAUDE.md", "/x/AGENTS.md"] }, (p) => p.replace("/h", "~"))).toEqual(["dateien: ~/r/CLAUDE.md, /x/AGENTS.md"]);
+  });
   test("je Teil sein Weg auf der Zeile", () => {
     const w = { claudeMd: true, rules: true, plugins: ["figma@claude-plugins-official"], agents: ["e2e-runner"], skills: ["audit"], mcp: ["playwright"], hooks: true } as const;
     expect(weglassenStart(w, "/h/.claude")).toEqual({ excludes: ["/h/.claude/CLAUDE.md", "/h/.claude/rules/**"], disallowed: ["Agent(e2e-runner)"],

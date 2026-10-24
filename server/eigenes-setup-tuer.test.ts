@@ -149,6 +149,94 @@ describe("Teile aus ~/.claude weglassen", () => {
   }, LIFE_DEADLINE_MS * 2);
 });
 
+// EINZELNE REGELDATEIEN WEGLASSEN (Runde 9, Owner über 16: „[Zitat entfernt]“): `weglassen.dateien` nimmt nur Dateien, die dieser
+// Start liest; jede geht als exakter Pfad in claudeMdExcludes. Ohne die CLAUDE.md eines Ordners lädt Claude Code dessen AGENTS.md — die
+// Fassung zeigt, was dann wirklich geladen wird.
+describe("einzelne Regeldateien weglassen", () => {
+  const regelOrdner = (f: Fixture, name: string): string => {
+    const d = join(f.repo, name);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "CLAUDE.md"), "Regel aus der CLAUDE.md\n");
+    writeFileSync(join(d, "AGENTS.md"), "Regel aus der AGENTS.md\n");
+    return d;
+  };
+  const regeln = (a: Answer | undefined): string[] =>
+    (((a?.body.teile as { abschnitte: { id: string; quelle?: string | null }[] }[] | undefined) ?? []).flatMap((t) => t.abschnitte)
+      .find((x) => x.id === "projektregeln")?.quelle ?? "").split("\n").filter(Boolean);
+  test("die Tür nimmt eine Datei dieses Starts; die Fassung zeigt die AGENTS.md, die an ihre Stelle tritt; ein fremder Pfad gibt 400", async () => {
+    const f = fixture();
+    const [ohneD, mitD, beideD, fremdD, agentsD] = ["ohne", "mit", "beide", "fremd", "agents"].map((n) => regelOrdner(f, n));
+    const [ohne, mit, beide, fremd, agents, muster, fOhne, fMit, fBeide] = await life(f, [
+      post("/api/slots/1/open", { cwd: ohneD }),
+      post("/api/slots/2/open", { cwd: mitD, weglassen: { dateien: [join(mitD, "CLAUDE.md")] } }),
+      post("/api/slots/3/open", { cwd: beideD, weglassen: { dateien: [join(beideD, "CLAUDE.md"), join(beideD, "AGENTS.md")] } }),
+      post("/api/slots/4/open", { cwd: fremdD, weglassen: { dateien: [join(ohneD, "CLAUDE.md")] } }),
+      post("/api/slots/5/open", { cwd: agentsD, weglassen: { dateien: [join(agentsD, "AGENTS.md")] } }),
+      post("/api/slots/6/open", { cwd: f.repo, weglassen: { dateien: [join(f.repo, "*.md")] } }),
+      get("/api/slots/1/fassung?anlass=laufend"), get("/api/slots/2/fassung?anlass=laufend"), get("/api/slots/3/fassung?anlass=laufend")]);
+    offen(ohne);
+    offen(mit);
+    offen(beide);
+    const name = (pfade: string[]): string[] => pfade.filter((p) => /\/(ohne|mit|beide)\//.test(p)).map((p) => p.replace(/^.*\/(ohne|mit|beide)\//, ""));
+    // ohne Wahl liest der Start die CLAUDE.md des Ordners, die AGENTS.md nicht
+    expect(name(regeln(fOhne))).toEqual(["CLAUDE.md"]);
+    // ohne die CLAUDE.md tritt die AGENTS.md an ihre Stelle, und die Fassung sagt es
+    expect(name(regeln(fMit))).toEqual(["AGENTS.md"]);
+    expect(darf(fMit, "weggelassen")).toMatch(/^dateien: \S*\/mit\/CLAUDE\.md$/);
+    expect(startzeile(f, mitD)).toMatch(/"claudeMdExcludes":\["[^"]*\/mit\/CLAUDE\.md"\]/);
+    // beide weg: keine Regeldatei aus dem Ordner
+    expect(name(regeln(fBeide))).toEqual([]);
+    expect(startzeile(f, beideD)).toMatch(/"claudeMdExcludes":\["[^"]*\/beide\/CLAUDE\.md","[^"]*\/beide\/AGENTS\.md"\]/);
+    // eine Datei, die dieser Start nicht liest: aus einem anderen Ordner, oder die AGENTS.md, solange die CLAUDE.md zählt
+    expect(fremd?.status).toBe(400);
+    expect(String(fremd?.body.error)).toContain("is no rule file this start reads");
+    expect(agents?.status).toBe(400);
+    expect(muster?.status).toBe(400);
+    expect(String(muster?.body.error)).toContain("weglassen.dateien must be a list of absolute file paths");
+  }, LIFE_DEADLINE_MS * 3);
+
+  test("die Selbst-Tür prüft dieselbe Liste", async () => {
+    const f = fixture();
+    const d = regelOrdner(f, "selbst");
+    const [opened] = await life(f, [post("/api/slots/1/open", { cwd: d })]);
+    offen(opened);
+    const self = recordOf(f, 1).selfToken;
+    if (!self) throw new Error("kein Self-Token");
+    const [fremd, gut] = await life(f, [
+      { ...post("/api/self/weglassen", { weglassen: { dateien: [join(d, "AGENTS.md")] } }), token: null, self },
+      { ...post("/api/self/weglassen", { weglassen: { dateien: [join(d, "CLAUDE.md")] } }), token: null, self }]);
+    expect(fremd?.status).toBe(400);
+    expect(gut?.status).toBe(200);
+    expect(String((gut?.body.zeilen as string[])[0])).toMatch(/^dateien: \S*\/selbst\/CLAUDE\.md$/);
+  }, LIFE_DEADLINE_MS * 2);
+});
+
+// DIE STARTWAHL LESBAR (Runde 9): GET /api/slots/:id/fassung trägt die Wahlen des Slots roh unter den Türnamen, dieselben, die ein Agent aus
+// diesem Sitz speichert (server/agenten.ts#wahlenAusSlot) — damit das Setup einer laufenden Session dasselbe Banner zeigen kann wie das Startfenster
+describe("die Startwahl steht an der Fassung", () => {
+  test("laufend und nachfolge tragen `wahlen` wie ein Agent aus diesem Slot; ohne Wahl ein leeres Objekt", async () => {
+    const f = fixture();
+    const [ohne, mit, laufend, nachfolge, agent, leer] = await life(f, [post("/api/slots/1/open", { cwd: f.repo }),
+      post("/api/slots/2/open", { cwd: zwei(f), permissionMode: "acceptEdits", tools: ["Bash", "Read"], weglassen: { claudeMd: true }, schwelle: 50 }),
+      get("/api/slots/2/fassung?anlass=laufend"), get("/api/slots/2/fassung?anlass=nachfolge"),
+      post("/api/agenten", { id: "aus-zwei", name: "Aus zwei", vonSlot: 2 }), get("/api/slots/1/fassung?anlass=laufend")]);
+    offen(ohne);
+    offen(mit);
+    expect(laufend?.body.wahlen).toMatchObject({ permissionMode: "acceptEdits", tools: ["Bash", "Read"], weglassen: { claudeMd: true }, schwelle: 50 });
+    expect(nachfolge?.body.wahlen).toEqual(laufend?.body.wahlen);
+    expect(laufend?.body.wahlen).toEqual((agent?.body.agent as { wahlen: unknown }).wahlen);
+    expect(leer?.body.wahlen).toEqual({});
+  }, LIFE_DEADLINE_MS * 3);
+
+  test("der getippte Purpose steht als `purpose` in den Wahlen, nicht als Profil", async () => {
+    const f = fixture();
+    const [opened, laufend] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, purpose: "Baue die Suche." }),
+      get("/api/slots/1/fassung?anlass=laufend")]);
+    offen(opened);
+    expect(laufend?.body.wahlen).toEqual({ purpose: "Baue die Suche." });
+  }, LIFE_DEADLINE_MS * 2);
+});
+
 // DIE EINGEBAUTEN WERKZEUGE ALS WAHL (Nachtrag Runde 3) und ein Slot, der die Wahlen von Slot 16 trägt: auto, Opus 5.5 [1m], xhigh,
 // 13 Werkzeuge, ohne ~/.claude/CLAUDE.md und rules/** — auf der Zeile und in der Fassung, die seine Nachfolgerin bekäme
 describe("die eingebauten Werkzeuge sind eine Wahl", () => {

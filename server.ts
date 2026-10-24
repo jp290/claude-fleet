@@ -261,7 +261,7 @@ import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
 import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, type AgentBezug, type Wahlen as AgentWahlen,
-  type WahlFeld as AgentWahlFeld } from "./server/agenten";
+  type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
@@ -8722,6 +8722,14 @@ function agentWahlenFehler(w: AgentWahlen): string | null {
     return "sitz must be \"<constellation id>/<position id>\" of a saved constellation";
   return null;
 }
+// DIE STARTWAHL EINES SLOTS unter den Türnamen (server/agenten.ts#wahlenAusSlot): ein Agent aus einem laufenden Sitz speichert sie, und
+// GET /api/slots/:id/fassung trägt sie roh, damit das Setup einer laufenden Session dasselbe Banner zeigt wie das Startfenster
+function slotWahlenVon(s: Slot): SlotWahlen {
+  return { harness: s.harness, model: s.model, effort: s.effort, permissionMode: s.permissionMode, rechte: s.rechte, tools: s.tools,
+    weglassen: s.weglassen, bibliothek: s.bibliothek, notizbuchWahl: s.notizbuchWahl, remote: s.remote, autoModeEnvironment: s.autoModeEnvironment,
+    schwelle: s.handover?.thresholdPct ?? null, agentMd: s.agentMd, sitz: s.sitz, rolle: isOrchestratorLabel(s.label) ? "orchestratorin" : null,
+    packMcp: s.packMcp.map((m) => m.name), worktree: !!s.worktree };
+}
 // dir als Getter: e2e/lanes-lifecycle.ts#workplacesChecks führt diesen Abschnitt von server.ts ohne STATE_DIR aus; gelesen wird es erst beim Aufruf
 const agentenServer: AgentenServer = {
   get dir() { return STATE_DIR; },
@@ -8729,11 +8737,7 @@ const agentenServer: AgentenServer = {
   pruefe: agentWahlenFehler,
   slotWahlen: (n) => {
     const s = slots[n - 1];
-    if (!s?.cwd) return null;
-    return { harness: s.harness, model: s.model, effort: s.effort, permissionMode: s.permissionMode, rechte: s.rechte, tools: s.tools,
-      weglassen: s.weglassen, bibliothek: s.bibliothek, notizbuchWahl: s.notizbuchWahl, remote: s.remote, autoModeEnvironment: s.autoModeEnvironment,
-      schwelle: s.handover?.thresholdPct ?? null, agentMd: s.agentMd, sitz: s.sitz, rolle: isOrchestratorLabel(s.label) ? "orchestratorin" : null,
-      packMcp: s.packMcp.map((m) => m.name), worktree: !!s.worktree };
+    return s?.cwd ? slotWahlenVon(s) : null;
   },
   historie: () => liesHistorie(STATE_DIR, HISTORIE_MAX),
   ort: (p) => realpathLoose(resolve(expandCwd(p))),
@@ -8840,13 +8844,16 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   try {
     if (!path) path = await checkoutBranchWorktree(ro.repo, body.branch, h);
     if (attachBusy.has(path) || slots.some((x) => x.cwd === path)) return json({ error: "the worktree is being opened right now" }, 409);
+    // single rule files left out: each one a file a start in this worktree reads (weglassenDateienDesStarts)
+    const wd = await weglassenDateienDesStarts({ ...free, cwd: path, label: record.name, harness: ho.harness, worktree: null, programId: null, weglassen: wg.wahl });
+    if (!wd.ok) return json({ error: wd.error }, 400);
     attachBusy.add(path);
     try {
       const resumeId = body.fresh === true ? null : lastConversationIn(path);
       if (sd.notizbuch) await saeSitzNotizbuch(path, agentMd, sd.notizbuch);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
         null, rc.remote, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, agentMd,
-        null, bib.wahl, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wg.wahl, um.wahl, tw.wahl, ag.tuer.agent);
+        null, bib.wahl, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent);
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
@@ -21178,20 +21185,25 @@ function basisFehlt(fleetBaum: string, dateien: readonly { pfad: string; bytes: 
   return `Basis fehlt: ${name} in ${ort} schaltet ${fleetBaum}/AGENTS.md ab`;
 }
 
+// a path as the Fassung shows it: under the user's home with ~
+const tildePfad = (pfad: string): string => { const home = CLAUDE_HOME ?? HOME; return pfad === home || pfad.startsWith(`${home}/`) ? `~${pfad.slice(home.length)}` : pfad; };
 function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: boolean,
   orchestrator = false, bau = false, fleetBaum: string | null = null, fleetRepo = false, weglassen: Weglassen | null = null): FassungAbschnittEingang[] {
   // what the line excludes does not count for the AGENTS.md fallback either, so the loader skips it — and with the
   // owner's ~/.claude/CLAUDE.md out (eigeneRegelnExcludes, or left out at the door: Slot.weglassen), its imports stay out too
   const claude = harnessFamilie(harness) === "claude";
   const ohneMd = claude && (fleetRepo || weglassen?.claudeMd === true), ohneRules = claude && (fleetRepo || weglassen?.rules === true);
+  // ...and each rule file left out by its path (weglassen.dateien): the loader skips it, so an AGENTS.md it stood in front of loads in its place
+  const ohneDateien = claude ? weglassen?.dateien ?? [] : [];
   const checkout = new Set([...(fleetCheckout && !orchestrator && claude ? fassungCheckoutExcludes(cwd) : []),
-    ...(ohneMd ? [resolve(eigeneRegelnExcludes()[0]!)] : [])]);
+    ...(ohneMd ? [resolve(eigeneRegelnExcludes()[0]!)] : []), ...ohneDateien.map((pfad) => resolve(pfad))]);
   const regelnDir = `${resolve(claudeConfigDir())}/rules/`;
   const geladen = nativeLoaderBytes(cwd, harness, checkout);
   if ("grund" in geladen) return [unknownAbschnitt("projektregeln", geladen.grund)];
   const loaded = ohneRules ? { ...geladen, dateien: geladen.dateien.filter((datei) => !resolve(datei.pfad).startsWith(regelnDir)) } : geladen;
-  const eigeneGrund = fleetRepo && claude ? EIGENE_REGELN_AUS : ohneMd || ohneRules
-    ? `beim Öffnen weggelassen (weglassen): ${[ohneMd ? "~/.claude/CLAUDE.md" : null, ohneRules ? "~/.claude/rules/**" : null].filter(Boolean).join(" und ")}` : null;
+  const weg = [...(fleetRepo ? [] : [ohneMd ? "~/.claude/CLAUDE.md" : null, ohneRules ? "~/.claude/rules/**" : null]), ...ohneDateien.map(tildePfad)].filter(Boolean);
+  const eigeneGrund = [fleetRepo && claude ? EIGENE_REGELN_AUS : null, weg.length ? `beim Öffnen weggelassen (weglassen): ${weg.join(" und ")}` : null]
+    .filter(Boolean).join(" · ") || null;
   // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Projekt-
   // Monolith samt AGENTS.md bleibt ausgeschlossen (server.ts#agentCmd). Was übrig bleibt, steht hier.
   if (orchestrator) {
@@ -21363,7 +21375,7 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
   // what the door left out of ~/.claude, read as agentCmd reads it (weglassenStart, mitWeglassen); paths shown with ~
   const weg = weglassenStart(weglassen, claudeConfigDir());
   const tilde = (pfad: string): string => pfad.replace(CLAUDE_HOME ?? HOME, "~");
-  const weggelassen = weglassenZeilen(weglassen);
+  const weggelassen = weglassenZeilen(weglassen, tildePfad);
   const eigen = eigenesSetup({ claude: true, role: listRole, fleetRepo });
   // the excludes of the line, from the one source agentCmd reads (startExcludes), with agentCmd's `bau && !eigen`
   const excludes = startExcludes({ orchestrator: listRole === "orchestrator", fleetCheckout, bau: bau && !eigen, fleetRepo, weg: weg.excludes }).map(tilde);
@@ -21582,9 +21594,9 @@ async function fassungKorrekturZeiger(rolle: FassungRolle, cwd: string): Promise
     `Zeiger, nicht im Start: GET ${KORREKTUR_DOOR} mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN" — die Owner-Korrekturen, die für eine Lane in Fleets Repo gelten.`, false)];
 }
 
-async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
+// WIE EIN SLOT STARTET, so wie ensureSlot ihn liest: die Fassung (fassungFuerSlot) und die Prüfung der Tür (weglassenDateienDesStarts) rechnen damit
+async function startLageVon(s: Slot) {
   const rolle = positionRole(s);
-  const nachfolge = anlass === "nachfolge";
   // Der Nachfolger erbt Agent, Modell und Effort; nur der Wechsel ist eine andere Wahl.
   const pick = successorSpawnOf(null, { harness: harnessOf(s.harness).id, model: s.model, effort: s.effort });
   const spawnPick = pick.ok ? pick.pick : { harness: harnessOf(s.harness).id, model: s.model, effort: s.effort };
@@ -21592,13 +21604,43 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   // trägt den cwd, wie er gestartet wurde (auf macOS /var gegen /private/var). Die Fassung nimmt
   // denselben realpath, damit „Liest“ und der Hash dieselben Quellen nennen.
   const cwd = realpathLoose(s.cwd!);
-  const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
   const spawnRolle = fassungSpawnRolle(s, rolle, spawnPick.harness);
   const fleetBaum = harnessFamilie(spawnPick.harness) === "claude" ? await fleetBaumVon(cwd) : null;
   // a seat in its own setup and a seat that builds, read as ensureSlot reads them
   const eigen = eigenesSetup({ claude: harnessFamilie(spawnPick.harness) === "claude", role: spawnRolle, fleetRepo: fleetBaum !== null });
-  const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const bau = spawnRolle === "generic" && !eigen && s.label !== STEWARD_LABEL && isBauCwd(cwd);
+  return { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau };
+}
+type StartLage = Awaited<ReturnType<typeof startLageVon>>;
+// die Projektregeln dieses Starts, mit einer Wahl dessen, was er weglässt
+const projektregelnDerLage = (s: Slot, l: StartLage, weglassen: Weglassen | null): FassungAbschnittEingang[] =>
+  fassungProjektregelnAus(l.cwd, l.spawnPick.harness, fassungImFleetCheckout(l.cwd, s.worktree),
+    l.rolle === "orchestrator", l.bau, l.rolle === "generic" ? l.fleetBaum : null, l.fleetBaum !== null, weglassen);
+// EINZELNE REGELDATEIEN AN DER TÜR (weglassen.dateien): jeder Pfad muss eine Regeldatei sein, die dieser Start liest — gerechnet mit den
+// anderen gewählten Pfaden schon weg, denn ohne die CLAUDE.md eines Ordners lädt Claude Code dessen AGENTS.md (nativeLoaderBytes). Die Wahl
+// trägt danach den Pfad, wie der Lader ihn nennt: so steht er exakt in claudeMdExcludes, auch wenn die Tür einen Link oder ~/ schrieb.
+async function weglassenDateienDesStarts(s: Slot): Promise<{ ok: true; wahl: Weglassen | null } | { ok: false; error: string }> {
+  const w = s.weglassen;
+  if (!w?.dateien?.length) return { ok: true, wahl: w ?? null };
+  if (harnessFamilie(s.harness ?? "claude") !== "claude" || !s.cwd) return { ok: false, error: "weglassen.dateien is Claude Code's — this start reads no Claude rule files" };
+  const echt = (pfad: string): string => realpathLoose(resolve(expandCwd(pfad)));
+  const gewollt = [...new Set(w.dateien.map(echt))];
+  const lage = await startLageVon(s);
+  const dateien: string[] = [];
+  for (const pfad of gewollt) {
+    const andere = gewollt.filter((p) => p !== pfad);
+    const regeln = projektregelnDerLage(s, lage, { ...w, dateien: andere })[0];
+    const treffer = regeln?.dateien?.find((d) => echt(d.pfad) === pfad);
+    if (!treffer) return { ok: false, error: `weglassen.dateien: ${tildePfad(pfad)} is no rule file this start reads — only a file under „Liest“ › Projektregeln can be left out` };
+    dateien.push(treffer.pfad);
+  }
+  return { ok: true, wahl: { ...w, dateien } };
+}
+async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
+  const nachfolge = anlass === "nachfolge";
+  const { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau } = await startLageVon(s);
+  const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
+  const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
@@ -21608,8 +21650,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
-    ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungImFleetCheckout(cwd, s.worktree),
-      rolle === "orchestrator", bau, rolle === "generic" ? fleetBaum : null, fleetBaum !== null, s.weglassen),
+    ...projektregelnDerLage(s, { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau }, s.weglassen),
     ...(await fassungWissen(s, rolle, cwd, eigen)),
     ...(await fassungKorrekturZeiger(rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
@@ -42640,7 +42681,7 @@ function nativeLoaderBytes(dir: string, harness: string, aus: ReadonlySet<string
         const pfad = `${rules}/${name}`;
         const read = readPresent(pfad);
         if (!read.ok) return unreadable(pfad);
-        if (!read.bytes || seen.has(pfad)) continue;
+        if (!read.bytes || seen.has(pfad) || aus.has(resolve(pfad))) continue;
         const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(read.bytes.toString("utf8"));
         if (front && /^paths\s*:/m.test(front[1]!)) { nachgeladen.push(pfad); continue; }
         seen.add(pfad);
@@ -43191,11 +43232,15 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       const rc = remoteOf(startBody, hh);
       if (!rc.ok) return refuse(rc.error);
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
-      fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { cwd: resolve(expandCwd(repo)),
+      const eingang: OeffnungEingang = { cwd: resolve(expandCwd(repo)),
         label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
         rechte: wr.rechte, agentMd: am.agentMd ?? q.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch,
         schwelle: sw.schwelle, notizbuchWahl: nb.wahl, permissionMode: pm.wahl,
-        weglassen: wg.wahl, autoModeEnvironment: um.wahl, tools: tw.wahl, agent: q.agent ?? null, remote: rc.remote }), anlass: "neu" };
+        weglassen: wg.wahl, autoModeEnvironment: um.wahl, tools: tw.wahl, agent: q.agent ?? null, remote: rc.remote };
+      // ...and the single rule files it leaves out, judged as the open judges them (weglassenDateienDesStarts)
+      const wd = await weglassenDateienDesStarts(fassungSlotDerOeffnung(freierSlotFuerVorschau(), eingang));
+      if (!wd.ok) return refuse(wd.error);
+      fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { ...eingang, weglassen: wd.wahl }), anlass: "neu" };
     } else {
       fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
         effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
@@ -51459,13 +51504,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // a lane's hooks are Fleet's guard (.claude/hooks/lane-permission.ts denies a dialog nobody answers); a lane never drops them itself
       if (s.worktree) return json({ error: "a lane keeps its hooks and settings — weglassen is for a seat of its own" }, 409);
       const body = await readJson(req);
-      if (!body || !("weglassen" in body)) return json({ error: 'expected { "weglassen": { claudeMd, rules, plugins, agents, skills, mcp, hooks } | null }' }, 400);
+      if (!body || !("weglassen" in body)) return json({ error: 'expected { "weglassen": { claudeMd, rules, plugins, agents, skills, mcp, hooks, dateien } | null }' }, 400);
       const wg = weglassenDerTuer(body.weglassen);
       if (!wg.ok) return json({ error: wg.error }, 400);
+      // single rule files: each one a file this seat's start reads (weglassenDateienDesStarts)
+      const wd = await weglassenDateienDesStarts({ ...s, weglassen: wg.wahl });
+      if (!wd.ok) return json({ error: wd.error }, 400);
       if (s.openedAt !== p.openedAt) return json({ error: "this slot has another occupant now" }, 409);
-      s.weglassen = wg.wahl;
+      s.weglassen = wd.wahl;
       await saveStateNow();
-      return json({ ok: true, weglassen: wg.wahl, zeilen: weglassenZeilen(wg.wahl), gilt: "ab dem nächsten Start dieses Sitzes: Neustart oder Übergabe" });
+      return json({ ok: true, weglassen: wd.wahl, zeilen: weglassenZeilen(wd.wahl, tildePfad), gilt: "ab dem nächsten Start dieses Sitzes: Neustart oder Übergabe" });
     }
     if (url.pathname === "/api/self/retire" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
@@ -53310,6 +53358,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const anlass = url.searchParams.get("anlass");
       if (anlass !== "laufend" && anlass !== "nachfolge")
         return json({ error: "anlass must be laufend or nachfolge" }, 400);
+      // die Startwahl des Slots roh, unter den Türnamen (slotWahlenVon): nur gelesen, nicht Teil des Hashes. Dazu die Agent-MD, wie die Tür sie
+      // nahm: `purpose` (der getippte Text) oder `profil` (sein Name) — sonst nennte das Banner einen Start „dein normales Claude Code“, dessen
+      // Systemprompt sie trägt (Slot 1, Runde 9)
+      const aus = wahlenAusSlot(slotWahlenVon(s));
+      const wahlen = { ...aus.wahlen, ...(aus.agentMd && s.agentMd?.getippt ? { purpose: aus.agentMd.text } : aus.agentMd?.profil ? { profil: aus.agentMd.profil } : {}) };
       // `laufend` ist der festgehaltene Start dieser Belegung (server/start-fassung.ts), nicht eine Neurechnung von jetzt; fehlt er,
       // wird gerechnet und `festgehalten` sagt es. Nach einer Nachfolge hält der Start die Fassung MIT Übergabe.
       if (anlass === "laufend" && s.openedAt) {
@@ -53318,9 +53371,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // `nachgefuehrt` nennt, was sich seit dem Start bewegt hat (dann ist der Hash ein anderer als der des Starts)
         const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", fassungLaufwerteFuer(s)) : null;
         if (gehalten && nach) return json({ ...nach.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am,
-          ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) } });
+          ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) }, wahlen });
       }
-      return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null });
+      return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null, wahlen });
     }
     const chainMatch = /^\/api\/slots\/(\d+)\/succession$/.exec(url.pathname);
     if (req.method === "GET" && chainMatch) {
@@ -55913,10 +55966,15 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // ein Start, der schon eine erste Nachricht bringt (die Rollenkarte der Orchestratorin, die Packs eines Plans), nimmt keine zweite daneben
         if (zi.ziel && !sitzAuftrag && (isOrchestratorLabel(label) || acc || founding))
           return json({ error: `goal and ${isOrchestratorLabel(label) ? "the Orchestratorin's role card" : "the packs of a plan"} would be two first messages — send the goal after the start` }, 400);
-        const gezeigt = await fassungGezeigtPruefung(body, s, { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
+        const eingang: OeffnungEingang = { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
           harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd, bibliothek: bib.wahl, packMcp,
           sitz: sd.sitz, notizbuch: sd.notizbuch, schwelle: sw.schwelle, notizbuchWahl: nb.wahl, permissionMode: pm.wahl, weglassen: wg.wahl,
-          autoModeEnvironment: um.wahl, tools: tw.wahl, agent: ag.tuer.agent, remote: ro.remote });
+          autoModeEnvironment: um.wahl, tools: tw.wahl, agent: ag.tuer.agent, remote: ro.remote };
+        // single rule files left out: each one a file this start reads, carried with the loader's path (weglassenDateienDesStarts)
+        const wd = await weglassenDateienDesStarts(fassungSlotDerOeffnung(s, eingang));
+        guard();
+        if (!wd.ok) return json({ error: wd.error }, 400);
+        const gezeigt = await fassungGezeigtPruefung(body, s, { ...eingang, weglassen: wd.wahl });
         guard();
         if (gezeigt) return json(gezeigt.body, gezeigt.status);
         if (fassungTestHaken.nachPruefung) await fassungTestHaken.nachPruefung();
@@ -55925,7 +55983,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), agentMd, sd.notizbuch);
           const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
             null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-            packMcp, undefined, wr.rechte, agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wg.wahl, um.wahl, tw.wahl, ag.tuer.agent);
+            packMcp, undefined, wr.rechte, agentMd, null, bib.wahl, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent);
           if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
             || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
           modelSupport = opened.modelSupport;

@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Answer, branchTestkit, type Fixture, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
+import { type Answer, branchTestkit, type Fixture, get, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
 import { agentMdDerTuer, agentMdText } from "./agentmd";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 
@@ -58,6 +58,13 @@ describe("Agent-MD an der Tür", () => {
 });
 
 describe("Agent-MD kommt bei der gestarteten Session an", () => {
+  test("die Fassung nennt das Profil unter den Wahlen (`profil`), damit das Banner der laufenden Session es zeigt", async () => {
+    const f = fixture();
+    speicher(f.state);
+    const [opened, laufend] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, profil: "planer" }), get("/api/slots/1/fassung?anlass=laufend")]);
+    offen(opened);
+    expect(laufend?.body.wahlen).toEqual({ profil: "planer" });
+  }, LIFE_DEADLINE_MS * 2);
   test("/open mit profil: der Systemprompt trägt die Datei, fleet.json hält sie über ein Laden", async () => {
     const f = fixture();
     speicher(f.state);

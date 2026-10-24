@@ -70,13 +70,13 @@ describe("fassungsHash", () => {
 describe("die fünf Teile", () => {
   test("Liest steht in Ladereihenfolge; Übergabe nur bei nachfolge, Richtung nur wenn getragen", () => {
     expect(baueFassung(eingang()).teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
-      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe" && id !== "richtung"));
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe" && id !== "richtung" && id !== "korrekturen"));
     expect(baueFassung(eingang({ anlass: "nachfolge" })).teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
-      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "richtung"));
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "richtung" && id !== "korrekturen"));
     // Die Orchestratorin trägt die Richtung als ersten Abschnitt; keine andere Rolle erbt davon.
     expect(baueFassung(eingang({ liest: [textAbschnitt("richtung", "docs/start/direction.md", "Richtung"), ...eingang().liest] }))
       .teile.find((t) => t.id === "liest")!.abschnitte.map((a) => a.id))
-      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe"));
+      .toEqual(LIEST_REIHENFOLGE.filter((id) => id !== "uebergabe" && id !== "korrekturen"));
   });
 
   test("eine fehlende Quelle steht als unknown mit Grund da, nie leer, und bleibt im Hash", () => {

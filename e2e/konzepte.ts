@@ -1265,6 +1265,7 @@ async function privatePackHandover(): Promise<void> {
       check("konzepte owner delivery fixture: the owner publishes one synthetic correction per position",
         published.status === 200, `${published.status} ${published.text.slice(0, 250)}`);
       if (published.status !== 200) return;
+      const fremdOrdner = gitRepo(`${FIXH}/fremd-ordner`);
       type Received = { tag: string; text: string; native: string; pointer: string | null; status: number | null;
         error: string | null; firstAt: number | null; answeredAt: number | null;
         body: { bindung?: { rolle: string; harness: string }; geltendeEintraege?: { id: string }[] } | null };
@@ -1375,14 +1376,32 @@ async function privatePackHandover(): Promise<void> {
           const opened = await call(`/api/slots/${genericSlot}/open`, "POST", { cwd: product, label: "Nur Ordner", packs: [], ...spawn });
           await call("/send", "POST", { slot: genericSlot, text: "fleet generic fixture prompt", submit: true });
           const received = opened.status === 200 ? await receive(genericSlot) : null;
-          const denied = await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(genericSlot) } });
-          const deniedBody = await denied.text();
-          check(`konzepte owner delivery (${harness}/nur-ordner): the first prompt has no pointer and the reader refuses the generic position`,
-            opened.status === 200 && received !== null && received.pointer === null && denied.status === 409
-              && !deniedBody.includes("geltendeEintraege"),
-            `open=${opened.status} pointer=${received?.pointer} reader=${denied.status} ${deniedBody}`);
+          // a seat without a role in Fleet's repo (the product checkout IS this server's repo) reads with the lane's geltung
+          // (server.ts#korrekturLeserFor, Orchestratorin 24.10.); its start carries no pointer, its Fassung names the door
+          const read = await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(genericSlot) } });
+          const readBody = await read.text();
+          const readJson = (() => { try { return JSON.parse(readBody) as Received["body"]; } catch { return null; } })();
+          check(`konzepte owner delivery (${harness}/nur-ordner): the first prompt has no pointer, and in Fleet's repo the reader serves the lane's correction only`,
+            opened.status === 200 && received !== null && received.pointer === null && read.status === 200
+              && readJson?.bindung?.rolle === "lane" && JSON.stringify(readJson.geltendeEintraege?.map((e) => e.id)) === '["start-lane"]',
+            `open=${opened.status} pointer=${received?.pointer} reader=${read.status} ${readBody.slice(0, 300)}`);
           await call(`/api/slots/${genericSlot}/kill`, "POST", {});
         } else check(`konzepte owner delivery (${harness}/nur-ordner): the fixture has a free slot`, false);
+        // the same seat in another repository: the heft is personal and does not travel there
+        const fremdSlot = await freeSlot();
+        if (fremdSlot !== null) {
+          rmSync(`${reads}/heft-${fremdSlot}.json`, { force: true });
+          const opened = await call(`/api/slots/${fremdSlot}/open`, "POST", { cwd: fremdOrdner, label: "Nur Ordner fremd", packs: [], ...spawn });
+          await call("/send", "POST", { slot: fremdSlot, text: "fleet generic fixture prompt", submit: true });
+          const received = opened.status === 200 ? await receive(fremdSlot) : null;
+          const denied = await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(fremdSlot) } });
+          const deniedBody = await denied.text();
+          check(`konzepte owner delivery (${harness}/nur-ordner fremd): in another repository the first prompt has no pointer and the reader refuses without correction bytes`,
+            opened.status === 200 && received !== null && received.pointer === null && denied.status === 409
+              && !deniedBody.includes("geltendeEintraege") && !deniedBody.includes("synthetische Startkorrektur"),
+            `open=${opened.status} pointer=${received?.pointer} reader=${denied.status} ${deniedBody}`);
+          await call(`/api/slots/${fremdSlot}/kill`, "POST", {});
+        } else check(`konzepte owner delivery (${harness}/nur-ordner fremd): the fixture has a free slot`, false);
       }
 
       // ---- THE FAILURE WAY of binding before the brief: a first delivery that fails takes the binding

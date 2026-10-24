@@ -315,7 +315,7 @@ export function foldKorrekturHeft(heft: KorrekturHeft): GefalteterEintrag[] {
 // THE READ VIEW (Karte 2 von 3, Entwurf §Dieselbe Lesetür für Claude, Codex und pi-zai): the entries of the
 // LAST fassung that apply to ONE reader, whose three coordinates the server derives from the session's
 // current binding — never from the request. `projekt` is the opaque projectKey of the bound repository,
-// `rolle` the server's positionRole (lane · program-main · orchestrator), `harness` the slot's adapter id.
+// `rolle` the server's positionRole (lane · program-main · orchestrator; a seat without a role in Fleet's repo reads as lane), `harness` the slot's adapter id.
 // A list axis holds when it names the reader's value, "*" holds for everyone; `modi` is NOT filtered — no
 // binding names a working mode — and each served entry carries its geltung, so the reader sees that axis.
 export interface KorrekturLeser { projekt: string; rolle: string; harness: string }

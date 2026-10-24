@@ -17390,8 +17390,8 @@ function konzeptKontextFor(s: Slot, p: Extract<Principal, { kind: "session" }>, 
 // derived from the CURRENT binding alone — role from positionRole (no second role derivation), project
 // as the opaque projectKey of the bound repository (a lane's worktree repo, otherwise the cwd's git
 // toplevel), harness from the slot's adapter. A READ door only: it widens no write. The Orchestratorin
-// reads here although konzeptKontextFor refuses her a fassung; a free session (role generic) reads
-// nothing, and a session outside any git repository has no project and is refused by name.
+// reads here although konzeptKontextFor refuses her a fassung; a seat without a role reads as a lane in
+// Fleet's repo and nothing elsewhere, and a session outside any git repository has no project and is refused by name.
 type KorrekturLeserAnswer = { ok: true; leser: KorrekturLeser } | { ok: false; error: string };
 const KORREKTUR_DOOR = "/api/self/konzepte/k-owner-korrekturen/leseansicht";
 function ownerKorrekturenPointer(): string {
@@ -17455,8 +17455,14 @@ async function ownerKorrekturenText(leser: KorrekturLeser | null): Promise<strin
 async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
   const binding = mainBindingOf(s);
   const rolle = positionRole(s, binding);
-  if (rolle === "generic")
-    return { ok: false, error: `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this session is none of them (${binding.ok ? "role generic" : binding.error})` };
+  if (rolle === "generic") {
+    // A SEAT WITHOUT A ROLE IN FLEET'S REPO builds Fleet (a board branch, a free seat in the checkout) and reads with the lane's
+    // geltung: the heft names no other builder, and its lane entries are the builder's (Orchestratorin 24.10.). Its project is
+    // Fleet's primary checkout, the one a lane's worktree.repo names. A seat in another repository stays refused: the heft is personal.
+    if (s.cwd && await fleetBaumVon(s.cwd) !== null)
+      return { ok: true, leser: korrekturLeserOf(FLEET_GIT_COMMON ? dirname(FLEET_GIT_COMMON) : import.meta.dir, "lane", s.harness) };
+    return { ok: false, error: "the owner's corrections are read by a lane, a bound Program-MAIN, the Orchestratorin or a seat in Fleet's repository — this session is none of them: it has no role and works in another repository, and the heft does not travel there" };
+  }
   const repo = s.cwd ? await repoKeyOf(s) : null;
   if (!repo) return { ok: false, error: "this session's working directory is in no git repository — without a project binding no entry can be chosen for it" };
   return { ok: true, leser: { projekt: projectKeyOf(repo), rolle, harness: harnessOf(s.harness).id } };
@@ -21345,6 +21351,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       ...fassungProjektregelnAus(o.repoRoot, o.harness, fassungImFleetCheckout(o.repoRoot, null), o.rolle === "orchestrator", false,
         o.rolle === "generic" ? fleetBaum : null, fleetBaum !== null),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness, eigen)),
+      ...(await fassungKorrekturZeiger(o.rolle, o.repoRoot)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
       ...(await fassungGedaechtnisAus(claude ? await notizbuchFuerStart(o.repoRoot,
         o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : "generic", null, eigen) : null, o.harness)),
@@ -21466,6 +21473,14 @@ function fassungLaufwerteFuer(s: Slot): FassungAbschnittEingang[] {
     wahl: thresholdChoiceOf(s, art), warmFleet: live ? keepCacheFleetOn(s) : art === "orchestrator" || art === "program-main" });
 }
 
+// DAS HEFT EINES SITZES OHNE ROLLE IN FLEETS REPO (korrekturLeserFor): er liest die Owner-Korrekturen an ihrer Tür, mit der Geltung einer
+// Lane. Sein Start trägt sie nicht, darum steht unter „[Zitat entfernt]“ der Zeiger und nicht der Inhalt; in einem fremden Repo steht nichts.
+async function fassungKorrekturZeiger(rolle: FassungRolle, cwd: string): Promise<FassungAbschnittEingang[]> {
+  if (rolle !== "generic" || await fleetBaumVon(cwd) === null) return [];
+  return [textAbschnitt("korrekturen", "AGENTS.md (What applies here) · server.ts#korrekturLeserFor",
+    `Zeiger, nicht im Start: GET ${KORREKTUR_DOOR} mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN" — die Owner-Korrekturen, die für eine Lane in Fleets Repo gelten.`, false)];
+}
+
 async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
   const rolle = positionRole(s);
   const nachfolge = anlass === "nachfolge";
@@ -21495,6 +21510,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ...fassungProjektregelnAus(cwd, spawnPick.harness, fassungImFleetCheckout(cwd, s.worktree),
       rolle === "orchestrator", bau, rolle === "generic" ? fleetBaum : null, fleetBaum !== null, s.weglassen),
     ...(await fassungWissen(s, rolle, cwd, eigen)),
+    ...(await fassungKorrekturZeiger(rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil ?? null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),

@@ -1704,7 +1704,7 @@ Eine Session ohne Bindung schreibt als `role:"generic"` mit `kontext` `{slot, op
 gehoert keinem Program: sie erreicht nur Konzepte mit Zugriff `fleet` (`k-claude-fleet`,
 `k-owner-korrekturen`, vom Owner als `fleet` erklaerte); ein Konzept eines Programs ist fuer sie **403**
 `konzept-program-forbidden: …` (`konzept-ledger.ts#konzeptAccess`). Die Lesetuer
-`GET …/k-owner-korrekturen/leseansicht` (unten) liest weiter nur, wer dort eine Rolle hat. Ohne erkannte
+`GET …/k-owner-korrekturen/leseansicht` (unten) liest sie nur in Fleets Repo, mit der Geltung einer Lane. Ohne erkannte
 Credential 401 nach 400 ms.
 Nach dem Body-Lesen wird der Occupant erneut geprueft; ein recycelter Slot bekommt 409 und nichts wird
 geschrieben.
@@ -1848,12 +1848,19 @@ andere Verb **404**, jede Abweisung der Leseansicht (unten) gilt unveraendert.
 kanonischen Repo-Pfad) des gebundenen Repositoriums — die Lane ihr Worktree-Repo, sonst das Git-Toplevel des
 cwd —, `harness` die Adapter-id des Slots (`claude` bei keiner). Eine Achse trifft, wenn sie `"*"` ist oder
 den Wert nennt. Claude-, Codex- und pi-zai-Lanes gleicher Bindung lesen also dieselben Eintraege. Lesen
-duerfen Lane, gebundene Program-MAIN und Orchestratorin; das erweitert KEIN Schreibrecht — die Fassung
+duerfen Lane, gebundene Program-MAIN und Orchestratorin, dazu seit 2026-10-24 ein Sitz ohne Rolle in Fleets
+Repo (ein Bau-Sitz auf einem Board-Branch, ein freier Sitz im Checkout; `server.ts#fleetBaumVon`): er liest
+mit `rolle` `lane` und dem Projekt von Fleets Haupt-Checkout, also dieselben Eintraege wie eine Lane dort,
+und seine Fassung nennt die Tuer unter „Liest“ als Abschnitt `korrekturen`. Das Heft kennt keine eigene
+Bau-Rolle, und seine lane-Eintraege sind die des Bauens. Ein Sitz ohne Rolle in einem fremden Repo bleibt
+409: das Heft ist persoenlich und reist nicht. Das erweitert KEIN Schreibrecht — die Fassung
 bleibt Owner-Sache (403 oben), die Orchestratorin bleibt an allen anderen Konzept-Pfaden 409.
 
 **Abweisungen, jede benannt und ohne Eintragsliste** — eine unlesbare Sicht erscheint nie als leeres Regal:
-**409** `the owner's corrections are read by a lane, a bound Program-MAIN or the Orchestratorin — this
-session is none of them (…)` (freie Session) · **409** `this session's working directory is in no git
+**409** `the owner's corrections are read by a lane, a bound Program-MAIN, the Orchestratorin or a seat in
+Fleet's repository — this session is none of them: it has no role and works in another repository, and the heft
+does not travel there`
+(Sitz ohne Rolle in einem fremden Repo) · **409** `this session's working directory is in no git
 repository — …` · **400** `the leseansicht takes its scope from your binding, never from the request —
 [<params>] is not read` (jeder Query-Parameter) · **401** fuer ein rotiertes Token eines recycelten Slots ·
 **409** wenn der Slot waehrend des Lesens den Occupant wechselt · **503** wie oben (Wurzel) · **404**

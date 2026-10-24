@@ -29,6 +29,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check } from "./harness";
+import { mutantSlice } from "./ctx";
 import {
   ACTIVITY_MUTANTS, ARBEITSORTE_MUTANTS, ArbeitsorteVerdictsIn, KEEP_MUTANTS, STRIP_MUTANTS, runActivityDom, runArbeitsorteDom, runBundleChatDom,
   runComposerKeepDom, runComposerTargetDom, runGlassIslandDom, runHeldDeliveriesDom,
@@ -53,7 +54,8 @@ import { K15_START_MUTANTS, runK15StartDom } from "./k15-start-dom";
 // 1606 s. That proof is owed when a claim is written, not in every run (AGENTS.md: let a mutation
 // prove the check can fail), so every mutant — the *_MUTANTS loops and the band's and the snapshot's
 // mutant pages — runs only with FLEET_E2E_DOM_MUTANTS=1. None is deleted; the nightly audit
-// (619a5000) is the place that runs the mode on a schedule.
+// (619a5000) is the place that runs the mode on a schedule. The *_MUTANTS loops are units of their
+// own since 2026-10-24, sliced across the nightly's shards (runMutants at the end of this file).
 const DOM_MUTANTS = process.env.FLEET_E2E_DOM_MUTANTS === "1";
 
 // ONE PROBE LINE. A rig whose browser cannot run is still fenced by its own try, so it cannot take its
@@ -95,7 +97,7 @@ export async function run(): Promise<void> {
   await uebergabeDom(sourceRoot);
   await leisteDom(sourceRoot);
   await k15StartDom(sourceRoot);
-  check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for every mutant" : ""}`,
+  check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for the band's and the snapshot's mutant pages" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
 }
 
@@ -143,14 +145,6 @@ async function slotsDom(sourceRoot: string): Promise<void> {
     }
   } catch (error) {
     probeFailed("composer keep DOM", error);
-  }
-  for (const m of DOM_MUTANTS ? KEEP_MUTANTS : []) {
-    try {
-      const hit = (await runComposerKeepDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => c.includes(m.claim));
-      check(`composer keep DOM MUTATION — ${m.name}: "${m.claim}…" turns red`, hit.length > 0 && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
-    } catch (error) {
-      probeFailed(`composer keep DOM MUTATION — ${m.name}`, error);
-    }
   }
 
   // A BUNDLED OWNER SEND IN THE CHAT VIEW (owner screenshot 2026-10-03 08:55), same rig: the composer
@@ -217,34 +211,6 @@ async function slotsDom(sourceRoot: string): Promise<void> {
   } catch (error) {
     probeFailed("arbeitsorte DOM", error);
   }
-  if (DOM_MUTANTS) {
-    // and each statement against its mutant: the claim that pins it must go red (ARBEITSORTE_MUTANTS) —
-    // all in ONE Chromium, each mutant in a browser context of its own. A shared browser that cannot
-    // start is a red PROBE line, and every mutant then starts its own as before: never a skip
-    const mutantProfile = mkdtempSync(resolve(tmpdir(), "fleet-arbeitsorte-mutants-"));
-    let mutantBrowser: ArbeitsorteBrowser | undefined;
-    try {
-      mutantBrowser = await startArbeitsorteBrowser(`${mutantProfile}/profile`);
-    } catch (error) {
-      probeFailed("arbeitsorte DOM MUTATION", error);
-    }
-    for (const m of ARBEITSORTE_MUTANTS) {
-      try {
-        const names = typeof m.claim === "string" ? [m.claim] : m.claim;
-        const width = m.width ?? 390;
-        const until = Object.keys(arbeitsorte.find((r) => r.state === m.state && r.width === width)?.claims ?? {}).filter((c) => names.some((n) => c.includes(n)));
-        const runs = await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [width], mutate: m, browser: mutantBrowser, until })
-          .catch((error: unknown) => { if (error instanceof ArbeitsorteVerdictsIn) return [error.result]; throw error; });
-        const hit = runs.flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
-        check(`arbeitsorte DOM MUTATION — ${m.name}: "${names.join('…" · "')}…" turns red`,
-          names.every((n) => hit.some(([c]) => c.includes(n))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
-      } catch (error) {
-        probeFailed(`arbeitsorte DOM MUTATION — ${m.name}`, error);
-      }
-    }
-    await mutantBrowser?.close();
-    rmSync(mutantProfile, { recursive: true, force: true });
-  }
 
   // THE PHONE UPRIGHT'S TWO ISLANDS (card "Auf dem Telefon steht oben klein", docs/design/
   // mobil-insel-notiz.md §1c), same rig: the two steps of the top island, closing by name, by a tap
@@ -275,15 +241,6 @@ async function slotsDom(sourceRoot: string): Promise<void> {
         check(`strip DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.detail[claim] ?? result.detail.missing).slice(0, 1500));
   } catch (error) {
     probeFailed("strip DOM", error);
-  }
-  for (const m of DOM_MUTANTS ? STRIP_MUTANTS : []) {
-    try {
-      const hit = (await runStripDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => m.claims.some((x) => c.includes(x)));
-      check(`strip DOM MUTATION — ${m.name}: ${m.claims.map((x) => `"${x}…"`).join(" and ")} turn${m.claims.length === 1 ? "s" : ""} red`,
-        m.claims.every((x) => hit.some(([c]) => c.includes(x))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
-    } catch (error) {
-      probeFailed(`strip DOM MUTATION — ${m.name}`, error);
-    }
   }
 
   // THE TOP ISLAND OF GLASS (card "Die Insel auf dem Telefon wird nach dem freigegebenen Entwurf
@@ -412,15 +369,6 @@ async function uebergabeDom(sourceRoot: string): Promise<void> {
   } catch (error) {
     probeFailed("uebergabe DOM", error);
   }
-  for (const m of DOM_MUTANTS ? UEB_MUTANTS : []) {
-    try {
-      const hit = (await runUebergabeDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
-      check(`uebergabe DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
-        JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      probeFailed(`uebergabe DOM mutant — ${m.name}`, error);
-    }
-  }
 }
 
 // --- from e2e/leiste.ts: the left bar (auftraege/leiste-aufraeumen.md, Mangel 126) and its mutants. Every claim at every
@@ -431,15 +379,6 @@ async function leisteDom(sourceRoot: string): Promise<void> {
       check(`leiste DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
   } catch (error) {
     probeFailed("leiste DOM", error);
-  }
-  for (const m of DOM_MUTANTS ? LEISTE_MUTANTS : []) {
-    try {
-      const hit = (await runLeisteDom(sourceRoot, undefined, { widths: [m.width ?? 1440], mutate: m }))[0];
-      check(`leiste DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
-        JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      probeFailed(`leiste DOM mutant — ${m.name}`, error);
-    }
   }
 }
 
@@ -453,28 +392,12 @@ async function k15StartDom(sourceRoot: string): Promise<void> {
   } catch (error) {
     probeFailed("k15 start DOM (fixture)", error);
   }
-  for (const m of DOM_MUTANTS ? K15_START_MUTANTS : []) {
-    try {
-      const hit = (await runK15StartDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
-      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false, JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
-    }
-  }
   // AGAINST THIS INSTANCE: the start gives a session with the chosen repo, agent, model and effort
   try {
     const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot });
     for (const [claim, ok] of Object.entries(r.claims)) check(`k15 start DOM: ${claim}`, ok, JSON.stringify(r.facts).slice(0, 1500));
   } catch (error) {
     probeFailed("k15 start DOM", error);
-  }
-  for (const m of DOM_MUTANTS ? K15_START_LIVE_MUTANTS : []) {
-    try {
-      const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot, mutate: m });
-      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim}`, r.claims[m.claim] === false, JSON.stringify(r.facts).slice(0, 600));
-    } catch (error) {
-      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
-    }
   }
 }
 
@@ -488,15 +411,6 @@ async function konstellationDom(sourceRoot: string): Promise<void> {
       check(`konstellation DOM ${result.width}x${result.height}: ${claim}`, ok, JSON.stringify(result.facts).slice(0, 1500));
   } catch (error) {
     probeFailed("konstellation DOM", error);
-  }
-  for (const m of DOM_MUTANTS ? KONST_MUTANTS : []) {
-    try {
-      const hit = (await runKonstellationDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
-      check(`konstellation DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
-        JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      probeFailed(`konstellation DOM mutant — ${m.name}`, error);
-    }
   }
 }
 
@@ -524,17 +438,6 @@ async function timelineDom(sourceRoot: string): Promise<void> {
     probeFailed("timeline DOM", error);
     return;
   }
-  // every mutant must turn its claim red at its one viewport (1200×900 unless it is a phone claim) —
-  // a needle that left the source fails as the probe
-  for (const m of DOM_MUTANTS ? TIMELINE_MUTANTS : []) {
-    try {
-      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
-      check(`timeline DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
-        JSON.stringify(hit?.facts ?? null).slice(0, 600));
-    } catch (error) {
-      probeFailed(`timeline DOM mutant — ${m.name}`, error);
-    }
-  }
 }
 
 // --- from e2e/slots.ts: the Activity window's type (G0.3) and its loading states, and their mutants
@@ -549,8 +452,53 @@ async function activityDom(sourceRoot: string): Promise<void> {
     probeFailed("activity DOM", error);
     return;
   }
+}
+
+// THE MUTANTS, IN SLICES (docs/neuaufbau/maengel.md, Mangel 147). Until 2026-10-24 every mutant ran
+// inside its rig's function above, so the whole mutant mode was the ONE unit `dom`, weighed at the
+// 1 092 s of a run without it. The nightly therefore put it on shard 1 alone, and shard 1 grew from
+// 24 min (15.10.) to 54 min (19.10.); from 20.10. on it lapsed every night at the 60-min claim window,
+// its verdict `unknown` and the mutants unmeasured. Now the mutants are the units dom-mutants-1 … -n
+// (e2e/ctx.ts#DOM_MUTANT_SLICES), which exist only in the mutant mode, and slice k runs every n-th
+// mutant of EACH family, starting at the k-th. A family that grows (k15 start: 1 412 s on 19.10.,
+// 2 797 s on 24.10.) grows every slice alike, so no table weight has to follow it. The
+// check lines are the ones the rigs had; each slice says its PROBE in one line of its own.
+export async function runMutants(k: number, n: number): Promise<void> {
+  if (!DOM_MUTANTS) return;
+  const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
+  probeFailures = [];
+  const mine = <T>(family: readonly T[]): T[] => mutantSlice(family, k, n);
+  for (const m of mine(KEEP_MUTANTS)) {
+    try {
+      const hit = (await runComposerKeepDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => c.includes(m.claim));
+      check(`composer keep DOM MUTATION — ${m.name}: "${m.claim}…" turns red`, hit.length > 0 && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      probeFailed(`composer keep DOM MUTATION — ${m.name}`, error);
+    }
+  }
+  await arbeitsorteMutants(sourceRoot, mine(ARBEITSORTE_MUTANTS));
+  for (const m of mine(STRIP_MUTANTS)) {
+    try {
+      const hit = (await runStripDom(sourceRoot, { mutate: m })).flatMap((r) => Object.entries(r.claims)).filter(([c]) => m.claims.some((x) => c.includes(x)));
+      check(`strip DOM MUTATION — ${m.name}: ${m.claims.map((x) => `"${x}…"`).join(" and ")} turn${m.claims.length === 1 ? "s" : ""} red`,
+        m.claims.every((x) => hit.some(([c]) => c.includes(x))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      probeFailed(`strip DOM MUTATION — ${m.name}`, error);
+    }
+  }
+  // every mutant must turn its claim red at its one viewport (1200×900 unless it is a phone claim) —
+  // a needle that left the source fails as the probe
+  for (const m of mine(TIMELINE_MUTANTS)) {
+    try {
+      const hit = (await runTimelineDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`timeline DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`timeline DOM mutant — ${m.name}`, error);
+    }
+  }
   // every mutant must turn its claim red at 1200×900 — a needle that left the source fails as the probe
-  for (const m of DOM_MUTANTS ? ACTIVITY_MUTANTS : []) {
+  for (const m of mine(ACTIVITY_MUTANTS)) {
     try {
       const hit = (await runActivityDom(sourceRoot, undefined, { widths: [1200], mutate: m }))[0];
       check(`activity DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
@@ -559,4 +507,88 @@ async function activityDom(sourceRoot: string): Promise<void> {
       probeFailed(`activity DOM mutant — ${m.name}`, error);
     }
   }
+  for (const m of mine(KONST_MUTANTS)) {
+    try {
+      const hit = (await runKonstellationDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`konstellation DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`konstellation DOM mutant — ${m.name}`, error);
+    }
+  }
+  for (const m of mine(UEB_MUTANTS)) {
+    try {
+      const hit = (await runUebergabeDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`uebergabe DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`uebergabe DOM mutant — ${m.name}`, error);
+    }
+  }
+  for (const m of mine(LEISTE_MUTANTS)) {
+    try {
+      const hit = (await runLeisteDom(sourceRoot, undefined, { widths: [m.width ?? 1440], mutate: m }))[0];
+      check(`leiste DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false,
+        JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`leiste DOM mutant — ${m.name}`, error);
+    }
+  }
+  for (const m of mine(K15_START_MUTANTS)) {
+    try {
+      const hit = (await runK15StartDom(sourceRoot, undefined, { widths: [m.width ?? 1200], mutate: m }))[0];
+      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim.slice(0, 60)}`, hit?.claims[m.claim] === false, JSON.stringify(hit?.facts ?? null).slice(0, 600));
+    } catch (error) {
+      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
+    }
+  }
+  for (const m of mine(K15_START_LIVE_MUTANTS)) {
+    try {
+      const r = await runK15StartLiveDom({ base: BASE, token: TOKEN, repo: REPO, sourceRoot, mutate: m });
+      check(`k15 start DOM mutant: ${m.name} turns red: ${m.claim}`, r.claims[m.claim] === false, JSON.stringify(r.facts).slice(0, 600));
+    } catch (error) {
+      probeFailed(`k15 start DOM mutant — ${m.name}`, error);
+    }
+  }
+  check(`dom mutants ${k}/${n} — PROBE: Chromium starts and loads the client bundle for every mutant of this slice`,
+    probeFailures.length === 0, probeFailures.join(" · "));
+}
+
+// The Arbeitsorte's mutants share ONE Chromium, each in a browser context of its own, and a mutant's
+// walk stops once its own claims have their verdicts (`until`, e2e/slots.ts#ArbeitsorteVerdictsIn).
+// The claim keys come from an unmutated walk over exactly the states and widths this slice's mutants
+// need, because the walk of the base run may sit on another shard. A shared browser that cannot start
+// is a red PROBE line, and every mutant then starts its own as before: never a skip.
+async function arbeitsorteMutants(sourceRoot: string, mutants: typeof ARBEITSORTE_MUTANTS): Promise<void> {
+  if (!mutants.length) return;
+  const mutantProfile = mkdtempSync(resolve(tmpdir(), "fleet-arbeitsorte-mutants-"));
+  let mutantBrowser: ArbeitsorteBrowser | undefined;
+  try {
+    mutantBrowser = await startArbeitsorteBrowser(`${mutantProfile}/profile`);
+  } catch (error) {
+    probeFailed("arbeitsorte DOM MUTATION", error);
+  }
+  let unmutated: ArbeitsorteDomResult[] = [];
+  try {
+    unmutated = await runArbeitsorteDom(sourceRoot, undefined, { states: [...new Set(mutants.map((m) => m.state))],
+      widths: [...new Set(mutants.map((m) => m.width ?? 390))], browser: mutantBrowser });
+  } catch (error) {
+    probeFailed("arbeitsorte DOM MUTATION — the unmutated walk", error);
+  }
+  for (const m of mutants) {
+    try {
+      const names = typeof m.claim === "string" ? [m.claim] : m.claim;
+      const width = m.width ?? 390;
+      const until = Object.keys(unmutated.find((r) => r.state === m.state && r.width === width)?.claims ?? {}).filter((c) => names.some((n) => c.includes(n)));
+      const runs = await runArbeitsorteDom(sourceRoot, undefined, { states: [m.state], widths: [width], mutate: m, browser: mutantBrowser, until })
+        .catch((error: unknown) => { if (error instanceof ArbeitsorteVerdictsIn) return [error.result]; throw error; });
+      const hit = runs.flatMap((r) => Object.entries(r.claims)).filter(([c]) => names.some((n) => c.includes(n)));
+      check(`arbeitsorte DOM MUTATION — ${m.name}: "${names.join('…" · "')}…" turns red`,
+        names.every((n) => hit.some(([c]) => c.includes(n))) && hit.every(([, ok]) => !ok), JSON.stringify(hit).slice(0, 600));
+    } catch (error) {
+      probeFailed(`arbeitsorte DOM MUTATION — ${m.name}`, error);
+    }
+  }
+  await mutantBrowser?.close();
+  rmSync(mutantProfile, { recursive: true, force: true });
 }

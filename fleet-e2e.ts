@@ -26,7 +26,7 @@
 // does not distinguish a product failure from missing setup. Both filters at once is refused —
 // nobody has measured that. Contract and the fixture record: docs/verify-tiering.md §16.
 import { REPO, SOCK, check, failures, post, quarantineLine, results } from "./e2e/harness";
-import { newCtx, parseShard, selectSkipUnits, shardPlan, SHARD_UNITS, type LaneCtx, type StewardCtx } from "./e2e/ctx";
+import { DOM_MUTANT_SLICES, newCtx, parseShard, selectSkipUnits, shardPlan, SHARD_UNITS, unitsOfRun, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
 import * as contextPacks from "./e2e/context-packs";
 import * as contextPlan from "./e2e/context-plan";
@@ -118,10 +118,12 @@ if (skipped.refusal) throw new Error(skipped.refusal);
 const skip = skipped.skip;
 // The units this run holds: the shard's share of the (skip-reduced) plan under --shard, every unit
 // but the skipped ones under a skip alone, `null` ("no unit filter") with neither.
+// In the mutant mode (the nightly) the table also holds the slices of dom's mutants (e2e/ctx.ts#unitsOfRun).
+const domMutants = process.env.FLEET_E2E_DOM_MUTANTS === "1";
 const myUnits: ReadonlySet<string> | null = shard
-  ? new Set([...shardPlan(shard.n, skip ?? undefined)].filter(([, s]) => s === shard.k).map(([u]) => u))
+  ? new Set([...shardPlan(shard.n, skip ?? undefined, domMutants)].filter(([, s]) => s === shard.k).map(([u]) => u))
   : skip
-    ? new Set(SHARD_UNITS.map((u) => u.unit).filter((u) => !skip.has(u)))
+    ? new Set(unitsOfRun(domMutants, skip).map((u) => u.unit))
     : null;
 // Every refusal is one pure decision (suite-modules.ts#selectModules) so that each of them is a
 // pinned fact rather than a line of this file nothing ever executes: a malformed value, both cuts at
@@ -220,6 +222,11 @@ const steps: Step[] = [
   { unit: "dom", module: "dom", run: async () => {
     await dom.run();
   } },
+  // …and its mutants, in slices that are units of their own in the mutant mode, so a sharded nightly
+  // spreads them over its shards (e2e/ctx.ts#DOM_MUTANT_SLICES); without the mode each step runs nothing
+  ...Array.from({ length: DOM_MUTANT_SLICES }, (_, i) => ({ unit: `dom-mutants-${i + 1}`, module: "dom", run: async () => {
+    await dom.runMutants(i + 1, DOM_MUTANT_SLICES);
+  } })),
   { unit: "core", module: "history", run: async () => {
     await history.run();
   } },

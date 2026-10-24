@@ -77,7 +77,10 @@ if [ "${SPEC%%=*}" = units ]; then
   for u in $(echo "${SPEC#units=}" | tr ',' ' '); do
     echo "$ALL" | grep -qx "$u" || { echo "Unit '$u' steht nicht in e2e/ctx.ts#SHARD_UNITS: $(echo $ALL)"; exit 2; }
   done
-  SKIP=$(echo "$ALL" | grep -vxF "$(echo "${SPEC#units=}" | tr ',' '\n')" | paste -sd, -)
+  KEEP=$(echo "${SPEC#units=}" | tr ',' '\n')
+  # mutants=1: eine genannte Unit fährt ihre Mutanten-Scheiben mit (<unit>-mutants-<k>, e2e/ctx.ts#unitsOfRun)
+  [ "$MUTANTS" = 1 ] && KEEP=$(printf '%s\n' "$KEEP"; for u in $KEEP; do echo "$ALL" | grep -x "$u-mutants-[0-9]*"; done)
+  SKIP=$(echo "$ALL" | grep -vxF "$KEEP" | paste -sd, -)
 fi
 
 exec 9> "$CI_HOME/band-$BAND.lock"

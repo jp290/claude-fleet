@@ -111,7 +111,18 @@ export interface StewardCtx {
 // The weights of dom, core, lanes and drops are their first sharded measurement on the Workhorse
 // (preview a4297f006a38, three co-resident shards, 2026-10-10 08:2x–09:0x): dom 1 092 s, core 701 s
 // (1 586 s with the probes), lanes 617 s (681 s), drops 3 s (11 s); timeline-ui's 114 s are in dom.
-export interface ShardUnit { unit: string; seconds: number; modules: readonly string[] }
+//
+// `dom-mutants-1` … `-4` (2026-10-24, Mangel 147): the mutants of dom's rigs, each slice every fourth
+// mutant of every family (e2e/dom.ts#runMutants). They are units only in the MUTANT MODE
+// (FLEET_E2E_DOM_MUTANTS=1, the nightly): `mutantsOf` names the unit they belong to, and outside that
+// mode they are not in the table, so every other plan (merge check, previews, the day's audits) is
+// the plan it was, byte for byte. A skip names them like any unit. As one unit they had put the whole
+// mode on one shard, which lapsed every night from 20.10. on at the 60-min claim window.
+// The weights are the slices measured alone on the Workhorse (hand run 1024041054-nd-slic on band 6,
+// main b13548f5 plus this cut, beside the measurement of the old shard 1 on band 5): 1 347, 1 185, 963
+// and 1 024 s; the 38 k15 start mutants alone take 2 797 s of them, ~74 s each. The old shard 1 on the
+// same tree took 4 874 s (hand run 1024041054-nd-main, units=dom mutants=1).
+export interface ShardUnit { unit: string; seconds: number; modules: readonly string[]; mutantsOf?: string }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts"] },
   { unit: "context-packs", seconds: 14, modules: ["context-packs"] },
@@ -129,6 +140,10 @@ export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "explorer", seconds: 1, modules: ["explorer"] },
   { unit: "drops", seconds: 3, modules: ["drops"] },
   { unit: "dom", seconds: 1092, modules: ["dom"] },
+  { unit: "dom-mutants-1", seconds: 1347, modules: ["dom"], mutantsOf: "dom" },
+  { unit: "dom-mutants-2", seconds: 1185, modules: ["dom"], mutantsOf: "dom" },
+  { unit: "dom-mutants-3", seconds: 963, modules: ["dom"], mutantsOf: "dom" },
+  { unit: "dom-mutants-4", seconds: 1024, modules: ["dom"], mutantsOf: "dom" },
   { unit: "ctl", seconds: 54, modules: ["ctl"] },
   { unit: "concurrency", seconds: 5, modules: ["concurrency"] },
   { unit: "lane-suite", seconds: 43, modules: ["lane-suite"] },
@@ -155,16 +170,28 @@ export const parseShard = (raw: string | undefined): { k: number; n: number } | 
   return n >= 1 && k >= 1 && k <= n ? { k, n } : null;
 };
 
+// The slices of dom's mutants (DOM_MUTANT_SLICES) are the units `<of>-mutants-<k>` above; the runner
+// gives slice k every DOM_MUTANT_SLICES-th mutant of each family (e2e/dom.ts#runMutants).
+export const DOM_MUTANT_SLICES = SHARD_UNITS.filter((u) => u.mutantsOf === "dom").length;
+// Slice k of n of ONE family: its k-th, (k+n)-th, … member, so each family spreads over every slice.
+export const mutantSlice = <T>(family: readonly T[], k: number, n: number): T[] => family.filter((_, i) => i % n === k - 1);
+
+// THE TABLE OF ONE RUN: every unit but the skipped ones, and a mutant unit only in the mutant mode.
+// shardPlan cuts its shards from exactly this list, and a run with a skip alone runs exactly this list.
+export const unitsOfRun = (mutants: boolean, skip?: ReadonlySet<string> | null): ShardUnit[] =>
+  SHARD_UNITS.filter((u) => !skip?.has(u.unit) && (!u.mutantsOf || mutants));
+
 // Longest-processing-time first: heaviest unit to the emptiest shard, ties to the lower shard
 // index. Deterministic for a given table and n, so every shard computes the same plan on its own.
 // `skip` takes units OUT OF THE TABLE before the plan is made (FLEET_E2E_SKIP_UNITS, see
 // selectSkipUnits below), so the plan of a skipping run is the plan of the smaller table — every
 // shard still computes it alone, and no shard holds a skipped unit. Without `skip` (or with an
 // empty one) the plan is the one this function always made, byte for byte; e2e/pins.ts holds both.
-export const shardPlan = (n: number, skip?: ReadonlySet<string>): Map<string, number> => {
+export const shardPlan = (n: number, skip?: ReadonlySet<string>, mutants = false): Map<string, number> => {
   const load = Array.from({ length: n }, () => 0);
   const plan = new Map<string, number>();
-  const byWeight = SHARD_UNITS.map((u, i) => ({ u, i })).filter(({ u }) => !skip?.has(u.unit))
+  const table = new Set(unitsOfRun(mutants, skip));
+  const byWeight = SHARD_UNITS.map((u, i) => ({ u, i })).filter(({ u }) => table.has(u))
     .sort((a, b) => b.u.seconds - a.u.seconds || a.i - b.i);
   for (const { u } of byWeight) {
     let best = 0;

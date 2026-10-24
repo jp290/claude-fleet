@@ -18,6 +18,12 @@ const OWN = new Set(["TMUX", "TMUX_PANE", "TERM", "TERM_PROGRAM", "TERM_PROGRAM_
 // the base a terminal hands a login shell: who and where, never the server's own settings
 const BASE = ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "SSH_AUTH_SOCK", "LANG", "__CF_USER_TEXT_ENCODING"];
 export const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Fleet's tmux runs with -u, so every pane is a UTF-8 terminal, and a terminal like that hands its shell a UTF-8 LANG. A server
+// started in C or POSIX (launchd, cron, the suite's LANG=C run) is no such terminal: its LANG would put the seat in a locale its
+// screen doesn't have, and readline there counts the two bytes of the `·` in every delivery header as two columns — measured
+// 24.10. on the work-horse: a line past the pane's width wrapped onto its own prompt and the delivered text was cut in two.
+// Without a UTF-8 LANG the login shell starts without one, and the pane keeps the LANG of its tmux environment, as before.
+const UTF8_RE = /\.utf-?8(@|$)/i;
 
 /** The variables `env -0` printed after the mark; null = no mark (the shell failed before it). Pure. */
 export function parseLoginEnv(out: string): Record<string, string> | null {
@@ -46,10 +52,16 @@ export const envFileText = (vars: Readonly<Record<string, string>>): string =>
   Object.entries(vars).map(([k, v]) => `export ${k}=${quote(v)}`).join("\n") + "\n";
 
 /** Runs the login shell in `cwd`; its variables, or the reason there are none. */
+/** What the login shell starts from: the terminal's part of `env`, LANG only as a UTF-8 locale. Pure. */
+export function loginBase(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const base: Record<string, string> = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+  for (const k of BASE) if (env[k] && (k !== "LANG" || UTF8_RE.test(env[k]!))) base[k] = env[k]!;
+  return base;
+}
+
 export async function readLoginEnv(shell: string, cwd: string, env: Readonly<Record<string, string | undefined>>, timeoutMs = 5000):
   Promise<{ ok: true; vars: Record<string, string>; ms: number } | { ok: false; error: string }> {
-  const base: Record<string, string> = { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
-  for (const k of BASE) if (env[k]) base[k] = env[k]!;
+  const base = loginBase(env);
   const t0 = Date.now();
   const p = Bun.spawn([shell, "-l", "-i", "-c", `printf '\\0FLEET-LOGIN-ENV\\0'; env -0`], { cwd, env: base, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const timer = setTimeout(() => p.kill("SIGKILL"), timeoutMs);

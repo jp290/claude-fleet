@@ -11,7 +11,7 @@ import { LEERLAUF } from "./warte-hinweis.fixtures";
 import { exportObjekt, pos, PROFILE0, type Konst, type Profil } from "../src/k15-entwurf-modell";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { eigenerModus } from "./fassung-umfeld";
-import { envFileText, paneVars, parseLoginEnv } from "./login-umgebung";
+import { envFileText, loginBase, paneVars, parseLoginEnv } from "./login-umgebung";
 
 const { TMP, BIN, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -268,6 +268,11 @@ describe("4 · die Umgebung der Login-Shell", () => {
     const vars = parseLoginEnv("Willkommen!\n\0FLEET-LOGIN-ENV\0A=1\0PATH=/x:/y:/z\0FLEET_TOKEN=geheim\0TMUX=/t\0PS1=%\0B=a=b\0")!;
     expect(vars).toEqual({ A: "1", PATH: "/x:/y:/z", FLEET_TOKEN: "geheim", TMUX: "/t", PS1: "%", B: "a=b" });
     expect(paneVars(vars, "/y")).toEqual({ A: "1", B: "a=b", PATH: "/y:/x:/z" });
+  });
+  test("die Login-Shell bekommt LANG nur als UTF-8-Locale; ein Server in C oder POSIX gibt ihr keins", () => {
+    const env = { HOME: "/h", SHELL: "/bin/bash", FLEET_SOCK: "x", LC_ALL: "C" };
+    for (const lang of ["de_DE.UTF-8", "en_US.utf8", "sr_RS.UTF-8@latin"]) expect(loginBase({ ...env, LANG: lang }).LANG).toBe(lang);
+    for (const lang of ["C", "POSIX", "C.ISO-8859-1", "de_DE", ""]) expect(loginBase({ ...env, LANG: lang })).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: "/h", SHELL: "/bin/bash" });
   });
   test("die Datei gibt jeden Wert zurück, wie er war", () => {
     const wert = "a 'b' \"c\" $HOME `x`\nzwei";

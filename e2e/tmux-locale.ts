@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SOCK as SERVER_SOCK } from "../server/tmux";
-import { ROOT, SOCK, check, post, restartSrv, tmuxOut, until, wsUrl, ownerWs } from "./harness";
+import { ROOT, SOCK, UntilTimeout, check, post, restartSrv, tmuxOut, until, wsUrl, ownerWs } from "./harness";
 
 interface Probe {
   created: { code: number; timedOut: boolean; out: string };
@@ -131,14 +131,22 @@ try {
         const opened = await post("/api/slots/14/open", { cwd });
         check(`tmux-locale: ${locale.name} server creates a usable slot`, opened.ok, String(opened.status));
         if (!opened.ok) continue;
-        const marker = `tmux-locale-send-${locale.name.replaceAll(/[^a-zA-Z0-9]/g, "-")}`;
+        // longer than the slot's 200 columns, so the line wraps inside the marker whatever the prompt: a shell that counts the
+        // header's `·` as two columns (a pane in LANG=C) cuts it in two there. Red only in the helper's audit until 24.10.,
+        // whose long scratch path put a 72-character text's wrap into the marker (prompt 138 columns; the merge check had 126).
+        const marker = `tmux-locale-send-${locale.name.replaceAll(/[^a-zA-Z0-9]/g, "-")}-${"0123456789".repeat(21)}`;
         const sent = await post("/send", { slot: 14, text: marker, submit: false });
         const body = await sent.json() as { error?: string };
         check(`tmux-locale: ${locale.name} /send accepts the exact pane`, sent.ok, JSON.stringify({ status: sent.status, error: body.error }));
         if (sent.ok) {
-          await until(async () => (await tmuxOut("capture-pane", "-p", "-J", "-t", "=s14:")).out.includes(marker),
-            { timeoutMs: 5000, stepMs: 50, what: `tmux-locale ${locale.name} paste visible` });
-          check(`tmux-locale: ${locale.name} /send really pastes into the pane`, true);
+          // a miss is this check's FAIL with the pane as it stood, never a throw that ends the shard
+          let screen = "";
+          const pasted = await until(async () => {
+            screen = (await tmuxOut("capture-pane", "-p", "-J", "-t", "=s14:")).out;
+            return screen.includes(marker);
+          }, { timeoutMs: 5000, stepMs: 50, what: `tmux-locale ${locale.name} paste visible` })
+            .catch((e) => { if (e instanceof UntilTimeout) return false; throw e; });
+          check(`tmux-locale: ${locale.name} /send really pastes into the pane`, pasted, pasted ? "" : JSON.stringify({ screen: screen.trimEnd() }));
         }
         const connected = await new Promise<boolean>((resolve) => {
           const ws = ownerWs(wsUrl(14));

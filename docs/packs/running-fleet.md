@@ -109,6 +109,10 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
 
 - **Check a green audit by its `ms` and its PASS lines, not by the word.** `checks.ran: 0` with `result: green`
   measured nothing, and zero PASS lines mean it crashed or never started; only `ms` tells the two apart.
+- **An audit runs under a longer path than a merge check.** On the helper an audit shard works under
+  `/var/lib/fleet-helper/work/run-…/tmp`, a merge check under `~/ci/runs/…`, so a test whose screen depends on the
+  path's length (a prompt that wraps) can be red only in the audit. Rerun it with `TMPDIR` as long as the audit's
+  before you call it a flake (tmux-locale, 24.10.).
 
 A red audit without a verdict stays with the owner, and he wants out of that loop. The orchestrator judges it
 through her own door, `POST /api/self/post-land-audits/adjudicate {at, verdict, note}` (`at` is the audit row's

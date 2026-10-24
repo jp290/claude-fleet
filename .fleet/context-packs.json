@@ -246,6 +246,42 @@
     "status": "active"
   },
   {
+    "id": "advanced-features",
+    "useWhen": "When the person wants a second computer, a helper, a test instance or to share a setup, or asks what Fleet can do.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "advanced-features.text", "path": "docs/packs/advanced-features.md", "anchor": "# Fleet's advanced features", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 13565,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "no-longer-humans-gentle",
+    "useWhen": "Before you give work to another agent, or decide how much proof a result needs.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "no-longer-humans-gentle.text", "path": "docs/packs/no-longer-humans-gentle.md", "anchor": "# Don't forget: you're no longer working with humans (gentle)", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2158,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "your-seat-in-fleet",
     "useWhen": "Before you call work on a Fleet branch done or land it: check command, landing, audit, mailbox, handover.",
     "scope": "repo-contract",
@@ -295,7 +331,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 17539,
+    "estimatedBytes": 18244,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

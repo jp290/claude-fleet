@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Merge-Check (docs/neuaufbau/plan.md K2): ein Urteil VOR dem Merge, am Branch sichtbar, in
 // ~5 min ohne große Units, ~20 min mit allen vier Audit-Shards. Geprüft wird der Baum, den main nach dem Merge hätte: main plus die Commits <base>..<branch>,
-// ohne Checkout per `git merge-tree` nachgebaut (so wie die Bauleitung per Rebase/Cherry-Pick merged).
+// ohne Checkout per `git merge-tree` nachgebaut, als Kette Commit für Commit und als ein Drei-Wege-Merge (candidateOf).
 // Die Suiten laufen parallel auf dem Helfer (ci/merge-check-run.sh), mit den Audit-Shards, die die großen
 // Units tragen, die der Kandidat schuldet (ci/big-units.ts); das Urteil nennt sie und warum. Solange main bekannt rot ist,
 // meldet er nie „mergebar“.
@@ -36,29 +36,76 @@ function mustGit(args: string[], input?: string, dir = REPO_DIR): string {
   return r.out;
 }
 
-// main plus <base>..<branch>, Commit für Commit wie ein Cherry-Pick; Merge-Commits fallen weg (ein
-// hereingemergtes bau/neuaufbau soll nicht mit nach main). Ein Commit, dessen Patch schon auf main
-// liegt (die Bauleitung merged per Cherry-Pick, der Branch behält das Original), wird übersprungen:
-// noch einmal angewendet gäbe er Konflikte mit späteren Änderungen derselben Datei. Verglichen wird
-// die Patch-ID mit den letzten MAIN_WINDOW Commits von main, nicht per `git cherry`: das sieht nur
-// main-Commits, die dem Branch fehlen, und hat ein Branch die main-Kopien per merge hereingeholt,
-// blieben die Originale stehen.
+// main plus <base>..<branch>, auf zwei Wegen gerechnet. DIE KETTE: Commit für Commit wie ein Cherry-Pick;
+// Merge-Commits fallen weg (ein hereingemergtes bau/neuaufbau soll nicht mit nach main). Ein Commit, dessen
+// Patch schon auf main liegt (die Bauleitung merged per Cherry-Pick, der Branch behält das Original), wird
+// übersprungen: noch einmal angewendet gäbe er Konflikte mit späteren Änderungen derselben Datei. Verglichen
+// wird die Patch-ID mit den letzten MAIN_WINDOW Commits von main, nicht per `git cherry`: das sieht nur
+// main-Commits, die dem Branch fehlen, und hat ein Branch die main-Kopien per merge hereingeholt, blieben
+// die Originale stehen.
+// DER EINE SCHRITT (Zielbild Landen 24.10., Schritt 1): ein Drei-Wege-Merge der Spitze mit main über die Basis
+// aus mergeBaseOf, wie `git merge` ihn sähe. Die Kette verliert, was ein Merge-Commit trägt: hat der Branch
+// main hereingeholt und dabei einen Konflikt gelöst, kommt der Konflikt beim Nachspielen wieder (Board-Zeile
+// 497828bd), und stellt ein Commit eine Änderung wieder her, die ein früherer desselben Branches zurücknahm,
+// fällt er als „schon auf main“ weg und der Kandidat trägt den Rückbau (Mangel 124, 3f754690a).
+// Gilt: Ergeben beide denselben Baum, bleibt die Kette der Kandidat, wie bisher (die Form „alle Commits“ landet
+// sie Commit für Commit). Scheitert die Kette oder ergibt sie einen anderen Baum, ist der Kandidat ein Commit mit
+// dem Baum des einen Schritts. Scheitert der eine Schritt, gilt die Kette: Originale, die als Squash auf main
+// liegen und die main danach weiter änderte, sieht nur ihr Patch-ID-Filter.
 const MAIN_WINDOW = 300;
-export function candidateOf(main: string, base: string, branch: string, dir = REPO_DIR):
-  { sha: string; commits: string[]; onMain: string[] } | { conflict: string } {
+export type Candidate = { sha: string; commits: string[]; onMain: string[]; form: "kette" | "ein-schritt";
+  mergeBase: string | null; ketteTree?: string; ketteConflict?: string };
+export function candidateOf(main: string, base: string, branch: string, dir = REPO_DIR): Candidate | { conflict: string } {
   const onMainIds = new Set(patchIds(["-n", String(MAIN_WINDOW), main], dir).values());
   const ids = patchIds([`${base}..${branch}`], dir);
   const all = mustGit(["rev-list", "--reverse", "--topo-order", "--no-merges", `${base}..${branch}`], undefined, dir)
     .split("\n").filter(Boolean);
   const onMain = all.filter((c) => onMainIds.has(ids.get(c) ?? ""));
   const commits = all.filter((c) => !onMain.includes(c));
+  const kette = chainOf(main, commits, dir);
+  const mergeBase = mergeBaseOf(main, base, branch, dir);
+  const one = mergeBase ? git(["merge-tree", "--write-tree", "--merge-base", mergeBase, main, branch], undefined, dir) : null;
+  if (!one?.ok) return "conflict" in kette ? { conflict: kette.conflict } : { ...kette, commits, onMain, form: "kette", mergeBase };
+  const tree = one.out.split("\n")[0]!;
+  if (!("conflict" in kette) && kette.tree === tree) return { ...kette, commits, onMain, form: "kette", mergeBase };
+  // der eine Schritt trägt, was die Kette nicht trägt: ein Commit mit seinem Baum. Die Liste nennt alle Commits
+  // der Charge, denn hier irrte der Patch-ID-Filter oder die Kette kam nicht durch (Mangel 124: der Übersprungene
+  // war der, der die Änderung wiederherstellte)
+  const msg = `${branch}: ${all.length} Commit(s) in einem Schritt auf main\n\n`
+    + (all.length ? mustGit(["log", "--no-walk=unsorted", "--format=- %h %s", ...all], undefined, dir) : "");
+  const sha = mustGit(["commit-tree", tree, "-p", main, "-F", "-"], `${msg}\n`, dir);
+  return { sha, commits: all, onMain: [], form: "ein-schritt", mergeBase,
+    ...("conflict" in kette ? { ketteConflict: kette.conflict } : { ketteTree: kette.tree }) };
+}
+
+// die Kette: jeder Commit auf den vorigen gesetzt, mit seiner eigenen Nachricht
+function chainOf(main: string, commits: readonly string[], dir: string): { sha: string; tree: string } | { conflict: string } {
   let cur = main;
   for (const c of commits) {
     const t = git(["merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c], undefined, dir);
     if (!t.ok) return { conflict: `${c.slice(0, 8)} lässt sich nicht auf main setzen:\n${t.out.split("\n").slice(1).join("\n")}` };
     cur = mustGit(["commit-tree", t.out.split("\n")[0]!, "-p", cur, "-F", "-"], mustGit(["log", "-1", "--format=%B", c], undefined, dir), dir);
   }
-  return { sha: cur, commits, onMain };
+  return { sha: cur, tree: mustGit(["rev-parse", `${cur}^{tree}`], undefined, dir) };
+}
+
+// Die Basis des einen Schritts: der Stand, den Branch und main zuletzt teilten, ohne die Basis des Branches.
+// Liegt die Basis (ein Basis-Branch wie bau/neuaufbau, oder nach einem Land dessen Spitze) unter der Spitze und
+// ist sie jünger als der Merge-Base von git, ist sie es: ihr Inhalt geht nicht mit nach main, und eine
+// gelandete Spitze trägt den Baum ihres Squash-Commits. Liegt der Merge-Base von git darüber, ist er der jüngere.
+// Liegen beide nebeneinander, gilt der Merge-Base nur, wenn er schon trägt, was die Basis trägt: so steht es, wenn
+// der Branch nach einem Squash-Land main hereinholte (der Squash ist kein Nachfahre der Spitze, trägt aber ihren
+// Baum). Sonst (ein Basis-Branch, den main nie bekam) gibt es keine eine Basis: null, dann gilt die Kette.
+export function mergeBaseOf(main: string, base: string, branch: string, dir = REPO_DIR): string | null {
+  const mb = git(["merge-base", main, branch], undefined, dir);
+  if (!mb.ok) return null;
+  const b = git(["rev-parse", "--verify", "-q", `${base}^{commit}`], undefined, dir);
+  const below = (a: string, c: string): boolean => git(["merge-base", "--is-ancestor", a, c], undefined, dir).ok;
+  if (!b.ok || !below(b.out, branch)) return mb.out;
+  if (below(mb.out, b.out)) return b.out;
+  if (below(b.out, mb.out)) return mb.out;
+  const both = git(["merge-tree", "--write-tree", mb.out, b.out], undefined, dir);
+  return both.ok && both.out.split("\n")[0] === mustGit(["rev-parse", `${mb.out}^{tree}`], undefined, dir) ? mb.out : null;
 }
 // Commit → Patch-ID (`git patch-id --stable`) für die Commits ohne Merges in `git log <args>`; ein
 // leerer Commit hat keine. Die Ausgabe von git log geht ungekürzt hinein, sonst ändert sich die ID.
@@ -194,7 +241,8 @@ async function main(): Promise<number> {
     appendFileSync(join(mustGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "merge-checks.jsonl"), `${JSON.stringify(row)}\n`);
     git(["notes", "--ref=merge-check", "add", "-f", "-m",
       `merge-check ${verdict} · ${mergeable ? "mergebar" : "nicht mergebar"} · ${Math.round((Date.now() - t0) / 1000)} s · ${new Date(t0).toISOString()}\n`
-      + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}\n${why}`
+      + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}`
+      + (row.candidateForm === "ein-schritt" ? ` in einem Schritt (Basis ${String(row.mergeBase).slice(0, 8)})` : "") + `\n${why}`
       + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
       + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : "")
       + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""), tip]);
@@ -206,6 +254,8 @@ async function main(): Promise<number> {
   const cand = candidateOf(mainSha, base, branch);
   if ("conflict" in cand) return finish("conflict", false, cand.conflict, 3);
   Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits,
+    candidateForm: cand.form, mergeBase: cand.mergeBase,
+    ...(cand.ketteTree ? { ketteTree: cand.ketteTree } : {}), ...(cand.ketteConflict ? { ketteConflict: cand.ketteConflict } : {}),
     ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
   const hidden = hiddenLayerOf(cand.sha);
   if (hidden.length) return finish("red", false, `verweigert, ein verstecktes Regelbuch: ${hidden.join("; ")}`, 1);

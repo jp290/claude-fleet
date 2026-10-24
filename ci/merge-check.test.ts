@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, hiddenLayerOf, mainVerdict } from "./merge-check";
+import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, hiddenLayerOf, mainVerdict, mergeBaseOf } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -160,6 +160,151 @@ describe("candidateOf: der Baum nach dem Merge", () => {
     const c = candidateOf(g("rev-parse", "main"), "neu", "strang", dir);
     rmSync(dir, { recursive: true, force: true });
     expect("conflict" in c).toBe(true);
+  });
+
+  // DER EINE SCHRITT (Zielbild Landen 24.10., Schritt 1): ein Board-Branch zweigt von main ab und zählt ab main
+  const zweig = () => {
+    const r = repo();
+    r.g("checkout", "-q", "-b", "zweig", "main");
+    return r;
+  };
+  const show = (g: (...a: string[]) => string, sha: string, file: string): string => g("show", `${sha}:${file}`);
+
+  test("ein Branch, der main mit gelöstem Konflikt hereinholte, besteht: der Kandidat ist der Baum, den git merge ergibt (Board-Zeile 497828bd)", () => {
+    const { dir, g, commit } = zweig();
+    commit("a.txt", "zweig\n");
+    g("checkout", "-q", "main");
+    commit("a.txt", "main\n");
+    g("checkout", "-q", "zweig");
+    Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-edit", "main"]);
+    writeFileSync(`${dir}/a.txt`, "beides\n");
+    g("add", "a.txt");
+    g("commit", "-q", "--no-edit");
+    g("checkout", "-q", "main");
+    commit("b.txt", "main danach\n");
+    g("checkout", "-q", "-b", "probe", "main");
+    g("merge", "-q", "--no-edit", "zweig");
+    const merged = g("rev-parse", "probe^{tree}");
+    const c = candidateOf(g("rev-parse", "main"), "main", "zweig", dir);
+    const tree = "conflict" in c ? "" : g("rev-parse", `${c.sha}^{tree}`);
+    const a = "conflict" in c ? "" : show(g, c.sha, "a.txt");
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(c.form).toBe("ein-schritt");
+    expect(tree).toBe(merged);
+    expect(a).toBe("beides");
+    expect(c.commits.length).toBe(1);
+  });
+
+  test("ein Commit, der eine zurückgenommene, schon gelandete Änderung wiederherstellt, bleibt im Kandidaten (Mangel 124)", () => {
+    const { dir, g, commit } = zweig();
+    g("checkout", "-q", "main");
+    commit("f.txt", "v1\n");
+    commit("f.txt", "v2\n");
+    g("checkout", "-q", "zweig");
+    g("reset", "-q", "--hard", "main");
+    writeFileSync(`${dir}/x.txt`, "neu\n");
+    writeFileSync(`${dir}/f.txt`, "v1\n");
+    g("add", "x.txt", "f.txt");
+    g("commit", "-q", "-m", "x.txt neu, f.txt versehentlich zurück");
+    const restore = commit("f.txt", "v2\n");
+    const c = candidateOf(g("rev-parse", "main"), "main", "zweig", dir);
+    const f = "conflict" in c ? "" : show(g, c.sha, "f.txt");
+    const x = "conflict" in c ? "" : show(g, c.sha, "x.txt");
+    const tipTree = g("rev-parse", "zweig^{tree}");
+    const tree = "conflict" in c ? "" : g("rev-parse", `${c.sha}^{tree}`);
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(f).toBe("v2");
+    expect(x).toBe("neu");
+    expect(tree).toBe(tipTree);
+    expect(c.form).toBe("ein-schritt");
+    expect(c.commits).toContain(restore);
+  });
+
+  test("ein bestehender Branch, dessen frühere Commits als Squash auf main liegen, trägt nur seine eigene Änderung (Mangel 68)", () => {
+    const { dir, g, commit } = zweig();
+    commit("f.txt", "1\n");
+    commit("f.txt", "2\n");
+    g("checkout", "-q", "main");
+    commit("f.txt", "2\n");
+    g("checkout", "-q", "zweig");
+    commit("g.txt", "neu\n");
+    const c = candidateOf(g("rev-parse", "main"), "main", "zweig", dir);
+    const files = "conflict" in c ? [] : filesOf(g, c.sha);
+    const f = "conflict" in c ? "" : show(g, c.sha, "f.txt");
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(files.sort()).toEqual(["a.txt", "f.txt", "g.txt"]);
+    expect(f).toBe("2");
+  });
+
+  test("nach einem Land zählt die Charge ab der gelandeten Spitze, und eine Charge aus mehreren Commits bleibt die Kette", () => {
+    const { dir, g, commit } = zweig();
+    const landed = commit("f.txt", "1\n");
+    g("checkout", "-q", "main");
+    g("reset", "-q", "--hard", g("commit-tree", `${landed}^{tree}`, "-p", "main", "-m", "Squash-Land"));
+    commit("f.txt", "1\nmain\n");
+    g("checkout", "-q", "zweig");
+    const c2 = commit("g.txt", "a\n");
+    const c3 = commit("g.txt", "b\n");
+    const main = g("rev-parse", "main");
+    const c = candidateOf(main, landed, "zweig", dir);
+    const parent = "conflict" in c ? "" : g("rev-parse", `${c.sha}~2`);
+    const f = "conflict" in c ? "" : show(g, c.sha, "f.txt");
+    const gt = "conflict" in c ? "" : show(g, c.sha, "g.txt");
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(c.form).toBe("kette");
+    expect(c.commits).toEqual([c2, c3]);
+    expect(parent).toBe(main);
+    expect(f).toBe("1\nmain");
+    expect(gt).toBe("b");
+  });
+
+  test("die Basis des einen Schritts: die gelandete Spitze, bis der Branch main samt Squash hereinholt", () => {
+    const { dir, g, commit } = zweig();
+    const landed = commit("f.txt", "1\n");
+    g("checkout", "-q", "main");
+    g("reset", "-q", "--hard", g("commit-tree", `${landed}^{tree}`, "-p", "main", "-m", "Squash-Land"));
+    commit("m.txt", "1\n");
+    g("checkout", "-q", "zweig");
+    const afterLand = mergeBaseOf(g("rev-parse", "main"), landed, "zweig", dir);
+    g("merge", "-q", "--no-edit", "main");
+    commit("g.txt", "danach\n");
+    const mainNow = g("rev-parse", "main");
+    const afterMerge = mergeBaseOf(mainNow, landed, "zweig", dir);
+    rmSync(dir, { recursive: true, force: true });
+    expect(afterLand).toBe(landed);
+    expect(afterMerge).toBe(mainNow);
+  });
+
+  test("ein Basis-Branch, den main nie bekam, und ein hereingeholtes main geben keine eine Basis: es gilt die Kette", () => {
+    const { dir, g, commit } = repo();
+    commit("x.txt", "strang\n");
+    g("checkout", "-q", "main");
+    commit("m.txt", "1\n");
+    g("checkout", "-q", "strang");
+    g("merge", "-q", "--no-edit", "main");
+    const main = g("rev-parse", "main");
+    const base = mergeBaseOf(main, "neu", "strang", dir);
+    const c = candidateOf(main, "neu", "strang", dir);
+    const files = "conflict" in c ? [] : filesOf(g, c.sha);
+    rmSync(dir, { recursive: true, force: true });
+    if ("conflict" in c) throw new Error(c.conflict);
+    expect(base).toBeNull();
+    expect(c.form).toBe("kette");
+    expect(files.sort()).toEqual(["a.txt", "m.txt", "x.txt"]);
+  });
+
+  // der gemessene Fall: die Spitze liegt nur im Repo, in dem sie gebaut wurde (nicht auf main, nicht auf dem Helfer)
+  const has = (sha: string): boolean => Bun.spawnSync(["git", "cat-file", "-e", `${sha}^{commit}`], { cwd: import.meta.dir }).exitCode === 0;
+  test.skipIf(!has("3f754690a"))("3f754690a auf a1f9b3299 ergibt den Baum 99b319d2 des späteren richtigen Checks, nicht 7ad323fd (Mangel 124)", () => {
+    const c = candidateOf("a1f9b32990455bc7f90fad81a7106fb654f0c1ea", "a1f9b32990455bc7f90fad81a7106fb654f0c1ea", "3f754690af1d69795faf399ce9a2f57a4bb1149d");
+    if ("conflict" in c) throw new Error(c.conflict);
+    const tree = Bun.spawnSync(["git", "rev-parse", `${c.sha}^{tree}`], { cwd: import.meta.dir }).stdout.toString().trim();
+    expect(tree).toBe("99b319d24a61d7aaaeab5685f0b71834a9071b00");
+    expect(c.ketteTree?.startsWith("7ad323fd")).toBe(true);
   });
 });
 

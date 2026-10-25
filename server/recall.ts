@@ -13,6 +13,7 @@
 // So what the field holds after the key is known from the transcript, and it is cleared with exactly that
 // many BSpaces — never ctrl+u or a broad clear. A field holding anything else is left as it is.
 import { composerHoldsExactly } from "../composer";
+import { OWNER_HEADER } from "../src/delivery-format";
 import { splitDeliveryHeader } from "../src/pendingsend";
 import type { Turn } from "./live-state";
 
@@ -60,7 +61,7 @@ export function eraseCount(prompts: readonly string[]): number {
 export function ownerPrompt(text: string): boolean {
   if (text.trim() === "" || text.startsWith("<")) return false;
   const { header } = splitDeliveryHeader(text);
-  return header === null ? !text.startsWith("[fleet-") : /^Owner-Credential · Slot \d+$/.test(header);
+  return header === null ? !text.startsWith("[fleet-") : OWNER_HEADER.test(header);
 }
 
 export interface RecallPane {

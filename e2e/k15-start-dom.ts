@@ -246,6 +246,8 @@ const AGENTEN = [
 const REGELN: { pfad: string; eigentum?: string }[] = [{ pfad: `${HOME}/.claude/CLAUDE.md`, eigentum: "owner" },
   { pfad: `${HOME}/.claude/rules/typescript.md`, eigentum: "owner" }, { pfad: `${HOME}/AGENTS.md` }, { pfad: `${REPO}/AGENTS.md` }];
 const STUFE_WORT: Record<string, string> = { lesen: "Nur lesen", bauen: "Bauen", landen: "Landen", deployen: "Deployen" };
+// the level as the session reads it in its rights sentence (server/rechte.ts)
+const STUFE_SATZ: Record<string, string> = { lesen: "read only", bauen: "build", landen: "land", deployen: "deploy" };
 // the Fassung the preview door returns with anlass=neu for this query (server/fassung.ts): what the choice leaves out of your ~/.claude,
 // the rights sentence, the guides; a saved agent's choices count as if set (server/agenten.ts), a role reads its card and is no own setup
 const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Record<string, unknown>[] }[] } => {
@@ -267,7 +269,7 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
       ...(w.notizbuch === "aus" ? [] : [a("gedaechtnis", "- [Fixture](fixture.md) — a note", { quelle: `${HOME}/.claude/projects/-fixture-claude-fleet/memory`,
         dateien: [{ pfad: `${HOME}/.claude/projects/-fixture-claude-fleet/memory/MEMORY.md`, bytes: 32 }] })])] },
     { id: "darf", abschnitte: [...(role === "nur-ordner" ? [a("eigenes-setup", "Eigenes Setup: so wie von Hand.")] : []),
-      a("darf", stufe ? `FLEET-RECHTE (Stufe „${STUFE_WORT[stufe]}“, beim Start gesetzt): erlaubt Edit, Write.` : "Keine Rechte gesetzt"),
+      a("darf", stufe ? `FLEET RIGHTS (level “${STUFE_SATZ[stufe]}”, set at start): allowed Edit, Write.` : "Keine Rechte gesetzt"),
       ...(w.permissionMode ? [a("modus", w.permissionMode)] : []),
       a("mitgegeben", gewaehlt.length ? gewaehlt.map((k) => `${k}: ${w[k]}`).join("\n") : "nichts"),
       ...(weg.claudeMd || weg.rules ? [a("weggelassen", `beim Öffnen weggelassen (weglassen): ${[weg.claudeMd ? "~/.claude/CLAUDE.md" : null, weg.rules ? "~/.claude/rules/**" : null].filter(Boolean).join(" und ")}`)] : []),
@@ -852,7 +854,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const h = fassungDerVorschau(mit("lesen"));
         const s = await sfStart();
         facts.rechte = { stufe, gelesen, satz, posts: s, expect: h };
-        verdicts[C.rechte] = stufe === "Builds" && gelesen.bauen && gelesen.lesen && satz?.zeichen === "+" && satz.text.startsWith("FLEET-RECHTE (Stufe „Nur lesen“")
+        verdicts[C.rechte] = stufe === "Builds" && gelesen.bauen && gelesen.lesen && satz?.zeichen === "+" && satz.text.startsWith("FLEET RIGHTS (level “read only”")
           && h !== null && s.length === 1 && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, rechte: { stufe: "lesen", an: [], aus: [] } });
       });
 

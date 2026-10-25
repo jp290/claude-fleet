@@ -5,6 +5,9 @@
 // beim Start; die Tabelle und der weiche Zaun stehen in session-rechte.ts.
 import { RECHTE_BEFEHLE, RECHTE_STUFEN, befehlAn, rechteAus, rechteRegeln, type Rechte } from "../session-rechte";
 
+// the level as the session reads it in its rights sentence (the picker's own words stay in session-rechte.ts)
+const STUFE_IM_SATZ: Readonly<Record<string, string>> = { lesen: "read only", bauen: "build", landen: "land", deployen: "deploy" };
+
 // der Body einer Tür: fehlt `rechte`, startet die Session wie bisher ohne Regeln; sonst nur für Claude Code, dessen Regeln es sind
 export function rechteDerTuer(body: Record<string, unknown> | null, harness: string):
   { ok: true; rechte: Rechte | null } | { ok: false; error: string } {
@@ -25,9 +28,9 @@ export const rechteSettings = (r: Rechte | null): { permissions?: { allow: strin
 
 // der Satz, den die Session im Systemprompt liest, damit sie weiß, was sie selbst erledigen darf
 export function rechteSatz(r: Rechte): string {
-  const stufe = RECHTE_STUFEN.find((s) => s.id === r.stufe)?.wort ?? r.stufe;
+  const stufe = STUFE_IM_SATZ[r.stufe] ?? r.stufe;
   const erlaubt = RECHTE_BEFEHLE.filter((b) => befehlAn(r, b.id)).map((b) => b.befehl);
   const gesperrt = RECHTE_BEFEHLE.filter((b) => !befehlAn(r, b.id)).map((b) => b.befehl);
-  return `FLEET-RECHTE (Stufe „${stufe}“, beim Start gesetzt): erlaubt ${erlaubt.length ? erlaubt.join(", ") : "nichts davon"}; `
-    + `gesperrt ${gesperrt.length ? gesperrt.join(", ") : "nichts davon"}. Brauchst du Gesperrtes, bitte den Owner darum.`;
+  return `FLEET RIGHTS (level “${stufe}”, set at start): allowed ${erlaubt.length ? erlaubt.join(", ") : "none of these"}; `
+    + `blocked ${gesperrt.length ? gesperrt.join(", ") : "none of these"}. If you need something that is blocked, ask the owner.`;
 }

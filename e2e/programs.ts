@@ -5442,7 +5442,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const orchStartAt = (prompt: string): number => orchStartBlock === "" ? -1 : prompt.indexOf(orchStartBlock);
   const orchStartDetail = (prompt: string): string =>
     `repo=${REPO} missingFiles=[${orchStartFehlt.join(", ")}] startAt=${orchStartAt(prompt)} `
-      + `fehltMarker=${prompt.includes("--- FEHLT ---")} head=${prompt.slice(0, 120)}`;
+      + `fehltMarker=${prompt.includes("--- MISSING ---")} head=${prompt.slice(0, 120)}`;
   const dlgTokOf = async (slot: number, not = ""): Promise<string> => {
     for (let i = 0; i < 50; i++) {
       const tok = readState().slots?.[String(slot)]?.selfToken ?? "";
@@ -5654,7 +5654,7 @@ export async function run(ctx: Ctx): Promise<void> {
     orchRes.ok && orchBody.ok === true && orchBody.label === orchLabel
       && orchBody.roleCard?.delivered === true && orchBody.roleCard.receipt === true
       && orchStartFehlt.length === 0 && orchPrompt.startsWith(orchStartBlock)
-      && !orchPrompt.includes("--- FEHLT ---"),
+      && !orchPrompt.includes("--- MISSING ---"),
     `screen=${orchScreen} ${orchRes.status} roleCard=${JSON.stringify(orchBody.roleCard ?? null)} `
       + `${orchStartDetail(orchPrompt)}`);
   check("…and the spawn is RECEIPTED like every other founding: founding source, the bytes sent, and no program named",
@@ -5725,7 +5725,7 @@ export async function run(ctx: Ctx): Promise<void> {
       && orchSuccBody.roleCard?.delivered === true && orchSuccBody.roleCard.receipt === true
       && orchSuccPrompt.startsWith("[fleet Orchestrator succession] ")
       && orchStartFehlt.length === 0 && orchStartAt(orchSuccPrompt) > 0
-      && !orchSuccPrompt.includes("--- FEHLT ---")
+      && !orchSuccPrompt.includes("--- MISSING ---")
       && !!orchSuccBody.lineage?.lineageId
       && orchSuccPrompt.includes(orchSuccBody.lineage.lineageId)
       // the brief shows the intent itself, indented (Bauleitung 2026-10-17: „[Zitat entfernt]“;
@@ -15559,7 +15559,7 @@ exit 0
 // points the transcript reader at a scratch directory. The lane's transcript is then WRITTEN here in
 // Claude Code's own line shape — the harvester cannot tell it from a pane the owner typed into, which
 // is the seam under test. One chunk carries three lines: the owner's words, a Fleet delivery with the
-// fleet-zustellung head, and an owner line holding the lane's own self token. Because the harvester
+// fleet-delivery head, and an owner line holding the lane's own self token. Because the harvester
 // reads a chunk whole, the moment the first shows up the second has been read too, so its absence
 // from the inbox is a measured exclusion and not a race. Then the lane hands its baton on, and the
 // successor's brief must carry the owner's words verbatim and nothing else of the three.
@@ -15643,7 +15643,7 @@ async function ownerLaneInput(): Promise<void> {
       message: { role: "user", content: compactText } })}\n`;
     const typedAt = Date.now() - 3_000;
     appendFileSync(transcript, compact(typedAt - 1_000) + user(ownerText, typedAt)
-      + user(`[fleet-zustellung · Owner-Credential · Slot ${laneSlot}] ${deliveryText}`, typedAt + 1_000)
+      + user(`[fleet-delivery · owner credential · Slot ${laneSlot}] ${deliveryText}`, typedAt + 1_000)
       + user(tokenText, typedAt + 2_000));
     type Entry = ProgramInboxView["entries"][number];
     const ownerEntries = async (): Promise<Entry[]> =>
@@ -15659,7 +15659,7 @@ async function ownerLaneInput(): Promise<void> {
         && typed.subject?.branch === laneRow.worktree?.branch,
       JSON.stringify(typed ?? entries));
     const laneHistory = await history();
-    check("owner input: a Fleet delivery with the fleet-zustellung head in the same pane was harvested but is no entry",
+    check("owner input: a Fleet delivery with the fleet-delivery head in the same pane was harvested but is no entry",
       laneHistory.some((h) => h.text.includes(deliveryText) && h.source === "fleet")
         && !entries.some((e) => String(e.subject?.text ?? "").includes(deliveryText)),
       JSON.stringify(entries.map((e) => e.subject?.text)));
@@ -15667,7 +15667,7 @@ async function ownerLaneInput(): Promise<void> {
       !!typed && !entries.some((e) => String(e.subject?.text ?? "").includes(`compact probe ${process.pid}`)),
       JSON.stringify(entries.map((e) => String(e.subject?.text ?? "").slice(0, 80))));
     // THE BOARD COMPOSER (src/client.ts#deliver): the owner's sentence reaches the lane as POST /send
-    // under the board's cookie, and its pane line carries the Owner-Credential head the harvester
+    // under the board's cookie, and its pane line carries the owner-credential head the harvester
     // skips. The same route with the bearer is ctl.sh or a MAIN, and stays out.
     const boardText = `board probe ${process.pid}: der Owner schreibt aus dem Board-Composer in die Lane`;
     const bearerText = `bearer probe ${process.pid}: eine MAIN schreibt mit dem Owner-Token in die Lane`;

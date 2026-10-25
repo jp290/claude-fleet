@@ -68,5 +68,5 @@ export function agentMdGeladen(raw: unknown, harness: string): AgentMd | null {
 }
 
 // der Block im Systemprompt
-export const agentMdBlock = (a: AgentMd): string => a.getippt ? `PURPOSE (beim Start vom Owner geschrieben):\n${a.text}`
-  : `AGENT-MD (Profil „${a.profil}“, Datei „${a.titel}“, beim Start vom Owner gesetzt):\n${a.text}`;
+export const agentMdBlock = (a: AgentMd): string => a.getippt ? `PURPOSE (written by the owner at start):\n${a.text}`
+  : `AGENT-MD (profile “${a.profil}”, file “${a.titel}”, set by the owner at start):\n${a.text}`;

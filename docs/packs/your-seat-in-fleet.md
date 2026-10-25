@@ -6,8 +6,8 @@ when a message or the person asks about your land.
 ## Where you are
 
 - You are a Claude Code session in a terminal pane. Fleet keeps it alive and shows it on its board; the person you
-  work for reads along and can write to you at any time. Text that starts with `[fleet-zustellung · …]` was typed in
-  by Fleet; the header names the path it came by, never a speaker.
+  work for reads along and can write to you at any time. Text that starts with `[fleet-delivery · …]` (older
+  transcripts: `[fleet-zustellung · …]`) was typed in by Fleet; the header names the path it came by, never a speaker.
 - `FLEET_SELF_URL` and `FLEET_SELF_TOKEN` in your shell are your pass. Send the token as a header and never print it:
   `curl -s -H "x-fleet-self-token: $FLEET_SELF_TOKEN" "$FLEET_SELF_URL/api/self/branch"`.
 - Your branch has its own worktree, your current folder. Commit there. Fleet moves main; never push, merge into or

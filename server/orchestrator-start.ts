@@ -118,6 +118,6 @@ export function orchestratorWorkEnds(roleText: string): string {
 
 /** Der Start auch dann, wenn eine Quelle fehlt: die gelesenen Texte und EINE Zeile, die die Lücke nennt. */
 export function renderOrchestratorStartParts(teile: OrchestratorStartTeile): string {
-  const fehlt = teile.fehlt.length ? `--- FEHLT --- ${teile.fehlt.join(", ")} (nicht lesbar in diesem Baum)` : "";
+  const fehlt = teile.fehlt.length ? `--- MISSING --- ${teile.fehlt.join(", ")} (not readable in this tree)` : "";
   return [...orchestratorStartDateien(teile).map((datei) => datei.text), ...(fehlt ? [fehlt] : [])].join("\n\n");
 }

@@ -165,7 +165,7 @@ export interface Kopf {
   readonly cwd: string | null;
   /** eine interaktive Session (entrypoint "cli"); `claude -p` schreibt einen anderen Systemprompt */
   readonly interaktiv: boolean;
-  /** die Rolle, deren Listenschnitt Fleet beim Start anhängte (FLEET-LISTENSCHNITT (<rolle>, …)); null = nicht von Fleet gestartet */
+  /** die Rolle, deren Listenschnitt Fleet beim Start anhängte (FLEET LIST CUT (<rolle>, …)); null = nicht von Fleet gestartet */
   readonly fleetRolle: string | null;
   readonly anatomie: Anatomie | null;
 }
@@ -181,6 +181,9 @@ function kopfDaten(text: string): Omit<Kopf, "anatomie" | "fleetRolle"> {
 }
 // der gelesene Kopf je Datei: ein ganzer Kopf ändert sich nicht mehr und bleibt im Speicher; einer ohne Antwort wird jedes Mal neu gelesen
 const koepfe = new Map<string, Kopf>();
+// The line Fleet appends to the system prompt for the list cut. Claude Code records the system prompt on a conversation's first
+// request and keeps it after --resume, so sessions started before 2026-10-25 still carry the German `FLEET-LISTENSCHNITT (…)`.
+const SCHNITT_ZEILE = /^(?:FLEET LIST CUT|FLEET-LISTENSCHNITT) \(([a-z]+)/;
 const KOEPFE_MAX = 64;
 export function kopfVon(pfad: string): Kopf | null {
   const da = koepfe.get(pfad);
@@ -189,8 +192,8 @@ export function kopfVon(pfad: string): Kopf | null {
   if (!k) return null;
   const a = k.ganz ? anatomieAusTranskript(k.text) : null;
   const anatomie = a && typeof a !== "string" ? a : null;
-  const schnitt = anatomie?.systemprompt.find((x) => x.text.startsWith("FLEET-LISTENSCHNITT ("));
-  const kopf: Kopf = { ...kopfDaten(k.text), fleetRolle: schnitt ? /^FLEET-LISTENSCHNITT \(([a-z]+)/.exec(schnitt.text)?.[1] ?? null : null, anatomie };
+  const schnitt = anatomie?.systemprompt.find((x) => SCHNITT_ZEILE.test(x.text));
+  const kopf: Kopf = { ...kopfDaten(k.text), fleetRolle: schnitt ? SCHNITT_ZEILE.exec(schnitt.text)?.[1] ?? null : null, anatomie };
   if (k.ganz) {
     if (koepfe.size >= KOEPFE_MAX) koepfe.delete(koepfe.keys().next().value ?? "");
     koepfe.set(pfad, kopf);
@@ -295,7 +298,7 @@ export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | 
   const schnittVon = (n: string) => fleet.schnitt.find((e) => e.name === n);
 
   // SYSTEMPROMPT · was Claude Code selbst schreibt: ohne Fleets Anhang (den der Quelle; der dieser Rolle steht in „fleet“)
-  const abschnitte = (a?.systemprompt ?? []).filter((x) => !x.text.startsWith("FLEET-LISTENSCHNITT") && !fleetTexte.has(x.text.trim()));
+  const abschnitte = (a?.systemprompt ?? []).filter((x) => !/^(?:FLEET LIST CUT|FLEET-LISTENSCHNITT)/.test(x.text) && !fleetTexte.has(x.text.trim()));
   const identitaet: AnatomieTeil | null = a?.identitaet ? { name: titelVon(a.identitaet.text), bytes: a.identitaet.bytes, stand: "an", weg: "mitgeliefert",
     satz: "der erste Satz jeder Anfrage, vor dem Systemprompt", text: a.identitaet.text } : null;
   const system: AnatomieTeil[] = [

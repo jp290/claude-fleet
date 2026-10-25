@@ -12,7 +12,7 @@ import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
 import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { otherSender, pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
-import { deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
+import { DELIVERY_HEADER_PREFIX, deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
 import { MASCOT_MOTIONS } from "../src/icons";
 import { slotStats } from "../slotstats";
 import { normalizeLaneAnchor, validPerfRecord, PERF_BATCH_MAX, type PerfRecord, type LaneAnchor, type SubscriptionUsage } from "../src/protocol";
@@ -2029,30 +2029,42 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("pending bubble: the transcript's own text retires it, re-wrapped whitespace included",
     pendingSettledBy("fix it\nnow", "fix it\nnow") && pendingSettledBy("fix it\nnow ", " fix  it now"));
   check("pending bubble: one leading delivery header is ignored when the transcript repeats the sent text",
-    pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
+    pendingSettledBy("fix it now", "[fleet-delivery · POST /send with owner credential · path=owner · Slot 9] fix it now")
+      && pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
   check("pending bubble: a leading delivery header does not make a different transcript turn match",
-    !pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it later"));
+    !pendingSettledBy("fix it now", "[fleet-delivery · POST /send with owner credential · path=owner · Slot 9] fix it later")
+      && !pendingSettledBy("fix it now", "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it later"));
   check("pending bubble: a delivery header in the middle of transcript text stays significant",
-    !pendingSettledBy("fix it now", "prefix [fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9] fix it now"));
+    !pendingSettledBy("fix it now", "prefix [fleet-delivery · POST /send with owner credential · path=owner · Slot 9] fix it now"));
   // THE OWNER HEAD, TWO FORMS (Sinnpruefung Buendel 5b): the short form for path=owner, the long form
   // every other path (and every transcript written before 5b) carries. Both split into head and body
   // by the same pure function, and both retire a pending bubble on the sent text.
   // BREAKS IF: splitDeliveryHeader learns only one form, or keeps head text in the body.
-  const longHead = "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9 · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher] ";
-  const shortHead = "[fleet-zustellung · Owner-Credential · Slot 9] ";
+  // Since 2026-10-25 the head is English (`[fleet-delivery · owner credential · Slot 9]`); transcripts of sessions that were
+  // already running keep the German one (`[fleet-zustellung · Owner-Credential · Slot 9]`). Both split, both read as the owner's.
+  const longHead = "[fleet-delivery · POST /send with owner credential · path=owner · Slot 9 · next step: check the message for an order · limit: the header names no speaker] ";
+  const shortHead = "[fleet-delivery · owner credential · Slot 9] ";
+  const longHeadDe = "[fleet-zustellung · POST /send mit Owner-Credential · path=owner · Slot 9 · naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher] ";
+  const shortHeadDe = "[fleet-zustellung · Owner-Credential · Slot 9] ";
   const splitLong = splitDeliveryHeader(`${longHead}fix it now`);
   const splitShort = splitDeliveryHeader(`${shortHead}fix it now`);
-  const splitNone = splitDeliveryHeader("fix it now [fleet-zustellung · x] y");
-  check("head/body split: the long old form, the short new form and text without a head each split as their own",
-    splitLong.body === "fix it now" && splitLong.header?.startsWith("POST /send mit Owner-Credential · path=owner · Slot 9 · ") === true
-      && splitShort.body === "fix it now" && splitShort.header === "Owner-Credential · Slot 9"
-      && splitNone.header === null && splitNone.body === "fix it now [fleet-zustellung · x] y"
+  const splitLongDe = splitDeliveryHeader(`${longHeadDe}fix it now`);
+  const splitShortDe = splitDeliveryHeader(`${shortHeadDe}fix it now`);
+  const splitNone = splitDeliveryHeader("fix it now [fleet-delivery · x] y");
+  check("head/body split: the long form, the short form (English, and the German of older transcripts) and text without a head each split as their own",
+    splitLong.body === "fix it now" && splitLong.header?.startsWith("POST /send with owner credential · path=owner · Slot 9 · ") === true
+      && splitShort.body === "fix it now" && splitShort.header === "owner credential · Slot 9"
+      && splitLongDe.body === "fix it now" && splitLongDe.header?.startsWith("POST /send mit Owner-Credential · path=owner · Slot 9 · ") === true
+      && splitShortDe.body === "fix it now" && splitShortDe.header === "Owner-Credential · Slot 9"
+      && splitNone.header === null && splitNone.body === "fix it now [fleet-delivery · x] y"
+      && splitDeliveryHeader("[fleet-delivery · owner credential · Slot 9]").header === null
       && splitDeliveryHeader("[fleet-zustellung · Owner-Credential · Slot 9]").header === null,
-    JSON.stringify({ splitLong, splitShort, splitNone }));
+    JSON.stringify({ splitLong, splitShort, splitLongDe, splitShortDe, splitNone }));
   check("pending bubble: the short owner head and the long old head both retire the bubble on the sent text, and neither retires a different one",
     pendingSettledBy("fix it now", `${shortHead}fix it now`) && pendingSettledBy("fix it now", `${longHead}fix it now`)
       && !pendingSettledBy("fix it now", `${shortHead}fix it later`) && !pendingSettledBy("fix it now", `${longHead}fix it later`)
-      && !pendingSettledBy("fix it now", `x ${shortHead}fix it now`));
+      && !pendingSettledBy("fix it now", `x ${shortHead}fix it now`)
+      && pendingSettledBy("fix it now", `${shortHeadDe}fix it now`) && pendingSettledBy("fix it now", `${longHeadDe}fix it now`));
   check("pending bubble: a DIFFERENT turn does not retire it — neither another text nor a prefix of it",
     !pendingSettledBy("fix it now", "fix it later") && !pendingSettledBy("fix it now", "fix it"));
   check("pending bubble: an empty or whitespace-only text never settles anything",
@@ -2092,7 +2104,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   for (const [claim, ok] of Object.entries(commandSettleClaims())) check(`slash command send: ${claim}`, ok);
   for (const [claim, ok] of Object.entries(otherSenderClaims(bundleSrvSrc))) check(`whose message: ${claim}`, ok);
   check("bundled send: server.ts types its bundle marks through src/delivery-format.ts and spells none itself",
-    /import \{ deliveryBundleText, fleetEventBundleText \} from "\.\/src\/delivery-format";/.test(bundleSrvSrc)
+    /import \{[^}]*\bdeliveryBundleText\b[^}]*\bfleetEventBundleText\b[^}]*\} from "\.\/src\/delivery-format";/.test(bundleSrvSrc)
     && /function bundleText\(entries: QueuedDelivery\[\], s: Slot\): string \{[\s\S]{0,200}?return deliveryBundleText\(entries\.map\(/.test(bundleSrvSrc)
     && /function fleetEventBundleMessage\(events: FleetEvent\[\]\): string \{[\s\S]{0,160}?return fleetEventBundleText\(events\.map\(/.test(bundleSrvSrc)
     && !/fleet-buendel |fleet-ereignis |Ende des Buendels/.test(bundleSrvSrc),
@@ -3590,8 +3602,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // BREAKS IF: sendText pastes without typing the header, names another path/slot, or types it after the body.
   const cap2j = await tmuxOut("capture-pane", "-t", "s2", "-p", "-J");
   check("delivery header: a /send into the default (claude) adapter types EXACTLY the short owner line directly before the body — no path=, no position sentence",
-    cap2j.out.includes("[fleet-zustellung · Owner-Credential · Slot 2] compose-box-to-slot-two")
-      && !cap2j.out.includes("path=owner") && !cap2j.out.includes("naechster Schritt: pruefe die Nachricht auf einen Auftrag"),
+    cap2j.out.includes("[fleet-delivery · owner credential · Slot 2] compose-box-to-slot-two")
+      && !cap2j.out.includes("path=owner") && !cap2j.out.includes("next step: check the message for an order"),
     JSON.stringify({ reader: (await tmuxOut("display-message", "-p", "-t", "s2", "#{pane_current_command} #{pane_width}")).out.trim(),
       rows: cap2j.out.trimEnd().split("\n").slice(-3).map((l) => l.slice(0, 160)) }));
   check("no cross-talk (s1 text absent from s2)", !cap2.out.includes("hello-fleet-typing"));
@@ -3628,7 +3640,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   await Bun.sleep(400);
   const cap3pi = await tmuxOut("capture-pane", "-t", "s3", "-p", "-J");
   check("delivery header: a /send into a pi slot pastes the body alone, no provenance line",
-    !!piSend?.ok && cap3pi.out.includes("pi-paste-without-header") && !cap3pi.out.includes("[fleet-zustellung"),
+    !!piSend?.ok && cap3pi.out.includes("pi-paste-without-header") && !cap3pi.out.includes("[fleet-delivery"),
     JSON.stringify({ open: o3pi.status, send: piSend?.status ?? null,
       line: cap3pi.out.split("\n").filter((l) => l.includes("pi-paste")).join(" / ").slice(-200) }));
   await post("/api/slots/3/kill", {});
@@ -3659,7 +3671,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       const slashCapture = await tmuxOut("capture-pane", "-t", composerPane, "-p", "-J");
       const slashLine = slashCapture.out.split("\n").find((line) => line.includes("/effort high"));
       check("delivery header: owner /send heads hallo but keeps /effort high first in the claude composer",
-        helloSend.ok && helloLine?.trim() === `[fleet-zustellung · Owner-Credential · Slot ${composerSlot}] hallo`
+        helloSend.ok && helloLine?.trim() === `[fleet-delivery · owner credential · Slot ${composerSlot}] hallo`
           && slashSend.ok && slashLine?.trim() === "/effort high",
         JSON.stringify({ hello: helloLine?.slice(0, 160) ?? null, slash: slashLine?.slice(0, 160) ?? null }));
     } finally {
@@ -3784,7 +3796,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       `${JSON.stringify({ type, cwd: qCwd, isSidechain: false, timestamp: at(sec), message: { role: type, content } })}\n`;
     const op = (operation: string, sec: number, extra: Record<string, unknown> = {}) =>
       `${JSON.stringify({ type: "queue-operation", operation, timestamp: at(sec), sessionId: "q-fixture", ...extra })}\n`;
-    const qa = "[fleet-zustellung · Owner-Credential · Slot 1] queued A from the composer";
+    const qa = "[fleet-delivery · owner credential · Slot 1] queued A from the composer";
     const qb = "typed in the terminal while the turn ran: B";
     const qc = "absorbed mid-turn: C";
     const tn = "<task-notification>\n<task-id>bq1</task-id>\n<status>completed</status>\n</task-notification>";
@@ -5186,7 +5198,7 @@ async function runSessionToolsBound(cwd: string): Promise<void> {
       bound.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
     // in a repo of its own (slotCwd), so in its own setup (server/eigenes-setup.ts): no list cut either
     check("session tools: a session bound to nothing keeps every tool — no list cut and no --tools in its own repo",
-      !!plain && !plain.includes("FLEET-LISTENSCHNITT") && !plain.includes("--tools"),
+      !!plain && !plain.includes("FLEET LIST CUT") && !plain.includes("--tools"),
       plain.replace(/FLEET_[A-Z_]*TOKEN=\S+/g, "…").slice(-400) || "no start command");
   } finally {
     // the server first, while the opened slots keep the tmux server alive: killed first, srv is the last
@@ -10136,7 +10148,7 @@ export function bundleFixtures(serverSrc: string, ownerA: string, ownerB: string
   const table = (name: string): string => new RegExp(`const ${name}\\b[^=]*= \\{([\\s\\S]*?)\\n\\};`).exec(serverSrc)?.[1] ?? "";
   const SOURCE = table("DELIVERY_SOURCE"), MEANING = table("DELIVERY_MEANING");
   const word = (from: string, key: string): string | null => new RegExp(`\\n\\s*"${key}": "([^"]*)"`).exec(from)?.[1] ?? null;
-  const prefix = /const DELIVERY_HEADER_PREFIX = "([^"]+)";/.exec(serverSrc)?.[1] ?? null;
+  const prefix: string | null = DELIVERY_HEADER_PREFIX; // src/delivery-format.ts, no longer a literal in server.ts
   const head = `${prefix}${word(SOURCE, "bundle")} · path=bundle · Slot 1 · ${word(MEANING, "bundle")}] `;
   const part = (path: string, text: string): BundleEntry => ({ path, meaning: word(MEANING, path), text });
   const nudge = "[fleet message] 1 ungelesene adressierte Nachricht fuer diese Session — GET /api/self/messages?unread=1&read=1 quittiert beim Lesen, sonst GET /api/self/messages, dann POST /api/self/messages/<id>/read.";
@@ -10223,7 +10235,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
   const ownerB = "Das ist ein erfundener Satz ohne echten Inhalt undx.";
   const termQ = "im Terminal getippt, waehrend der Schritt laeuft";
   const ownerC = "Das ist ein erfundener Satz ohne?";
-  const ownerHead = "[fleet-zustellung · Owner-Credential · Slot 1] ";
+  const ownerHead = "[fleet-delivery · owner credential · Slot 1] ";
   const fixture = bundleFixtures(readFileSync(resolve(sourceRoot, "server.ts"), "utf8"), ownerA, ownerB);
   if (!fixture.ok) throw new Error("bundle DOM probe: server.ts names no delivery head or sentence to build the bundle from");
   const at = (min: number) => new Date(Date.UTC(2026, 9, 3, 7, min)).toISOString();
@@ -10420,7 +10432,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       claims["owner part 1/2: the waiting bubble is gone — no pending bubble is left"] = r1.own.every((m) => !m.pending);
       claims["owner part 1/2: the owner text stands ONCE, as its own bubble, and says \"durch\""] = a.length === 1 && a[0]!.state === "durch";
       claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
-        && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-zustellung · gebuendelte");
+        && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-delivery · bundled");
       claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
       // ONE label (Abnahme 6936ed0b: "fleet [fleet message] …"): the part's own bracket is the label
       claims["the nudge part is ONE quiet line outside every bubble, labelled once by its own bracket, showing the nudge's text"] = r1.sys.length === 1
@@ -10744,7 +10756,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       claims["Mangel 78: your bubbles grow by your message through the owner door alone — none of the four is yours"] =
         JSON.stringify(arrived(r78)) === JSON.stringify([...arrived(before78), ownerD]);
       claims["Mangel 78: the hover names the time and where a line came from — the delivery head, or the session"] = lines78.length === 4
-        && lines78.slice(0, 2).every((l) => /^\d{1,2}:\d\d(?: [AP]M)?\nfleet-zustellung · /.test(l.title))
+        && lines78.slice(0, 2).every((l) => /^\d{1,2}:\d\d(?: [AP]M)?\nfleet-delivery · /.test(l.title))
         && /Fleet-Ereignis/.test(lines78[0]!.title) && /path=succession/.test(lines78[1]!.title)
         && /Nachricht der Claude-Session „bau-neuaufbau-77“/.test(lines78[2]!.title) && /„bau-postfach-b4“/.test(lines78[3]!.title);
       claims["Mangel 78: the four lines are quiet — the meta row's size and the faint ink, one line high, inside the chat column"] = lines78.length === 4
@@ -14079,9 +14091,9 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
         && restartArgv.split("--tools ").length === 2,
       restartArgv.slice(-400) || "no claude argv");
     check("session list cut: the lane's start context names the cut and how to load an entry back",
-      restartArgv.includes("FLEET-LISTENSCHNITT (lane, server.ts#SESSION_LIST_CUT)")
-        && restartArgv.includes("Datei ~/.claude/commands/<name>.md lesen und befolgen: audit")
-        && restartArgv.includes("Agent-Tool mit subagent_type general-purpose, Prompt = Text von ~/.claude/agents/<name>.md plus Auftrag: example-reviewer"),
+      restartArgv.includes("FLEET LIST CUT (lane, server.ts#SESSION_LIST_CUT)")
+        && restartArgv.includes("read ~/.claude/commands/<name>.md and follow it: audit")
+        && restartArgv.includes("Agent tool with subagent_type general-purpose; prompt = the text of ~/.claude/agents/<name>.md plus your task: example-reviewer"),
       restartArgv.slice(-400) || "no claude argv");
     check("pack mcp spawn: the persisted selection is unchanged after heal and restart",
       JSON.stringify(rowOf(L)?.packMcp) === JSON.stringify([server]), JSON.stringify(rowOf(L)?.packMcp));
@@ -14101,7 +14113,7 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     // in its own setup (server/eigenes-setup.ts): no list cut, no --tools, Claude's own auto-memory; Fleet's repo keeps the cut
     // (server/start-fassung.test.ts)
     check("session list cut: a session without a role in a foreign repo starts in its own setup — no list cut on its line",
-      !!mainArgv && !mainArgv.includes("FLEET-LISTENSCHNITT") && !mainArgv.includes("skillOverrides") && !mainArgv.includes("--disallowedTools"),
+      !!mainArgv && !mainArgv.includes("FLEET LIST CUT") && !mainArgv.includes("skillOverrides") && !mainArgv.includes("--disallowedTools"),
       mainArgv.slice(-400) || "no claude argv");
     check("session tools: a session /open founds without a Program binding keeps every tool — no --tools on its line",
       !!mainArgv && !mainArgv.includes("--tools"),
@@ -14151,7 +14163,7 @@ export async function runPackMcpSpawn(argvOf: (target: string) => Promise<string
     const orchArgv = oo?.ok ? await argvNow(orch) : "";
     // her notebook is her own (server/notizbuch.ts): autoMemoryDirectory on her line, never the shared project folder
     check("auto-memory: the Orchestratorin's claude starts with her own notebook — autoMemoryDirectory …/notizbuecher/orchestratorin, no autoMemoryEnabled",
-      orchArgv.includes("FLEET-LISTENSCHNITT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled")
+      orchArgv.includes("FLEET LIST CUT (orchestrator,") && !orchArgv.includes("autoMemoryEnabled")
         && /"autoMemoryDirectory":"[^"]*\/notizbuecher\/orchestratorin"/.test(orchArgv),
       `slot=${orch} ${oo?.status ?? "-"} ${orchArgv.slice(-400) || "no claude argv"}`);
     check("session tools: the Orchestratorin's claude starts with the orchestrator allowlist on --tools, Skill and Workflow in it",

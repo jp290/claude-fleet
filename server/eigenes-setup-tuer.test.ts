@@ -313,10 +313,10 @@ describe("ein Purpose als Text an der Tür", () => {
     expect(String(beide?.body.error)).toContain("purpose and profil");
     expect(leer?.status).toBe(400);
     const zeile = startzeile(f, f.repo);
-    expect(zeile).toContain("PURPOSE (beim Start vom Owner geschrieben):");
+    expect(zeile).toContain("PURPOSE (written by the owner at start):");
     expect(zeile).toContain(zweck);
     expect(zeile).not.toContain("autoMemoryDirectory");
-    expect(liest(fassung, "eigenes")).toBe(`PURPOSE (beim Start vom Owner geschrieben):\n${zweck}`);
+    expect(liest(fassung, "eigenes")).toBe(`PURPOSE (written by the owner at start):\n${zweck}`);
     expect(darf(fassung, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
     expect(darf({ status: 200, body: vorschau?.body.fassung as Record<string, unknown> }, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
     expect((persisted(f).slots as Record<string, { agentMd?: { getippt?: boolean; text?: string } }>)["1"]?.agentMd)

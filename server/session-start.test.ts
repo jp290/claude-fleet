@@ -41,7 +41,7 @@ describe("Owner 15.10.: „[Zitat entfernt]“", () => {
 
   test("every auto session reads the auto-mode brief line at its start, a bypass session none", () => {
     for (const role of ROLES) expect(startAspects(facts({ role })).briefLine).toBe(role === "orchestrator" ? null : AUTO_MODE_BRIEF);
-    expect(AUTO_MODE_BRIEF).toContain("nicht umgehen");
+    expect(AUTO_MODE_BRIEF).toContain("don't work around it");
   });
 });
 

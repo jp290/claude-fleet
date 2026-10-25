@@ -71,7 +71,7 @@ describe("Agent-MD kommt bei der gestarteten Session an", () => {
     const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, profil: "planer" })]);
     offen(opened);
     expect(opened?.body.agentMd).toMatchObject({ profil: "planer", titel: "planer.md" });
-    traegt(startzeile(f, f.repo), `AGENT-MD (Profil „planer“, Datei „planer.md“, beim Start vom Owner gesetzt):\n${TEXT}`);
+    traegt(startzeile(f, f.repo), `AGENT-MD (profile “planer”, file “planer.md”, set by the owner at start):\n${TEXT}`);
     expect(gespeichert(f, 1)).toEqual({ profil: "planer", titel: "planer.md", text: TEXT, name: "Planer" });
     await life(f, ["save"]);
     expect(gespeichert(f, 1)).toEqual({ profil: "planer", titel: "planer.md", text: TEXT, name: "Planer" });
@@ -84,7 +84,7 @@ describe("Agent-MD kommt bei der gestarteten Session an", () => {
       post("/api/branches/open", { repo: f.repo, branch: "branch/planer-a", profil: "planer", rechte: { stufe: "lesen" } })]);
     offen(opened);
     const zeile = startzeile(f, String(made?.body.path));
-    expect(zeile).toContain("FLEET-RECHTE (Stufe „Nur lesen“");
+    expect(zeile).toContain("FLEET RIGHTS (level “read only”");
     traegt(zeile, TEXT);
     expect(gespeichert(f, Number(opened?.body.slot))).toMatchObject({ profil: "planer" });
   }, LIFE_DEADLINE_MS);

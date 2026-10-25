@@ -299,7 +299,7 @@ describe("die Fassung und die Zeile des Spawns", () => {
         const zeileSet = JSON.parse(flag("--settings") ?? "{}") as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment?: string[] } };
         const fassungSet = JSON.parse(darf("einstellungen")) as { claudeMdExcludes?: string[]; skillOverrides?: unknown; permissions?: unknown; autoMode?: { environment: string[] } };
         gleich(fassungSet.skillOverrides ?? {}, zeileSet.skillOverrides ?? {});
-        gleich(eigen ? [zeileSet.skillOverrides, zeileSet.autoMode, f.zeile.includes("FLEET-LISTENSCHNITT")] : null, eigen ? [undefined, undefined, false] : null);
+        gleich(eigen ? [zeileSet.skillOverrides, zeileSet.autoMode, f.zeile.includes("FLEET LIST CUT")] : null, eigen ? [undefined, undefined, false] : null);
         // die Excludes jedes Zweigs, Eintrag für Eintrag (beide lesen server.ts#startExcludes). MUTATION: fassungFleetStart rechnet sie wieder
         // selbst (`bau ? ~/AGENTS.md` plus die eigenen Regeln) ⇒ rot für die Orchestratorin (2 statt 6), den Server-Checkout und die Lane in Fleets Repo
         gleich(fassungSet.claudeMdExcludes ?? null, zeileSet.claudeMdExcludes?.map((pfad) => pfad.replace(f.home, "~")) ?? null);
@@ -400,10 +400,10 @@ describe("ein Sitz im eigenen Setup", () => {
       expect(z.fleetModus).toContain("--permission-mode 'plan'");
       expect(z.fleetModus).not.toContain("--permission-mode 'auto'");
       // eine Wahl am Sitz bringt ihre Regeln und ihren Satz, nie den Schnitt oder den Modus
-      for (const da of ["--settings", "--append-system-prompt", "FLEET-RECHTE"]) expect(z.rechte).toContain(da);
-      for (const weg of ["FLEET-LISTENSCHNITT", "skillOverrides", "--permission-mode", "--disallowedTools", "AUTO-MODE", "autoMode"]) expect(z.rechte).not.toContain(weg);
+      for (const da of ["--settings", "--append-system-prompt", "FLEET RIGHTS"]) expect(z.rechte).toContain(da);
+      for (const weg of ["FLEET LIST CUT", "skillOverrides", "--permission-mode", "--disallowedTools", "AUTO-MODE", "autoMode"]) expect(z.rechte).not.toContain(weg);
       // in Fleets Repo: der Schnitt der Bindung, der Modus und Fleets Modell wie bisher
-      for (const da of ["FLEET-LISTENSCHNITT (main,", '"anthropic-skills:docx":"off"', "--disallowedTools 'Agent(e2e-runner)'", "--permission-mode 'auto'", "--model '"])
+      for (const da of ["FLEET LIST CUT (main,", '"anthropic-skills:docx":"off"', "--disallowedTools 'Agent(e2e-runner)'", "--permission-mode 'auto'", "--model '"])
         expect(z.fleet).toContain(da);
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -127,6 +127,13 @@ describe("transkriptKopf", () => {
 });
 
 describe("kopfVon", () => {
+  test("die Rolle steht unter dem englischen Listenschnitt wie unter dem deutschen älterer Transkripte", () => {
+    const d = tmp(), neu = join(d, "neu.jsonl");
+    writeFileSync(neu, KOPF.map((z) => z.replace("FLEET-LISTENSCHNITT (lane)", "FLEET LIST CUT (lane)")).join("\n") + "\n");
+    expect(KOPF.join("").includes("FLEET LIST CUT")).toBe(false);
+    expect(kopfVon(neu)?.fleetRolle).toBe("lane");
+    expect(kopfVon(neu)?.anatomie?.systemprompt.find((x) => x.text.startsWith("FLEET LIST CUT"))?.text).toBe("FLEET LIST CUT (lane): weg");
+  });
   test("ein ganzer Kopf bleibt im Speicher; einer ohne Antwort wird neu gelesen", () => {
     const d = tmp(), ganz = join(d, "g.jsonl"), halb = join(d, "h.jsonl");
     writeFileSync(ganz, KOPF.join("\n") + "\n");

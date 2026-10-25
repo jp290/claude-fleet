@@ -105,119 +105,94 @@ Eine Lane-Zeile nennt `./ctl.sh task <id>` als Tür.
 `./state.sh --full` und `./register.sh --full` wählen die vollständige Diagnose; ein unbekanntes
 Flag endet mit exit 2. Game-Maker, Fremdrepo- und Lane-Einstieg behalten ihren Vertrag.
 
-## Ein fremdes Repo als Fleet-Projekt aufnehmen
+## Taking on a foreign repo as a Fleet project
 
-Diese Reihenfolge bereitet die Gruendung vor dem ersten `bootstrap-main` vor. Sie beschreibt
-den gebauten Serververtrag; Konfigurations-, Trust- und Loeschakte bleiben beim Owner oder
-seiner konkreten Delegation. Sie fuehrt keinen dieser Akte selbst aus. Fuer spaetere Lane-Karten
-gilt der Nachbar `AGENTS.md` §Rows for a repo that is not claude-fleet.
+This order prepares the founding before the first `bootstrap-main`. It describes the server contract as built;
+configuration, trust and deletion acts stay with the owner or a concrete delegation from the owner. It performs
+none of them itself. For later lane cards the neighbour holds: `AGENTS.md` §Rows for a repo that is not claude-fleet.
 
-1. **Repo und Regelrahmen zuerst.** Den Ziel-Checkout als Git-Repo mit lesbarem HEAD und
-   Branch benennen. Eine nicht leere Root-`AGENTS.md` muss bereits **committiert in HEAD** liegen;
-   eine Datei nur im Arbeitsbaum oder Index reicht nicht. `server.ts#preflightProgramMain`
-   prueft `git cat-file -s HEAD:AGENTS.md` und verweigert sonst mit
-   `target repository requires a tracked, non-empty root AGENTS.md` (400). Nicht-Git-CWD und
-   unlesbarer HEAD/Branch haben eigene Refusals. Die Datei traegt die eigenen Repo-Regeln und
-   Verify-Anweisung; Fleet-Prozesszustand gehoert nicht ins Produktrepo. Ein Game-Maker braucht
-   zusaetzlich einen eigenen linked Worktree des Produktrepos, keinen primaeren Checkout und
-   keinen Fleet-Worktree (`server.ts#gameMakerMachineError`).
+1. **Repo and rules first.** Name the target checkout as a git repo with a readable HEAD and branch. A non-empty
+   root `AGENTS.md` must already be **committed in HEAD**; a file only in the working tree or the index is not
+   enough. `server.ts#preflightProgramMain` checks `git cat-file -s HEAD:AGENTS.md` and otherwise refuses with
+   `target repository requires a tracked, non-empty root AGENTS.md` (400). A non-git cwd and an unreadable
+   HEAD or branch have their own refusals. The file carries the repo's own rules and verify instruction; Fleet's
+   process state doesn't belong in the product repo. A game maker also needs its own linked worktree of the product
+   repo, not the primary checkout and not a Fleet worktree (`server.ts#gameMakerMachineError`).
 
-2. **Harness-Trust vor der Gruendung klaeren.** Bei Claude muss der Zielordner im Harness
-   bereits vertrauenswuerdig sein. `server.ts#CLAUDE_TRUST_DIALOG` erkennt
-   den sichtbaren Selektor; `server.ts#canDeliver` verweigert ihn als
-   `blocked-screen: claude trust dialog`. `server.ts#bootstrapProgramMainReserved`
-   rollt die Gruendung dann zurueck und antwortet mit
-   `Program-MAIN delivery held (...)` (500). Der Server akzeptiert den Dialog nicht selbst.
-   Die Abhilfe ist eine autorisierte Trust-Bestaetigung im Harness fuer den exakten Zielpfad.
-   Der in der Aufnahme berichtete Eintrag `projects[<pfad>].hasTrustDialogAccepted` in
-   `~/.claude.json` ist ein Harness-Konfigurationsweg, **kein von Fleet gelesener oder
-   validierter Schluessel**; seine Wirksamkeit muss am verschwundenen Dialog beobachtet werden.
-   Diese Anleitung verlangt keine automatische Aenderung der Datei.
+2. **Settle harness trust before the founding.** For Claude the target folder must already be trusted in the
+   harness. `server.ts#CLAUDE_TRUST_DIALOG` recognises the visible dialog; `server.ts#canDeliver` refuses it as
+   `blocked-screen: claude trust dialog`. `server.ts#bootstrapProgramMainReserved` then rolls the founding back and
+   answers `Program-MAIN delivery held (...)` (500). The server doesn't accept the dialog itself. The remedy is an
+   authorised trust confirmation in the harness for the exact target path. The entry
+   `projects[<path>].hasTrustDialogAccepted` in `~/.claude.json`, as reported during onboarding, is a harness
+   configuration route, **not a key Fleet reads or validates**; check that it works by seeing the dialog gone. This
+   guide asks for no automatic change to that file.
 
-3. **Den eigenen Verify-Befehl vor Arbeitsfreigabe konfigurieren.** Der Operator hinterlegt
-   einen nicht leeren Befehl pro Repo in `FLEET_VERIFY_CMD_REPOS` und startet den Server nach
-   einer Env-Aenderung autorisiert neu. `server.ts#VERIFY_CMD_REPOS`
-   liest einmal beim Modulstart ein JSON-Objekt; ungueltiges JSON, falsche Form oder leere
-   Befehle werden mit Warnung ignoriert. Schluessel sind kanonische Repo-Toplevels;
-   `server.ts#verifyRepoKey` findet fuer linked Worktrees auch den Eintrag
-   des primaeren Repos ueber die gemeinsame Git-Ablage. **Ohne Eintrag ist das Gate nicht
-   pauschal unbekannt:** `server.ts#verifyCmdFor` faellt auf
-   `FLEET_VERIFY_CMD` zurueck; fehlt auch der, ist Verify unkonfiguriert. Die globale Fleet-Standardkette
-   bricht ohne `fleet-e2e.ts` mit `SKIPPED` ab. Nach Gruendung liest die erste Lane
-   `GET /api/self/gate` und prueft `verify.cmd` sowie den Fremdrepo-Befehl in `localProof.note`.
-   Das ist ein Vorab-Abgleich, kein bereits bestandener Verify und keine Bootstrap-Voraussetzung.
+3. **Configure the repo's own verify command before work is released.** The operator stores a non-empty command per
+   repo in `FLEET_VERIFY_CMD_REPOS` and restarts the server, authorised, after an env change.
+   `server.ts#VERIFY_CMD_REPOS` reads a JSON object once at module start; invalid JSON, a wrong shape or empty
+   commands are ignored with a warning. Keys are canonical repo toplevels; `server.ts#verifyRepoKey` also finds the
+   primary repo's entry for linked worktrees through the shared git directory. **Without an entry the gate is not
+   simply unknown:** `server.ts#verifyCmdFor` falls back to `FLEET_VERIFY_CMD`; if that is missing too, verify is
+   unconfigured. Fleet's global default chain stops with `SKIPPED` without `fleet-e2e.ts`. After the founding the
+   first lane reads `GET /api/self/gate` and checks `verify.cmd` and the foreign repo's command in `localProof.note`.
+   That is an early comparison, not a verify that has passed, and no precondition for bootstrap.
 
-4. **Parallelitaet bewusst setzen.** Vor dem Release den effektiven Repo-Deckel mit
-   `GET /api/repo-lane-caps` lesen. `server.ts#repoLaneCap` nimmt ohne
-   Eintrag `FLEET_DISPATCH_MAX_LANES`; der Code-Fallback ist **3**, kein festes 1
-   (`server.ts#DISPATCH_MAX_LANES`). Eine Betriebs-Env kann 1 setzen.
-   Fuer einen autorisierten anderen Deckel nimmt `POST /api/repo-lane-cap`
-   (`server.ts#fetch`) `{repo,maxLanes}`: Git-Toplevel muss lesbar sein, der Wert ganzzahlig
-   zwischen 1 und `REPO_MAX_LANES_MAX`. Sonst 400, ohne bestehende Werte zu aendern;
-   0/null entfernt den Eintrag und stellt den Maschinendefault wieder her. Die Antwort nennt
-   `effective` und `source`; Speicherung wirkt ohne Neustart. Repo-Deckel hebt Program-
-   Deckel oder fehlende freie Slots nicht auf. Ein zu kleiner Deckel haelt Dispatch wartend,
-   verhindert aber keine MAIN-Gruendung.
+4. **Set parallelism on purpose.** Before the release, read the effective repo cap with `GET /api/repo-lane-caps`.
+   Without an entry `server.ts#repoLaneCap` takes `FLEET_DISPATCH_MAX_LANES`; the code fallback is **3**, not a fixed
+   1 (`server.ts#DISPATCH_MAX_LANES`). An operating env can set 1. For another authorised cap,
+   `POST /api/repo-lane-cap` (`server.ts#fetch`) takes `{repo,maxLanes}`: the git toplevel must be readable and the
+   value an integer between 1 and `REPO_MAX_LANES_MAX`. Otherwise 400, and existing values stay. 0 or null removes
+   the entry and restores the machine default. The answer names `effective` and `source`; the setting works without
+   a restart. A repo cap doesn't lift a program cap or a lack of free slots. A cap that is too small keeps dispatch
+   waiting but doesn't stop a MAIN founding.
 
-5. **Wissen nach Heimat und Leser vorbereiten.** Die Zuordnung in
-   [Projektwissen und Loeschwege](messungen/2026-10-08-projektwissen-fremdrepo-schichten.md#ergebnis-vier-eindeutige-heimaten)
-   ist eine begruendete Empfehlung: Entscheide im Program-Record, Arbeitsregeln im Repo-
-   `AGENTS.md`, erklaerendes Projektverstaendnis im privaten Projektkonzept, operative Auswahl
-   als Pack-Zeiger. Fuer Startwissen prueft `server.ts#repoManifestContextPlan`
-   das **Zielrepo-Manifest am receiptierten HEAD** und dessen getrackte
-   Quellen/Anker. Fehlende oder unlesbare Quellen und ungueltige Packs werden als Omission
-   ausgewiesen (`context-manifest.ts#planRepoContext`), nicht
-   durch Fleet-Wissen ersetzt. Program-Packs kann erst die gebundene aktive MAIN schreiben
-   (`server.ts#boundProgramForMain`); die Self-Tuer
-   `/api/self/program-context-packs` (`server.ts#fetch`) prueft maximal 5 Packs mit je 4
-   getrackten Quellen am Integration-HEAD. Ungueltige Pfade/Anker ergeben 400 mit `issues`
-   (`context-plan.ts#validateProgramContextPacks`). Sie erreichen
-   Program-Lanes, nicht den MAIN-Gruendungsbrief. Beliebige private Projektkonzepte sind
-   heute keine automatisch zustellbaren Program-Packs: expliziten privaten Lesezeiger mit
-   Fassung/Hash im autorisierten Auftrag vorsehen. `ebene:projekt` ist keine Projekt-
-   Zugriffssperre (`server.ts#konzeptKontextFor`;
-   `konzept-ledger.ts#konzeptRequest`).
+5. **Prepare knowledge by home and reader.** The mapping in
+   [Project knowledge and deletion routes](messungen/2026-10-08-projektwissen-fremdrepo-schichten.md#ergebnis-vier-eindeutige-heimaten)
+   is a reasoned recommendation: decisions in the program record, working rules in the repo's `AGENTS.md`,
+   explanatory understanding of the project in the private project concept, the operative selection as a pack
+   pointer. For start knowledge, `server.ts#repoManifestContextPlan` checks the **target repo's manifest at the
+   receipted HEAD** and its tracked sources and anchors. Missing or unreadable sources and invalid packs are
+   reported as omissions (`context-manifest.ts#planRepoContext`), not replaced by Fleet knowledge. Only the bound,
+   active MAIN can write program packs (`server.ts#boundProgramForMain`); the self door
+   `/api/self/program-context-packs` (`server.ts#fetch`) checks at most 5 packs with 4 tracked sources each at the
+   integration HEAD. Invalid paths or anchors give 400 with `issues`
+   (`context-plan.ts#validateProgramContextPacks`). They reach program lanes, not the MAIN founding brief. Arbitrary
+   private project concepts are not automatically deliverable program packs today: provide an explicit private
+   reading pointer with version and hash in the authorised order. `ebene:projekt` is no project access lock
+   (`server.ts#konzeptKontextFor`; `konzept-ledger.ts#konzeptRequest`).
 
-6. **Erst jetzt das aktive Program gruenden und Zustellung belegen.** Der Owner bestaetigt
-   den Vorschlag und aktiviert ihn (`server.ts#handleOwnerProgramRoute`). Danach nimmt
-   `POST /api/programs/:id/bootstrap-main` `cwd`, Harness,
-   Modell und Effort; nicht aktive Programs ergeben 409, ungueltige Spawn-Felder 400
-   (`server.ts#bootstrapProgramMainReserved`). Kein freier MAIN-Platz
-   oder eine laufende Gruendung ergibt 409. Eine bereits lebende MAIN ergibt `existing:true`,
-   ohne zweite Gruendung. Nach Boot-/Delivery-/Readiness-Pruefung muss Briefzustellung und
-   Context-Receipt gelingen, bevor die Bindung als Erfolg gilt. Antwort und exakte neue
-   Identitaet/Program-Zuordnung lesen; ein offener Slot allein belegt keine Gruendung.
-   Danach prueft die MAIN die vorbereiteten Wissenszeiger und die erste Lane den eigenen
-   Gate-Vertrag, bevor weitere Arbeit freigegeben wird.
+6. **Only now found the active program and prove delivery.** The owner confirms the proposal and activates it
+   (`server.ts#handleOwnerProgramRoute`). Then `POST /api/programs/:id/bootstrap-main` takes `cwd`, harness, model
+   and effort; a program that is not active gives 409, invalid spawn fields 400
+   (`server.ts#bootstrapProgramMainReserved`). No free MAIN slot or a founding in progress gives 409. A MAIN that
+   already lives gives `existing:true` without a second founding. After the boot, delivery and readiness checks, the
+   brief delivery and the context receipt must succeed before the binding counts as a success. Read the answer and
+   the exact new identity and program assignment; an open slot alone proves no founding. Then the MAIN checks the
+   prepared knowledge pointers and the first lane its own gate contract, before more work is released.
 
-7. **Die Loeschpflicht schon bei der Aufnahme auffindbar machen.** Im autorisierten
-   Projektinventar Leser, Ablagen, zulaessige Aufbewahrung und den spaeteren Loeschnachweis
-   benennen. Der Server verweigert `complete` bei offenen Pflichten ohne `{force:true}`, fuehrt aber
-   **keine Vertraulichkeit-Loeschung** aus (`server.ts#handleOwnerProgramRoute`).
-   `context-plan.ts#planProgramContext` unterdrueckt nach Abschluss
-   lediglich weitere Pack-Zustellung; `konzept-ledger.ts#konzeptOpOf`
-   hat keinen DELETE-Weg, `verwerfen` appendiert einen Status.
-   Repo/Git-Kopien, ehemalige Worktrees, Scratch, Harness-Transkripte/Memory, Konzeptfassungen,
-   Fleet-State und Ledger samt Rotationen sowie Backups/weitere Hosts/Provider gehoeren ins
-   Inventar der genannten Wissensnotiz. Jeder Loeschakt braucht eigene Autorisierung und
-   Nachpruefung; `complete`, leere Packs oder ein entfernter Checkout beweisen ihn nicht.
+7. **Make the deletion duty findable at onboarding.** In the authorised project inventory, name the readers, the
+   places data is kept, the permitted retention and the later proof of deletion. The server refuses `complete` while
+   duties are open unless `{force:true}`, but runs **no Vertraulichkeit deletion** (`server.ts#handleOwnerProgramRoute`). After
+   completion `context-plan.ts#planProgramContext` only stops further pack delivery; `konzept-ledger.ts#konzeptOpOf`
+   has no DELETE route, and `verwerfen` appends a status. Repo and git copies, former worktrees, scratch, harness
+   transcripts and memory, concept versions, Fleet state and the ledger with its rotations, and backups, other
+   hosts and providers all belong in the inventory of that knowledge note. Every deletion act needs its own
+   authorisation and a check afterwards; `complete`, empty packs or a removed checkout prove nothing.
 
-**Start-Pack und Grenze.** `projekt-aufnahme` ist ein aktiver Hinweis mit Trigger
-`orchestration`: `server.ts#BOOTSTRAP_CONTEXT_TRIGGERS` liefert ihn
-Orchestratorin und neuer MAIN **im Fleet-Repo** beim Start; normale Lane-Dispatches setzen
-diesen Trigger nicht. `server.ts#programMainContextPlan` und
-`server.ts#orchestratorFoundingContext` lesen das Manifest ihres CWD-Repos.
-Eine MAIN im Fremdrepo bekommt deshalb dessen eigene Packs, nicht diesen Fleet-Manifest-Eintrag.
-Die Orchestratorin muss die benoetigten Aufnahmehinweise vorab weitergeben; automatische
-Zustellung dieses Fleet-Abschnitts ueber Repo-Grenzen waere ein eigener Serverschnitt.
+**Start pack and its limit.** `projekt-aufnahme` is an active hint with trigger `orchestration`:
+`server.ts#BOOTSTRAP_CONTEXT_TRIGGERS` delivers it to the orchestrator and to a new MAIN **in the Fleet repo** at
+start; normal lane dispatches don't set that trigger. `server.ts#programMainContextPlan` and
+`server.ts#orchestratorFoundingContext` read the manifest of their cwd repo. So a MAIN in the foreign repo gets that
+repo's own packs, not this Fleet manifest entry. The orchestrator has to pass on the onboarding hints it needs;
+automatic delivery of this Fleet section across repo borders would be a server cut of its own.
 
-**Folgeschnitt: Abhilfe am Fehler statt weiterer Fehlversuche.** Die AGENTS-400 sollte
-`HEAD:AGENTS.md` und „nicht leer committen, dann erneut gruenden“ nennen. Die Trust-500 sollte
-den Zielpfad und die autorisierte Harness-Bestaetigung nennen. Bei fremdem Verify-Fallback
-waere ein Hinweis auf fehlenden Repo-Eintrag und den tatsaechlich gewaehlten globalen Befehl
-sinnvoll; am Dispatch-Warten sollten effektiver Deckel, Herkunft und `/api/repo-lane-cap`
-sichtbar sein. Wissen und Vertraulichkeit-Loeschung sind keine vorhandenen Bootstrap-400er: dort fehlt
-jeweils eine Funktion bzw. ein Nachweis, den ein besserer Fehlertext allein nicht ersetzt.
+**Follow-up cut: the remedy at the error instead of more failed tries.** The AGENTS 400 should name
+`HEAD:AGENTS.md` and "commit it non-empty, then found again". The trust 500 should name the target path and the
+authorised harness confirmation. For a foreign verify fallback, a hint would help that the repo entry is missing and
+which global command was actually chosen; while dispatch waits, the effective cap, its source and
+`/api/repo-lane-cap` should be visible. Knowledge and Vertraulichkeit deletion are no existing bootstrap 400s: each lacks a
+function or a proof that a better error text alone doesn't replace.
 
 ## Werkzeuge
 
@@ -348,75 +323,62 @@ schreibt dieser Weg nicht; die Übergabe trägt deshalb ein committeter `HANDOFF
 Nachfolge nach Regel A), auf den die Vorgängerin die Nachfolgerin per `/send` zeigt, bevor sie endet.
 Codex lädt `AGENTS.md`, nicht `CLAUDE.md`: der Hinweis nennt die benötigten Regelbuch-Abschnitte namentlich.
 
-## Nachfolge ohne kalten Wiederaufruf
+## Succession without a cold resume
 
-Für eine Claude-Session empfehlen wir: **im noch warmen Turn nachfolgen, sobald die effektive
-Übergabe-Schwelle erreicht ist und nichts mehr in Flug ist, das nur in dieser Session lebt.**
-Den eigenen Füllstand mit `./ctl.sh ctx` messen. Die effektive Schwelle steht als
-`succession.thresholdPct` im Slot-Brief beziehungsweise Board (`GET /api/slots/:id/brief`,
-`server.ts#successionFacts`, `docs/self-api.md` §succeed). Sind diese Fakten nicht zugestellt,
-die wirksame Einstellung beim eigenen Empfänger klären; fehlende Werte bleiben `unknown`,
-eine ausgeschaltete Schwelle ist kein Auslöser. Die Owner-Einstellung dieser Belegung geht vor dem Fleet-Default
-(`server.ts#patchHandover`). Der Pack setzt keine Schwelle und erteilt keine zusätzliche
-Nachfolge-Befugnis: die eigene Rollenkarte und Nachfolge-Schiene gelten, insbesondere das
-Lane-Ende des jeweiligen Harness. Codex kompaktiert nativ; diese Cache-Messung begründet dort
-keinen Arbeitsstopp und keine Nachfolge.
+For a Claude session we recommend: **succeed in the still-warm turn as soon as the effective handover threshold is
+reached and nothing is in flight that lives only in this session.** Measure your own fill with `./ctl.sh ctx`. The
+effective threshold is `succession.thresholdPct` in the slot brief and on the board (`GET /api/slots/:id/brief`,
+`server.ts#successionFacts`, `docs/self-api.md` §succeed). If those facts weren't delivered, clarify the effective
+setting with your own receiver; missing values stay `unknown`, and a threshold that is switched off is no trigger.
+The owner's setting for this occupancy goes before the Fleet default (`server.ts#patchHandover`). This pack sets no
+threshold and grants no extra authority to succeed: your own role card and succession rail hold, in particular the
+lane end of the harness. Codex compacts natively; this cache measurement gives no work stop and no succession there.
 
-Die [Usage-Messung vom 07.10.](messungen/2026-10-07-cache-lebensdauer-nachfolge.md) findet auf
-diesem Host **rund 60 Minuten Cache-Lebensdauer** im Claude-Hauptgespräch: 3 043 von 3 043
-Pausen zwischen 5 und 60 Minuten waren Treffer; ab 62 Minuten waren 270 von 270 Wiederaufnahmen
-kalt. Direkt an der Kante: letzter Treffer bei 60,13, erster Miss bei 60,21 Minuten
-(25 Paare aus 22 Sessions im Band 58–62 Minuten). Das ist eine beobachtete Übergangszone,
-keine garantierte Frist. Ein gemeinsam genutzter Sockel kann warm bleiben, obwohl der
-Gesprächsverlauf neu geschrieben wird. Als Planungspuffer **vor 55 Minuten seit der letzten
-Usage** fertig sein; die fünf Minuten Reserve sind eine Empfehlung, kein gemessener Timer.
-Ist die Schwelle schon erreicht und die Übergabe möglich, gleich im laufenden Turn handeln,
-nicht erst bis zu diesem Puffer warten. Werkzeuglaufzeit zählt zur Cache-Pause, wenn kein
-neuer Modellaufruf den Cache auffrischt.
+The [usage measurement of 07.10.](messungen/2026-10-07-cache-lebensdauer-nachfolge.md) finds **about 60 minutes of
+cache life** on this host in the main Claude conversation: 3 043 of 3 043 pauses between 5 and 60 minutes were hits;
+from 62 minutes on, 270 of 270 resumes were cold. Right at the edge: the last hit at 60.13, the first miss at 60.21
+minutes (25 pairs from 22 sessions in the 58–62 minute band). That is an observed transition zone, not a guaranteed
+deadline. A shared base can stay warm even though the conversation is rewritten. As a planning buffer, **be done
+before 55 minutes since the last usage**; the five minutes of reserve are a recommendation, not a measured timer. If
+the threshold is already reached and the handover is possible, act in the running turn; don't wait for that buffer.
+Tool run time counts toward the cache pause when no new model call refreshes the cache.
 
-Vorher dauerhaft machen:
+Make these durable first:
 
-- Änderungen committen; Ergebnis, Beleg, offene Arbeit und nächste Handlung an einem für die
-  Nachfolgerin lesbaren Ort festhalten. Offene Pflichten tragen ihre IDs und ihre maßgebliche
-  Quelle. Eine stehende Übergabe im ohnehin laufenden Turn aktualisieren; für die ungebundene
-  Schiene und die Standard-Program-MAIN `intent` oder Zeiger auf einen committeten Abschnitt (bei
-  der Program-MAIN neben dem Program-Record, der bei Widerspruch gilt), für Game-Maker den
-  vollständigen Checkpoint. Es gelten die vier Fälle oben, kein zusätzlicher HANDOFF-Commit für Standard-MAINs.
-- Laufende Subagenten beenden lassen und ihre Ergebnisse dauerhaft sichern: sie überleben den
-  Tod der Vorgängerin nicht. Ein angekündigtes Ergebnis oder ein Tool-Handle im Gespräch genügt
-  nicht als Übergabe. Eine selbstständige Fleet-Lane ist kein solcher Subagent; ihren Report
-  und ihren Rückweg als dauerhafte Pflicht erhalten.
-- Watches, Autos, nicht quittierte Events und offene Reports prüfen. Auf der ungebundenen
-  Schiene setzt Fleet die armierten Watches und Autos mit ihrem Ziel bei der Nachfolgerin neu; der
-  Linien-Record nennt je Pflicht `rearmed` oder `notRearmed` (`docs/self-api.md` §Der Linien-Record).
-  Bei einer gebundenen Standard-Program-MAIN persistiert Fleet übertragbare Pflichten im
-  `handover`; verlorene stehen in `handover.lost` (§Nachfolge oben). Vor dem Ende Quelle und
-  Rückweg der noch laufenden Arbeit lesbar machen, nach dem Schnitt Übertragung beziehungsweise
-  Wiederarmierung belegen. Eine Watch allein ist kein Beweis, dass ihr Ergebnis ankommt.
+- Commit changes. Put the result, the evidence, the open work and the next act where your successor can read them.
+  Open duties carry their IDs and their authoritative source. Update a standing handover in the turn that is running
+  anyway; for the unbound rail and the standard program MAIN that is `intent` or a pointer to a committed section
+  (for the program MAIN next to the program record, which wins in a contradiction), for a game maker the full
+  checkpoint. The four cases in `docs/controller.md` §Nachfolge — vier Fälle hold; no extra HANDOFF commit for standard MAINs.
+- Let running subagents finish and secure their results: they don't survive your death. An announced result or a
+  tool handle in the conversation is no handover. An independent Fleet lane is no such subagent; keep its report
+  and its way back as a durable duty.
+- Check watches, autos, unacknowledged events and open reports. On the unbound rail Fleet re-sets armed watches and
+  autos with their target for the successor; the line record names `rearmed` or `notRearmed` for each duty
+  (`docs/self-api.md` §Der Linien-Record). For a bound standard program MAIN, Fleet persists transferable duties in
+  the `handover`; lost ones stand in `handover.lost` (§Nachfolge — vier Fälle). Before the end, make the source and the way
+  back of work still running readable; after the cut, show the transfer or re-arming. A watch alone is no proof
+  that its result arrives.
 
-**Warten an der Schwelle kostet den alten Verlauf nochmals.** Bei 40 % eines 1M-Fensters,
-also 400 000 gecachten Input-Token, kostet deren vollständiger 1h-Neuschrieb für Opus 5.5
-3,20 USD statt 0,08 USD Cache-Read: **3,12 USD Mehrkosten, Faktor 40**. Das sind
-[API-Listenpreis-Äquivalente](https://platform.claude.com/docs/en/about-claude/pricing)
-(07.10.2026), keine gemessene Abo-Rechnung. Ein weiterhin warmer Sockel senkt den Neuschrieb;
-Output, neuer Input und Erdung der Nachfolgerin kommen hinzu. Gemessen wurden bei kalten
-Wiederaufnahmen ab 62 Minuten median 199 779 Write-Token, bei warmen Pausen von 5–60 Minuten
-614. Wer nach einer Stunde nur noch zur Übergabe geweckt wird, bezahlt den großen alten
-Verlauf und anschließend den Aufbau der Nachfolgerin. Ist die Übergabe noch blockiert,
-Pflicht und Grund schon warm sichern; keine Keepalive-Pings daraus ableiten. Für eine bereits
-kalte ungebundene Session, Orchestratorin oder Standard-Program-MAIN gibt es die Owner-Nachfolge
-ohne Turn der Vorgängerin (oben); die Session erhält dadurch keine Owner-Befugnis.
+**Waiting at the threshold pays for the old history once more.** At 40 % of a 1M window, that is 400 000 cached
+input tokens, rewriting them in full for 1 h costs $3.20 for Opus 5.5 instead of $0.08 of cache read: **$3.12
+extra, a factor of 40**. These are [API list-price equivalents](https://platform.claude.com/docs/en/about-claude/pricing)
+(07.10.2026), not a measured subscription bill. A base that stays warm lowers the rewrite; output, new input and
+the successor's grounding come on top. Measured on cold resumes from 62 minutes: a median of 199 779 write tokens;
+on warm pauses of 5–60 minutes: 614. Whoever is woken after an hour only to hand over pays for the large old
+history and then for building the successor. If the handover is still blocked, secure the duty and its reason while
+the cache is warm; don't derive keepalive pings from this. For an unbound session, orchestrator or standard program
+MAIN that is already cold, there is the owner succession without a turn of the predecessor (§Nachfolge — vier Fälle); it
+gives the session no owner authority.
 
-Das ist gemessenes Wissen und eine Handlungsempfehlung für die bestehende Nachfolge. Der
-Server-Hinweis `tickMigrate` prüft Füllstand, Schwelle und Zustellbarkeit und schweigt bei einer
-frischen stehenden Übergabe (`server.ts#standingHandoverFresh`); er implementiert keinen
-Cache-Ablauf und keinen Abschluss laufender Subagenten. Den Cache-Ablauf übernimmt je Session der
-Owner-Schalter keepCache (`server.ts#tickKeepCache`, `docs/self-api.md` §keepCache): vor Ablauf der
-gemessenen Stunde wird eine ruhende Session über ihrer Schwelle ohne eigenen Turn nachgefolgt oder,
-solange Arbeit absehbar ist, mit einem kurzen Turn warm gehalten. Einen laufenden Subagenten liest
-auch er nicht; solange einer läuft, ruht die Pane nicht, und keiner der beiden Akte greift.
-Ohne Schalter warmt derselbe Tick eine gebundene claude-Program-MAIN und die Orchestratorin nach
-50 min Ruhe mit einem kurzen Turn, abschaltbar je Belegung (`docs/self-api.md` §Default-Warm-Turn).
+This is measured knowledge and a recommendation for the existing succession. The server hint `tickMigrate` checks
+fill, threshold and deliverability and stays silent for a fresh standing handover (`server.ts#standingHandoverFresh`);
+it implements no cache expiry and doesn't wait for running subagents. The cache expiry is handled per session by the
+owner switch keepCache (`server.ts#tickKeepCache`, `docs/self-api.md` §keepCache): before the measured hour runs
+out, an idle session above its threshold is succeeded without a turn of its own or, while work is foreseeable, kept
+warm with a short turn. It doesn't read a running subagent either; while one runs, the pane isn't idle, and neither
+act applies. Without the switch, the same tick warms a bound claude program MAIN and the orchestrator with a short
+turn after 50 min idle, switchable off per occupancy (`docs/self-api.md` §Default-Warm-Turn).
 
 ### When, and what comes first
 
@@ -456,30 +418,25 @@ Stufe (`thresholdStep`: Hinweis an der Basis, fällig an der Obergrenze oder kal
 Hinweis kommt auch mitten in der Arbeit. Er ist ein Server-Prädikat, nicht das Gate; das Gate bleibt
 `handleSelfSucceed`.
 
-## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)
+## Two traits an orchestrator has paid for (measured 2026-10-02)
 
-**Die Nachfolge-Schwelle ist die effektive Einstellung, nicht eine Zahl auf der Karte.** Die Orchestratorin Slot 9
-übergab am 2026-10-02 ~00:50 bei gemessenen 30 %, weil ihre Rollenkarte („Entscheidung bei 25 %
-gemessen, keine neue Tiefenarbeit ab 30 %") das so sagte. Damals galt `FLEET_MIGRATE_PCT='40'`, und
-der Owner fand die frühe Nachfolge „[Zitat entfernt]“. Seit der Owner-Promotion am selben Tag gilt: Die
-Fleet-Defaults sind `FLEET_MIGRATE_PCT` (MAINs und Orchestratorin) bzw. `FLEET_LANE_MIGRATE_PCT`
-(Lanes); eine Owner-Einstellung für die konkrete Belegung geht ihnen inzwischen vor
-(`server.ts#patchHandover`). Die wirksame Zahl steht im Slot-Brief/Board
-(`GET /api/slots/:id/brief` → `succession.thresholdPct`), der eigene Füllstand in dessen
-`succession.fill` beziehungsweise `./ctl.sh ctx`. Die historische
-45-%-Handlungsmarke ersetzt keine heutige Einstellung. **Das gilt für claude, nicht für
-codex** (Owner-Korrektur 2026-09-30): eine codex-Orchestratorin verdichtet nativ, ihr gemessener
-Füllstand ist Anzeige, und weder Schwelle noch 45 % lösen bei ihr einen Arbeitsstopp oder eine
-Nachfolge aus. Eine bewusste Nachfolge schuldet trotzdem den vollen Linien-Record der Karte.
+**The succession threshold is the effective setting, not a number on the card.** Orchestrator slot 9 handed over on
+2026-10-02 at about 00:50, at a measured 30 %, because its role card ("decision at 25 % measured, no new deep work
+from 30 %") said so. `FLEET_MIGRATE_PCT='40'` held then, and the owner found the early succession „[Zitat entfernt]“. Since
+the owner promoted the setting the same day: the Fleet defaults are `FLEET_MIGRATE_PCT` (MAINs and orchestrator) and
+`FLEET_LANE_MIGRATE_PCT` (lanes); an owner setting for the concrete occupancy goes before them
+(`server.ts#patchHandover`). The effective number is in the slot brief and on the board
+(`GET /api/slots/:id/brief` → `succession.thresholdPct`), your own fill in `succession.fill` or `./ctl.sh ctx`.
+The historical 45 % mark replaces no setting of today. **This holds for claude, not for codex** (owner correction
+2026-09-30): a codex orchestrator compacts natively, its measured fill is a display, and neither the threshold nor
+45 % starts a work stop or a succession there. A deliberate succession still owes the card's full line record.
 
-**Fünf armierte Watches heißen: kein Report kann dich erreichen.** `server.ts#slotDeliveryBudget`
-rechnet `free = cap − offene Events − armierte Watches`, und `cap` ist
-`FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT = 5`. Wer fünf Watches armiert (gemessen: vier
-Lane-Watches + eine Merge-Watch nach einer Nachfolge), hat `free = 0`. Ein `fleet-report` einer
-handgegründeten Lane an diese Session bekommt dann 409 `fleet-report receiver has no FleetEvent
-delivery budget` — obwohl die Lane-Watch auf genau diese Lane der Empfängerbeleg ist, den der Report
-braucht. Eine Route zum Entfernen einer Watch gibt es nicht; eine Watch gibt ihr Budget erst frei,
-wenn sie feuert. Regel daraus: **höchstens vier Watches armieren, einen Platz für Zustellungen frei
-halten**, und Merge-/Audit-Ausgänge lieber über einen Hintergrund-Wächter auf
-`GET /api/slots/:id/merge` (`running:false`) lesen als über eine fünfte Watch. Offene Events mit
-`./ctl.sh events --ack` quittieren, sonst halten auch sie Budget.
+**Five armed watches mean: no report can reach you.** `server.ts#slotDeliveryBudget` computes
+`free = cap − open events − armed watches`, and `cap` is `FLEET_EVENT_MAX_OPEN_PER_SLOT = WATCH_MAX_PER_SLOT = 5`.
+Whoever arms five watches (measured: four lane watches and one merge watch after a succession) has `free = 0`. A
+`fleet-report` from a hand-founded lane to this session then gets 409 `fleet-report receiver has no FleetEvent
+delivery budget`, although the lane watch on exactly that lane is the receiver record the report needs. There is no
+route to remove a watch; a watch gives its budget back only when it fires. The rule: **arm at most four watches and
+keep one place free for deliveries**, and read merge and audit outcomes through a background waiter on
+`GET /api/slots/:id/merge` (`running:false`) rather than a fifth watch. Acknowledge open events with
+`./ctl.sh events --ack`, or they hold budget too.

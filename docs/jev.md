@@ -45,47 +45,43 @@ Ausgaenge trainiert (RLCD) [Doc].
 Die Frage-ID geht nicht ans Modell. `usage.output_tokens` ist eine Abrechnungsgroesse der
 serialisierten Antwort, kein Mass fuer Generation [Essay]. Ueber einem Limit antwortet die API 429.
 
-## Verwendungsform
+## How Jev is used
 
-Owner (26.09.), woertlich: „[Zitat entfernt]“
+The owner (26.09.), verbatim: „[Zitat entfernt]“
 
-Owner (26.09.), zweite Regel, woertlich: „[Zitat entfernt]“
+The owner (26.09.), second rule, verbatim: „[Zitat entfernt]“
 
-Die Messung S4, Messung 4 (`2a4064de`,
-`docs/messungen/2026-09-26-s4-jev-ergebnis-messung4.md`) traegt Sicherheitswerte je Attribut:
-die Knoten-AUC liegt gerundet bei 0,85–1,00. Ein Vorteil des Einzelaufrufs mit Logik-Text gegenueber
-dem Buendel ist bei 34 Quellen nicht belegt; K1 erreichte 0,863 gegen 0,876, K3c 0,941 gegen 0,978.
-Schwach war vor allem die feste Schwelle 0,5. Schwellen kommen aus eigenen Labels (§5), mit einer
-Pruefung auf getrenntem Material. **Einzelaufruf mit Logik-Erklaerung ist die Form, gemessen
-gleichwertig zum Buendel in S4; die Topologie im Code ist der eigentliche Gewinn.**
+Measurement S4, measurement 4 (`2a4064de`, `docs/messungen/2026-09-26-s4-jev-ergebnis-messung4.md`) carries safety
+values per attribute: the node AUC is about 0.85–1.00, rounded. An advantage of the single call with logic text
+over the bundle isn't shown at 34 sources: K1 reached 0.863 against 0.876, K3c 0.941 against 0.978. The weak spot
+was mostly the fixed threshold of 0.5. Thresholds come from your own labels (§5), checked on separate material.
+**A single call with a logic explanation is the form, measured equal to the bundle in S4; the topology in code is
+the real gain.**
 
-In dieser Form fragt **ein Jev-Aufruf ein Attribut und liefert einen Sicherheitswert**. Die API kann
-mehrere Fragen in einem Request beantworten (§2); S4 belegt keinen Qualitaetsvorteil einer der beiden
-Aufrufformen. Der State enthaelt den konkreten Input und eine knappe Erklaerung der Logik: wozu dieser
-Wert dient, was davor bereits entschieden oder berechnet wurde und welche spaeteren Schritte ihn
-verwenden. Die 32k fuer State plus
-laengste Frage sind eine Obergrenze, kein Fuellziel; nur fuer dieses Attribut noetige Fakten gelangen
-hinein.
+In this form **one Jev call asks one attribute and returns one safety value**. The API can answer several questions
+in one request (§2); S4 shows no quality advantage for either call form. The state holds the concrete input and a
+short explanation of the logic: what this value is for, what was already decided or computed before, and which later
+steps use it. The 32k for state plus the longest question is a ceiling, not a target to fill; only facts this
+attribute needs go in.
 
-**Die Input-Auswahl steht vor dem Prompt fest.** Fuer jedes Feld benennt die Knoten-Logik seine Quelle
-und warum es fuer das Attribut oder den nachfolgenden Code noetig ist. Nachvollziehbare Worktrails
-helfen, diese Quellen und fehlende Felder zu pruefen. Die eigene Messnotiz zur Input-Logik ist in
-Arbeit (Zeile `f9c1749b`, `docs/messungen/2026-09-26-jev-input-logik.md`); ihr Ergebnis ist offen.
+**The choice of input is fixed before the prompt.** For every field, the node logic names its source and why the
+attribute or the code after it needs it. Traceable worktrails help check those sources and the missing fields. The
+measurement note on input logic is still in progress (row `f9c1749b`, `docs/messungen/2026-09-26-jev-input-logik.md`);
+its result is open.
 
-Die Topologie liegt im Code: Er benennt die Attribute und ihre Abhaengigkeiten, baut den State je
-Knoten aus bereits vorliegenden Fakten und wertet erst dann das Jev-Urteil aus. Ein nachfolgender
-Knoten bekommt benoetigte Vorwerte explizit in seinen eigenen State, weil Fragen im selben Aufruf
-einander nicht sehen (§3.1). Code prueft Antwortform, Schwelle und Folgen; `null` bleibt unbekannt
-und gibt keine Erlaubnis (§5). So wird Jevs rohe Intelligenz fuer genau den jeweiligen, im State
-erklaerten Anwendungsfall genutzt, ohne die Ablauf- und Sicherheitsregeln an das Modell zu geben.
+The topology lives in code: it names the attributes and their dependencies, builds each node's state from facts
+already at hand, and only then evaluates the Jev verdict. A following node gets the earlier values it needs
+explicitly in its own state, because questions in the same call don't see each other (§3.1). Code checks the answer
+shape, the threshold and the consequences; `null` stays unknown and gives no permission (§5). That uses Jev's raw
+intelligence for exactly the use case explained in the state, without handing the flow and safety rules to the
+model.
 
-example-project T1 hat den Bedrohungs-Knoten K1 offline gegen Handregeln geprueft
-(`docs/messungen/2026-09-26-example-project-attribut-topologie.md`: Vorregistrierung `d9838f90`,
-Schwelle aus Kalibrierung `3e7d4d0c`, Ergebnis `16fbd3e8`, Input-Begruendung je Feld `7eb8625f`).
-**K1 wurde nach dem vorab gesetzten Kippwert verworfen:** Pruef-AUC 0,663; ohne sichtbaren Gegner 0,89,
-mit sichtbarem Gegner 0,44. Der State enthielt keine Deckung (`unterstand`/`grube`); ein naher Gegner
-hinter einem Dach sah deshalb wie eine Gefahr im Freien aus. Das fehlende Feld kippte diesen Knoten,
-nicht die Aufrufform. Die Handregel bleibt, bis neues Material mit Deckung eine neue Messung traegt.
+example-project T1 checked the threat node K1 offline against hand rules
+(`docs/messungen/2026-09-26-example-project-attribut-topologie.md`: pre-registration `d9838f90`, threshold from
+calibration `3e7d4d0c`, result `16fbd3e8`, input rationale per field `7eb8625f`). **K1 was dropped at the tipping
+value set in advance:** check AUC 0.663; 0.89 without a visible enemy, 0.44 with one. The state held no cover
+(`unterstand`/`grube`), so a near enemy behind a roof looked like a danger in the open. The missing field tipped
+this node, not the call form. The hand rule stays until new material with cover supports a new measurement.
 
 ## 3. Wie es sich verhaelt
 

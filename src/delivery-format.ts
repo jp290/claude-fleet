@@ -5,6 +5,19 @@
 // 2026-10-03 the reader knew one delivery head only, and an owner text that rode a bundle never
 // retired its "wartet" bubble (owner screenshot 2026-10-03 08:55).
 
+// THE HEAD OF A TYPED DELIVERY, one source for the writer (server.ts#deliveryHeader) and every reader
+// (src/pendingsend.ts, the composer-rest check in server.ts). Transcripts written before 2026-10-25 carry
+// the German head `[fleet-zustellung · Owner-Credential …]`; they stay on disk and in running sessions, so
+// the readers take both heads and only the English one is written.
+export const DELIVERY_HEADER_PREFIX = "[fleet-delivery · ";
+const DELIVERY_HEADER_PREFIX_DE = "[fleet-zustellung · ";
+export function deliveryHeaderPrefixOf(text: string): string | null {
+  return text.startsWith(DELIVERY_HEADER_PREFIX) ? DELIVERY_HEADER_PREFIX
+    : text.startsWith(DELIVERY_HEADER_PREFIX_DE) ? DELIVERY_HEADER_PREFIX_DE : null;
+}
+// the source of the owner door's short head: `owner credential · Slot 9` (before 2026-10-25 `Owner-Credential · Slot 9`)
+export const OWNER_HEADER = /^(?:owner credential|Owner-Credential) · Slot \d+$/;
+
 // one entry of a delivery bundle: its path, the sentence its mark carries (null = no sentence,
 // the receiver is not a headed harness or the path has none) and its text, untouched
 export interface BundleEntry { path: string; meaning: string | null; text: string }

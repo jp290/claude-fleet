@@ -15,10 +15,10 @@ const eventRows = async (): Promise<DeliveryEvent[]> =>
   (await (await get("/api/events")).json() as { events: DeliveryEvent[] }).events;
 // THE SENTENCES A RECEIVER READS (server.ts#DELIVERY_MEANING), quoted where the pane must show them
 const MEANING = {
-  auto: "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
-  owner: "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
-  bundle: "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
-  "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
+  auto: "next step: answer the check-in within your current order · limit: no new authority",
+  owner: "next step: check the message for an order · limit: the header names no speaker",
+  bundle: "next step: work through the deliveries inside · limit: only within your existing role",
+  "fleet-event": "next step: read the event and act within your role · limit: no new authority",
 } as const;
 // the whole scrollback: a header is wider than the pane and a bundle is many lines
 const paneText = async (pane: string): Promise<string> =>
@@ -136,7 +136,7 @@ export async function run(): Promise<void> {
       timedAutoSends.length === 1 && timedAutoSends[0]?.path === "auto"
         && timedAutoBundled.length === 1 && timedAutoBundled[0]?.count === 1
         && timedAutoBundled[0]?.paths === "auto"
-        && inPane(timedAutoPane, `[fleet-zustellung · geplanter Check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
+        && inPane(timedAutoPane, `[fleet-delivery · scheduled check-in · path=auto · Slot 2 · ${MEANING.auto}] ${timedAuto}`),
       JSON.stringify({ sends: timedAutoSends.map((r) => r.path), bundled: timedAutoBundled.map((r) => [r.count, r.paths]),
         line: around(timedAutoPane, timedAuto) }));
     const loneText = `${marker}: allein im leeren Buendel`;
@@ -158,7 +158,7 @@ export async function run(): Promise<void> {
         && loneBundled?.paths === "owner" && loneBundled.count === 1 && loneBundled.deliveryClass === "sofort"
         && auditRows().slice(loneAuditBefore).some((r) => r.event === "delivery_bundle_dropped" && r.path === "auto")
         && loneSends.length === 1 && loneSends[0]?.path === "owner"
-        && inPane(lonePane, `[fleet-zustellung · Owner-Credential · Slot 2] ${loneText}`),
+        && inPane(lonePane, `[fleet-delivery · owner credential · Slot 2] ${loneText}`),
       JSON.stringify({ status: [loneScheduled.status, loneDeleted.status, loneSent.status],
         bundled: loneBundled ? [loneBundled.count, loneBundled.paths, loneBundled.deliveryClass] : null,
         sends: loneSends.map((r) => r.path),

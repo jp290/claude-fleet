@@ -59,14 +59,14 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     expect(ansicht?.body.naechster).toEqual({ purpose: ZWECK, packs: [PACK.id] });
     // ein Neustart behält den Start dieser Belegung: nichts davon auf der Zeile
     expect(neustart?.status).toBeLessThan(300);
-    expect(startzeile(f, f.repo)).not.toContain("ZWECK (von deiner Vorgängerin");
+    expect(startzeile(f, f.repo)).not.toContain("PURPOSE (written for you by your predecessor");
     expect(startzeile(f, f.repo)).not.toContain("Du hilfst bei Anfrageen.");
 
     const [nachfolge] = await life(f, [als(self, post("/api/self/succeed", {}))], kurz);
     expect(nachfolge?.status).toBeLessThan(600);
     const zeile = startzeile(f, f.repo);
     // Zeile und Startdatei, Zeile für Zeile
-    for (const teil of ["ZWECK (von deiner Vorgängerin auf diesem Slot für dich geschrieben):", ...ZWECK.split("\n"), `--- ${PACK.id} (`,
+    for (const teil of ["PURPOSE (written for you by your predecessor in this slot):", ...ZWECK.split("\n"), `--- ${PACK.id} (`,
       "Du hilfst bei Anfrageen.", "Jede Anfrage bekommt eine eigene Datei."]) expect(zeile).toContain(teil);
 
     const [sessions, fassung, wieder] = await life(f, [get("/api/sessions"), get("/api/slots/1/fassung?anlass=laufend"),
@@ -83,7 +83,7 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     expect(zz?.zeichen).toBe("+");
     expect(pz?.diff?.every((z) => z.z === "+")).toBe(true);
     expect(pz?.diff?.map((z) => z.t)).toContain("Jede Anfrage bekommt eine eigene Datei.");
-    expect(zz?.diff?.map((z) => z.t)).toEqual(["ZWECK (von deiner Vorgängerin auf diesem Slot für dich geschrieben):", ...ZWECK.split("\n")]);
+    expect(zz?.diff?.map((z) => z.t)).toEqual(["PURPOSE (written for you by your predecessor in this slot):", ...ZWECK.split("\n")]);
   }, LIFE_DEADLINE_MS * 4);
 
   test("eine Lane richtet sich nicht selbst ein: ihre Karte bestimmt ihren Start", async () => {

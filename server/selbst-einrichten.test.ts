@@ -40,7 +40,7 @@ describe("die Nachfolge", () => {
     const vor = mitNaechstem({ jetzt: { packs: ["a"], zweck: null }, naechster: null, neu: [] }, naechster({ purpose: "Z", packs: ["a", "b"] }));
     const nach = selbstDerNachfolge(vor);
     expect(nach).toEqual({ jetzt: { packs: ["a", "b"], zweck: "Z" }, naechster: null, neu: ["b", "purpose"] });
-    expect(nachfolgeZeile(nach)).toContain("+ Pack b, + Zweck");
+    expect(nachfolgeZeile(nach)).toContain("+ pack b, + purpose");
     // eine zweite Nachfolge ohne Änderung trägt alles weiter und hat nichts Neues
     expect(selbstDerNachfolge(nach)).toEqual({ jetzt: { packs: ["a", "b"], zweck: "Z" }, naechster: null, neu: [] });
     expect(nachfolgeZeile(selbstDerNachfolge(nach))).toBeNull();

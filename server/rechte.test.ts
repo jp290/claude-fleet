@@ -48,7 +48,7 @@ describe("Rechte kommen bei der gestarteten Session an", () => {
     const zeile = startzeile(f, f.repo);
     expect(settings(zeile).permissions).toEqual({ allow: ["Bash(./ctl.sh land *)", "Bash(curl *api/deploy*)"],
       deny: ["Bash(curl *api/worktrees/discard*)"] });
-    expect(zeile).toContain("FLEET-RECHTE (Stufe „Landen“, beim Start gesetzt): erlaubt Edit, Write, ./ctl.sh land, POST /api/deploy; gesperrt POST /api/worktrees/discard.");
+    expect(zeile).toContain("FLEET RIGHTS (level “land”, set at start): allowed Edit, Write, ./ctl.sh land, POST /api/deploy; blocked POST /api/worktrees/discard.");
     expect(gespeichert(f, 1)).toEqual(rechte);
     await life(f, ["save"]);
     expect(gespeichert(f, 1)).toEqual(rechte);
@@ -71,7 +71,7 @@ describe("Rechte kommen bei der gestarteten Session an", () => {
     const zeile = startzeile(f, f.repo);
     // ein fremdes Repo, also eigenes Setup (server/eigenes-setup.ts): ohne Rechte trägt die Zeile gar kein --settings
     expect(zeile).not.toContain("--settings");
-    expect(zeile).not.toContain("FLEET-RECHTE");
+    expect(zeile).not.toContain("FLEET RIGHTS");
     expect(opened?.body.rechte).toBeUndefined();
     expect(gespeichert(f, 1)).toBeUndefined();
   }, LIFE_DEADLINE_MS);

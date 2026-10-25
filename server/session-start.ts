@@ -26,8 +26,8 @@ export const PERMISSION_MODE: Readonly<Record<ClaudeStartRole, ClaudePermissionM
 };
 
 // the brief sentence every auto session reads at its start (befunde/18 §3.2)
-export const AUTO_MODE_BRIEF = "AUTO-MODE: Du läufst im Auto-Mode. Eine Sperre des Klassifizierers ist eine Antwort: "
-  + "nicht umgehen, nicht wörtlich wiederholen. Hängt deine Aufgabe daran, melde sie deiner Leitung mit dem Sperrgrund.";
+export const AUTO_MODE_BRIEF = "AUTO-MODE: You run in auto mode. When the classifier blocks an action, that is an answer: "
+  + "don't work around it and don't repeat it unchanged. If your task depends on it, tell your lead and give the reason for the block.";
 
 export interface StartFacts {
   role: ClaudeStartRole;

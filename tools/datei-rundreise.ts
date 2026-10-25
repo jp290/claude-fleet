@@ -151,9 +151,9 @@ for (const [i, name] of ["Bauer", "Prüferin"].entries()) {
   // B gedeckelt auf „Bauen“
   const wA = nurA.filter((x) => !x.startsWith("darf/")), wB = nurB.filter((x) => !x.startsWith("darf/"));
   const dA = nurA.filter((x) => x.startsWith("darf/")), dB = nurB.filter((x) => x.startsWith("darf/"));
-  const darfOk = i === 0 ? dA.length === 1 && dA[0]!.includes("Stufe „Landen“") && dB.length === 1 && dB[0]!.includes("Stufe „Bauen“") : !dA.length && !dB.length;
+  const darfOk = i === 0 ? dA.length === 1 && dA[0]!.includes("level “land”") && dB.length === 1 && dB[0]!.includes("level “build”") : !dA.length && !dB.length;
   ok.push(darfOk && wA.length === 2 && wA.some((x) => x.includes("PERSOENLICH-A")) && wA.every((x) => x.startsWith("liest/wissen:")) && wB.length === 1
-    && wB[0]!.startsWith("liest/wissen: BIBLIOTHEK") && !wB[0]!.split("\n")[0]!.includes("working-with-the-owner"));
+    && wB[0]!.startsWith("liest/wissen: FLEET LIBRARY") && !wB[0]!.split("\n")[0]!.includes("working-with-the-owner"));
 }
 muss(ok.every(Boolean), "B unterscheidet sich von A nicht nur im persönlichen Platz und im gedeckelten Darf des Bauers");
 
@@ -174,7 +174,7 @@ muss(probe(B, "POST", `/api/slots/${SLOTS[0]}/open`, { cwd: heim(B), harness: "c
 const darfF = ((probe(B, "GET", `/api/slots/${SLOTS[0]}/fassung?anlass=laufend`).json.teile as { id: string; abschnitte: { text: string | null }[] }[])
   .find((t) => t.id === "darf")?.abschnitte[0]?.text ?? "").split(";")[0]!;
 console.log(`B: Bauer mit „deployen“ aus der Datei startet mit: ${darfF}`);
-muss(/Stufe „Bauen“/.test(darfF) && !/ctl\.sh land|api\/deploy|discard/.test(darfF), "der Deckel greift nicht");
+muss(/level “build”/.test(darfF) && !/ctl\.sh land|api\/deploy|discard/.test(darfF), "der Deckel greift nicht");
 console.log("B: zurück auf den leeren Platz, damit der Owner die Ankunft so sieht, wie sie kommt");
 starteUndMiss(B, importiere(B, datei, null));
 console.log("RUNDREISE GRÜN");

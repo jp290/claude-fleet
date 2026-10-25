@@ -244,7 +244,7 @@ export const CONTEXT_PACKS = [
   {
     id: "portable-core",
     group: "grundlagen",
-    useWhen: "Immer zuerst: das Vokabular und die harten Invarianten, die jede Session in diesem Baum binden.",
+    useWhen: "Read first, always: the vocabulary and the hard invariants that bind every session in this tree.",
     scope: "portable-core",
     audience: "agent",
     triggers: ["always"],
@@ -266,7 +266,7 @@ export const CONTEXT_PACKS = [
   {
     id: "verify-e2e",
     group: "pruefen-landen",
-    useWhen: "Wenn du beweisen willst, dass deine Aenderung traegt: welcher Beweis wann genuegt und was das Gate wirklich faehrt.",
+    useWhen: "When you need to prove your change holds: which proof is enough when, and what the gate really runs.",
     scope: "verify-e2e",
     audience: "agent",
     triggers: ["verification"],
@@ -277,7 +277,7 @@ export const CONTEXT_PACKS = [
     // and Lane come as the Zusatz "vor dem Land" — named in the founding, borrowed on the owner's
     // word to land. Without the variant none of this is in the plan (context-plan.ts#resolvePackAnatomy).
     varianten: { "live-bau": { sources: [VERIFY_MAIN, VERIFY_MORE, VERIFY_GATE_VS_AUDIT, VERIFY_PROPORTION],
-      useWhen: "Vor dem Land, auf das Owner-Wort: welcher Beweis genuegt und was das Gate wirklich faehrt." } },
+      useWhen: "Before landing, on the owner's word: which proof is enough and what the gate really runs." } },
     zusaetze: [{ id: "vor-dem-land", bedingung: { varianten: ["live-bau"], zeitpunkt: ["vor-dem-land"] }, sources: [VERIFY_KERN, VERIFY_LANE] }],
     requiredCapabilities: ["tracked-source-read", "pure-validator-run"],
     harnesses: ALL_HARNESSES,
@@ -290,16 +290,16 @@ export const CONTEXT_PACKS = [
   {
     id: "jev-use",
     group: "vor-arbeiten",
-    useWhen: "Wenn die Aufgabe Jev betrifft: die Verwendungsform und ihre Stelle in der Attribut-Topologie lesen.",
+    useWhen: "When the task involves Jev: read how it is used and where it sits in the attribute topology.",
     scope: "product-quality",
     audience: "agent",
     triggers: ["jev-use"],
     hardness: "guidance",
-    sources: [{ id: "jev-use.verwendungsform", path: "docs/jev.md", anchor: "## Verwendungsform", sorte: "wissen", positions: AUSLEIHE }],
+    sources: [{ id: "jev-use.verwendungsform", path: "docs/jev.md", anchor: "## How Jev is used", sorte: "wissen", positions: AUSLEIHE }],
     requiredCapabilities: ["tracked-source-read"],
     harnesses: ALL_HARNESSES,
     modes: ["read-only", "mutating"],
-    estimatedBytes: 3500,
+    estimatedBytes: 3344,
     evidence: "tree-anchor",
     owner: "owner",
     status: "active",
@@ -307,7 +307,7 @@ export const CONTEXT_PACKS = [
   {
     id: "land-mechanics",
     group: "pruefen-landen",
-    useWhen: "Bevor du eine Lane landest oder den Land-Pfad anfasst: was sich beim Land wirklich bewegt.",
+    useWhen: "Before you land a lane or touch the landing path: what really moves at a land.",
     scope: "land-mechanics",
     audience: "maintainer",
     triggers: ["landing"],
@@ -327,7 +327,7 @@ export const CONTEXT_PACKS = [
   {
     id: "harness-adapter",
     group: "sessions-fuehren",
-    useWhen: "Wenn du einen Harness auswaehlst oder den Adapter-Kontrakt anfasst: Probe-Mengen und Automations-Grenzen.",
+    useWhen: "When you choose a harness or touch the adapter contract: probe sets and automation limits.",
     scope: "harness-adapter",
     audience: "maintainer",
     triggers: ["harness-selection"],
@@ -356,7 +356,7 @@ export const CONTEXT_PACKS = [
     // boxed session does not see the host's private root, and a path it cannot open is no pointer.
     id: "konzept-claude-fleet",
     group: "grundlagen",
-    useWhen: "Wenn eine Aufgabe verstehen muss, was Claude Fleet ist und nach welchen Prinzipien es arbeitet.",
+    useWhen: "When a task has to understand what Claude Fleet is and the principles it works by.",
     scope: "konzept",
     audience: "private-ops",
     triggers: ["always"],

@@ -29,7 +29,7 @@ const LEER: SelbstStart = { packs: [], zweck: null };
 const leer = (x: SelbstStart): boolean => !x.packs.length && x.zweck === null;
 
 /** Der Block im Systemzusatz. Er sagt, wer ihn schrieb: nicht der Owner, sondern die Vorgängerin. */
-export const zweckBlock = (zweck: string): string => `ZWECK (von deiner Vorgängerin auf diesem Slot für dich geschrieben):\n${zweck}`;
+export const zweckBlock = (zweck: string): string => `PURPOSE (written for you by your predecessor in this slot):\n${zweck}`;
 
 /** DIE TÜR: `purpose` (Text oder null) und `packs` (Ids), beide optional; ein fehlendes Feld bleibt, wie es für die Nachfolgerin steht.
  *  Ob jede Id ein Pack ist, den dieser Sitz bekommen kann, prüft der Server (packAuswahlFehlt). */
@@ -91,8 +91,8 @@ export function einrichtenZeilen(jetzt: SelbstStart, naechster: SelbstStart): st
 /** Die Zeile im Brief der Nachfolgerin; null, wenn sie nichts Neues hat. */
 export function nachfolgeZeile(s: SlotSelbst | null): string | null {
   if (!s?.neu.length) return null;
-  return `Neu gegenüber deiner Vorgängerin (sie hat es dir gegeben, es steht in deinem Systemzusatz): ${s.neu
-    .map((w) => w === "purpose" ? "+ Zweck" : `+ Pack ${w}`).join(", ")}.`;
+  return `New compared with your predecessor's start (that session gave you these; they are in your system prompt addition): ${s.neu
+    .map((w) => w === "purpose" ? "+ purpose" : `+ pack ${w}`).join(", ")}.`;
 }
 
 /** Was fleet.json hält: nur eine lesbare Form. */

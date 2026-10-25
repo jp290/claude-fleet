@@ -29,7 +29,7 @@ import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } 
 import type { CcAnatomie } from "./src/k15-anatomie";
 import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
 import type { SubscriptionUsage } from "./src/protocol";
-import { deliveryBundleText, fleetEventBundleText } from "./src/delivery-format";
+import { DELIVERY_HEADER_PREFIX, deliveryBundleText, deliveryHeaderPrefixOf, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
@@ -487,11 +487,11 @@ function startExcludes(z: { orchestrator: boolean; fleetCheckout: boolean; bau: 
 const startTools = (role: SessionSpawnRole, bau: boolean): readonly string[] | null =>
   role === "generic" ? bau ? bauTools() : null : SESSION_TOOLS[role];
 const SESSION_LIST_RELOAD: Readonly<Record<SessionListFrom, string>> = {
-  "user-command": "Datei ~/.claude/commands/<name>.md lesen und befolgen",
-  "fleet-command": "Datei .claude/commands/<name>.md im Fleet-Checkout lesen und befolgen",
-  "synced-skill": "anthropic-skills:<name>, Datei ~/.claude/plugins/synced/*/<name>/SKILL.md lesen und befolgen",
-  bundled: "Name steht in der Liste: Skill-Tool mit dem Namen",
-  "user-agent": "Agent-Tool mit subagent_type general-purpose, Prompt = Text von ~/.claude/agents/<name>.md plus Auftrag",
+  "user-command": "read ~/.claude/commands/<name>.md and follow it",
+  "fleet-command": "read .claude/commands/<name>.md in the Fleet checkout and follow it",
+  "synced-skill": "for anthropic-skills:<name>, read ~/.claude/plugins/synced/*/<name>/SKILL.md and follow it",
+  bundled: "the name is in your list, so call the Skill tool with it",
+  "user-agent": "Agent tool with subagent_type general-purpose; prompt = the text of ~/.claude/agents/<name>.md plus your task",
 };
 /** The cut for one role: the skillOverrides map, the denied agent rules, and the ONE start-context line
  *  that names every cut entry with its way back. null when nothing is cut. Pure. */
@@ -506,8 +506,8 @@ function sessionListCut(role: SessionListRole): { skillOverrides: Record<string,
     return names.length ? [`${SESSION_LIST_RELOAD[from]}: ${names.join(", ")}`] : [];
   });
   return { skillOverrides, disallowed,
-    line: `FLEET-LISTENSCHNITT (${role}, server.ts#SESSION_LIST_CUT): Fleet hat diese Skills und Agenten fuer deine Rolle aus der Liste genommen; `
-      + `brauchst du einen, lade ihn so nach — ${groups.join(" · ")}.` };
+    line: `FLEET LIST CUT (${role}, server.ts#SESSION_LIST_CUT): Fleet removed these skills and agents from your list for your role. `
+      + `If you need one, load it like this — ${groups.join(" · ")}.` };
 }
 
 // model names are validated at SET time (MODEL_RE, the open/lane routes) — this string is
@@ -11504,67 +11504,69 @@ function deliveryAuditCache(s: Slot | null): { ttlSec: number; ttlQuelle: Delive
 // `owner` names the CREDENTIAL, because the orchestrator sends through the same door with the same
 // token and the server cannot tell the two apart. null = no header: `/model` must be the first thing
 // the composer holds, or claude takes it as prose.
-const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
+// DELIVERY_HEADER_PREFIX and the reader that takes the older German head too: src/delivery-format.ts
+// NO APOSTROPHE OR QUOTE in any source or sentence below: a stand-in harness is a plain shell, and one unclosed quote in a
+// typed header swallows every later line the pane is given (e2e/watch.ts: the heir's paneEnv probe came back empty).
 const DELIVERY_SOURCE: Record<SendPath, string | null> = {
-  "bundle": "gebuendelte Fleet-Zustellungen",
-  "owner": "Owner-Credential",
-  "brief": "Gruendungs-Brief einer Lane",
-  "founding": "Gruendungs-/Bind-Brief (Program-MAIN, Orchestratorin)",
-  "branch-goal": "Ziel eines Branches (vom Öffner, POST /api/branches/open)",
-  "sitz-auftrag": "eigene Datei eines Sitzes aus einer importierten Datei (POST /api/slots/:id/open mit sitz)",
-  "start-ziel": "erste Nachricht beim Öffnen (POST /api/slots/:id/open mit goal oder aufgabe)",
-  "succession": "Nachfolge-Brief",
-  "lane-harness": "Fortsetzungs-Brief nach Harness-Wechsel (POST /api/slots/:id/lane-harness)",
-  "auto": "geplanter Check-in",
-  "steward": "Steward-Sendetuer",
-  "fleet-event": "Fleet-Ereignis (Watch/Report/Land)",
-  "clarification-reply": "Antwort der MAIN auf eine Rueckfrage",
-  "report-decision": "Entscheidung zu einem fleet-report",
+  "bundle": "bundled Fleet deliveries",
+  "owner": "owner credential",
+  "brief": "founding brief of a lane",
+  "founding": "founding or bind brief (program MAIN, orchestrator)",
+  "branch-goal": "goal of a branch (from its opener, POST /api/branches/open)",
+  "sitz-auftrag": "own file of a seat, from an imported file (POST /api/slots/:id/open with sitz)",
+  "start-ziel": "first message at open (POST /api/slots/:id/open with goal or aufgabe)",
+  "succession": "succession brief",
+  "lane-harness": "continuation brief after a harness switch (POST /api/slots/:id/lane-harness)",
+  "auto": "scheduled check-in",
+  "steward": "steward send door",
+  "fleet-event": "Fleet event (watch, report, land)",
+  "clarification-reply": "answer from the MAIN to a question",
+  "report-decision": "decision on a fleet-report",
   "model-push": null,
-  "merge-author": "Konfliktauftrag des Merge-Pfads",
-  "merge-verdict": "Merge-Urteil",
-  "audit-ping": "Post-Land-Audit-Hinweis",
-  "inbox-nudge": "Inbox-Hinweis",
-  "postfach": "Postfach-Nachricht",
-  "report-orphan": "Hinweis auf verwaisten Program-Report",
-  "program-event-orphan": "Hinweis auf unzustellbares Program-Ereignis",
-  "attention-orchestrator": "Rueckfrage einer MAIN an die Orchestratorin",
-  "migrate-nudge": "Kontext-/Nachfolge-Erinnerung",
+  "merge-author": "conflict order from the merge path",
+  "merge-verdict": "merge verdict",
+  "audit-ping": "post-land audit notice",
+  "inbox-nudge": "inbox notice",
+  "postfach": "mailbox message",
+  "report-orphan": "notice of an orphaned program report",
+  "program-event-orphan": "notice of an undeliverable program event",
+  "attention-orchestrator": "question from a MAIN to the orchestrator",
+  "migrate-nudge": "context and succession reminder",
   // a slash command: typed bare, a delivery header in front would make it prose (deliveryHeader)
   "threshold-compact": null,
-  "stand-nudge": "Stand-Erinnerung einer Lane",
-  "cache-warm": "Cache-Warmhalten (keepCache)",
-  "api-stall-resume": "Fortsetzen nach API-Fehler",
-  "rate-limit-resume": "Fortsetzen nach Nutzungslimit",
+  "stand-nudge": "status reminder for a lane",
+  "cache-warm": "cache keep-warm (keepCache)",
+  "api-stall-resume": "resume after an API error",
+  "rate-limit-resume": "resume after a usage limit",
 };
 const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
-  "bundle": "naechster Schritt: bearbeite die enthaltenen Zustellungen · Grenze: nur innerhalb deiner bestehenden Rolle",
-  "owner": "naechster Schritt: pruefe die Nachricht auf einen Auftrag · Grenze: der Kopf belegt keinen Sprecher",
-  "brief": "naechster Schritt: fuehre die zugewiesene Karte aus · Grenze: ihr Write-Set und Stop-Punkt",
-  "founding": "naechster Schritt: uebernimm die gebundene Rolle · Grenze: ihr bestaetigter Auftrag",
-  "branch-goal": "naechster Schritt: arbeite am Ziel dieses Branches · Grenze: sein Worktree und Branch",
-  "sitz-auftrag": "naechster Schritt: arbeite an deiner eigenen Datei · Grenze: was sie und deine Rechte sagen",
-  "start-ziel": "naechster Schritt: arbeite an diesem Ziel · Grenze: der Ordner, in dem du startest, und deine Rechte",
-  "succession": "naechster Schritt: setze die uebergebene Arbeit fort · Grenze: derselbe Auftrag und dieselbe Rolle",
-  "lane-harness": "naechster Schritt: setze die Lane-Arbeit auf dem neuen Harness fort · Grenze: derselbe Auftrag und Worktree",
-  "auto": "naechster Schritt: beantworte den Check-in im laufenden Auftrag · Grenze: keine neue Befugnis",
-  "steward": "naechster Schritt: pruefe den Steward-Hinweis · Grenze: deine bestehende Rolle",
-  "fleet-event": "naechster Schritt: lies das Ereignis und handle in deiner Rolle · Grenze: keine neue Befugnis",
-  "clarification-reply": "naechster Schritt: setze die Arbeit mit der Antwort fort · Grenze: deine Karte",
-  "report-decision": "naechster Schritt: beachte die Entscheidung zum Report · Grenze: kein Land durch die Lane",
-  "merge-author": "naechster Schritt: loese den benannten Konflikt · Grenze: dein Branch und Auftrag",
-  "merge-verdict": "naechster Schritt: fuehre aus, was das Urteil nennt (Rebase, Reparatur, Warten) · Grenze: der benannte Branch",
-  "audit-ping": "naechster Schritt: pruefe den roten Audit-Befund · Grenze: keine eigenmaechtige Promotion",
-  "inbox-nudge": "naechster Schritt: lies die ungelesenen Eintraege, die der Hinweis nennt · Grenze: keine neue Befugnis",
-  "postfach": "naechster Schritt: lies die Nachricht und antworte, wenn noetig · Grenze: keine neue Befugnis",
-  "report-orphan": "naechster Schritt: pruefe den benannten Report · Grenze: Urteil nur durch eine bestehende Tuer",
-  "program-event-orphan": "naechster Schritt: pruefe das benannte Ereignis · Grenze: nur bestehende Tueren",
-  "attention-orchestrator": "naechster Schritt: beantworte die Rueckfrage oder reiche sie mit Grund an den Owner · Grenze: nur die benannten Tueren",
-  "migrate-nudge": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine bestehende Rolle",
-  "stand-nudge": "naechster Schritt: schreib deiner MAIN den Stand und arbeite weiter · Grenze: deine Lane",
-  "cache-warm": "naechster Schritt: antworte nur mit ok · Grenze: keine neue Arbeit, kein Werkzeugaufruf",
-  "api-stall-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
-  "rate-limit-resume": "naechster Schritt: setze den unterbrochenen Zug fort · Grenze: derselbe Auftrag",
+  "bundle": "next step: work through the deliveries inside · limit: only within your existing role",
+  "owner": "next step: check the message for an order · limit: the header names no speaker",
+  "brief": "next step: carry out the assigned card · limit: its write set and stop point",
+  "founding": "next step: take over the bound role · limit: its confirmed order",
+  "branch-goal": "next step: work on the goal of this branch · limit: its worktree and branch",
+  "sitz-auftrag": "next step: work on your own file · limit: what it and your rights say",
+  "start-ziel": "next step: work on this goal · limit: the folder you start in, and your rights",
+  "succession": "next step: continue the handed-over work · limit: the same order and the same role",
+  "lane-harness": "next step: continue the work of the lane on the new harness · limit: the same order and worktree",
+  "auto": "next step: answer the check-in within your current order · limit: no new authority",
+  "steward": "next step: check the steward notice · limit: your existing role",
+  "fleet-event": "next step: read the event and act within your role · limit: no new authority",
+  "clarification-reply": "next step: carry on with the answer · limit: your card",
+  "report-decision": "next step: follow the decision on the report · limit: the lane does not land",
+  "merge-author": "next step: resolve the named conflict · limit: your branch and order",
+  "merge-verdict": "next step: do what the verdict names (rebase, repair, wait) · limit: the named branch",
+  "audit-ping": "next step: check the red audit finding · limit: no promotion on your own",
+  "inbox-nudge": "next step: read the unread entries the notice names · limit: no new authority",
+  "postfach": "next step: read the message and answer if needed · limit: no new authority",
+  "report-orphan": "next step: check the named report · limit: a verdict only through an existing door",
+  "program-event-orphan": "next step: check the named event · limit: existing doors only",
+  "attention-orchestrator": "next step: answer the question, or pass it to the owner with your reason · limit: only the named doors",
+  "migrate-nudge": "next step: check your context limit and secure your state · limit: your existing role",
+  "stand-nudge": "next step: write your MAIN your status and keep working · limit: your lane",
+  "cache-warm": "next step: answer with ok only · limit: no new work, no tool call",
+  "api-stall-resume": "next step: resume the interrupted turn · limit: the same order",
+  "rate-limit-resume": "next step: resume the interrupted turn · limit: the same order",
 };
 // THE SENTENCE HAS A RECEIVER. Two paths reach more than lanes, and their one sentence told every
 // receiver it was one: tickMigrate nudges non-lane MAINs ("Grenze: deine Lane"), handleSelfSucceed
@@ -11574,14 +11576,14 @@ const DELIVERY_MEANING: Record<Exclude<SendPath, UnheadedPath>, string> = {
 type DeliveryRole = "lane" | "main" | "orchestrator";
 const DELIVERY_MEANING_BY_ROLE: Partial<Record<Exclude<SendPath, UnheadedPath>, Record<DeliveryRole, string>>> = {
   "succession": {
-    "lane": "naechster Schritt: setze die Lane-Arbeit fort · Grenze: derselbe Auftrag und Worktree",
-    "main": "naechster Schritt: uebernimm das gebundene Program und seine offenen Pflichten · Grenze: sein Auftrag",
-    "orchestrator": "naechster Schritt: setze die Orchestrierung aus der Uebergabe fort · Grenze: die Orchestratorinnen-Rolle",
+    "lane": "next step: continue the work of the lane · limit: the same order and worktree",
+    "main": "next step: take over the bound program and its open duties · limit: its order",
+    "orchestrator": "next step: continue the orchestration from the handover · limit: the orchestrator role",
   },
   "migrate-nudge": {
-    "lane": "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane",
-    "main": "naechster Schritt: pruefe die Kontextgrenze und sichere dein Program · Grenze: deine MAIN-Rolle",
-    "orchestrator": "naechster Schritt: pruefe die Kontextgrenze und sichere die Orchestrierung · Grenze: deine Rolle",
+    "lane": "next step: check your context limit and secure your state · limit: your lane",
+    "main": "next step: check your context limit and secure your program · limit: your MAIN role",
+    "orchestrator": "next step: check your context limit and secure the orchestration · limit: your role",
   },
 };
 function deliveryRole(s: Slot): DeliveryRole | null {
@@ -12561,7 +12563,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       // nothing left that the record could describe
       const kept = unsentFleetPayloads.get(s.id);
       unsentFleetPayloads.delete(s.id);
-      if (before?.startsWith(DELIVERY_HEADER_PREFIX)) {
+      if (before && deliveryHeaderPrefixOf(before)) {
         // A DELIVERED PROMPT ESC PUT BACK is no rest (Mangel 62, server/recall.ts#deliveredInField): submitted again,
         // the session got it twice. It stays in the field like an owner draft
         await liveReader.count(s.id);
@@ -25487,7 +25489,7 @@ let harvestBusy = false;
 // Fleet delivery, and a Fleet composer residue that sendText submits, opens with the `[fleet` prefix
 // (DELIVERY_HEADER_PREFIX and the older `[fleet …]` heads), the same test the slot history already
 // uses to tell `fleet` from `owner`. The owner's own board sends are on that side too: POST /send
-// heads them `[fleet-zustellung · Owner-Credential …]`, the credential every MAIN sends with as well.
+// heads them `[fleet-delivery · owner credential …]`, the credential every MAIN sends with as well.
 // The TEXT goes to its own ledger, because an inbox entry is a pointer and copies none
 // (server/types.ts#ProgramInboxEntry); secrets are cut first, host and home are not, so the words
 // stay the owner's. The pointer goes to the lane's Program when it is active, the same condition the
@@ -56607,7 +56609,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
       // THE BOARD IS THE OWNER (UI-MAIN-Befund 11.10.): a sentence typed into the board's composer
       // reaches a lane as this POST under the owner COOKIE, and its pane line opens with the
-      // `[fleet-zustellung · Owner-Credential …]` head the harvester skips — so it reached neither the
+      // `[fleet-delivery · owner credential …]` head the harvester skips — so it reached neither the
       // MAIN's inbox nor the successor's brief. The cookie is the browser; ctl.sh, the Orchestratorin
       // and every MAIN send with the bearer and stay outside, as the harvester keeps them outside.
       if (tokenChannel(req) === "cookie")

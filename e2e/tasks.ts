@@ -16,6 +16,7 @@ import { classify as laneModelClass } from "../tools/lane-context-cost";
 import { deriveTaskMetadata, readSymbolIndexSnapshot, resolveSurfaceRanges, SURFACE_RESOLVER, topLevelDeclarations, symbolGraphStamp,
   type SymbolIndex, type TaskCluster } from "../task-metadata";
 import { surfaceSha, clusterForFiles } from "../task-metadata";
+import { DELIVERY_HEADER_PREFIX, deliveryHeaderPrefixOf } from "../src/delivery-format";
 import { noteFirstSentence, notesForTask, laneNoteSources, renderNotesBlock, upsertKeyedVerdict,
   NOTE_HUB_FILES, NOTES_READ_ROUTES_EXIST, NOTES_SENTENCE_MAX, type NoteInput } from "../task-notes";
 import { projectTaskWaves, type ProjectTaskWavesInput, type TaskWaveInput } from "../task-waves";
@@ -2454,12 +2455,12 @@ export async function run(ctx: Ctx): Promise<void> {
         slotStreamOccupant: () => occupant, slotTeardownInflight: new Set<number>(),
         slotWakeInflight: new Set<number>(),
         harnessOf: () => ({ composer: { kind: "rules" }, bootSettleMs: 0 }), commsFor: () => [],
-        deliveryHeader: () => "[fleet-zustellung · probe] ", DEFAULT_BOOT_SETTLE_MS: 0,
+        deliveryHeader: () => `${DELIVERY_HEADER_PREFIX}probe] `, DEFAULT_BOOT_SETTLE_MS: 0,
         wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
         existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
         readComposer: async () => reads.length ? reads.shift()! : before, sameBoundPane: () => true,
         paneReadiness: async () => readiness,
-        DELIVERY_HEADER_PREFIX: "[fleet-zustellung · ",
+        deliveryHeaderPrefixOf,
         awaitComposer: async () => { composerReads++; events.push(composerReads === 1 ? "reread" : "accept-read");
           if (answers.length) return answers.shift()!;
           return composerReads === 1 ? afterResidue : ""; },
@@ -2534,14 +2535,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // CHARGE 2b (1): a rest that IS the new message is submitted once and never typed again — by the
     // visible field when it shows the whole text, by the kept-payload record when it shows only the
     // folded `[Pasted text …]` of the not-accepted send before it (Slot 9, 2026-10-11 09:34/09:40)
-    const composedProbe = "[fleet-zustellung · probe] next payload";
+    const composedProbe = "[fleet-delivery · probe] next payload";
     const onceOnly = (trace: SendTrace): boolean => trace.acceptance === "observed"
       && trace.events.filter((e) => e === "enter").length === 1 && !trace.events.includes("paste")
       && trace.audits.includes("send_residue");
     const sameVisible = sendSource ? await exerciseSend(sendSource, composedProbe, "") : { events: [], audits: [], earlier: [] };
     check("(2b-1) a Fleet rest equal to the new message by hash is submitted once, and the new copy is never typed",
       onceOnly(sameVisible), JSON.stringify(sameVisible));
-    const folded = "[fleet-zustellung · probe] [Pasted text #1 +3 lines]";
+    const folded = "[fleet-delivery · probe] [Pasted text #1 +3 lines]";
     const sameKept = sendSource ? await exerciseSend(sendSource, folded, "", { state: "ready" },
       { sends: 2, reads: ["", folded], composer: [composedProbe], notAccepted: true }) : { events: [], audits: [], earlier: [] };
     check("(2b-1) a folded rest of the same message, kept by a not-accepted send, is submitted once and not typed again",
@@ -2552,14 +2553,14 @@ export async function run(ctx: Ctx): Promise<void> {
     // MANGEL 62, owner (über die Bauleitung) 14.10.: „[Zitat entfernt]“
     //  The rest IS the transcript's newest prompt — delivered
     // once, put back by Esc (measured on :8982: the next send submitted it, the session got it twice)
-    const owner = "[fleet-zustellung · Owner-Credential · Slot 1] Das ist ein erfundener Sa.";
+    const owner = "[fleet-delivery · owner credential · Slot 1] Das ist ein erfundener Sa.";
     const putBack = sendSource ? await exerciseSend(sendSource, owner, "", { state: "ready" },
       { last: { n: 5, text: `${owner}\n\nDas ist ein erfunde.` }, field: [owner, "", "Das ist ein erfunde."] }) : { events: [], audits: [], earlier: [] };
     check("(Mangel 62) a delivered prompt Esc put back is never submitted again: no Enter, no paste, the send says the field is occupied",
       putBack.events.length === 0 && /composer occupied/.test(putBack.error ?? "") && !putBack.audits.includes("send_residue"),
       JSON.stringify(putBack));
     const foldedBack = sendSource ? await exerciseSend(sendSource, folded, "", { state: "ready" },
-      { last: { n: 5, text: `[fleet-zustellung · probe] \n\n<pasted_content id="ba78">\nA\nB\nC\n</pasted_content id="ba78">\n` },
+      { last: { n: 5, text: `[fleet-delivery · probe] \n\n<pasted_content id="ba78">\nA\nB\nC\n</pasted_content id="ba78">\n` },
         field: [folded] }) : { events: [], audits: [], earlier: [] };
     check("(Mangel 62) a folded paste Esc put back, stored with its closing newline, is never submitted again either",
       foldedBack.events.length === 0 && /composer occupied/.test(foldedBack.error ?? ""), JSON.stringify(foldedBack));

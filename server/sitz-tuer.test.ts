@@ -113,7 +113,7 @@ describe("ein Fremder importiert die Datei, und beide Sitze starten mit dem Setu
       .toEqual([roh("finder").profil.modell, roh("finder").profil.effort, "finder"]);
     // die Zeile, die tmux startete, trägt die Agent-MD aus der Datei
     const start = await startOf(finderSlot);
-    expect(start.appended).toContain(`AGENT-MD (Profil „finder-reviewer“, Datei „${md.titel}“`);
+    expect(start.appended).toContain(`AGENT-MD (profile “finder-reviewer”, file “${md.titel}”`);
     expect(start.appended).toContain(md.text);
     expect(start.args[start.args.indexOf("--model") + 1]).toBe(roh("finder").profil.modell);
   }, 90_000);

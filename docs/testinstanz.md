@@ -21,30 +21,28 @@ Für mehrere Branches gibt es eine Instanz je Runde (unten, „Eine Instanz je R
     bun tools/runde.ts up <name> <branch> [<branch> …]   die Branches auf dem main von jetzt, eine Instanz dazu
     bun tools/runde.ts status | tick | down <name>
 
-## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt
+## Accepting visible work — done means clicked through
 
-Owner-Regel vom 2026-10-08: Sichtbare Arbeit (eine Karte, deren FLAECHE `src/` oder `public/`
-nennt) landet erst, wenn sie in der laufenden Testinstanz der Lane durchgeklickt ist und der Report
-den token-freien Link und ein Bild des fertigen Ablaufs trägt. Ein „fertig" ohne gesehene Wirkung
-geht zurück. Anlass, Owner wörtlich: Tasks in Apps seien „[Zitat entfernt]“.
+Owner rule of 2026-10-08: visible work (a card whose FLAECHE line, the files it may touch, names `src/` or `public/`) lands only once it has been
+clicked through in the lane's running test instance and the report carries the token-free link and a picture of the
+finished flow. A "done" without a seen effect goes back. The occasion, in the owner's words: tasks in apps were „[Zitat entfernt]“.
 
 **Lane.**
-1. `./testinstanz.sh up` im eigenen Worktree, einmal zu Beginn der sichtbaren Arbeit.
-2. Nach jedem Commit `./testinstanz.sh refresh`: Port, Token und Fixtures bleiben, der Link hält.
-3. Den Ablauf wie ein Nutzer durchgehen, bei 390 px Breite und am Desktop. Kritisch bewerten: was
-   fehlt, was bricht, was ist halb. Was du dort findest, baust du fertig, bevor du meldest.
-4. Zwischen den Teilen nur `refresh` und Durchklicken, keine Gate-Suite und keine Vorschau. Der
-   volle Beweis (Beweismenge aus `GET /api/self/gate`) läuft einmal am Ende, vor dem Report.
-5. In den Report: der token-freie Link aus `./testinstanz.sh list` oder der `refreshed`-Zeile (nie
-   aus `status`, das druckt den Token) und ein Bild des fertigen Ablaufs (Pfad der Datei).
-6. Deine eigene Instanz endet mit deinem Report: `./testinstanz.sh down`, nachdem Link und Bild
-   darin stehen. Der Owner sieht deinen Branch in der Instanz seiner Runde (unten). Lief deine eigene
-   für ihn, weil ihr live baut, bleibt sie, bis er „passt“ sagt.
+1. `./testinstanz.sh up` in your own worktree, once at the start of the visible work.
+2. After every commit, `./testinstanz.sh refresh`: port, token and fixtures stay, the link holds.
+3. Go through the flow like a user, at 390 px width and on the desktop. Judge it critically: what is missing, what
+   breaks, what is half done. Whatever you find there, you finish before you report.
+4. Between the parts, only `refresh` and clicking through: no gate suite and no preview. The full proof (the proof
+   set from `GET /api/self/gate`) runs once at the end, before the report.
+5. Into the report: the token-free link from `./testinstanz.sh list` or from the `refreshed` line (never from
+   `status`, which prints the token), and a picture of the finished flow (the file's path).
+6. Your own instance ends with your report: `./testinstanz.sh down`, once link and picture are in it. The owner sees
+   your branch in the instance of their round (section "Eine Instanz je Runde", below). If your own instance ran for the owner because you build
+   live, it stays until the owner says „[Zitat entfernt]“.
 
-**MAIN.** Vor dem Land öffnest du den Link und klickst den Ablauf selbst durch. Fehlen Link oder
-Bild, oder siehst du die Wirkung nicht, geht der Report mit Grund zurück. Vom Board aus öffnet
-„Öffnen" an der Zeile des Worktrees in Info → Arbeitsorte die Instanz, danach schaltet der
-Instanz-Chip um (beides unten).
+**MAIN.** Before the land, open the link and click through the flow yourself. If the link or the picture is missing,
+or you don't see the effect, the report goes back with the reason. From the board, "Open" on the worktree's row in
+Info → Arbeitsorte opens the instance, and afterwards the instance chip switches (both described further down in this file).
 
 ### Visible work, widened
 
@@ -158,27 +156,24 @@ Eine Instanz aus einem Branch endet sonst mit ihm: wenn er nach seinem Land ende
 wird, ruft der Server ihr `down` (`server/branch-ende.ts`). Wer hineinschaut oder in den letzten zehn
 Minuten schaute, hält sie.
 
-## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt
+## Live build with the owner — building while the owner clicks in the instance
 
-Für eine Lane, deren Karte die Live-Bau-Variante wählt (eine Zeile `VARIANTE: live-bau` im
-Auftrag). Der Owner schaut in der Testinstanz zu und sagt, was als Nächstes kommt; deine
-Arbeitsschleife ist bauen, `refresh`, er klickt. Das Land kommt erst auf sein Wort, das dir deine
-MAIN schickt. Entwurf und Messung: `docs/design/live-bau-profil-2026-10.md`.
+For a lane whose card chooses the live-build variant (a line `VARIANTE: live-bau` in the order). The owner watches
+in the test instance and says what comes next; your work loop is build, `refresh`, the owner clicks. The land comes
+only on the owner's word, which your MAIN sends you. Draft and measurement: `docs/design/live-bau-profil-2026-10.md`.
 
-1. Einmal zu Beginn `./testinstanz.sh up` im eigenen Worktree. Den token-freien Link aus
-   `./testinstanz.sh list` gibst du deiner MAIN, nie die Ausgabe von `status` (sie druckt den
-   Token).
-2. Nach jedem Bauschritt `./testinstanz.sh refresh`. Es spiegelt den Working Tree, ein Commit ist
-   dafür nicht nötig. Port, Token und Fixtures bleiben, der Link des Owners hält. Ein roter Build
-   lässt die alte Instanz stehen; die Zeile `refreshed …` nennt den übernommenen Kopf.
-3. Zwischen den Bauschritten nur `refresh`, keine Gate-Suite, keine Vorschau, kein
-   `suite-offer`. Was du dabei siehst, steht in der Instanz, nicht in einem Suite-Tail.
-4. Committen bleibt Pflicht wie in jeder Lane: der Baum muss landbar sein, bevor du meldest oder
-   übergibst.
-5. Vor dem Land, also erst auf das Owner-Wort: `GET /api/self/context/verify-e2e` leiht dir die
-   Prüf- und Land-Regeln aus, danach fährst du die Beweismenge aus `GET /api/self/gate`, prüfst
-   drift und meldest wie jede Lane. Die Regelbuch-Abschnitte zu Verify, Suiten und Land, die dein
-   `CLAUDE.md` in dieser Variante nicht trägt, nennt sein Schlussblock mit Lesepfad.
+1. Once at the start, `./testinstanz.sh up` in your own worktree. Give your MAIN the token-free link from
+   `./testinstanz.sh list`, never the output of `status` (it prints the token).
+2. After every build step, `./testinstanz.sh refresh`. It mirrors the working tree; no commit is needed for it.
+   Port, token and fixtures stay, so the owner's link holds. A red build leaves the old instance standing; the line
+   `refreshed …` names the head it took over.
+3. Between build steps only `refresh`: no gate suite, no preview, no `suite-offer`. What you see there is in the
+   instance, not in a suite tail.
+4. Committing stays a duty as in every lane: the tree must be landable before you report or hand over.
+5. Before the land, so only on the owner's word: `GET /api/self/context/verify-e2e` lends you the verify and land
+   rules, then you run the proof set from `GET /api/self/gate`, check drift and report like any lane. The rulebook
+   sections on verify, suites and land that your `CLAUDE.md` doesn't carry in this variant are named, with the
+   reading path, in its closing block.
 
 ## Probe — einen Befund an der eigenen Instanz zeigen
 

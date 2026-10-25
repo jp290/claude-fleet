@@ -115,7 +115,7 @@ const events = async (token: string): Promise<StuckDeliveryFleetEvent[]> => {
 
 export async function run(): Promise<void> {
   const form = { kind: "glyph" as const, re: /^❯/ };
-  const header = "[fleet-zustellung · Messung · path=owner · Slot 1] ";
+  const header = "[fleet-delivery · measurement · path=owner · Slot 1] ";
   const label = "[Pasted text #1 +79 lines]";
   const payload = header + Array.from({ length: 80 }, (_, i) => `Messzeile ${i}`).join("\n");
   const frame = `\x1b[39m❯\u00a0${header}${label}\n${"─".repeat(40)}\n`;

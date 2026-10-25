@@ -89,7 +89,7 @@ export async function runHistoryProvenance(root = ROOT, clientRoot = dirname(rea
     const entryCode = new Bun.Transpiler({ loader: "ts" }).transformSync(`const entry = ${write[2]};`);
     const make = new Function("fixture", `with (fixture) { ${entryCode} return entry; }`) as
       (fixture: Record<string, unknown>) => { text: string; ts: number; source?: string };
-    for (const text of ["owner input", "[fleet-zustellung · test] routed text"]) {
+    for (const text of ["owner input", "[fleet-delivery · test] routed text"]) {
       const entry = make({ text, t: text, p: { text }, body: { text }, debt: { brief: text }, a: { text },
         brief: text, line: text, message: text, prompt: text, deliveredBrief: text, delivered: text,
         rendered: { text }, ts: 1, sentAt: 1, at: 1, now: 1, deliveredAt: 1, Date: { now: () => 1 } });

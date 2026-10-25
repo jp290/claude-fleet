@@ -47,15 +47,15 @@ export const SEAT_TRIGGERS: Readonly<Record<SeatTree, readonly ContextPackTrigge
 // Gemessen am 22.10. (claude 2.1.308, Opus 5.5, Usage der ersten Antwort im selben Ordner, ohne Bibliothek 29 284 Tokens): ein
 // Sitz in einem anderen Repo +1 985 (Box, keine Skill, kein --add-dir), im Fleet-Repo +1 997 (Box, fünf Skills).
 export const SEAT_BOX: Readonly<Record<string, string>> = {
-  "who-it-is-for": "Jeder Sitz baut etwas, das jemand trifft; für wen, entscheidet er schon mit dem ersten Schritt, und "
-    + "kein späterer Moment sagt ihm, dass eine Beschreibung jetzt passen würde.",
-  "working-with-the-owner": "Der Owner schreibt jedem Sitz direkt und liest alles, was er schreibt, ab der ersten Nachricht; "
-    + "wie man ihn versteht, kommt zu spät, wenn es erst beim zweiten Missverständnis geladen wird.",
-  "working-in-few-calls": "Der erste Akt eines Sitzes ist eine Suche; wie man in wenigen Aufrufen sucht, liest und wartet, hilft nur "
-    + "vor ihr, und jeder gesparte Aufruf spart das Lesen des ganzen Kontexts (Kostenprüfung 23.10.).",
+  "who-it-is-for": "Every seat builds something that someone meets. For whom is decided with the first step, and no later "
+    + "moment tells the seat that a description would fit now.",
+  "working-with-the-owner": "The owner writes to any seat directly and reads everything it writes, from the first message. "
+    + "How to understand the owner comes too late if it loads only at the second misunderstanding.",
+  "working-in-few-calls": "A seat's first act is a search. How to search, read and wait in few calls helps only before it, "
+    + "and every call saved saves a read of the whole context (cost check 23.10.).",
   // Owner 25.10. über Slot 16: „[Zitat entfernt]“
-  "building-an-agent": "Jede Session kann mit ihrem Nutzer ihre Nachfolgerin bauen; als Skill rief Haiku 5.5 ihn auch im richtigen "
-    + "Moment nicht auf und schrieb die Bitte in Claude Codes Memory, statt sie über die Selbst-Tür weiterzugeben (Probe 25.10.).",
+  "building-an-agent": "Every session can build its successor with its user. As a skill, Haiku 5.5 did not call it even at the "
+    + "right moment and wrote the request into Claude Code's memory instead of passing it on through the self door (probe 25.10.).",
 };
 
 const SEAT_MODE: ContextPackMode = "mutating";
@@ -102,12 +102,12 @@ const quelleOf = (pack: SeatPack): string => pack.sources.map((source) => `${sou
 const quellPfad = (k: SeatKnowledge, path: string): string => path.startsWith("/") || path.startsWith("~") ? path : `${k.repoRoot}/${path}`;
 const groesse = (bytes: number): string => bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1).replace(".", ",")} kB`;
 
-export const SEAT_START_HEAD = "BIBLIOTHEK (server/sitz-wissen.ts): Fleets Wissen für deinen Sitz.";
+export const SEAT_START_HEAD = "FLEET LIBRARY (server/sitz-wissen.ts): Fleet's knowledge for your seat.";
 const headOf = (k: SeatKnowledge): string => {
   const box = boxOf(k), skills = skillsOf(k);
   return [SEAT_START_HEAD,
-    box.length ? `Wörtlich hier: ${box.map((pack) => pack.id).join(", ")}.` : "",
-    skills.length ? `Als Skills, wenn ihre Beschreibung passt (Skill-Werkzeug): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
+    box.length ? `In full below: ${box.map((pack) => pack.id).join(", ")}.` : "",
+    skills.length ? `As skills, open one when its description fits your moment (Skill tool): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
     .filter(Boolean).join(" ");
 };
 const boxBlock = (pack: SeatPack): string => `--- ${pack.id} (${quelleOf(pack)}) ---\n${pack.text}`;
@@ -130,7 +130,7 @@ export function seatPacks(k: SeatKnowledge): { box: string[]; skills: string[]; 
  *  der Text am Kopf. */
 export function renderSkillFile(pack: SeatPack, head: string): string {
   return `---\nname: ${pack.id}\ndescription: ${JSON.stringify(pack.useWhen ?? "")}\n---\n`
-    + `Aus Fleets Bibliothek: ${quelleOf(pack)} am Commit ${head.slice(0, 12)}.\n\n${pack.text}`;
+    + `From Fleet's library: ${quelleOf(pack)} at commit ${head.slice(0, 12)}.\n\n${pack.text}`;
 }
 
 /** Die Skill-Dateien dieses Sitzes, relativ zum Verzeichnis, das `--add-dir` bekommt. */

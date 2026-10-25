@@ -1784,7 +1784,7 @@ function liveBauChecks(check: ContextPlanCheck, probe: {
   const part = (file: typeof filePlain, id: string) => file.parts.find((p) => p.id === id);
   const kernText = sourceSection(repo.sourceBytes.get(".fleet/vertraege/lane.md")!, ".fleet/vertraege/lane.md", "### Kern")!.content;
   const liveBauText = sourceSection(repo.sourceBytes.get("docs/testinstanz.md")!, "docs/testinstanz.md",
-    "## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt")!.content;
+    "## Live build with the owner — building while the owner clicks in the instance")!.content;
   check("live-bau file: verify-e2e Kern and Lane are receipt rows ausleihe with zeitpunkt vor-dem-land, the pointer says so, the text is out",
     ["verify-e2e.kern", "verify-e2e.lane"].every((id) => part(fileLive, id)?.ort === "ausleihe" && part(fileLive, id)?.zeitpunkt === "vor-dem-land"
       && part(fileLive, id)?.content === null && part(fileLive, id)?.sha256 !== null)

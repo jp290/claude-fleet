@@ -4,11 +4,10 @@
 // Whitespace is the one thing allowed to differ: the transcript keeps the text, the renderer and
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
-import { deliveryParts } from "./delivery-format";
+import { deliveryHeaderPrefixOf, deliveryParts, OWNER_HEADER } from "./delivery-format";
 import { slashCommand } from "./slashcommand";
 
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
-const DELIVERY_HEADER_PREFIX = "[fleet-zustellung · ";
 // Claude Code (2.1.278) stores a pasted prompt — every composer send is one — wrapped as
 // <pasted_content id="x">…</pasted_content id="x">. The bubble shows what you wrote, so only a
 // wrapper whose closing id matches its opening one is taken off; the text inside stays verbatim.
@@ -23,10 +22,11 @@ export const unwrapPasted = (text: string): string => text.replace(PASTED_RE, "$
 // bundle body began "\n\n[fleet-buendel 1/…", deliveryParts never saw its marks, and every bundled owner
 // send stood as "wartet" for good (measured 2026-10-04: 102 of 102 bundles in the day's transcripts).
 export function splitDeliveryHeader(entry: string): { header: string | null; body: string } {
-  if (!entry.startsWith(DELIVERY_HEADER_PREFIX)) return { header: null, body: entry };
-  const end = entry.indexOf("] ", DELIVERY_HEADER_PREFIX.length);
+  const prefix = deliveryHeaderPrefixOf(entry);
+  if (prefix === null) return { header: null, body: entry };
+  const end = entry.indexOf("] ", prefix.length);
   if (end < 0) return { header: null, body: entry };
-  return { header: entry.slice(DELIVERY_HEADER_PREFIX.length, end), body: entry.slice(end + 2).replace(/^\s*\n/, "") };
+  return { header: entry.slice(prefix.length, end), body: entry.slice(end + 2).replace(/^\s*\n/, "") };
 }
 // A MESSAGE THE OWNER DID NOT WRITE (Mangel 78, owner 15.10.: „[Zitat entfernt]“
 // ), read off one turn's text after unwrapPasted: a Fleet delivery on any
@@ -36,7 +36,6 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
 // "Another Claude session sent a message:" line (both forms measured 15.10.). `who` labels the chat's quiet line, `text`
 // is the message without head or wrapper. null = the owner's own words: typed in the terminal or sent through the owner
 // door. A bundle says whose each part is itself (src/delivery-format.ts#deliveryParts).
-const OWNER_HEADER = /^Owner-Credential · Slot \d+$/;
 const CROSS_SESSION = /^(?:Another Claude session sent a message:\n)?<cross-session-message((?: [a-z-]+="[^"]*")*)>\n?([\s\S]*?)\n?(?:<\/cross-session-message>\s*)?$/;
 export function otherSender(entry: string): { who: string; text: string } | null {
   const session = CROSS_SESSION.exec(entry);

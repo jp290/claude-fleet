@@ -58,13 +58,26 @@ describe("a delivered prompt back in Claude's field", () => {
   });
 });
 
+// A transcript keeps the head it was written with: sessions running since before 2026-10-25 hold the German
+// `[fleet-zustellung · …]` (H and BUNDLE above, measured), every new delivery the English `[fleet-delivery · …]`.
+// Recall reads both.
+const H_NEW = "[fleet-delivery · owner credential · Slot 1] ";
+const BUNDLE_NEW = "[fleet-delivery · bundled Fleet deliveries · path=bundle · Slot 1 · next step: x · limit: y] [fleet-buendel 1/2 · path=owner] Hallo";
+
 describe("whose text a recall may take", () => {
   test("the owner door and the terminal are the owner's", () => {
     expect(ownerPrompt(`${H}Hallo`)).toBe(true);
+    expect(ownerPrompt(`${H_NEW}Hallo`)).toBe(true);
     expect(ownerPrompt("im Terminal getippt")).toBe(true);
+  });
+  test("the English head erases and matches like the German one, two code points shorter", () => {
+    const p = `${H_NEW}Schreibe einen Aufsatz über Füchse mit 400 Wörtern.`;
+    expect(fieldHolds([p], [p])).toBe(true);
+    expect(eraseCount([p])).toBe(98 - 2);
   });
   test("a Fleet bundle, a cross-session message and Claude Code's plumbing are not", () => {
     expect(ownerPrompt(BUNDLE)).toBe(false);
+    expect(ownerPrompt(BUNDLE_NEW)).toBe(false);
     expect(ownerPrompt('<cross-session-message from="x">hi</cross-session-message>')).toBe(false);
     expect(ownerPrompt("<task-notification>done</task-notification>")).toBe(false);
   });

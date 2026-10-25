@@ -98,8 +98,8 @@ Read when you need it:
 - Where things stand: `./state.sh --brief`. Your doors: `./ctl.sh` without arguments and `docs/self-api.md`.
 - Land, deploy, red audits, the helper, acts on a live session or instance: `docs/packs/running-fleet.md`.
 - This machine (helper, disk, demo, publishing), local only: `~/local-notes/this-machine.md`.
-- When and how to hand over: `docs/controller.md` §Nachfolge ohne kalten Wiederaufruf.
-- Visible work, before you build it and before it lands: `docs/testinstanz.md` §Abnahme sichtbarer Arbeit.
+- When and how to hand over: `docs/controller.md` §Succession without a cold resume.
+- Visible work, before you build it and before it lands: `docs/testinstanz.md` §Accepting visible work.
 - Before you write or change a context pack: `docs/packs/making-a-pack.md`.
 
 ## Handing over

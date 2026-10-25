@@ -2056,14 +2056,14 @@ export async function run(lc: LaneCtx): Promise<void> {
       JSON.stringify((sendsR[0] ?? "").slice(0, 400)));
     // The HEADER in front of it says the same (Sinnpruefung Buendel 5a): mergeVerdictKind only yields
     // a verdict for landed=NO, and each one asks for a step — so its sentence names that step, never
-    // "nur zur Information". The typed header exists only in the pane.
+    // "for information only". The typed header exists only in the pane.
     // BREAKS IF: DELIVERY_MEANING["merge-verdict"] falls back to an information-only sentence.
     // Compared with all whitespace removed: the capture trims a space that falls at a row end.
     const paneR = (await tmuxOut("capture-pane", "-p", "-J", "-S", "-", "-t", `s${lnR.slot}`)).out.replace(/\s+/g, "");
     const verdictSentence = new RegExp(`path=merge-verdict·Slot${lnR.slot}·([^\\]]*)\\]`).exec(paneR)?.[1] ?? null;
-    check("land verdict: the header in front of a red verdict names a next step, not 'nur zur Information'",
-      !!verdictSentence && /^naechsterSchritt:.+·Grenze:.+$/.test(verdictSentence)
-        && !verdictSentence.includes("nurzurInformation"),
+    check("land verdict: the header in front of a red verdict names a next step, not 'for information only'",
+      !!verdictSentence && /^nextstep:.+·limit:.+$/.test(verdictSentence)
+        && !verdictSentence.includes("informationonly"),
       JSON.stringify(verdictSentence));
     await tmuxOut("send-keys", "-t", `s${lnR.slot}`, "C-c");
     // …and it is the SERVER speaking, in the same fixed envelope every other injected prompt

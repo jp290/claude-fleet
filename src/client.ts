@@ -2243,7 +2243,7 @@ class Pane {
     if (header || mark) {
       // a bundled owner part shows its own mark; the bundle's head stays in the tooltip
       const head = el("span", "mhead", mark ?? header ?? "");
-      head.title = [header && `fleet-zustellung · ${header}`, mark].filter(Boolean).join("\n");
+      head.title = [header && `fleet-delivery · ${header}`, mark].filter(Boolean).join("\n");
       head.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
       meta.appendChild(head);
     }
@@ -2266,7 +2266,7 @@ class Pane {
     const first = own ? lead.slice(own[0].length) : lead;
     sum.append(el("span", "msyswho", own?.[1] ?? who), el("span", "msystext", first));
     sum.title = [ts && fmtClock(ts), who === "fleet" ? null : `Nachricht der Claude-Session „${who}“`,
-      header && `fleet-zustellung · ${header}`, part.mark].filter(Boolean).join("\n");
+      header && `fleet-delivery · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
     if (more) line.appendChild(el("div", "msysbody", more));

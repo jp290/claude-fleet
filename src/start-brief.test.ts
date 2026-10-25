@@ -55,7 +55,7 @@ describe("the start brief, file by file against claude by hand", () => {
     expect(geaendert(b)).toBe(2);
   });
   test("rights add their sentence to what Fleet appends; a changed model shows in the start line", () => {
-    const b = startbrief(fassung({ rechte: "FLEET-RECHTE (Stufe „Bauen“)", modell: "claude-sonnet-5-5" }), fassung({}), dazu);
+    const b = startbrief(fassung({ rechte: "FLEET RIGHTS (level “build”)", modell: "claude-sonnet-5-5" }), fassung({}), dazu);
     expect(b.anweisungen.find((x) => x.key === "fleet")!.kinder!.map((k) => k.key)).toEqual(["rechte"]);
     const line = b.einstellungen.find((x) => x.key === "line")!;
     expect(line.zeichen).toBe("~");
@@ -98,7 +98,7 @@ describe("uebergabeHinweis", () => {
 
 // INFO → SETUP NACH EINER NACHFOLGE (POST /api/self/einrichten): dieselbe Vergleichsfunktion, die Vorgängerin an der Stelle von „normal“
 describe("what a successor has that its predecessor didn't", () => {
-  const ZWECK = "ZWECK (von deiner Vorgängerin auf diesem Slot für dich geschrieben):\nDu bist der Anfrages-Agent.";
+  const ZWECK = "PURPOSE (written for you by your predecessor in this slot):\nDu bist der Anfrages-Agent.";
   const mitZweck = (f: Fassung): Fassung => ({ teile: f.teile.map((t) => t.id !== "liest" ? t
     : { ...t, abschnitte: [...t.abschnitte, { id: "zweck", text: ZWECK }] }) });
   test("every line of a pack and a purpose it gave itself is a + line; what stayed the same has no row", () => {

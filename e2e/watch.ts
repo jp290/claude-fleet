@@ -7926,7 +7926,7 @@ export async function run(): Promise<void> {
       [mainId, boundId, orchId].every((id) => id > 0 && heldRows.find((r) => r.id === id)?.openedAt === migrateOccupant.get(id)),
       JSON.stringify([mainId, boundId, orchId].map((id) => ({ id, was: migrateOccupant.get(id), now: heldRows.find((r) => r.id === id)?.openedAt }))));
     // THE HEADER'S SENTENCE FOLLOWS THE SAME ROLE (Sinnpruefung Buendel 5a). Until then every
-    // migrate-nudge header ended "Grenze: deine Lane", the bound and the unbound MAIN's included.
+    // migrate-nudge header ended "limit: your lane", the bound and the unbound MAIN's included.
     // The pane is the only place the typed header exists — the prompt journal records the body.
     // BREAKS IF: deliveryMeaning stops reading the receiver's role, or the lane loses its own sentence.
     // Compared with all whitespace removed: the capture trims a space that falls at a row end.
@@ -7936,10 +7936,10 @@ export async function run(): Promise<void> {
     };
     const sentences = { bound: await migrateSentence(boundId), lane: await migrateSentence(lane.slot),
       main: await migrateSentence(mainId) };
-    check("migrate-nudge header: the bound MAIN gets a MAIN sentence without 'deine Lane', the lane the lane sentence",
-      !!sentences.bound && !sentences.bound.includes("Lane") && sentences.bound.includes("Program")
-        && sentences.lane === "naechster Schritt: pruefe die Kontextgrenze und sichere den Stand · Grenze: deine Lane".replace(/\s+/g, "")
-        && !!sentences.main && !sentences.main.includes("Lane")
+    check("migrate-nudge header: the bound MAIN gets a MAIN sentence without 'your lane', the lane the lane sentence",
+      !!sentences.bound && !/lane/i.test(sentences.bound) && /program/i.test(sentences.bound)
+        && sentences.lane === "next step: check your context limit and secure your state · limit: your lane".replace(/\s+/g, "")
+        && !!sentences.main && !/lane/i.test(sentences.main)
         && sentences.bound !== sentences.main,
       JSON.stringify(sentences));
     for (const id of [mainId, lane.slot, boundId, orchId].filter(Boolean)) await tmuxOut("send-keys", "-t", `s${id}`, "C-c");

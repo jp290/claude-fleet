@@ -1,25 +1,25 @@
 [
   {
     "id": "haltung-worker",
-    "useWhen": "Beim Start einer Lane: deine Arbeitshaltung — Ziel hinter der Karte, ganzes Ergebnis, Wirkung selbst sehen.",
+    "useWhen": "At the start of a lane: how to work — the goal behind the card, the whole result, seeing the effect yourself.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["always"],
     "hardness": "guidance",
     "sources": [
-      { "path": "docs/haltung-worker.md", "anchor": "## Was wir bevorzugen, und warum" }
+      { "path": "docs/haltung-worker.md", "anchor": "## What we prefer, and why" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1810,
+    "estimatedBytes": 1625,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "messnotiz-index",
-    "useWhen": "Bevor du misst: durchsuche den Index (rg), ob deine Frage schon vermessen wurde — nicht ganz lesen.",
+    "useWhen": "Before you measure: search the index (rg) for whether your question was already measured — don't read it whole.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["measurement"],
@@ -37,145 +37,145 @@
   },
   {
     "id": "orchestrator-eigenarten",
-    "useWhen": "Bevor du als Orchestratorin oder MAIN Watches armierst oder ueber eine Nachfolge entscheidest.",
+    "useWhen": "Before you, as orchestrator or MAIN, arm watches or decide on a succession.",
     "scope": "repo-contract",
     "audience": "maintainer",
     "triggers": ["orchestration"],
     "hardness": "guidance",
     "sources": [
-      { "path": "docs/controller.md", "anchor": "## Zwei Eigenarten, die eine Orchestratorin bezahlt hat (gemessen 2026-10-02)" }
+      { "path": "docs/controller.md", "anchor": "## Two traits an orchestrator has paid for (measured 2026-10-02)" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1800,
+    "estimatedBytes": 2091,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "projekt-aufnahme",
-    "useWhen": "Bevor du als Orchestratorin oder neue MAIN ein fremdes Repo als Fleet-Projekt aufnimmst.",
+    "useWhen": "Before you, as orchestrator or new MAIN, take on a foreign repo as a Fleet project.",
     "scope": "repo-contract",
     "audience": "maintainer",
     "triggers": ["orchestration"],
     "hardness": "guidance",
     "sources": [
-      { "path": "docs/controller.md", "anchor": "## Ein fremdes Repo als Fleet-Projekt aufnehmen" }
+      { "path": "docs/controller.md", "anchor": "## Taking on a foreign repo as a Fleet project" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 8541,
+    "estimatedBytes": 8242,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "owner-instanzweg",
-    "useWhen": "Wenn im Owner-Gespraech Arbeit auf einer anderen Fleet-Instanz ansteht: den bestehenden Weg dorthin nachlesen.",
+    "useWhen": "When work on another Fleet instance comes up in a conversation with the owner: read the existing way there.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestration"],
     "hardness": "guidance",
     "sources": [
-      { "path": "docs/messungen/2026-10-04-pruefung-owner-gespraech-r1-r5.md", "anchor": "### Quellenabschnitt fuer das Pack: auf einer anderen Instanz arbeiten" }
+      { "path": "docs/messungen/2026-10-04-pruefung-owner-gespraech-r1-r5.md", "anchor": "### Source section for the pack: working on another instance" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1500,
+    "estimatedBytes": 1368,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "haltung-auftraggeber",
-    "useWhen": "Bevor du als MAIN oder Orchestratorin eine Karte schreibst: wie eine Karte die beste Besetzung hervorholt.",
+    "useWhen": "Before you write a card as MAIN or orchestrator: how a card gets the best out of whoever takes it.",
     "scope": "repo-contract",
     "audience": "maintainer",
     "triggers": ["orchestration"],
     "hardness": "guidance",
     "sources": [
-      { "path": "docs/haltung-auftraggeber.md", "anchor": "## Wie wir Karten schreiben, und warum" }
+      { "path": "docs/haltung-auftraggeber.md", "anchor": "## How we write cards, and why" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 3135,
+    "estimatedBytes": 3024,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "nachfolge-klug",
-    "useWhen": "Wenn deine Claude-Session die wirksame Uebergabe-Schwelle erreicht: warm sichern und den Nachfolgezeitpunkt entscheiden.",
+    "useWhen": "When your Claude session reaches its handover threshold: secure your state while the cache is warm, pick the moment.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["always"],
     "hardness": "guidance",
     "group": "sessions-fuehren",
     "sources": [
-      { "path": "docs/controller.md", "anchor": "## Nachfolge ohne kalten Wiederaufruf" }
+      { "path": "docs/controller.md", "anchor": "## Succession without a cold resume" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude"],
     "modes": ["read-only", "mutating", "monitoring"],
-    "estimatedBytes": 8025,
+    "estimatedBytes": 7692,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "testinstanz-abnahme",
-    "useWhen": "Wenn du Sichtbares baust oder abnimmst: fertig ist erst die durchgeklickte Testinstanz mit Link und Bild.",
+    "useWhen": "When you build or accept visible work: done means the test instance clicked through, with link and picture.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["visible-surface", "orchestration", "seat-start"],
     "hardness": "hard",
     "group": "pruefen-landen",
     "sources": [
-      { "id": "testinstanz-abnahme.ablauf", "path": "docs/testinstanz.md", "anchor": "## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt", "sorte": "anleitung", "positions": { "lane": "box", "main": "box", "orchestratorin": "ausleihe" } }
+      { "id": "testinstanz-abnahme.ablauf", "path": "docs/testinstanz.md", "anchor": "## Accepting visible work — done means clicked through", "sorte": "anleitung", "positions": { "lane": "box", "main": "box", "orchestratorin": "ausleihe" } }
     ],
     "varianten": {
       "live-bau": {
-        "useWhen": "Live-Bau mit dem Owner: bauen, refresh, er klickt — keine Suite zwischen den Schritten, das Land erst auf sein Wort.",
+        "useWhen": "Live build with the owner: build, refresh, the owner clicks. No suite between steps; land only on the owner's word.",
         "sources": [
-          { "id": "testinstanz-abnahme.live-bau", "path": "docs/testinstanz.md", "anchor": "## Live-Bau mit dem Owner — bauen, während er in der Instanz klickt", "sorte": "anleitung", "positions": { "lane": "box", "main": "ausleihe", "orchestratorin": "ausleihe" } },
-          { "id": "testinstanz-abnahme.ablauf", "path": "docs/testinstanz.md", "anchor": "## Abnahme sichtbarer Arbeit — fertig heißt durchgeklickt", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+          { "id": "testinstanz-abnahme.live-bau", "path": "docs/testinstanz.md", "anchor": "## Live build with the owner — building while the owner clicks in the instance", "sorte": "anleitung", "positions": { "lane": "box", "main": "ausleihe", "orchestratorin": "ausleihe" } },
+          { "id": "testinstanz-abnahme.ablauf", "path": "docs/testinstanz.md", "anchor": "## Accepting visible work — done means clicked through", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
         ]
       }
     },
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6571,
+    "estimatedBytes": 6678,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "pruefpraxis",
-    "useWhen": "Bevor du fertig meldest oder einen Bericht abnimmst: Belege lesen, Diff und Testinstanz selbst ansehen, Bericht.",
+    "useWhen": "Before you report done or accept a report: read the evidence, the diff and the test instance yourself.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["landing"],
     "hardness": "hard",
     "group": "pruefen-landen",
     "sources": [
-      { "path": "docs/pruefpraxis.md", "anchor": "## Prüfpraxis — ein Bericht ist eine Behauptung, bis er belegt ist" }
+      { "path": "docs/pruefpraxis.md", "anchor": "## Checking practice — a report is a claim until it is backed" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 2016,
+    "estimatedBytes": 1934,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
   },
   {
     "id": "setting-up-agents",
-    "useWhen": "Bevor du einen Agenten oder ein Team aufsetzt: die fünf Teile und das Verbindungsstück.",
+    "useWhen": "Before you set up an agent or a team: the five parts and the connecting piece.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestrator-start", "seat-start"],
@@ -193,7 +193,7 @@
   },
   {
     "id": "working-with-the-owner",
-    "useWhen": "Wenn du mit dem Owner sprichst oder etwas schreibst, das er liest.",
+    "useWhen": "When you talk with the owner or write something the owner will read.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestrator-start", "seat-start-any-repo"],
@@ -211,7 +211,7 @@
   },
   {
     "id": "how-fleet-remembers",
-    "useWhen": "Wenn du etwas gelernt hast und entscheiden musst, wohin die Notiz gehört.",
+    "useWhen": "When you have learned something and must decide where the note belongs.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestrator-start", "seat-start"],
@@ -229,7 +229,7 @@
   },
   {
     "id": "who-it-is-for",
-    "useWhen": "Bevor du Arbeit wählst, beauftragst oder baust, die jemand nutzt: wer sie trifft und wie Arbeit ihre Leute verfehlt.",
+    "useWhen": "Before you choose, order or build work that someone will use: who meets it, and how work misses its people.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestrator-start", "seat-start-any-repo"],
@@ -313,7 +313,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 4525,
+    "estimatedBytes": 4572,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -338,7 +338,7 @@
   },
   {
     "id": "sharpening-an-order",
-    "useWhen": "Bevor du einer Session mit Vorgeschichte einen Auftrag gibst: wie sharpen3 ihn gegen ihr Gespräch liest.",
+    "useWhen": "Before you give an order to a session that has a history: how sharpen3 reads it against its conversation.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestrator-start", "seat-start-any-repo"],
@@ -374,7 +374,7 @@
   },
   {
     "id": "system-concept",
-    "useWhen": "Wenn du verstehen musst, was Fleet ist, wofür es gebaut wird und wohin es geht: das Systemkonzept.",
+    "useWhen": "When you need to understand what Fleet is, what it is built for and where it is going: the system concept.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["seat-start"],
@@ -392,7 +392,7 @@
   },
   {
     "id": "running-fleet",
-    "useWhen": "Bevor du landest, deployst, ein rotes Audit beurteilst, den Helfer anfasst oder in eine lebende Session eingreifst.",
+    "useWhen": "Before you land, deploy, judge a red audit, touch the helper or step into a live session.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["landing", "orchestration", "seat-start"],
@@ -411,7 +411,7 @@
   },
   {
     "id": "making-a-pack",
-    "useWhen": "Bevor du einen Context Pack schreibst oder änderst: was hinein gehört, wie er registriert wird und wen er erreicht.",
+    "useWhen": "Before you write or change a context pack: what belongs in it, how it is registered and whom it reaches.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["orchestration"],
@@ -430,7 +430,7 @@
   },
   {
     "id": "working-in-few-calls",
-    "useWhen": "Bevor du suchst, liest oder wartest: in wenigen, gut gefütterten Aufrufen arbeiten.",
+    "useWhen": "Before you search, read or wait: work in few calls, each asked so one answer is enough.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["always", "seat-start"],
@@ -448,7 +448,7 @@
   },
   {
     "id": "made-with-love",
-    "useWhen": "Während du Sichtbares baust, und bevor du es zeigst: der kritische Blick aufs Ganze, wie der Owner ihn will.",
+    "useWhen": "While you build something visible, and before you show it: the critical look at the whole, as the owner wants it.",
     "scope": "repo-contract",
     "audience": "agent",
     "triggers": ["seat-start"],

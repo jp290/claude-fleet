@@ -235,7 +235,7 @@ check("the live claude stand-in in a foreign folder keeps its prompt suggestions
 // bypass of FLEET_CMD. Fleet's own seats keep auto: server/start-fassung.test.ts holds the line of every role in Fleet's repo.
 check("the live claude stand-in in a foreign folder starts in its own setup: no permission mode, no classifier environment, no brief line",
   claudeArgv.length > 0 && claudeArgv.every((argv) => !argv.includes("--permission-mode") && !argv.includes('"autoMode"')
-    && !argv.includes("AUTO-MODE:") && !argv.includes("FLEET-LISTENSCHNITT") && !argv.includes("--dangerously-skip-permissions")),
+    && !argv.includes("AUTO-MODE:") && !argv.includes("FLEET LIST CUT") && !argv.includes("FLEET-LISTENSCHNITT") && !argv.includes("--dangerously-skip-permissions")),
   claudeArgv.join(" | ") || "no claude argv observed");
 // …and the other half: this instance leaves FLEET_MIGRATE_PCT unset, which reads as 0 (server.ts#MIGRATE_PCT),
 // so a non-lane session has its handover OFF — Claude Code's compaction stays the last hold (owner 10:4x

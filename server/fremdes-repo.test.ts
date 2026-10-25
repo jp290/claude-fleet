@@ -5,6 +5,7 @@
 // 3. das Ziel einer Branch-Session wartet, solange Claude Code nach Vertrauen fragt, und das Board zeigt die Frage.
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { loadavg } from "node:os";
 import { basename, join } from "node:path";
 import { type Answer, branchTestkit, commitIn, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
 import { LEERLAUF } from "./warte-hinweis.fixtures";
@@ -44,6 +45,16 @@ const ledger = (repo: string): string => join(sh(repo, "rev-parse", "--path-form
 type CheckCommand = { way: string; cmd: string | null; by?: string | null; at?: number | null; proposal: { cmd: string; by: string } | null };
 const commandOf = (a: Answer | undefined, repo: string): CheckCommand =>
   ((a?.body.repos as { repo: string; checkCommand: CheckCommand }[]).find((r) => r.repo === repo))!.checkCommand;
+
+// Wartet das Audit nach dem Land auf eine Datei, die nie kommt (408), sagt der Fehler, was das Audit gerade tut und ob die Suite-Sperre
+// des Rechners im Spiel ist: der Audit-Stand aus Schritt 10 und 12, was im Zustandsordner liegt, die Sperre und ihr Halter.
+function auditDiagnosis(f: Fixture, r: (Answer | undefined)[]): string {
+  const lockPath = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
+  const lock = existsSync(lockPath) ? `${lockPath} held: ${readFileSync(lockPath, "utf8").slice(0, 300).replace(/\s+/g, " ")}` : `${lockPath} absent`;
+  const look = (a: Answer | undefined) => JSON.stringify({ status: a?.status, body: a?.body }).slice(0, 1200);
+  return `Audit nach dem Land: Schritt 11 endete mit ${r[11]?.status}. Schritt 10 ${look(r[10])}. Schritt 12 ${look(r[12])}. `
+    + `Zustandsordner: ${readdirSync(f.state).join(", ")}. Suite-Sperre: ${lock}. Last: ${loadavg().map((n) => n.toFixed(1)).join(" ")}.`;
+}
 
 describe("1 · der Prüfbefehl je Repo", () => {
   test("eine Session schlägt vor, nichts läuft; der Owner setzt ihn, der Check läuft ihn gegen den Kandidaten, grün landet die Session selbst", async () => {
@@ -87,6 +98,7 @@ describe("1 · der Prüfbefehl je Repo", () => {
     // der Prüfbefehl ist auch das Audit nach dem Land: ohne jeden Audit-Befehl in der Umgebung wartet eins auf den neuen Tip
     expect(r[10]?.body.pending).toEqual([expect.objectContaining({ repo: basename(f.repo), main: "main", covers: 1 })]);
     // …und sein Exit-Code ist das Urteil: grün, nicht „unknown, weil keine Fleet-Checks gezählt wurden“
+    if (r[11]?.status !== 200) throw new Error(auditDiagnosis(f, r));
     expect(r[11]?.status).toBe(200);
     expect((r[12]?.body.audits as Record<string, unknown>[])[0]).toMatchObject({ result: "green", exitCode: 0, checks: null, cmdSource: "check-command" });
     expect(persisted(f).repoChecks).toEqual({ [f.repo]: { cmd: CMD, by: "owner", at: expect.any(Number), proposal: null } });

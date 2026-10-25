@@ -415,7 +415,7 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
     // not the Fleet checkout, so the honest plan names the absent files instead of falling back to the
     // old role card.
     check("founding plan: the orchestratorin role names her seven start files, or their absence — never the old card",
-      orchard.status === 200 && !!orchardFile && /--- FEHLT --- [^\n]*docs\/start\/orchestrator\.md/.test(orchardFile.text)
+      orchard.status === 200 && !!orchardFile && /--- MISSING --- [^\n]*docs\/start\/orchestrator\.md/.test(orchardFile.text)
       && !orchardFile.text.includes("--- ROLLE --- Orchestratorin")
       && !orchardFile.text.includes("HOW THIS PROGRAM IS EXECUTED"));
     const manifestIds = ["promise-anchor", "broken-pointer"];

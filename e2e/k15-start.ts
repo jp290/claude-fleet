@@ -166,7 +166,7 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
       { teile?: { id: string; abschnitte: { id: string; text?: string | null }[] }[]; festgehalten?: unknown } | null : null;
     const rechteSatz = gehalten?.teile?.find((t) => t.id === "darf")?.abschnitte.find((x) => x.id === "darf")?.text ?? null;
     facts.fensterSlot = { cwd: amOrt?.cwd ?? null, rechteSatz: rechteSatz?.slice(0, 160) ?? null, festgehalten: !!gehalten?.festgehalten };
-    claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo) && !!rechteSatz?.startsWith("FLEET-RECHTE (Stufe „Bauen“");
+    claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo) && !!rechteSatz?.startsWith("FLEET RIGHTS (level “build”");
 
     // 2. the place free again: the start window, then „Lanes, MAIN and constellations ›“ leads to the build, a lane chosen
     if (amOrt?.cwd) await own("POST", `/api/slots/${free.id}/kill`, {}).catch(() => undefined);

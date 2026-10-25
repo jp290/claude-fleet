@@ -14785,7 +14785,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // UEBERGABE block says so), so nothing here is a second one.
   const orchestrator = isOrchestratorLabel(label);
   const harness = spawn.harness !== undefined ? spawn.harness : s.harness;
-  // DIE ROLLE, IHR START UND IHRE VIER PACKS — gelesen aus dem Baum, in dem die Vorgängerin steht.
+  // DIE ROLLE, IHR START UND IHRE FÜNF PACKS — gelesen aus dem Baum, in dem die Vorgängerin steht.
   // Keine Box und kein Ankerblock mehr: der Start ist genau die acht Dateien.
   const orchStart = orchestrator ? readOrchestratorStartParts(predecessor.cwd) : null;
   const ritual = orchestrator && orchStart
@@ -21416,7 +21416,7 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
     zusatz: textAbschnitt("systemzusatz", "server.ts#sessionListCut · server/session-start.ts#AUTO_MODE_BRIEF", zusatz, false),
     // the Orchestratorin's start rides beside the line as a file (orchestratorStartDatei); its texts stand under Richtung, Rolle and Wissen
     start: listRole === "orchestrator" && IS_CLAUDE ? textAbschnitt("systemzusatz", "server.ts#orchestratorStartDatei",
-      "--append-system-prompt-file: Richtung, Rolle, Systemkonzept und die vier Packs, wie unter „Richtung“, „Rolle“ und „Wissen“ gezeigt. "
+      "--append-system-prompt-file: Richtung, Rolle, Systemkonzept und die fünf Packs, wie unter „Richtung“, „Rolle“ und „Wissen“ gezeigt. "
         + "Der erste Brief trägt sie nicht mehr, nur die Übergabe und den Zeiger auf die Owner-Korrekturen.", false) : null,
     darf: [
       textAbschnitt("modus", "server/session-start.ts#PERMISSION_MODE", startMode(aspects.mode, false, permissionMode) ?? aspects.mode, false),
@@ -43164,7 +43164,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
     const rule = entry.why === "harness-unsupported" ? declaredPackRule(entry.id, manifest) : null;
     return { id: entry.id, reason: entry.why, ...(rule ? { harnesses: rule.harnesses } : {}) };
   });
-  // DIE ORCHESTRATORIN SIEHT IHREN ECHTEN START: Richtung, Rolle, Systemkonzept und die vier Packs,
+  // DIE ORCHESTRATORIN SIEHT IHREN ECHTEN START: Richtung, Rolle, Systemkonzept und die fünf Packs,
   // nicht die alte Session-Datei mit der Rollenkarte. Der Plan ist ihre Fassung, kein Nachbau daneben.
   const planSessionAgents = rolle === "orchestratorin" ? orchestratorPlanSessionAgents(fp.value.repoRoot) : sessionAgents;
   const body = {
@@ -44399,7 +44399,7 @@ function orchestratorStartDatei(cwd: string): string {
   }
   return pfad;
 }
-const ORCHESTRATOR_START_IM_PROMPT = "Dein Start — Richtung, Rolle, Systemkonzept und vier Packs — steht in deinem Systemprompt.";
+const ORCHESTRATOR_START_IM_PROMPT = "Dein Start — Richtung, Rolle, Systemkonzept und fünf Packs — steht in deinem Systemprompt.";
 
 function buildOrchestratorSpawnBrief(start: OrchestratorStartTeile, imSystemprompt = false): string {
   // THE OWNER'S CORRECTIONS STAY A MECHANISM, NOT A ROLE TEXT: the server binds the reader to the

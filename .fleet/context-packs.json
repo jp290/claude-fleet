@@ -300,6 +300,42 @@
     "status": "active"
   },
   {
+    "id": "sharpening-an-order",
+    "useWhen": "Bevor du einer Session mit Vorgeschichte einen Auftrag gibst: wie sharpen3 ihn gegen ihr Gespräch liest.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["orchestrator-start", "seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "sharpening-an-order.text", "path": "docs/packs/sharpening-an-order.md", "anchor": "# Sharpening an order", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 5161,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "sharpen3",
+    "useWhen": "Prompt compiler: reshape a rough prompt into context plus dosed discipline; run it only on a clear \"do this\".",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "sharpen3.text", "path": "docs/skills/sharpen3.md", "anchor": "# sharpen3", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2453,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "system-concept",
     "useWhen": "Wenn du verstehen musst, was Fleet ist, wofür es gebaut wird und wohin es geht: das Systemkonzept.",
     "scope": "repo-contract",
@@ -350,7 +386,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 10400,
+    "estimatedBytes": 10539,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

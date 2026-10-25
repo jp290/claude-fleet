@@ -5406,7 +5406,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${unboundFreeSlot}/kill`, {});
   rmSync(unboundRepo, { recursive: true, force: true });
 
-  // DER START DER ORCHESTRATORIN: sieben Texte, in dieser Ordnung. Der Test listet die Pfade
+  // DER START DER ORCHESTRATORIN: acht Texte, in dieser Ordnung. Der Test listet die Pfade
   // selbst statt die Server-Konstanten zu importieren — eine Datei, die der Server aus seiner
   // Liste verliert, soll hier rot werden und nicht still mitverschwinden. Die Texte gehören ihrem
   // Autor und werden nicht umgeschrieben: der Test kopiert sie aus der gestagten Instanz (ROOT)
@@ -5422,6 +5422,7 @@ export async function run(ctx: Ctx): Promise<void> {
     "docs/packs/working-with-the-owner.md",
     "docs/packs/how-fleet-remembers.md",
     "docs/packs/who-it-is-for.md",
+    "docs/packs/sharpening-an-order.md",
   ] as const;
   const orchStartQuelle = ORCH_START_FILES.map((pfad) => {
     try { return readFileSync(resolve(ROOT, pfad), "utf8"); } catch { return ""; }

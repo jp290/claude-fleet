@@ -190,7 +190,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
   {
     id: "orchestrator-card",
     wort: "Auftrag",
-    satz: "Richtung, Rolle, Systemkonzept und vier Packs sagen der Orchestratorin, wo sie steht.",
+    satz: "Richtung, Rolle, Systemkonzept und fünf Packs sagen der Orchestratorin, wo sie steht.",
     funktion: ["auftrag", "vertrag"],
     // Frage: Befund B „auftrag → Auftrag“, A18 „mehrere“; der Start aus server/orchestrator-start.ts, sein Korrekturen-Zeiger ist owner-heft
     frage: "auftrag",
@@ -201,7 +201,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
       { teil: "## Your knowledge", frage: "hintergrund" },
       { teil: "## Handing over", frage: "howto" },
     ],
-    grenze: {"art": "noetig", "grund": "Ohne ihre Richtung, Rolle, das Systemkonzept und die vier Packs fehlen ihr Auftrag, Grenzen und Wissen."},
+    grenze: {"art": "noetig", "grund": "Ohne ihre Richtung, Rolle, das Systemkonzept und die fünf Packs fehlen ihr Auftrag, Grenzen und Wissen."},
     schicht: "docs/start/ und docs/packs/",
     autor: ["Owner-Promotion"],
     harness: {"art": "alle"},

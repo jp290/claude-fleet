@@ -184,6 +184,14 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
       }
     }
     expect(starts[0][0].cwd).toBe(String(made?.body.path));
+    // SHARPEN3 KOMMT MIT FLEET (Owner 25.10.: „[Zitat entfernt]“): jeder dieser Sitze, auch der im fremden
+    // Repo, hat es als Skill aus dem Ordner seiner Belegung, nicht aus ~/.claude; der Text ist Fleets docs/skills/sharpen3.md am HEAD,
+    // und `$ARGUMENTS` steht darin, damit Claude einsetzt, was hinter /sharpen3 steht (code.claude.com/docs/en/skills)
+    for (const [start] of starts) {
+      const sharpen = skillsIn(start.addDirs).get("sharpen3");
+      expect(sharpen?.endsWith(atHead("docs/skills/sharpen3.md"))).toBe(true);
+      expect(sharpen).toContain("The user's original prompt: $ARGUMENTS");
+    }
 
     // EIN SITZ VERÄNDERT SEINEN ORDNER: eine SKILL.md umgeschrieben, ein Befehl daneben, Schreibrechte genommen. Ein anderer Sitz
     // mit demselben Inhalt bekommt seinen eigenen, unberührten Ordner; endet die Belegung, geht ihr Ordner mit ihr; was beim Start
@@ -240,14 +248,15 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     expect([(await startOf(sa)).appended.includes(SEAT_START_HEAD), (await startOf(sx)).appended.includes(SEAT_START_HEAD)]).toEqual([false, false]);
 
     // zwei Leben statt einem: jedes hat seine Frist (LIFE_DEADLINE_MS), und im vollen Lauf ist die Maschine voll
-    const [fassungB, fassung12, fassung15, leiheB, verwehrtB, leihe12, leihe15] = await life(f, [
+    const [fassungB, fassung12, fassung15, leiheB, verwehrtB, leihe12, leihe15, sharpen14] = await life(f, [
       get(`/api/slots/${b}/fassung?anlass=laufend`),
       get("/api/slots/12/fassung?anlass=laufend"),
       get("/api/slots/15/fassung?anlass=laufend"),
       borrow(tokenOf(f, b), "who-it-is-for"),
       borrow(tokenOf(f, b), "running-fleet"),
       borrow(tokenOf(f, 12), "who-it-is-for"),
-      borrow(tokenOf(f, 15), "system-concept")]);
+      borrow(tokenOf(f, 15), "system-concept"),
+      borrow(tokenOf(f, 14), "sharpen3")]);
     const [planB, plan12, plan15, planCodex, fassung16] = await life(f, [
       plan(f.repo, "claude", "bibliothek=an"), plan(other, "claude", "bibliothek=an"), plan(FLEET_WT), plan(FLEET_WT, "codex"),
       get("/api/slots/16/fassung?anlass=laufend")]);
@@ -262,6 +271,9 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     expect(verwehrtB).toMatchObject({ status: 409, body: { refusal: "trigger-not-matched" } });
     expect(leihe12).toMatchObject({ status: 200, body: { id: "who-it-is-for", origin: "fleet-manifest" } });
     expect(leihe15).toMatchObject({ status: 200, body: { id: "system-concept", origin: "fleet-manifest" } });
+    // der Weg der anderen Harnesses (und jedes Sitzes ohne Skill, hier einer im fremden Repo ohne Bibliothek): sharpen3 über die Leih-Tür
+    expect(sharpen14).toMatchObject({ status: 200, body: { id: "sharpen3", origin: "fleet-manifest" } });
+    expect((sharpen14?.body.sources as { content: string }[]).map((s) => s.content).join("\n")).toBe(atHead("docs/skills/sharpen3.md"));
 
     // DIE FASSUNG: unter „Wissen“ der Kopf, je Box-Pack sein Text, je Skill die Zeile aus Claudes Skill-Liste mit dem
     // Ordner seiner Belegung — kein „keine stehende Rolle“

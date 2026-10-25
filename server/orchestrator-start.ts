@@ -1,7 +1,7 @@
-// DER START DER ORCHESTRATORIN — Richtung, Rolle, Systemkonzept und vier Packs, mehr nicht.
+// DER START DER ORCHESTRATORIN — Richtung, Rolle, Systemkonzept und fünf Packs, mehr nicht.
 //
 // Der Owner will, dass sie mit einem kleinen, lesbaren Setup startet statt mit Rollenkarte, Box und
-// Rollen-Render (TASK.md, Runde 1; vierte Fassung, Runde 4). Die sieben Texte liegen im Repo und
+// Rollen-Render (TASK.md, Runde 1; vierte Fassung, Runde 4). Die acht Texte liegen im Repo und
 // gehören ihrem Autor: dieses Modul liest sie, es schreibt keinen Wortlaut um. Spawn, Nachfolge und
 // Fassung rufen dieselbe Lesefunktion, damit „was du siehst“ und „was startet“ dieselben Bytes sind.
 import { readFileSync } from "node:fs";
@@ -11,12 +11,13 @@ import { join } from "node:path";
 export const ORCHESTRATOR_DIRECTION_PATH = "docs/start/direction.md";
 export const ORCHESTRATOR_ROLE_PATH = "docs/start/orchestrator.md";
 export const ORCHESTRATOR_START_PATH = "docs/start/system-concept.md";
-/** die vier Packs, die mit dem Start kommen; `writing-for-agents` bleibt ein Verweis der Rolle */
+/** die fünf Packs, die mit dem Start kommen; `writing-for-agents` bleibt ein Verweis der Rolle */
 export const ORCHESTRATOR_PACK_PATHS = [
   "docs/packs/setting-up-agents.md",
   "docs/packs/working-with-the-owner.md",
   "docs/packs/how-fleet-remembers.md",
   "docs/packs/who-it-is-for.md",
+  "docs/packs/sharpening-an-order.md",
 ] as const;
 
 export interface OrchestratorStartDatei {
@@ -31,7 +32,7 @@ export interface OrchestratorStart {
   readonly rolle: OrchestratorStartDatei;
   readonly start: OrchestratorStartDatei;
   readonly packs: readonly OrchestratorStartDatei[];
-  /** die Summe der sieben Dateien — die Zahl, die der Owner mit `wc -c` gemessen hat */
+  /** die Summe der acht Dateien — die Zahl, die der Owner mit `wc -c` gemessen hat */
   readonly bytes: number;
 }
 
@@ -53,13 +54,13 @@ function lese(repoRoot: string, id: string, pfad: string): OrchestratorStartDate
   }
 }
 
-/** Die sieben Texte in ihrer Ordnung, die fehlenden ausgelassen (für Fassung und Beleg). */
+/** Die acht Texte in ihrer Ordnung, die fehlenden ausgelassen (für Fassung und Beleg). */
 export function orchestratorStartDateien(teile: OrchestratorStartTeile): readonly OrchestratorStartDatei[] {
   return [teile.direction, teile.rolle, teile.start, ...teile.packs]
     .filter((datei): datei is OrchestratorStartDatei => datei !== null);
 }
 
-/** Die sieben Texte einzeln, mit den fehlenden als `null` und ihrem Grund — nie eine leere Zeile. */
+/** Die acht Texte einzeln, mit den fehlenden als `null` und ihrem Grund — nie eine leere Zeile. */
 export function readOrchestratorStartParts(repoRoot: string): OrchestratorStartTeile {
   const direction = lese(repoRoot, "direction", ORCHESTRATOR_DIRECTION_PATH);
   const rolle = lese(repoRoot, "rolle", ORCHESTRATOR_ROLE_PATH);
@@ -73,7 +74,7 @@ export function readOrchestratorStartParts(repoRoot: string): OrchestratorStartT
   return { direction, rolle, start, packs, fehlt };
 }
 
-/** Die sieben Texte ganz, oder der Grund, warum dieser Start nicht aus ihnen gebaut werden kann. */
+/** Die acht Texte ganz, oder der Grund, warum dieser Start nicht aus ihnen gebaut werden kann. */
 export function readOrchestratorStart(repoRoot: string):
   { readonly ok: true; readonly value: OrchestratorStart } | { readonly ok: false; readonly error: string } {
   const teile = readOrchestratorStartParts(repoRoot);
@@ -84,7 +85,7 @@ export function readOrchestratorStart(repoRoot: string):
     bytes: [teile.direction, teile.rolle, teile.start, ...packs].reduce((sum, datei) => sum + datei.bytes, 0) } };
 }
 
-/** Der Text, den die Session bekommt: die sieben Dateien in ihrer Ordnung, durch eine Leerzeile getrennt. */
+/** Der Text, den die Session bekommt: die acht Dateien in ihrer Ordnung, durch eine Leerzeile getrennt. */
 export function renderOrchestratorStart(start: OrchestratorStart): string {
   return [start.direction.text, start.rolle.text, start.start.text, ...start.packs.map((pack) => pack.text)].join("\n\n");
 }

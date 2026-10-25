@@ -20,7 +20,7 @@ export const CONTEXT_PACK_TRIGGERS = [
   // Passed by server.ts#BOOTSTRAP_CONTEXT_TRIGGERS only: founding sessions carry orchestration
   // guidance without any queue seed riding along (the task-queue trigger and pack are removed).
   "orchestration",
-  // DER START DER ORCHESTRATORIN (TASK.md, Runde 1): reserviert für die vier Packs in docs/packs/.
+  // DER START DER ORCHESTRATORIN (TASK.md, Runde 1): reserviert für die fünf Packs in docs/packs/.
   // Keine andere Gründung trägt diesen Auslöser, damit MAIN, Lane und freie Session byte-gleich bleiben.
   "orchestrator-start",
   // DER START EINES SITZES OHNE STEHENDE ROLLE (server/sitz-wissen.ts): Branch-Session, freie Session, Sitz in

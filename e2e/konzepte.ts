@@ -931,11 +931,15 @@ function firstInputText(input) {
 process.stdin.on("data", (chunk) => {
   if (firstRecorded) return;
   firstPrompt += chunk.toString("utf8").replace(/\r\n?/g, "\n");
-  const text = firstInputText(firstPrompt);
-  if (text === null) return;
+  const pasted = firstInputText(firstPrompt);
+  if (pasted === null) return;
   void (async () => {
     firstRecorded = true;
     firstPrompt = "";
+    // A FIRST PROMPT OVER THE PASTE LIMIT arrives stored whole, behind one line that names its file (server.ts#PASTE_MAX_BYTES):
+    // a real agent reads that file before it acts, and so does this one — the Orchestratorin's start outside Claude is over it
+    const stored = /Read the complete text from (\S+) before acting on it\./.exec(pasted)?.[1] ?? null;
+    const text = stored ? readFileSync(stored, "utf8") : pasted;
     const nativePath = /^Session-Regeln: (\.\/AGENTS\.override\.md)$/m.exec(text)?.[1] ?? null;
     const native = nativePath ? readFileSync(nativePath, "utf8") : "";
     const pointer = /GET (http:\/\/[^\s]+\/api\/self\/konzepte\/k-owner-korrekturen\/leseansicht)/.exec(text + "\n" + native)?.[1] ?? null;

@@ -189,14 +189,14 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
     }
   }, 75_000);
 
-  test("die Orchestratorin bekommt Richtung, Rolle, Systemkonzept und vier Packs — nicht mehr die Rollenkarte", async () => {
+  test("die Orchestratorin bekommt Richtung, Rolle, Systemkonzept und fünf Packs — nicht mehr die Rollenkarte", async () => {
     const dir = mkdtempSync(join(tmpdir(), "orchestrator-start-"));
     const out = join(dir, "out.json");
     const pfade = ["docs/start/direction.md", "docs/start/orchestrator.md", "docs/start/system-concept.md",
       "docs/packs/setting-up-agents.md", "docs/packs/working-with-the-owner.md", "docs/packs/how-fleet-remembers.md",
-      "docs/packs/who-it-is-for.md"];
+      "docs/packs/who-it-is-for.md", "docs/packs/sharpening-an-order.md"];
     // DER PLAN BRAUCHT EINEN EIGENEN BAUM MIT EINEM ZWEIG: der Merge-Check prüft einen Checkout,
-    // dem der Integrationszweig fehlen darf. Die sieben Texte (und das Manifest, das die vier Packs
+    // dem der Integrationszweig fehlen darf. Die acht Texte (und das Manifest, das die fünf Packs
     // registriert) werden aus dem Checkout in ein kleines Repo kopiert und dort committet; so fragt
     // der Test den Gründungsplan, ohne sich auf den Zweig des umgebenden Baums zu verlassen.
     const repo = join(dir, "repo");
@@ -281,15 +281,15 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       // Kein Rollen-Render: die Startzeile schließt den Projekt-Monolithen aus, lädt aber kein --add-dir.
       expect(got.orchCmd).not.toContain("--add-dir");
       expect(got.orchCmd).toContain("claudeMdExcludes");
-      // DER GRÜNDUNGSPLAN ZEIGT DENSELBEN START: keine alte Rollenkarte, dieselben sieben Dateien,
+      // DER GRÜNDUNGSPLAN ZEIGT DENSELBEN START: keine alte Rollenkarte, dieselben acht Dateien,
       // derselbe Fassungs-Hash wie die laufende Slot-Fassung.
       expect(got.plan.sessionAgents.text).toBe(texte.join("\n\n"));
       expect(got.plan.sessionAgents.parts.map((part) => part.path)).toEqual(pfade);
       expect(got.plan.fassungsHash).toBe(got.laufend.hash);
       expect(got.plan.sessionAgents.text).not.toContain("--- ROLLE ---");
       const liest = got.fassung.teile.find((teil) => teil.id === "liest")!.abschnitte;
-      // GENAU DIESE SIEBEN TEILE, IN DIESER REIHENFOLGE, mit Quelle und Bytes: die Richtung steht
-      // als eigener Abschnitt vor der Rolle, danach Systemkonzept und die vier Packs unter „Wissen“.
+      // GENAU DIESE ACHT TEILE, IN DIESER REIHENFOLGE, mit Quelle und Bytes: die Richtung steht
+      // als eigener Abschnitt vor der Rolle, danach Systemkonzept und die fünf Packs unter „Wissen“.
       expect(liest[0]!.id).toBe("richtung");
       expect(liest[1]!.id).toBe("rolle");
       // ...und sie sagt, wie der Start ankommt: als Datei am Systemprompt, nicht im ersten Brief
@@ -554,12 +554,12 @@ describe("Liest stimmt mit dem Transkript überein", () => {
       };
       const datei = (path: string) => ({ path, content: readFileSync(path, "utf8") });
       const mitInhalt = (list: { pfad: string }[]) => list.map((eintrag) => datei(eintrag.pfad));
-      // DIE ORCHESTRATORIN LÄDT IHREN NEUEN START: Richtung, Rolle, Systemkonzept und vier Packs,
+      // DIE ORCHESTRATORIN LÄDT IHREN NEUEN START: Richtung, Rolle, Systemkonzept und fünf Packs,
       // dazu die globalen Regeln und ihr Gedächtnis. Kein Rollen-Render und kein Projekt-Monolith.
       const startRolle = ["docs/start/direction.md", "docs/start/orchestrator.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
       const startWissen = ["docs/start/system-concept.md", "docs/packs/setting-up-agents.md",
         "docs/packs/working-with-the-owner.md", "docs/packs/how-fleet-remembers.md",
-        "docs/packs/who-it-is-for.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
+        "docs/packs/who-it-is-for.md", "docs/packs/sharpening-an-order.md"].map((pfad) => ({ pfad: join(ROOT, pfad) }));
       expect(got.orch!.dateien).toEqual(transkript([...mitInhalt(startRolle), ...mitInhalt(geladen.orch),
         ...mitInhalt(startWissen), datei(memOrch)]));
       expect(got.lane!.dateien).toEqual(transkript(mitInhalt(geladen.lane)));

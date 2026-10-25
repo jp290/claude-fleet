@@ -3513,7 +3513,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Lesegrenze (`server.ts#messageAddressesFor`, `#resolveMessageAddress`):** Eine ungebundene
   Session liest nur ihre Session-Adresse, eine Lane nur ihre Lane-Adresse, jeweils solange
   `slot` und `openedAt` passen, und dazu die Adressen ihrer Vorgängerinnen in derselben Linie
-  (oben). Gesendet wird immer unter der eigenen, aktuellen Adresse. Die Zustellung setzt
+  (oben). Die Orchestratorin liest zuerst unter ihrer Rolle und dahinter unter ihrer Session-Adresse samt
+  Linie: dort kommt an, was ein Sitz, den sie geöffnet hat, an `{kind:"session",slot}` schreibt. Sie sendet
+  weiter unter der Rolle. Gesendet wird immer unter der eigenen, aktuellen Adresse. Die Zustellung setzt
   dieselbe aktuelle Leseberechtigung voraus:
   Wird eine Session in derselben Occupation zur gebundenen MAIN, hält sie während der Bindung keine Session-Adresse.
   Ein später gestorbener Empfänger oder eine nicht mehr gelesene Adresse bleibt im Record adressiert;

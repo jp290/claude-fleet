@@ -17868,14 +17868,18 @@ function messageAddressesFor(s: Slot): MessageAddress[] {
   if (s.worktree) return [{ kind: "lane", slot: s.id, openedAt: s.openedAt },
     ...before("lane", s.laneSeats.map((seat) => seat.openedAt))];
   const out: MessageAddress[] = [];
+  const session = (): MessageAddress[] => [{ kind: "session", slot: s.id, openedAt: s.openedAt }, ...before("session", !s.lineageId ? []
+    : lineageHandovers.filter((r) => r.lineageId === s.lineageId && r.from.slot === s.id).map((r) => r.from.openedAt))];
   const bound = boundProgramsForMain(s);
   for (const p of bound) out.push({ kind: "program", id: p.id });
+  // The Orchestratorin reads under her role first, and under her own session line behind it: a seat she opened through
+  // POST /api/self/branches/open answers her at {kind:"session",slot} (branchPeers lets it through), and those
+  // messages lay unread when she held only the role (brief postfach-sitz-antwort, 24.10.: nine reports of two seats).
   if (!bound.length && deliveryRecipient({ kind: "orchestrator" }) === s)
-    out.push({ kind: "role", role: "orchestrator" });
+    out.push({ kind: "role", role: "orchestrator" }, ...session());
   if (!out.length && !isOrchestratorLabel(s.label) && !programs.some((p) => p.status === "active"
     && p.main?.slot === s.id && p.main.openedAt === s.openedAt))
-    out.push({ kind: "session", slot: s.id, openedAt: s.openedAt }, ...before("session", !s.lineageId ? []
-      : lineageHandovers.filter((r) => r.lineageId === s.lineageId && r.from.slot === s.id).map((r) => r.from.openedAt)));
+    out.push(...session());
   return out;
 }
 

@@ -20,7 +20,7 @@ import { BASE, ROOT, check, get, post, restartSrv, stopSrv } from "./harness";
 const NO_MESSAGE_ADDRESS = "not a principal with an address";
 
 type RoleConflict = { address: string; slots: number[]; note?: string };
-type Row = { id: number; cwd: string | null; label: string | null; worktree?: unknown; role?: string; addresses?: unknown[] };
+type Row = { id: number; cwd: string | null; label: string | null; openedAt?: number; worktree?: unknown; role?: string; addresses?: unknown[] };
 interface Poll { slots: Row[]; roleConflict?: RoleConflict }
 interface SlotAnswer { ok?: boolean; label?: string | null; roleConflict?: RoleConflict; error?: string; addresses?: unknown[] }
 
@@ -260,8 +260,9 @@ export async function messageDeliveryChecks(): Promise<void> {
     return fixture;
   };
   const orch = orchestratorFixture();
-  check("role message: the Orchestratorin holds the role address and reads a message to it",
-    JSON.stringify(orch.api.messageAddressesFor(orch.slot)) === JSON.stringify([{ kind: "role", role: "orchestrator" }])
+  check("role message: the Orchestratorin holds the role address first, her session address behind it, and reads a message to it",
+    JSON.stringify(orch.api.messageAddressesFor(orch.slot))
+      === JSON.stringify([{ kind: "role", role: "orchestrator" }, { kind: "session", slot: 29, openedAt: 100 }])
       && orch.api.messageInboundFor(orch.slot, orch.rows[0]!),
     JSON.stringify(orch.api.messageAddressesFor(orch.slot)));
   await orch.tick();
@@ -451,8 +452,9 @@ export async function run(): Promise<void> {
       inboxA1.status === 200, `${inboxA1.status} ${JSON.stringify(inboxA1.body).slice(0, 200)}`);
     // the board's Postfach tab (src/postfach.ts) reads and counts under the addresses the rail answers; a plain
     // session's only address is its own, which the board has from id and openedAt
-    check("one holder: the poll carries A's Postfach addresses as its message rail answers them — the role — and none for a plain session",
-      JSON.stringify(rowA1?.addresses) === JSON.stringify([{ kind: "role", role: "orchestrator" }])
+    check("one holder: the poll carries A's Postfach addresses as its message rail answers them — the role, then her session — and none for a plain session",
+      JSON.stringify(rowA1?.addresses)
+        === JSON.stringify([{ kind: "role", role: "orchestrator" }, { kind: "session", slot: a, openedAt: rowA1?.openedAt }])
         && JSON.stringify(rowA1?.addresses) === JSON.stringify(inboxA1.body.addresses) && !!rowB1 && rowB1.addresses === undefined,
       JSON.stringify({ poll: rowA1?.addresses ?? null, rail: inboxA1.body.addresses ?? null, plain: rowB1?.addresses ?? null }));
 

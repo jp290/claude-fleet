@@ -120,9 +120,9 @@ which one it was derived from, so the person who takes it can see what was chang
 - **A stone in an awkward place.** A rule that must always hold, given as a skill, may never be opened; a how-to for
   one rare moment, given with every request, costs attention on every turn. Check where it sits in the start brief.
 - **Several stones at once.** The person can't tell which one helped. One stone per round.
-- **Changing yourself by memory.** What you only decide to do differently dies with your context, and a note in your
-  notebook doesn't reach the next agent's start. How the agent works is a stone. Only a stone stands as a + line in the
-  start and travels with a shared setup.
+- **Changing yourself by memory.** What you only decide to do differently dies with your context, and a note reaches
+  only your own successor, as one note among many. How the agent works is a stone: only a stone stands as a + line in
+  the start, holds where it sits, and travels with a shared setup.
 
 ## Done
 

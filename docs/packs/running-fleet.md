@@ -170,6 +170,12 @@ reads as his.
   points the wrong way. As the orchestrator replying with `replyTo`, keep the `openedAt` the parent came from: the
   successor holds its predecessor's address, and the new one answers 409 "replyTo names no message addressed to
   this sender".
+- **Let two seats talk directly with an edge, when they ask.** A round through you costs them an hour; an edge lets
+  two plain sessions write each other, both ways, until a time: `POST /api/self/kanten {"between": [<a>, <b>],
+  "why": "…", "minutes": 60}` (without `minutes` an hour, at most a day). It frees writing and nothing else, and
+  only between sessions you may write yourself, never a lane or a MAIN. Both hear it in one sentence with its end,
+  and the board shows `↔ <slot>` on both rows. `GET /api/self/kanten` lists every edge with every message it let
+  through: read it before you judge what the two agreed. `DELETE /api/self/kanten/<id>` closes one early.
 - **Acknowledge a message once you have acted on it.** `POST /api/self/messages/<id>/read` marks it. The unread
   list is what you and your successor read as open work (`./state.sh --brief`, line `own-messages`), and dozens
   of unacknowledged messages hide the one that matters. An unacknowledged message also comes back: the postfach

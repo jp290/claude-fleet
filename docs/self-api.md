@@ -3641,7 +3641,8 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | Situation | Code | Satz |
 |---|---|---|
 | Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
-| Session an etwas anderes als die Orchestratorin oder ihr Branch-Gegenüber; Ziel Session ohne Orchestratorin-Antwort und ohne Paar | 409 | `an unbound session may address only the Orchestrator or its branch counterpart (…); a session destination is otherwise only an Orchestrator reply` |
+| Session an etwas anderes als die Orchestratorin oder ihr Branch-Gegenüber; Ziel Session ohne Orchestratorin-Antwort, ohne Paar und ohne lebende Kante | 409 | `an unbound session may address only the Orchestrator or its branch counterpart (…); a session destination is otherwise only an Orchestrator reply` |
+| … und das Paar hatte eine Kante, die vorbei ist | 409 | `your edge to slot <n> ended at <hh:mm> — ask the Orchestrator for a new one; ` + der Satz darüber |
 | `{kind:"session",slot}` auf einen Slot ohne lebende Session | 400 | `to session slot <n> holds no live session — without openedAt the address names the session in that slot now` |
 | Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
 | GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator` |
@@ -3672,6 +3673,32 @@ Audit-Zeile `messages_unreadable`) und hinterlässt eine **persistierte Narbe** 
 exakt wie einer, an den nie jemand geschrieben hat. Die erste Narbe gewinnt: ein späterer Boot
 sieht keine kaputten Bytes mehr, und `at` nach vorn zu schieben würde den Verlust auf Nachrichten
 umdatieren, die längst weg waren.
+
+### Kanten — `GET /api/self/kanten`, `POST /api/self/kanten`, `DELETE /api/self/kanten/:id`
+
+Eine **Kante** lässt zwei Sessions sich direkt schreiben, in beide Richtungen, bis zu einer Zeit
+(`server/kanten.ts`, Tür `server.ts#kantenTuer`, Prüfung in `sendMessageFor`). Owner 25.10.: „[Zitat entfernt]“
+ Geprüft wird beim Senden, also
+gilt sie sofort und erlischt von selbst. Ihre Enden sind Sitze (Slot und Ordner): eine Nachfolge
+behält die Kante, ein Slot in einem anderen Ordner fällt heraus.
+
+- **`POST`** nur die Orchestratorin (sonst **403**): `{between:[<slot>,<slot>], why, minutes?}`,
+  `why` höchstens 500 Zeichen, `minutes` größer 0 und höchstens 1440, ohne Angabe 60. Beide Slots
+  müssen schlichte Sessions sein (Sender-Art `session`): keine Lane, keine MAIN, nicht sie selbst
+  (**409**). Eine lebende Kante desselben Paars wird ersetzt. Beide Enden bekommen von der
+  Rollenadresse der Orchestratorin einen Satz ins Postfach: „Du kannst Slot 3 bis 15:30 direkt
+  schreiben (…); die Orchestratorin liest mit. Grund: …“. Antwort **201** `{ok, kante, told:[<ids>]}`.
+- **`DELETE /api/self/kanten/<id>`** nur die Orchestratorin: schließt sie vor ihrem Ende, beide
+  Enden bekommen „Deine Kante zu Slot 3 ist seit 15:10 geschlossen …“. Unbekannt oder vorbei: **404**.
+- **`GET`**: der Orchestratorin jede Kante, einer Session ihre eigenen, lebende und die des letzten
+  Tages: `{kanten:[{id, between, why, at, until, endedAt, live, untilText, messages:[{id, at, from,
+  to, text}]}]}`. `messages` sind die Nachrichten, die nur diese Kante durchließ (höchstens 200 je
+  Kante, solange der Postfach-Record sie hält).
+- Das Board trägt die lebenden Kanten an der Session-Zeile (`GET /api/sessions`, `kanten:[{slot,
+  until, why}]`) und zeigt sie als `↔ <slot>`.
+
+Eine Kante gibt **nur das Schreiben** frei: kein `replyTo`-Recht an Dritte, kein Lesen fremder
+Nachrichten, keine Land-, Deploy- oder Owner-Autorität.
 
 ### Owner liest und antwortet — `GET /api/messages`, `POST /api/messages/:id/reply`
 

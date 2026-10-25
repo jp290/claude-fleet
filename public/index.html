@@ -1164,6 +1164,9 @@
      no pointer — it is a reading; the board's Info → Setup shows the stones */
   .slot .gave { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 5px; border-radius: 5px;
     font-size: var(--chat-ui-fs); line-height: 1; color: var(--amber); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 45%, transparent); }
+  /* AN EDGE (SlotInfo.kanten): the same box, quiet — the other slot it writes directly; the tooltip says until when and why */
+  .slot .kante { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 5px; border-radius: 5px;
+    font-size: var(--chat-ui-fs); line-height: 1; color: var(--dim); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dim) 45%, transparent); }
   /* small on purpose: the sidebar is 228px and a lane label is already tight, so the indent buys
      "belongs to the row above" with the least width it can be read at */
   .slot.stacked { margin-left: 10px; }
@@ -4071,6 +4074,7 @@
       #msheet .mshrow.current { background: var(--chat-surface); color: var(--chat-ink); }
       .mshrow .mshw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .mshrow .mshgave { color: var(--amber); }
+      .mshrow .mshkante { color: var(--chat-mute); }
       .mshval { margin-left: auto; flex: none; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
       .mshnm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .mshname, .mshwhy { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

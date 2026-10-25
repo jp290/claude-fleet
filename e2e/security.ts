@@ -142,6 +142,11 @@ const PRE_AUTH_ROUTES = [
   String.raw`~ /^\/api\/self\/inbox\/([0-9a-f]{24})\/read$/`,
   '= /api/self/messages',
   String.raw`~ /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/`,
+  // EDGES (server/kanten.ts, server.ts#kantenTuer): the Orchestratorin lets two sessions write each other directly until a
+  // time. POST and DELETE answer only her (messageSenderFor gives her role address, every other caller gets 403); both ends
+  // must be plain sessions, never a lane, a MAIN or herself. An edge frees only the send check in sendMessageFor, nothing
+  // else: no read of foreign mail, no reply right, no land, deploy or owner authority. GET shows a session only its own edges.
+  String.raw`~ /^\/api\/self\/kanten(?:\/([0-9a-f]{16}))?$/`,
   // A SESSION LANDS ITS OWN BRANCH (rechts-7 P5, owner Z132 18.10.: „[Zitat entfernt]“
   // ; Mangel 121) — it moves the integration branch. What bounds it: the principal is the token's slot, and repo and
   // branch come from that session's own checkout (ownBranchOf: its linked worktree of a workplace repo; a main checkout, a

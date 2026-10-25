@@ -582,6 +582,9 @@ export interface SlotInfo {
   // what this session started with on top of its predecessor, one word per stone: the pack ids, then „purpose“
   // (Slot.selbst.neu, POST /api/self/einrichten). ABSENT = nothing new at its start.
   gaveItself?: string[];
+  // the edges the Orchestrator granted it (server/kanten.ts): the other session it writes directly, until when, and why.
+  // ABSENT = none live; a closed or ended edge is never on the poll.
+  kanten?: { slot: number; until: number; why: string }[];
   // the addresses this occupant reads its Postfach under (server.ts#messageAddressesFor, the same list
   // GET /api/self/messages answers as `addresses`): a role or a Program beside or instead of its own.
   // ABSENT = only its own session or lane address, which the board knows from id and openedAt.
@@ -847,6 +850,7 @@ export interface TEntry { n: number; role: "user" | "assistant"; ts: string | nu
 // markdown rendering shared with the guest reader — see src/md.ts
 
 
+const kanteClock = (ms: number) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
@@ -6155,6 +6159,8 @@ function sessionsSheet(): HTMLElement[] {
     if (s.awaiting === "owner") nm.appendChild(el("span", "mshwhy", "wartet auf dich"));
     // what it gave itself at its start (SlotInfo.gaveItself): on the phone in words, there is no hover for the bar's +N
     if (s.gaveItself?.length) nm.appendChild(el("span", "mshwhy mshgave", `gave itself ${s.gaveItself.length} stone${s.gaveItself.length === 1 ? "" : "s"}`));
+    // its edges (SlotInfo.kanten), in words like the line above
+    for (const k of s.kanten ?? []) nm.appendChild(el("span", "mshwhy mshkante", `writes slot ${k.slot} until ${kanteClock(k.until)}`));
     const act = el("span", `act ${state}`);
     act.title = STATE_WORD[state];
     r.replaceChildren(el("span", "maddr", addr), nm, act);
@@ -7535,6 +7541,12 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
         g.title = `gave itself ${n} stone${n === 1 ? "" : "s"} at its start: ${s.gaveItself.map((w) => w === "purpose" ? "its purpose" : `context pack ${w}`).join(", ")}`
           + " — the board's Info → Setup shows every new line";
         r1.appendChild(g);
+      }
+      // AN EDGE (server/kanten.ts): it writes another session directly until a time — the other slot, in the lane count's box
+      if (s.kanten?.length) {
+        const k = el("span", "kante", `↔ ${s.kanten.map((x) => x.slot).join(" ")}`);
+        k.title = s.kanten.map((x) => `writes slot ${x.slot} directly until ${kanteClock(x.until)} — the Orchestrator allowed it: ${x.why}`).join("\n");
+        r1.appendChild(k);
       }
       // ⎇+ — the one button the owner calls right as it is. Not on lanes: a lane off a lane would
       // nest .worktrees inside a worktree.

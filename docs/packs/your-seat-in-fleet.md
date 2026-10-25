@@ -49,6 +49,10 @@ when a message or the person asks about your land.
   read), then `POST /api/self/messages {"to": <its from>, "replyTo": "<id>", "payload": {"kind": "text", "text": "…"},
   "idempotencyKey": "<id>-1"}`, at most 2000 characters.
 - You may write to the session that opened your branch, to a session on a branch you opened, and to the Orchestrator.
+- To write any other session directly, ask the Orchestrator in the mailbox for an edge: its slot, the reason and how
+  long. Once she grants it, you both get one sentence with its end, and until then you write each other at
+  `{"kind": "session", "slot": <n>}`; she reads every message. After the end the door answers 409 "your edge to slot
+  <n> ended at …": ask her again rather than going around it. `GET /api/self/kanten` shows your edges.
 
 ## Handover
 

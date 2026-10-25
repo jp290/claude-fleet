@@ -22,6 +22,8 @@ import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, typ
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
 import { openerGeladen, openerVon } from "./server/opener";
+import { andererSlot, beendeteKante, type Kante, kanteAbgelaufen, kanteBeruehrt, kanteGeben, kanteGeschlossen, kanteGilt, kanteLebt,
+  kanteMerkt, kanteSchliessen, kantenGeladen, kantenGestutzt, kantenWunsch, lebendeKante, uhrzeit } from "./server/kanten";
 import type { Rechte } from "./session-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
 import type { CcAnatomie } from "./src/k15-anatomie";
@@ -4740,6 +4742,8 @@ let shelved: Record<string, { at: number; note: string; review?: LaneReviewCandi
 // the text travels between this book, the state file and the owner's own board — never into
 // /api/self, a pane env, the audit log or a server log.
 let branchBook: BranchBook = [];
+// THE EDGES the Orchestratorin granted: two sessions write each other directly until a time (server/kanten.ts)
+let kantenBook: Kante[] = [];
 // ALTBESTAND: the pre-K5 notepads, keyed by worktree PATH. Adopted onto their branch ONCE, at the
 // first boot that knows branches (settleBranchBook; `notesAdoptedAt` says it ran), so a path that
 // later holds another branch never inherits a stale note. Persisted UNCHANGED until the Bauleitung
@@ -6104,7 +6108,7 @@ function stateSnapshot(): string {
     ...(blockerObservedAt.size ? { blockerObservedAt: Object.fromEntries(blockerObservedAt) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, ...(Object.keys(repoChecks).length ? { repoChecks } : {}), repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
+    repoBases, repoWorkers, ...(Object.keys(repoChecks).length ? { repoChecks } : {}), repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(kantenBook.length ? { kanten: kantenGestutzt(kantenBook, Date.now()) } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -18060,6 +18064,17 @@ async function branchPeers(a: Slot, to: MessageAddress): Promise<boolean> {
   }
   return false;
 }
+// AN EDGE (server/kanten.ts): the Orchestratorin let these two seats write each other directly until a time. Session to session
+// only, by seat (slot and folder) — a succession keeps its edge, a slot recycled into another folder drops out. `ended` is the
+// pair's last closed edge, so a refusal can say since when.
+function kanteFuer(s: Slot, from: MessageAddress, to: MessageAddress): { live: Kante | null; ended: Kante | null } {
+  const none = { live: null, ended: null };
+  if (from.kind !== "session" || to.kind !== "session" || !s.cwd) return none;
+  const b = slotFrom(to.slot);
+  if (!b?.cwd || b.openedAt !== to.openedAt || b === s) return none;
+  const x = { slot: s.id, cwd: s.cwd }, y = { slot: b.id, cwd: b.cwd }, now = Date.now();
+  return { live: lebendeKante(kantenBook, x, y, now), ended: beendeteKante(kantenBook, x, y, now) };
+}
 const SESSION_COUNTERPART = "an unbound session may address only the Orchestrator or its branch counterpart "
   + "(the session that opened its branch through POST /api/branches/open, or the session on a branch it opened); "
   + "a session destination is otherwise only an Orchestrator reply";
@@ -18106,12 +18121,16 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   // the Orchestrator answers it, and the two ends of a branch door write to each other (K13) — the
   // Orchestratorin as opener too, under her role address (bau/ohne-owner-token: her first word to the
   // session she opened went through /send with the owner token).
+  let viaKante: Kante | null = null;
   if (sender.from.kind === "session" || to.kind === "session") {
     const orchestratorSends = sender.from.kind === "role" && sender.from.role === "orchestrator";
     const orchestrator = (sender.from.kind === "session" && to.kind === "role" && to.role === "orchestrator")
       || (orchestratorSends && to.kind === "session" && replyTo !== null);
-    if (!orchestrator && !((sender.from.kind === "session" || orchestratorSends) && await branchPeers(s, to)))
-      return json({ error: SESSION_COUNTERPART }, 409);
+    const kante = orchestrator ? null : kanteFuer(s, sender.from, to);
+    if (!orchestrator && !kante?.live && !((sender.from.kind === "session" || orchestratorSends) && await branchPeers(s, to)))
+      return json({ error: kante?.ended && s.cwd ? `${kanteAbgelaufen(kante.ended, { slot: s.id, cwd: s.cwd })}; ${SESSION_COUNTERPART}`
+        : SESSION_COUNTERPART }, 409);
+    viaKante = kante?.live ?? null;
   }
   if (to.kind === "lane") {
     if (sender.from.kind !== "program")
@@ -18144,6 +18163,8 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   }
 
   const entry = appendMessage(sender.from, to, payload, key, replyTo);
+  // the Orchestratorin reads along: the edge keeps the id of every message it let through (GET /api/self/kanten)
+  if (viaKante) kantenBook = kanteMerkt(kantenBook, viaKante.id, entry.id);
   if (resolved.escalatedTo === "owner") {
     const event: MessageFleetEvent = {
       id: randomBytes(12).toString("hex"), watchId: null,
@@ -18167,6 +18188,63 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   return json({ ok: true, existing: false, message: entry,
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
     note: resolved.note, escalatedTo: resolved.escalatedTo });
+}
+
+// /api/self/kanten — THE EDGE DOOR (server/kanten.ts). POST and DELETE are the Orchestratorin's alone: she lets two sessions
+// write each other until a time, or closes it early, and both hear it in one sentence from her role address. GET shows each
+// edge with the messages it let through: to her every edge, to a session its own. An edge frees writing between two
+// sessions she may write herself, nothing else — no lane, no MAIN, never herself as an end.
+async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Response> {
+  const sender = messageSenderFor(s);
+  const orchestratorin = sender.ok && sender.from.kind === "role" && sender.from.role === "orchestrator";
+  const now = Date.now();
+  const view = (k: Kante) => ({ id: k.id, between: [k.a.slot, k.b.slot], why: k.why, at: k.at, until: k.until, endedAt: k.endedAt,
+    live: kanteLebt(k, now), untilText: uhrzeit(k.endedAt ?? k.until),
+    messages: k.messages.map((mid) => messages.entries.find((m) => m.id === mid)).filter((m): m is Message => !!m)
+      .map((m) => ({ id: m.id, at: m.at, from: m.from.kind === "session" ? m.from.slot : null,
+        to: m.to.kind === "session" ? m.to.slot : null, text: m.payload.text })) });
+  if (req.method === "GET") {
+    if (id !== null) return json({ error: "GET /api/self/kanten lists every edge; there is no single-edge read" }, 400);
+    const seat = s.cwd ? { slot: s.id, cwd: s.cwd } : null;
+    const mine = kantenGestutzt(kantenBook, now).filter((k) => orchestratorin || (seat !== null && kanteBeruehrt(k, seat)));
+    return json({ kanten: mine.map(view) });
+  }
+  if (!orchestratorin)
+    return json({ error: "only the Orchestrator grants or closes an edge — ask her in the Postfach, with the slot and the reason" }, 403);
+  // her sentence into a session's Postfach, from her role address, like any word of hers
+  const sag = (k: Kante, text: (k: Kante, du: { slot: number; cwd: string }) => string, tag: string): string[] => [k.a, k.b].flatMap((end) => {
+    const live = slotFrom(end.slot);
+    if (!live?.cwd || live.cwd !== end.cwd) return [];
+    return [appendMessage({ kind: "role", role: "orchestrator" }, { kind: "session", slot: live.id, openedAt: live.openedAt },
+      { kind: "text", text: text(k, end) }, `kante:${k.id}:${tag}:${end.slot}`, null).id];
+  });
+  if (req.method === "DELETE") {
+    if (id === null) return json({ error: "DELETE /api/self/kanten/<id> closes one edge" }, 400);
+    const done = kanteSchliessen(kantenBook, id, now);
+    if (!done.kante) return json({ error: `no live edge ${id}` }, 404);
+    kantenBook = done.book;
+    audit("kante_close", undefined, `slot ${done.kante.a.slot} <-> slot ${done.kante.b.slot} ${id}`);
+    const told = sag(done.kante, kanteGeschlossen, "zu");
+    await saveStateNow();
+    return json({ ok: true, kante: view(done.kante), told });
+  }
+  if (id !== null) return json({ error: "POST /api/self/kanten grants an edge; the path names none" }, 400);
+  const w = kantenWunsch(await readJson(req));
+  if (!w.ok) return json({ error: w.error }, 400);
+  const ends: { slot: number; cwd: string }[] = [];
+  for (const n of w.slots) {
+    const t = slotFrom(n);
+    const as = t ? messageSenderFor(t) : null;
+    if (!t?.cwd || !as?.ok || as.from.kind !== "session")
+      return json({ error: `slot ${n} holds no session an edge can join — an edge joins two plain sessions, never a lane, a MAIN or the Orchestrator` }, 409);
+    ends.push({ slot: t.id, cwd: t.cwd });
+  }
+  const done = kanteGeben(kantenBook, ends[0]!, ends[1]!, w.why, w.minutes, now, randomBytes(8).toString("hex"));
+  kantenBook = kantenGestutzt(done.book, now);
+  audit("kante_grant", undefined, `slot ${done.kante.a.slot} <-> slot ${done.kante.b.slot} until ${new Date(done.kante.until).toISOString()} ${done.kante.id}`);
+  const told = sag(done.kante, kanteGilt, "auf");
+  await saveStateNow();
+  return json({ ok: true, kante: view(done.kante), told }, 201);
 }
 
 function ownerMessageView(url: URL): Response {
@@ -46952,6 +47030,7 @@ if (existsSync(file)) {
       for (const [k, v] of Object.entries(pwn as Record<string, unknown>))
         if (typeof k === "string" && typeof v === "string") worktreeNotes[k] = v;
     branchBook = restoreBook((persisted as { branches?: unknown }).branches);
+    kantenBook = kantenGeladen((persisted as { kanten?: unknown }).kanten, Date.now());
     const adoptedAt = (persisted as { branchNotesAdoptedAt?: unknown }).branchNotesAdoptedAt;
     notesAdoptedAt = typeof adoptedAt === "number" && Number.isFinite(adoptedAt) ? adoptedAt : null;
     retiredCandidateState = {
@@ -51120,6 +51199,15 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return await sendMessageFor(s, await readJson(req));
     }
 
+    // EDGES: the Orchestratorin lets two sessions write each other directly for a while (kantenTuer, server/kanten.ts)
+    const selfKante = /^\/api\/self\/kanten(?:\/([0-9a-f]{16}))?$/.exec(url.pathname);
+    if (selfKante && (req.method === "GET" || req.method === "POST" || req.method === "DELETE")) {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return await kantenTuer(s, req, selfKante[1] ?? null);
+    }
+
     const selfMessageRead = /^\/api\/self\/messages\/([0-9a-f]{24})\/read$/.exec(url.pathname);
     if (selfMessageRead && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
@@ -52722,6 +52810,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(s.programId ? { programId: s.programId } : {}),
             // who opened this session (Slot.openedBy); the constellation hangs it under that one. Omitted when none
             ...(s.cwd && s.openedBy ? { openedBy: s.openedBy } : {}),
+            // the edges the Orchestratorin granted this seat (server/kanten.ts): whom it writes directly, until when. Omitted when none
+            ...(s.cwd ? (() => {
+              const seat = { slot: s.id, cwd: s.cwd }, now = Date.now();
+              const live = kantenBook.filter((k) => kanteLebt(k, now) && kanteBeruehrt(k, seat));
+              return live.length ? { kanten: live.map((k) => ({ slot: andererSlot(k, seat), until: k.until, why: k.why })) } : {};
+            })() : {}),
             // the run of a constellation it sits in (Slot.lauf, server/laeufe.ts). Omitted when none
             ...(s.cwd && s.lauf ? { lauf: s.lauf } : {}),
             // OMITTED when null (the common case) — this is the 2s poll (data-saver); absent reads as "the

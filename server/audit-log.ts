@@ -416,6 +416,9 @@ type AuditEvent =
   | "message_append"
   | "message_read"
   | "messages_unreadable"
+  // an edge the Orchestratorin granted or closed early (server/kanten.ts): the two slots, the end, the edge id — never the reason
+  | "kante_grant"
+  | "kante_close"
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second
   // row is the one that matters: a MAIN told nothing must not be told nothing SILENTLY.

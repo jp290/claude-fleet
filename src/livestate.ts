@@ -6,16 +6,15 @@ import type { LiveState } from "../server/live-state";
 export type { LiveState };
 export type LiveKind = "work" | "wait" | "stop" | "idle";
 
-// what the session runs in the background (a subagent, a shell command) beside its turn; 0 from a server
-// that does not report it yet
-export const backgroundCount = (s: Partial<Pick<LiveState, "background">>): number =>
-  (s.background?.agents ?? 0) + (s.background?.shells ?? 0);
+// the subagents the session runs beside its turn; 0 from a server that does not report it yet. Shell commands
+// are reported too (server/live-state.ts) but do not count: a watch that looks every 2 minutes is no work
+export const backgroundCount = (s: Partial<Pick<LiveState, "background">>): number => s.background?.agents ?? 0;
 
 export function liveWord(s: Pick<LiveState, "turn" | "detail"> & Partial<Pick<LiveState, "background">>): { word: string; kind: LiveKind } | null {
   if (s.turn === "working") return { word: s.detail === "thinking" ? "denkt" : s.detail === "hooks" ? "Hooks laufen" : "arbeitet", kind: "work" };
   if (s.turn === "asking") return { word: "wartet auf dich", kind: "wait" };
   if (s.turn === "interrupted") return { word: "unterbrochen", kind: "stop" };
-  // owner 25.10.: the turn is over, but a subagent or a command still runs — that is work, not „[Zitat entfernt]“
+  // owner 25.10.: the turn is over, but a subagent still runs (a background command alone does not count) — that is work, not „[Zitat entfernt]“
   if ((s.turn === "ready" || s.turn === "unknown") && backgroundCount(s) > 0) return { word: "arbeitet im Hintergrund", kind: "work" };
   if (s.turn === "ready") return { word: "bereit", kind: "idle" };
   return null;

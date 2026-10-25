@@ -26,6 +26,7 @@ import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 import { fassungKurz } from "./fassung-zeile";
 import { GRUPPE, setupDateien, umfeldZeilen, type SetupDatei, type UmfeldGruppe, type UmfeldTeil, type UmfeldZeile } from "./fassung-umfeld-zeilen";
+import { gegenVorgaengerin, type Block as BriefBlock, type Fassung as BriefFassung } from "./start-brief";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
 // poll — set only on an instance testinstanz.sh started, never on the live fleet. Null there, and
@@ -2372,8 +2373,9 @@ function moreSection(c: BoardCtx): HTMLElement {
   sec.appendChild(sectionHead(SECTION.more, "session"));
   const setup = facts?.setup;
   const packs = setup?.packs ?? [];
+  const gave = s.gaveItself?.length ?? 0;
   const setupSum = [setup?.profile ?? "standard", packs.length ? `${packs.length} ${packs.length === 1 ? "Pack" : "Packs"}` : "",
-    s.browser ? "Browser" : "", s.container ? "Container" : ""].filter(Boolean).join(" · ");
+    s.browser ? "Browser" : "", s.container ? "Container" : "", gave ? `gave itself ${gave} stone${gave === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
   sec.appendChild(boardTab("setup", SECTION.setup, setupSum, (body) => setupBody(c, body)));
   sec.appendChild(boardTab("rechte", SECTION.rights, rightsSummary(s), (body) => {
     // the rights block unchanged (src/rights.ts#rightsSection) — its own head is this tab's
@@ -2425,7 +2427,8 @@ function moreSection(c: BoardCtx): HTMLElement {
 // nach FASSUNG_FRISCH_MS neu, denn Schwelle und Warmhalten kann der Owner nach dem Start ändern (die Route führt sie nach). Das Fenster zeigt
 // vor dem Start dieselben acht Zeichen; null = die Antwort kam nicht, dann steht keine Zeile. Darunter, was den Sitz außer Fleets Zeile formt
 // (src/fassung-umfeld-zeilen.ts).
-interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; dateien: SetupDatei[]; nachgefuehrt: string[]; at: number }
+// `neu`: after a succession in which the seat gave itself something, what this start has that the one before it didn't (src/start-brief.ts)
+interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; dateien: SetupDatei[]; nachgefuehrt: string[]; neu: BriefBlock[]; at: number }
 const FASSUNG_FRISCH_MS = 15_000;
 const fassungLaeuft = new Map<string, FassungGelesen | null>(), fassungImFlug = new Set<string>();
 function fassungLesen(c: BoardCtx, openedAt: number, wohin: HTMLElement | null): void {
@@ -2434,11 +2437,13 @@ function fassungLesen(c: BoardCtx, openedAt: number, wohin: HTMLElement | null):
   fassungImFlug.add(key);
   void api(`/api/slots/${slot}/fassung?anlass=laufend`).then(async (r) => {
     const j: unknown = r.ok ? await r.json().catch(() => null) : null;
-    const o = j && typeof j === "object" ? j as { hash?: unknown; teile?: unknown; festgehalten?: { nachgefuehrt?: unknown } | null } : null;
+    const o = j && typeof j === "object" ? j as { hash?: unknown; teile?: unknown; festgehalten?: { nachgefuehrt?: unknown } | null; vorgaengerin?: unknown } : null;
     const h = typeof o?.hash === "string" ? o.hash : null;
     const teile = Array.isArray(o?.teile) ? o.teile as UmfeldTeil[] : [];
+    const vorher = o?.vorgaengerin && typeof o.vorgaengerin === "object" && Array.isArray((o.vorgaengerin as BriefFassung).teile) ? o.vorgaengerin as BriefFassung : null;
     const gelesen = h ? { hash: h, zeilen: umfeldZeilen(teile, c.s.cwd ?? null), dateien: setupDateien(teile, c.s.cwd ?? null),
-      nachgefuehrt: Array.isArray(o?.festgehalten?.nachgefuehrt) ? o.festgehalten.nachgefuehrt.map(String) : [], at: Date.now() } : null;
+      nachgefuehrt: Array.isArray(o?.festgehalten?.nachgefuehrt) ? o.festgehalten.nachgefuehrt.map(String) : [],
+      neu: vorher ? gegenVorgaengerin({ teile: teile as BriefFassung["teile"] }, vorher, c.s.cwd ?? "") : [], at: Date.now() } : null;
     // eine Neulesung, die scheitert, nimmt die alte Antwort nicht weg
     if (gelesen || !fassungLaeuft.get(key)) fassungLaeuft.set(key, gelesen);
     fassungImFlug.delete(key);
@@ -2457,6 +2462,14 @@ function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
   // je Herkunft ein Kopf mit einem Satz, darunter ihre Zeilen; eine Zeile mit Ziel ist ein Knopf dorthin
   let nach: Element | null = r, gruppe: UmfeldGruppe | null = null;
   const setze = (e: HTMLElement) => { nach?.after(e); nach = e; };
+  // WHAT IS NEW SINCE THE SESSION BEFORE IT, first: each part a row, its changed lines below it (+ added, − gone), as the start window shows them
+  if (f.neu.length) {
+    const k = el("div", "bsumfeld bsgruppe");
+    k.append(el("span", "bsgkopf", "New since the session before it"),
+      el("span", "bsgsatz", "The session before it on this slot gave it this when it handed over. Every line it reads now and that one didn't is a +."));
+    setze(k);
+    for (const b of f.neu) setze(neuZeile(c, b));
+  }
   for (const z of f.zeilen) {
     if (z.gruppe !== gruppe) {
       gruppe = z.gruppe;
@@ -2479,6 +2492,37 @@ function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
     };
     setze(zr);
   }
+}
+// one part that differs from the predecessor's start: its sign, its name and size, then its changed lines; the first four, the rest a click away
+const neuOffen = new Set<string>();
+const NEU_WORT = { "+": "added", "−": "gone", "~": "changed" } as const;
+function neuZeile(c: BoardCtx, b: BriefBlock): HTMLElement {
+  const key = `${c.slot}:${c.s.openedAt}:${b.key}`, offen = neuOffen.has(key);
+  const box = el("div", "bsumfeld bsneu");
+  const kopf = el("div", "bsneuh");
+  const name = b.key.startsWith("pack:") ? `context pack ${b.key.slice(5)}` : b.key === "zweck" ? "its purpose" : b.pfad;
+  const zeichen = el("span", `bsneuz z${b.zeichen === "+" ? "add" : b.zeichen === "−" ? "del" : "chg"}`, b.zeichen ?? "");
+  zeichen.title = `${NEU_WORT[b.zeichen ?? "~"]} since the session before it`;
+  kopf.append(zeichen, el("span", "bsneun", name), el("span", "bsneug", b.bytes ? `${(b.bytes / 1000).toFixed(1)} kB` : ""));
+  kopf.title = `${b.pfad} — ${b.satz}`;
+  box.appendChild(kopf);
+  const geaendert = (b.diff ?? []).filter((z) => z.z !== " " && z.t.trim());
+  const zeig = offen ? (b.diff ?? []) : geaendert.slice(0, 4);
+  const linien = el("div", "bsneul");
+  for (const z of zeig) {
+    const l = el("div", `bsneuline${z.z === "+" ? " add" : z.z === "−" ? " del" : ""}`);
+    l.append(el("span", "bsneug1", z.z === " " ? "" : z.z), el("span", "bsneut", z.t || " "));
+    linien.appendChild(l);
+  }
+  const rest = geaendert.length - (offen ? geaendert.length : zeig.length);
+  if (rest > 0 || offen && geaendert.length > 4) {
+    const mehr = el("button", "bsneumehr", offen ? "show less" : `… ${rest} more line${rest === 1 ? "" : "s"}`) as HTMLButtonElement;
+    mehr.type = "button";
+    mehr.onclick = () => { if (offen) neuOffen.delete(key); else neuOffen.add(key); box.replaceWith(neuZeile(c, b)); };
+    linien.appendChild(mehr);
+  }
+  box.appendChild(linien);
+  return box;
 }
 function setupBody(c: BoardCtx, su: HTMLElement): void {
   const { s, slot, facts } = c;

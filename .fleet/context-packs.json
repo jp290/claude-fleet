@@ -300,6 +300,24 @@
     "status": "active"
   },
   {
+    "id": "building-an-agent",
+    "useWhen": "When someone says an agent should work differently, asks for a context pack, or asks how agents in Fleet are made.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "building-an-agent.text", "path": "docs/packs/building-an-agent.md", "anchor": "# Building an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 8644,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "sharpening-an-order",
     "useWhen": "Bevor du einer Session mit Vorgeschichte einen Auftrag gibst: wie sharpen3 ihn gegen ihr Gespräch liest.",
     "scope": "repo-contract",

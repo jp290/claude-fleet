@@ -55,7 +55,10 @@ const startOf = async (slot: number): Promise<{ cwd: string; appended: string; a
   const args = rest.join("\n").split("\0");
   // die Rolle ohne Lane, Orchestratorin und gebundene MAIN trägt genau ein --append-system-prompt
   const at = args.indexOf("--append-system-prompt");
-  return { cwd: cwd!, appended: at >= 0 ? args[at + 1]! : "",
+  // ...and the seat's start file behind it (server.ts#seatStartDatei): the library stands there, read after the line
+  const datei = args.indexOf("--append-system-prompt-file");
+  const appended = [at >= 0 ? args[at + 1]! : "", datei >= 0 ? readFileSync(args[datei + 1]!, "utf8") : ""].filter(Boolean).join("\n\n");
+  return { cwd: cwd!, appended,
     addDirs: args.flatMap((arg, i) => arg === "--add-dir" ? [args[i + 1]!] : []) };
 };
 // die Skills, die Claude aus den --add-dir-Ordnern lädt: <dir>/.claude/skills/<name>/SKILL.md
@@ -89,10 +92,10 @@ describe("Die Regel: welche Packs zu welchem Sitz kommen, und wie", () => {
     expect(seatContextFacts("foreign", "claude", true).triggers).toEqual(["seat-start-any-repo"]);
     expect(seatContextFacts("fleet", "claude").triggers).toEqual(["seat-start", "seat-start-any-repo"]);
   });
-  test("was wörtlich im Start steht, erreicht jeden Sitz seines Baums und hat einen Grund: für wen, mit dem Owner, in wenigen Aufrufen", () => {
-    expect(Object.keys(SEAT_BOX).sort()).toEqual(["who-it-is-for", "working-in-few-calls", "working-with-the-owner"]);
+  test("was wörtlich im Start steht, erreicht jeden Sitz seines Baums und hat einen Grund: für wen, mit dem Owner, in wenigen Aufrufen, seine Nachfolgerin bauen", () => {
+    expect(Object.keys(SEAT_BOX).sort()).toEqual(["building-an-agent", "who-it-is-for", "working-in-few-calls", "working-with-the-owner"]);
     // für wen und mit dem Owner gilt in jedem Repo; wie man hier sucht, nur in Fleets eigenem
-    expect(erwartet(false)).toEqual(expect.arrayContaining(["who-it-is-for", "working-with-the-owner"]));
+    expect(erwartet(false)).toEqual(expect.arrayContaining(["who-it-is-for", "working-with-the-owner", "building-an-agent"]));
     expect(erwartet(false)).not.toContain("working-in-few-calls");
     for (const [id, grund] of Object.entries(SEAT_BOX)) {
       expect(erwartet(true)).toContain(id);
@@ -393,7 +396,13 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     const p = (id: string) => ({ id, useWhen: null, sources: [], text: id });
     const k: SeatKnowledge = { tree: "foreign", repoRoot: "/f", head: "h", packs: [p("a"), p("b"), p("c")] };
     expect(bibliothekGewaehlt(k, ["c", "a"]).packs.map((x) => x.id)).toEqual(["a", "c"]);
-    expect(bibliothekGewaehlt(k, true)).toBe(k);
+    expect(bibliothekGewaehlt(k, true)).toEqual(k);
+    // ein eigener Pack (server/eigene-packs.ts) kommt nie von selbst, nur gewählt oder selbst gegeben
+    const mit = { ...k, packs: [...k.packs, { id: "eigen", useWhen: "w", sources: [], text: "# E", weg: "start" as const, privat: true as const }] };
+    expect(bibliothekGewaehlt(mit, true).packs.map((x) => x.id)).not.toContain("eigen");
+    expect(bibliothekGewaehlt(mit, ["a", "eigen"]).packs.map((x) => x.id)).toEqual(["a", "eigen"]);
+    expect(bibliothekGewaehlt(mit, null, ["eigen"]).packs.map((x) => x.id)).toContain("eigen");
+    expect(bibliothekGewaehlt(mit, false, ["eigen"], false).packs.map((x) => x.id)).toEqual(["eigen"]);
     expect(packAuswahlFehlt(["a", "zz"], k)).toEqual(["zz"]);
     expect(packAuswahlFehlt(true, k)).toEqual([]);
   });

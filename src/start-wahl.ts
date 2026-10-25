@@ -17,6 +17,8 @@ export interface Wahl {
   // the first message, typed into the pane once Claude Code is ready; null = none, "" = switched on and still empty
   aufgabe: string | null;
   bibliothek: boolean; rechte: Stufe | null;
+  // packs a session wrote (server/eigene-packs.ts), each a stone of its own; they come on top of Fleet's guides
+  packs: string[];
   // a board name for its own branch (POST /api/branches, then /api/branches/open); null = it works in the checkout
   branch: string | null;
   // its own notebook, one per branch; the door takes it only with a branch of its own
@@ -24,9 +26,9 @@ export interface Wahl {
   schwelle: number | null;
 }
 export const NORMAL: Readonly<Wahl> = Object.freeze({ model: null, effort: null, permissionMode: null, eigeneRegeln: true, gedaechtnis: true,
-  hooks: true, pluginsAus: [], agentenAus: [], tools: null, aufgabe: null, bibliothek: false, rechte: null, branch: null, notizbuch: false,
+  hooks: true, pluginsAus: [], agentenAus: [], tools: null, aufgabe: null, bibliothek: false, rechte: null, packs: [], branch: null, notizbuch: false,
   schwelle: null });
-export const normal = (): Wahl => ({ ...NORMAL, pluginsAus: [], agentenAus: [] });
+export const normal = (): Wahl => ({ ...NORMAL, pluginsAus: [], agentenAus: [], packs: [] });
 
 // what each level blocks at the start (session-rechte.ts#RECHTE_BEFEHLE): editing files, landing, deploying, throwing a working copy
 // away; its shell stays free, so it can still run commands and commit
@@ -54,26 +56,29 @@ function weglassen(w: Wahl): Record<string, unknown> | null {
   if (w.agentenAus.length) o.agents = [...w.agentenAus];
   return Object.keys(o).length ? o : null;
 }
-// the fields both doors share; the notebook only where a branch carries it
-function felder(w: Wahl, mitBranch: boolean): Record<string, unknown> {
+// the fields both doors share; the notebook only where a branch carries it. OWN PACKS go as a list (`bibliothek`, „only these packs“):
+// `standard` is what the library gives this start without them — Fleet's guides where they are on, here or by the place — and the
+// list is that plus the chosen ones
+function felder(w: Wahl, mitBranch: boolean, standard: readonly string[] = []): Record<string, unknown> {
   const wg = weglassen(w);
+  const liste = w.packs.length ? [...new Set([...standard, ...w.packs])] : null;
   return { ...(w.permissionMode ? { permissionMode: w.permissionMode } : {}), ...(wg ? { weglassen: wg } : {}),
     ...(w.tools ? { tools: [...w.tools] } : {}), ...(!w.gedaechtnis ? { notizbuch: "aus" } : mitBranch && w.notizbuch ? { notizbuch: "branch" } : {}),
-    ...(w.rechte ? { rechte: { stufe: w.rechte, an: [], aus: [] } } : {}), ...(w.bibliothek ? { bibliothek: true } : {}),
+    ...(w.rechte ? { rechte: { stufe: w.rechte, an: [], aus: [] } } : {}), ...(liste ? { bibliothek: liste } : w.bibliothek ? { bibliothek: true } : {}),
     ...(w.schwelle !== null ? { schwelle: w.schwelle } : {}) };
 }
 // THE PREVIEW: the query fields of GET /api/founding-plan (server.ts#startVonAdresse) for this choice; a branch's notebook has no
 // preview here (the door needs the branch's own worktree), so it stays out of it
-export function vorschau(w: Wahl): Record<string, string> {
-  const f = felder(w, false), q: Record<string, string> = {};
+export function vorschau(w: Wahl, standard: readonly string[] = []): Record<string, string> {
+  const f = felder(w, false, standard), q: Record<string, string> = {};
   if (w.model) q.model = w.model;
   if (w.effort) q.effort = w.effort;
   for (const [k, v] of Object.entries(f)) q[k] = typeof v === "string" ? v : Array.isArray(v) ? v.join(",") : JSON.stringify(v);
   return q;
 }
 // THE START: the body fields beside cwd/plan/fassung, for the open door or the branch door
-export function tuer(w: Wahl): Record<string, unknown> {
-  const f = felder(w, w.branch !== null);
+export function tuer(w: Wahl, standard: readonly string[] = []): Record<string, unknown> {
+  const f = felder(w, w.branch !== null, standard);
   const ziel = w.aufgabe?.trim();
   return { ...f, ...(ziel ? { goal: ziel } : {}) };
 }
@@ -91,6 +96,7 @@ export function abweichungen(w: Wahl, modellWort: (id: string) => string = (x) =
   if (!w.hooks) D.push({ id: "hooks", zeichen: "−", wort: "Hooks off" });
   if (w.aufgabe !== null) D.push({ id: "task", zeichen: "+", wort: "First task" });
   if (w.bibliothek) D.push({ id: "knowledge", zeichen: "+", wort: "Fleet's guides" });
+  for (const id of w.packs) D.push({ id: `pack:${id}`, zeichen: "+", wort: `Context pack ${id}` });
   if (w.rechte) D.push({ id: "rights", zeichen: "+", wort: `Rights: ${STUFEN.find((s) => s.id === w.rechte)?.wort ?? w.rechte}` });
   if (w.branch !== null) D.push({ id: "branch", zeichen: "+", wort: "Branch & land" });
   if (w.branch !== null && w.notizbuch) D.push({ id: "notebook", zeichen: "+", wort: "Own notebook" });
@@ -106,8 +112,8 @@ const TOOL_ZAHL = TOOLS.length;
 // A SAVED AGENT (server/agenten.ts) carries its choices under the doors' names. What the window can set comes back as a Wahl; what it
 // can't (a role, a profile, a seat of the old window, another harness, an agent file) stays in `fremd`, and such an agent starts whole,
 // by its id. A task is never part of an agent: it comes at the door.
-export function wahlenVon(w: Wahl): Record<string, unknown> {
-  return { ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}), ...felder(w, true) };
+export function wahlenVon(w: Wahl, standard: readonly string[] = []): Record<string, unknown> {
+  return { ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}), ...felder(w, true, standard) };
 }
 const STUFE_IDS: readonly string[] = STUFEN.map((s) => s.id);
 const texte = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? [...v] as string[] : null;

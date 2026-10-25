@@ -52,6 +52,9 @@ export const SEAT_BOX: Readonly<Record<string, string>> = {
     + "wie man ihn versteht, kommt zu spät, wenn es erst beim zweiten Missverständnis geladen wird.",
   "working-in-few-calls": "Der erste Akt eines Sitzes ist eine Suche; wie man in wenigen Aufrufen sucht, liest und wartet, hilft nur "
     + "vor ihr, und jeder gesparte Aufruf spart das Lesen des ganzen Kontexts (Kostenprüfung 23.10.).",
+  // Owner 25.10. über Slot 16: „[Zitat entfernt]“
+  "building-an-agent": "Jede Session kann mit ihrem Nutzer ihre Nachfolgerin bauen; als Skill rief Haiku 5.5 ihn auch im richtigen "
+    + "Moment nicht auf und schrieb die Bitte in Claude Codes Memory, statt sie über die Selbst-Tür weiterzugeben (Probe 25.10.).",
 };
 
 const SEAT_MODE: ContextPackMode = "mutating";
@@ -73,6 +76,8 @@ export interface SeatPack {
   readonly text: string | null;
   /** nur ein mitgereister Pack (server/sitz-reise.ts): sein Weg aus der Datei; sonst entscheidet SEAT_BOX */
   readonly weg?: "start" | "skill";
+  /** ein eigener Pack (server/eigene-packs.ts): seine Quelle ist eine Datei in Fleets Zustand, und er kommt nur, wenn er gewählt ist */
+  readonly privat?: true;
 }
 
 export interface SeatKnowledge {
@@ -88,6 +93,8 @@ const isBox = (pack: SeatPack): boolean => pack.weg ? pack.weg === "start" : pac
 const boxOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => isBox(pack) && pack.text !== null);
 const skillsOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => !isBox(pack) && pack.text !== null && pack.useWhen);
 const quelleOf = (pack: SeatPack): string => pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
+// wo eine Quelle liegt: im Fleet-Baum, oder — ein eigener Pack — schon ein ganzer Pfad
+const quellPfad = (k: SeatKnowledge, path: string): string => path.startsWith("/") || path.startsWith("~") ? path : `${k.repoRoot}/${path}`;
 const groesse = (bytes: number): string => bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1).replace(".", ",")} kB`;
 
 export const SEAT_START_HEAD = "BIBLIOTHEK (server/sitz-wissen.ts): Fleets Wissen für deinen Sitz.";
@@ -174,11 +181,12 @@ export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge):
   const da = new Set(k.packs.map((pack) => pack.id));
   return Array.isArray(wahl) ? wahl.filter((id) => !da.has(id)) : [];
 }
-/** Die Bibliothek eines Sitzes, wie seine Wahl sie lässt: bei einer Liste nur ihre Packs, in der Reihenfolge des Registers. Rein. */
-export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null): SeatKnowledge {
-  if (!Array.isArray(wahl)) return k;
-  const ids = new Set(wahl);
-  return { ...k, packs: k.packs.filter((pack) => ids.has(pack.id)) };
+/** Die Bibliothek eines Sitzes, wie seine Wahl sie lässt: bei einer Liste nur ihre Packs, sonst jeder Pack des Registers, ein eigener
+ *  nie von selbst; in der Reihenfolge des Katalogs. `dazu`: was der Sitz sich selbst gab (server/selbst-einrichten.ts), kommt immer
+ *  dazu; `an` false = die Bibliothek ist für ihn aus, dann nur das. Rein. */
+export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null, dazu: readonly string[] = [], an = true): SeatKnowledge {
+  const ids = Array.isArray(wahl) ? new Set(wahl) : null, extra = new Set(dazu);
+  return { ...k, packs: k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat)) };
 }
 
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste
@@ -196,10 +204,11 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
   return [
     textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
-    ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${k.repoRoot}/${source.path} · ${source.anchor}`).join("\n"),
-      boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? "so mitgereist"}`)),
+    ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
+      boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`
+        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : "so mitgereist")}`)),
     ...skills.map((pack) => textAbschnitt("wissen", `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills/${pack.id}/SKILL.md\n`
-      + pack.sources.map((source) => `${k.repoRoot}/${source.path} · ${source.anchor}`).join("\n"),
+      + pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,
       `Skill: im Kontext steht diese Beschreibung, beim Aufruf lädt sie ${groesse(Buffer.byteLength(renderSkillFile(pack, k.head)))}`)),
   ];

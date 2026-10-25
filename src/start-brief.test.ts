@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anzeige, geaendert, packDateien, regelDateien, startbrief, uebergabeHinweis, zeilenDiff, type Dazu, type Fassung } from "./start-brief";
+import { anzeige, geaendert, gegenVorgaengerin, packDateien, regelDateien, startbrief, uebergabeHinweis, zeilenDiff, type Dazu, type Fassung } from "./start-brief";
 import { schwelleAbschnitt, type SchwelleFakten } from "../server/fassung-umfeld";
 
 const CLAUDE = "# Global Rules\n\n- Lead with the answer.\n- Report faithfully.";
@@ -93,5 +93,22 @@ describe("uebergabeHinweis", () => {
     expect(uebergabeHinweis(schwelleAbschnitt({ ...f, hinweis: false }).text)).toBeNull();
     expect(uebergabeHinweis(schwelleAbschnitt({ ...f, aus: "eigenes Setup ohne gewählte Schwelle" }).text)).toBeNull();
     expect(uebergabeHinweis(null)).toBeNull();
+  });
+});
+
+// INFO → SETUP NACH EINER NACHFOLGE (POST /api/self/einrichten): dieselbe Vergleichsfunktion, die Vorgängerin an der Stelle von „normal“
+describe("what a successor has that its predecessor didn't", () => {
+  const ZWECK = "ZWECK (von deiner Vorgängerin auf diesem Slot für dich geschrieben):\nDu bist der Anfrages-Agent.";
+  const mitZweck = (f: Fassung): Fassung => ({ teile: f.teile.map((t) => t.id !== "liest" ? t
+    : { ...t, abschnitte: [...t.abschnitte, { id: "zweck", text: ZWECK }] }) });
+  test("every line of a pack and a purpose it gave itself is a + line; what stayed the same has no row", () => {
+    const vorher = fassung({ packs: ["who-it-is-for"] }), jetzt = mitZweck(fassung({ packs: ["who-it-is-for", "mein-agent"] }));
+    const neu = gegenVorgaengerin(jetzt, vorher, dazu.repo);
+    expect(neu.map((b) => [b.key, b.zeichen])).toEqual([["zweck", "+"], ["pack:mein-agent", "+"]]);
+    expect(neu.find((b) => b.key === "zweck")!.diff).toEqual(ZWECK.split("\n").map((t) => ({ z: "+", t })));
+    expect(neu.find((b) => b.key === "pack:mein-agent")!.diff!.map((z) => z.z)).toEqual(["+", "+", "+"]);
+  });
+  test("the same start twice has nothing new", () => {
+    expect(gegenVorgaengerin(fassung({}), fassung({}), dazu.repo)).toEqual([]);
   });
 });

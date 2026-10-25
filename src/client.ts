@@ -578,6 +578,9 @@ export interface SlotInfo {
   // how this session's Postfach arrives (Slot.zustellung, server/zustellung.ts). ABSENT = not set,
   // and the role default applies: a slot with a worktree (a lane) bundles, every other comes direct.
   zustellung?: "direkt" | "gebuendelt";
+  // what this session started with on top of its predecessor, one word per stone: the pack ids, then „purpose“
+  // (Slot.selbst.neu, POST /api/self/einrichten). ABSENT = nothing new at its start.
+  gaveItself?: string[];
   // the addresses this occupant reads its Postfach under (server.ts#messageAddressesFor, the same list
   // GET /api/self/messages answers as `addresses`): a role or a Program beside or instead of its own.
   // ABSENT = only its own session or lane address, which the board knows from id and openedAt.
@@ -6144,6 +6147,8 @@ function sessionsSheet(): HTMLElement[] {
     const nm = el("span", "mshnm");
     nm.appendChild(el("span", "mshname", laneLabel(s)));
     if (s.awaiting === "owner") nm.appendChild(el("span", "mshwhy", "wartet auf dich"));
+    // what it gave itself at its start (SlotInfo.gaveItself): on the phone in words, there is no hover for the bar's +N
+    if (s.gaveItself?.length) nm.appendChild(el("span", "mshwhy mshgave", `gave itself ${s.gaveItself.length} stone${s.gaveItself.length === 1 ? "" : "s"}`));
     const act = el("span", `act ${state}`);
     act.title = STATE_WORD[state];
     r.replaceChildren(el("span", "maddr", addr), nm, act);
@@ -7517,6 +7522,14 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // lanes are waiting for is in its tooltip, and a hidden lane that works still lights the
       // state below (hidHot).
       if (stack) r1.appendChild(laneCountChip(stack, open));
+      // WHAT IT GAVE ITSELF (POST /api/self/einrichten): the stones its predecessor set for this start, counted; Info → Setup shows them line by line
+      if (s.gaveItself?.length) {
+        const n = s.gaveItself.length;
+        const g = el("span", "gave", `+${n}`);
+        g.title = `gave itself ${n} stone${n === 1 ? "" : "s"} at its start: ${s.gaveItself.map((w) => w === "purpose" ? "its purpose" : `context pack ${w}`).join(", ")}`
+          + " — the board's Info → Setup shows every new line";
+        r1.appendChild(g);
+      }
       // ⎇+ — the one button the owner calls right as it is. Not on lanes: a lane off a lane would
       // nest .worktrees inside a worktree.
       if (s.git && !s.worktree) {

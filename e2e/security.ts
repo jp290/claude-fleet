@@ -358,6 +358,11 @@ const PRE_AUTH_ROUTES = [
   '= /api/self/weglassen', // added 2026-10-24 (branch/eigenes-setup): what the caller's OWN next start leaves out of the
   // user's ~/.claude (server/weglassen.ts), on its own slot row, bound to its occupation (409 for another occupant).
   // It can only take away from its own start line, never add a right, names no other slot and acts on no pane now.
+  '= /api/self/packs', // added 2026-10-24 (branch/selbst-einrichten): writes a private context pack (server/eigene-packs.ts) into
+  // Fleet's state — text only (id, useWhen, text; any other field 400), never a register id, reaches no seat until one chooses it.
+  '= /api/self/einrichten', // added 2026-10-24 (branch/selbst-einrichten): what the caller's OWN successor gets on top — a
+  // purpose and context packs, text only (server/selbst-einrichten.ts; rights, model, hooks, MCP have no field and 400). Its own
+  // slot row, bound to its occupation; a seat without a standing role, claude only; in force at its succession, acts on no pane.
   '= /api/self/retire',   // non-lane only: immediately retire the token's own slot after reporting
   '= /api/self/drift',    // same credential, read-only: the lane's own drift view (slot-bound)
   '= /api/self/gate',     // same credential, read-only: the live land-gate facts (env-derived)

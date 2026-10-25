@@ -11,9 +11,11 @@ import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
 import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek, type StartAspects } from "./server/session-start";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
-import { halteFassung, holeFassung, vergissFassung } from "./server/start-fassung";
+import { halteFassung, halteVorgaengerin, holeFassung, holeVorgaengerin, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeZeile, selbstDerNachfolge, slotSelbstGeladen, zweckBlock, type SlotSelbst } from "./server/selbst-einrichten";
+import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { dateiFuer, geschwister, leerePlaetze, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
@@ -638,7 +640,8 @@ function agentCmd(sessionId: string | null, resume: boolean, model: string | nul
     const anhang = [rechte ? rechteSatz(rechte) : null, agentMd ? agentMdBlock(agentMd) : null, seat?.text || null];
     if (cut) cmd += ` --append-system-prompt ${shellSingleQuote([cut.line, aspects?.briefLine, ...anhang].filter(Boolean).join("\n"))}`;
     else if (anhang.some(Boolean)) cmd += ` --append-system-prompt ${shellSingleQuote(anhang.filter(Boolean).join("\n\n"))}`;
-    // ...and the Orchestratorin's start (orchestratorStartDatei): too large for the line, so a file beside it
+    // ...and the Orchestratorin's start (orchestratorStartDatei), or a seat's library with the purpose its predecessor wrote
+    // (seatStartDatei, Slot.selbst; beside an Agent-MD of the owner, never in its place): too large for the line, so a file beside it
     if (startDatei) cmd += ` --append-system-prompt-file ${shellSingleQuote(startDatei)}`;
     // ...a list chosen at the door (Slot.tools) wins over the role's; [] is "no built-in tool" and goes on the line as ''
     const tools = listRole && toolsWahl ? toolsWahl : listRole && !eigen ? startTools(listRole, bau) : null;
@@ -2835,6 +2838,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   weglassen: null,
   autoModeEnvironment: null,
   tools: null,
+  selbst: null,
   agent: null,
   zustellung: null,
   packMcp: [],
@@ -6063,7 +6067,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -10097,6 +10101,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
   weglassen: Weglassen | null;
   autoModeEnvironment: boolean | null;
   tools: readonly string[] | null;
+  selbst: SlotSelbst | null;
   context: SlotContext | null;
   permissions: SlotPermissions | null;
   container: string | null;
@@ -10107,7 +10112,7 @@ interface SlotSpawnOccupant extends SlotStreamOccupant {
 const slotSpawnOccupant = (s: Slot): SlotSpawnOccupant | null => s.cwd ? {
   slot: s.id, cwd: s.cwd, openedAt: s.openedAt, selfToken: s.selfToken, label: s.label,
   sessionId: s.sessionId, model: s.model, harness: s.harness, effort: s.effort,
-  browser: s.browser, remote: s.remote, rechte: s.rechte, agentMd: s.agentMd, sitz: s.sitz, bibliothek: s.bibliothek, notizbuchWahl: s.notizbuchWahl, permissionMode: s.permissionMode, weglassen: s.weglassen, autoModeEnvironment: s.autoModeEnvironment, tools: s.tools, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
+  browser: s.browser, remote: s.remote, rechte: s.rechte, agentMd: s.agentMd, sitz: s.sitz, bibliothek: s.bibliothek, notizbuchWahl: s.notizbuchWahl, permissionMode: s.permissionMode, weglassen: s.weglassen, autoModeEnvironment: s.autoModeEnvironment, tools: s.tools, selbst: s.selbst, context: s.context, permissions: s.permissions ? { ...s.permissions } : null, container: s.container, containerContext: s.containerContext,
   webSearch: s.webSearch,
 } : null;
 
@@ -10361,15 +10366,21 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // In every repo unless it was switched off for this session (seatLibraryOn); the skills in this occupancy's own folder.
       if (listRole === "generic" && occupant.label !== STEWARD_LABEL) {
         try {
-          if (seatLibraryOn(occupant.bibliothek, eigen, !!occupant.sitz)) {
-            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek);
+          // ...and the packs it gave itself (Slot.selbst), even where its library is off
+          const an = seatLibraryOn(occupant.bibliothek, eigen, !!occupant.sitz), dazu = occupant.selbst?.jetzt.packs ?? [];
+          if (an || dazu.length) {
+            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an);
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
         } catch (e) { logError("ensureSlot:seat-library", e); }
         if (!current()) return;
       }
       // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
-      const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd) : null;
+      // ...and a seat's own start — Fleet's library and the purpose its predecessor wrote (Slot.selbst) — in a file the same way: with
+      // building-an-agent in SEAT_BOX the line of a seat in Fleet's repo outgrew what tmux takes in one message (16 KB, new-session exited 1)
+      const seatZweck = h.id === "claude" ? occupant.selbst?.jetzt.zweck ?? null : null;
+      const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd)
+        : seat?.text || seatZweck ? seatStartDatei([seatZweck ? zweckBlock(seatZweck) : null, seat?.text || null].filter(Boolean).join("\n\n")) : null;
       // A SEAT IN ITS OWN SETUP gets its user's login environment (server/login-umgebung.ts, Mangel 136): a file the pane reads and deletes
       const paneEnv = eigen && PANE_LOGIN_ENV ? await paneEnvFile(s.id, occupant.openedAt, occupant.cwd) : null;
       if (!current()) { if (paneEnv) removeEnvFile(paneEnv.file); return; }
@@ -10393,7 +10404,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           remoteName: h.id === "claude" && occupant.remote
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? occupant.agentMd : null, notizbuch,
-          seat, bau, startDatei, fleetRepo, permissionMode: occupant.permissionMode,
+          seat: seat ? { ...seat, text: "" } : null, bau, startDatei, fleetRepo, permissionMode: occupant.permissionMode,
           weglassen: occupant.weglassen, autoModeEnvironment: occupant.autoModeEnvironment, tools: occupant.tools }))}`);
       if (paneEnv && (created.code !== 0 || created.timedOut)) removeEnvFile(paneEnv.file);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
@@ -10549,7 +10560,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // the built-in tools the door chose (toolsDerTuer), null = no choice; claude only
   tools: readonly string[] | null = null,
   // the agent the door opened it from (server/agenten.ts#agentAnDerTuer), null = none
-  agent: AgentBezug | null = null): Promise<SlotOpenResult> {
+  agent: AgentBezug | null = null,
+  // what the seat gave itself for this start (server/selbst-einrichten.ts): only a succession carries it; claude only
+  selbst: SlotSelbst | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10682,6 +10695,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.weglassen = h.id === "claude" ? weglassen : null; // ...nor what it left out of ~/.claude
   s.autoModeEnvironment = h.id === "claude" ? autoModeEnvironment : null; // ...nor its choice of the classifier's environment
   s.tools = h.id === "claude" ? tools : null; // ...nor its choice of built-in tools
+  s.selbst = h.id === "claude" ? selbst : null; // ...nor what the previous occupant gave itself
   s.agent = agent; // ...nor the agent it was opened from
   s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
   s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
@@ -10961,6 +10975,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.weglassen = null;
   s.autoModeEnvironment = null;
   s.tools = null;
+  s.selbst = null;
   s.agent = null;
   s.zustellung = null;
   s.packMcp = [];
@@ -14791,9 +14806,15 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const ritual = orchestrator && orchStart
     ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry, orchestratorStartImSystemprompt(harness))
     : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
+  // WHAT THE PREDECESSOR GAVE IT (POST /api/self/einrichten): its next start becomes the successor's, claude only; the brief names
+  // what is new, and the predecessor's held Fassung stays beside the successor's for Info → Setup's + lines (start-fassung.ts#vorher)
+  const carriedSelbst = harnessOf(harness).id === "claude" ? selbstDerNachfolge(s.selbst) : null;
+  const vorher = holeFassung(STATE_DIR, s.id, predecessorIdentity.openedAt)?.fassung ?? null;
+  const selbstZeile = nachfolgeZeile(carriedSelbst);
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
-  const brief = opts.appendix === null ? ritual : `${ritual}\n\n${opts.appendix}`;
+  const mitSelbst = selbstZeile ? `${ritual}\n\n${selbstZeile}` : ritual;
+  const brief = opts.appendix === null ? mitSelbst : `${mitSelbst}\n\n${opts.appendix}`;
   // the predecessor's box; another agent takes it along only where it has one (as switchLaneHarness carries it)
   const box: BoxPin = harnessOf(harness).id === harnessOf(s.harness).id || harnessOf(harness).supports.container
     ? { container: s.container, containerContext: s.containerContext } : NO_BOX;
@@ -14826,12 +14847,16 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent),
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
     // would leave the successor's GET /api/self without its handover on every delivery failure.
     const openedAt = s.openedAt;
+    // ...and so does the predecessor's start, the comparison of Info → Setup — whether or not the brief arrives
+    if (vorher && s.selbst) {
+      try { halteVorgaengerin(STATE_DIR, s.id, openedAt, vorher); } catch (e) { logError("halteVorgaengerin", e); }
+    }
     const record = writeLineageHandover(draft, s, Date.now());
     try {
       await saveStateNow();
@@ -21298,21 +21323,24 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
   }
   if (s.label === STEWARD_LABEL) return [unknownAbschnitt("wissen", "der Steward hat keinen Kontextplan")];
   return fassungSeatWissen(cwd, s.harness ?? null, s.bibliothek, { slot: s.id, openedAt: s.openedAt,
-    spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz, eigen);
+    spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz, eigen,
+    s.selbst?.jetzt.packs ?? []);
 }
 
 // EIN SITZ OHNE STEHENDE ROLLE (server/sitz-wissen.ts): was sein Start wörtlich trägt und welche Skills er bekommt, je
 // Pack mit Quelle im Fleet-Baum. Die Route ist lesend: sie nennt den Skill-Ordner, schreibt ihn aber nicht. `laufend`: die
 // Belegung einer laufenden Session und ihr Spawn-Beleg (session-start.ts#SpawnBibliothek) — ohne sie ist es der Start einer neuen.
+// `dazu`: the packs the seat gave itself (Slot.selbst), read as the spawn reads them
 async function fassungSeatWissen(cwd: string, harness: string | null, wahl: BibliothekWahl | null,
   laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }, sitz: SitzStart | null = null,
-  eigen = false): Promise<FassungAbschnittEingang[]> {
+  eigen = false, dazu: readonly string[] = []): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
-    if (claude && !seatLibraryOn(wahl, eigen, !!sitz))
+    const an = !claude || seatLibraryOn(wahl, eigen, !!sitz);
+    if (!an && !dazu.length)
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, claude ? dazu : [], an);
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
@@ -21664,6 +21692,9 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
         ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
+    // the purpose its predecessor wrote (Slot.selbst): a row only where the start carries it
+    ...(s.selbst?.jetzt.zweck && harnessFamilie(spawnPick.harness) === "claude"
+      ? [textAbschnitt("zweck", "Slot.selbst (von der Vorgängerin geschrieben, POST /api/self/einrichten)", zweckBlock(s.selbst.jetzt.zweck), true)] : []),
   ];
   const umfeld = fassungUmfeld(cwd, spawnPick.harness, fleetBaum !== null);
   const claudeCode = harnessFamilie(spawnPick.harness) === "claude" && s.cwd
@@ -42377,7 +42408,20 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
     packs.push({ id: pack.id, useWhen: pack.useWhen ?? null,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: unread ? null : sections.join("\n") });
   }
+  // ...and the packs a session wrote (server/eigene-packs.ts): in the catalog, wörtlich im Start, but only for a seat that chose one
+  // (bibliothekGewaehlt); one that shares an id with the register stays out — the register's comes first
+  for (const eigen of liesEigenePacks(STATE_DIR)) if (!packs.some((pack) => pack.id === eigen.id))
+    packs.push({ id: eigen.id, useWhen: eigen.useWhen, sources: [{ path: tildePfad(eigen.pfad), anchor: `# ${eigen.titel}` }], text: eigen.text,
+      weg: "start", privat: true });
   return { knowledge: { tree, repoRoot: fleetRoot, head, packs }, plan, blobShas, blobModes };
+}
+// the ids of Fleet's register as its folder holds it now: a pack of its own may not take one (server/eigene-packs.ts#eigenerPackDerTuer)
+function registerIds(): ReadonlySet<string> {
+  try {
+    const roh: unknown = JSON.parse(readFileSync(`${BIBLIOTHEK?.root ?? REPO_DIR}/${CONTEXT_MANIFEST_PATH}`, "utf8"));
+    const liste = Array.isArray(roh) ? roh : roh && typeof roh === "object" && Array.isArray((roh as { packs?: unknown }).packs) ? (roh as { packs: unknown[] }).packs : [];
+    return new Set(liste.flatMap((x) => x && typeof x === "object" && typeof (x as { id?: unknown }).id === "string" ? [(x as { id: string }).id] : []));
+  } catch { return new Set(); }
 }
 // in Fleet's own repo is a seat whose tree shares Fleet's object store (a worktree of Fleet counts); a folder without git is foreign
 async function seatTreeOf(cwd: string): Promise<SeatTree> {
@@ -42478,11 +42522,12 @@ async function halteBestandFest(): Promise<number[]> {
 }
 // `belegung`: the occupancy whose folder this is; null for a start not yet made (the plan), which names no folder
 // `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
+// `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
-  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
+  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
   const knowledge = bibliothekGewaehlt(sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
-    : (await seatKnowledgeFor(cwd, harness)).knowledge, wahl);
+    : (await seatKnowledgeFor(cwd, harness)).knowledge, wahl, dazu, an);
   const files = seatSkillFiles(knowledge);
   const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
@@ -42872,7 +42917,9 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     // the start block as agentCmd appends it, the skill lines as Claude lists them, and the folder --add-dir names
     if (bibliothek && "start" in bibliothek) {
       bytes.bibliothek = Buffer.byteLength(bibliothek.start.text);
-      details.bibliothek = { text: bibliothek.start.text, packs: bibliothek.box, head: bibliothek.start.knowledge.head };
+      // ...and the packs sessions wrote (server/eigene-packs.ts): none comes by itself, the start window offers each as a stone
+      details.bibliothek = { text: bibliothek.start.text, packs: bibliothek.box, head: bibliothek.start.knowledge.head,
+        eigene: liesEigenePacks(STATE_DIR).map((pack) => ({ id: pack.id, titel: pack.titel, useWhen: pack.useWhen, bytes: pack.bytes })) };
       bytes["bibliothek-skills"] = Buffer.byteLength(bibliothek.skillListe);
       details["bibliothek-skills"] = { text: bibliothek.skillListe, packs: bibliothek.skills };
     } else if (bibliothek) details.bibliothek = details["bibliothek-skills"] = { grund: bibliothek.grund };
@@ -44386,6 +44433,17 @@ const isOrchestratorLabel = (label: string | null | undefined): boolean =>
 // selbst geht er nicht: tmux lehnt ein Kommando über 16 KiB ab („command too long“). Also eine Datei, nach ihrem Inhalt benannt, die
 // auch ein Neustart des Servers nicht wegnimmt. Ein anderer Harness hat keinen Systemprompt von Fleet und bekommt den Start im Brief.
 const ORCHESTRATOR_START_ROOT = `${STATE_DIR}/orchestrator-start`;
+// A SEAT'S START AS A FILE (ensureSlot): named by its content like the Orchestratorin's, so a respawn with the same text reuses it
+const SEAT_START_ROOT = `${STATE_DIR}/sitz-start`;
+function seatStartDatei(text: string): string {
+  const pfad = `${SEAT_START_ROOT}/${sha256Of(text).slice(0, 32)}.md`;
+  if (!existsSync(pfad)) {
+    mkdirSync(SEAT_START_ROOT, { recursive: true });
+    writeFileSync(`${pfad}.${process.pid}`, text);
+    renameSync(`${pfad}.${process.pid}`, pfad);
+  }
+  return pfad;
+}
 const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
 function orchestratorStartDatei(cwd: string): string {
   const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
@@ -46658,6 +46716,7 @@ if (existsSync(file)) {
         s.permissionMode = pmw.ok && hOf.id === "claude" ? pmw.wahl : null;
         const wgl = weglassenDerTuer((v as { weglassen?: unknown }).weglassen);
         s.weglassen = wgl.ok && hOf.id === "claude" ? wgl.wahl : null;
+        s.selbst = hOf.id === "claude" ? slotSelbstGeladen((v as { selbst?: unknown }).selbst) : null;
         const ame = (v as { autoModeEnvironment?: unknown }).autoModeEnvironment;
         s.autoModeEnvironment = typeof ame === "boolean" && hOf.id === "claude" ? ame : null;
         const tls = toolsDerTuer((v as { tools?: unknown }).tools);
@@ -51519,6 +51578,51 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       await saveStateNow();
       return json({ ok: true, weglassen: wd.wahl, zeilen: weglassenZeilen(wd.wahl, tildePfad), gilt: "ab dem nächsten Start dieses Sitzes: Neustart oder Übergabe" });
     }
+    // A SEAT WRITES A PACK OF ITS OWN (server/eigene-packs.ts): privat in Fleet's state, never in a repo, at once and without a land; it
+    // reaches no seat by itself, only one that chooses it (the start window's stone, POST /api/self/einrichten). Only text, so the self
+    // token suffices; an id of Fleet's register is refused, never shadowed.
+    if (url.pathname === "/api/self/packs" && req.method === "POST") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const pk = eigenerPackDerTuer(await readJson(req), registerIds());
+      if (!pk.ok) return json({ error: pk.error }, 400);
+      if (s.openedAt !== p.openedAt) return json({ error: "this slot has another occupant now" }, 409);
+      const { pack, ersetzt } = schreibEigenenPack(STATE_DIR, pk.pack, `Slot ${s.id}`);
+      return json({ ok: true, pack: { id: pack.id, useWhen: pack.useWhen, titel: pack.titel, bytes: pack.bytes, pfad: tildePfad(pack.pfad) }, ersetzt,
+        naechster: "POST /api/self/einrichten { packs: [...] } gibt ihn deiner Nachfolgerin; im Startfenster ist er ein Stein" });
+    }
+    // WHAT A SEAT GIVES ITS SUCCESSOR ON TOP (Slot.selbst, server/selbst-einrichten.ts; owner 24.10. über Slot 6: without his click, as long
+    // as it shows afterwards): packs and a purpose, only text. Set for its own slot, in force with its succession; a restart keeps the
+    // start it has. Rights, model, hooks and MCP have no field here — those stay the owner's.
+    if (url.pathname === "/api/self/einrichten" && (req.method === "POST" || req.method === "GET")) {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const leer = { packs: [], zweck: null };
+      const ansicht = (x: SlotSelbst | null) => ({ jetzt: { purpose: (x?.jetzt ?? leer).zweck, packs: (x?.jetzt ?? leer).packs },
+        naechster: { purpose: (x?.naechster ?? x?.jetzt ?? leer).zweck, packs: (x?.naechster ?? x?.jetzt ?? leer).packs },
+        zeilen: einrichtenZeilen(x?.jetzt ?? leer, x?.naechster ?? x?.jetzt ?? leer), gilt: "bei deiner Übergabe (POST /api/self/succeed); ein Neustart behält deinen Start" });
+      if (req.method === "GET") return json(ansicht(s.selbst));
+      if (harnessOf(s.harness).id !== "claude") return json({ error: "einrichten is Claude Code's — its purpose and packs go into Claude Code's system prompt" }, 409);
+      if (s.worktree) return json({ error: "a lane is set up by its card — einrichten is for a seat of its own" }, 409);
+      if (!isSeat(s)) return json({ error: "a seat with a standing role (MAIN, Orchestratorin, steward) gets its start from that role — einrichten is for a seat without one" }, 409);
+      const er = einrichtenDerTuer(await readJson(req), s.selbst);
+      if (!er.ok) return json({ error: er.error }, 400);
+      // each pack one this seat can get: from Fleet's register for its folder, or one of its own (packAuswahlFehlt)
+      if (er.naechster.packs.length) {
+        try {
+          const fehlt = packAuswahlFehlt(er.naechster.packs, (await seatKnowledgeFor(s.cwd, s.harness)).knowledge);
+          if (fehlt.length) return json({ error: `no pack ${fehlt.join(", ")} for a seat in this folder — write one with POST /api/self/packs` }, 400);
+        } catch (e) {
+          return json({ error: `Fleet's library could not be read (${e instanceof Error ? e.message : String(e)})` }, 409);
+        }
+      }
+      if (s.openedAt !== p.openedAt) return json({ error: "this slot has another occupant now" }, 409);
+      s.selbst = mitNaechstem(s.selbst, er.naechster);
+      await saveStateNow();
+      return json({ ok: true, ...ansicht(s.selbst) });
+    }
     if (url.pathname === "/api/self/retire" && req.method === "POST") {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
@@ -52629,6 +52733,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // how its Postfach arrives (Slot.zustellung); omitted at null = the role default, which
             // the board derives from `worktree` — one short value on the 2 s poll, only when chosen
             ...(s.zustellung ? { zustellung: s.zustellung } : {}),
+            // what this seat started with on top of its predecessor (Slot.selbst.neu, server/selbst-einrichten.ts): the board's
+            // „gave itself N stones“; omitted when it got nothing new
+            ...(s.selbst?.neu.length ? { gaveItself: s.selbst.neu } : {}),
             // the addresses its Postfach is read under (messageAddressesFor, as GET /api/self/messages) —
             // the board's Postfach tab filters and counts with them; omitted when it is only the
             // occupant's own session or lane address, which the board has from id and openedAt
@@ -53369,15 +53476,19 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const wahlen = { ...aus.wahlen, ...(aus.agentMd && s.agentMd?.getippt ? { purpose: aus.agentMd.text } : aus.agentMd?.profil ? { profil: aus.agentMd.profil } : {}) };
       // `laufend` ist der festgehaltene Start dieser Belegung (server/start-fassung.ts), nicht eine Neurechnung von jetzt; fehlt er,
       // wird gerechnet und `festgehalten` sagt es. Nach einer Nachfolge hält der Start die Fassung MIT Übergabe.
+      // ...and after a succession in which the seat gave itself something, the predecessor's start (`vorgaengerin`) and what it gave
+      // (`selbst`): Info → Setup compares the two as the start window compares a start with normal (src/start-brief.ts#gegenVorgaengerin)
+      const vorgaengerin = anlass === "laufend" && s.openedAt && s.selbst ? holeVorgaengerin(STATE_DIR, s.id, s.openedAt) : null;
+      const selbstTeil = { ...(vorgaengerin ? { vorgaengerin } : {}), ...(s.selbst ? { selbst: s.selbst } : {}) };
       if (anlass === "laufend" && s.openedAt) {
         const gehalten = holeFassung(STATE_DIR, s.id, s.openedAt);
         // Schwelle und Warmhalten gehören dem Slot und dürfen sich nach dem Start ändern: sie stehen, wie sie jetzt gelten, und
         // `nachgefuehrt` nennt, was sich seit dem Start bewegt hat (dann ist der Hash ein anderer als der des Starts)
         const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", fassungLaufwerteFuer(s)) : null;
         if (gehalten && nach) return json({ ...nach.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am,
-          ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) }, wahlen });
+          ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) }, wahlen, ...selbstTeil });
       }
-      return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null, wahlen });
+      return json({ ...(await fassungFuerSlot(s, anlass)), festgehalten: null, wahlen, ...selbstTeil });
     }
     const chainMatch = /^\/api\/slots\/(\d+)\/succession$/.exec(url.pathname);
     if (req.method === "GET" && chainMatch) {

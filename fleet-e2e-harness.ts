@@ -621,6 +621,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedNotizbuch: null, carriedPermissionMode: null, carriedWeglassen: null, carriedUmgebung: null, carriedTools: null,
           // ...and the agent it was opened from (server/agenten.ts) — a codex fixture opens from none
           carriedAgent: null,
+          // ...and what the seat gave itself (server/selbst-einrichten.ts), claude only — a codex fixture carries none
+          carriedSelbst: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });

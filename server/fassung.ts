@@ -18,11 +18,12 @@ export type FassungByte = number | "unknown";
  *  Gedächtnis (Claudes Auto-Memory) lädt zwischen Wissen und Übergabe. „richtung“ trägt nur die
  *  Orchestratorin (ihr erster Startteil); für jede andere Rolle fehlt der Abschnitt, ohne als
  *  `unknown` aufzutauchen. „systemzusatz“ ist, was Fleet selbst an den Systemprompt hängt (Listenschnitt, Auto-Mode-Zeile). */
-export const LIEST_REIHENFOLGE = ["richtung", "rolle", "systemzusatz", "projektregeln", "wissen", "korrekturen", "gedaechtnis", "uebergabe", "eigenes"] as const;
+export const LIEST_REIHENFOLGE = ["richtung", "rolle", "systemzusatz", "projektregeln", "wissen", "korrekturen", "gedaechtnis", "uebergabe", "eigenes", "zweck"] as const;
 export type LiestAbschnittId = (typeof LIEST_REIHENFOLGE)[number];
 /** Abschnitte, die nur eine Rolle trägt: fehlen sie, wird kein `unknown` erfunden. „korrekturen“ ist der Zeiger auf die Owner-Korrekturen,
- *  den ein Sitz ohne Rolle in Fleets Repo trägt (server.ts#fassungKorrekturZeiger); die anderen Rollen bekommen das Heft im Brief. */
-export const OPTIONALE_LIEST: ReadonlySet<LiestAbschnittId> = new Set(["richtung", "korrekturen"]);
+ *  den ein Sitz ohne Rolle in Fleets Repo trägt (server.ts#fassungKorrekturZeiger); die anderen Rollen bekommen das Heft im Brief. „[Zitat entfernt]“ trägt
+ *  nur ein Sitz, dem seine Vorgängerin einen schrieb (server/selbst-einrichten.ts). */
+export const OPTIONALE_LIEST: ReadonlySet<LiestAbschnittId> = new Set(["richtung", "korrekturen", "zweck"]);
 
 export interface FassungAbschnittEingang {
   readonly id: string;

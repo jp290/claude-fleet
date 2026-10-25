@@ -28,7 +28,10 @@ const startOf = async (slot: number): Promise<{ cwd: string; appended: string; a
   const [cwd, ...rest] = readFileSync(file, "utf8").split("\n");
   const args = rest.join("\n").split("\0");
   const at = args.indexOf("--append-system-prompt");
-  return { cwd: cwd!, appended: at >= 0 ? args[at + 1]! : "", args };
+  // ...and the seat's start file behind it (server.ts#seatStartDatei): the library stands there, read after the line
+  const datei = args.indexOf("--append-system-prompt-file");
+  const appended = [at >= 0 ? args[at + 1]! : "", datei >= 0 ? readFileSync(args[datei + 1]!, "utf8") : ""].filter(Boolean).join("\n\n");
+  return { cwd: cwd!, appended, args };
 };
 
 // DIE DATEI, wie sie geteilt wurde, und wie das Fenster sie importiert und am Server ablegt (src/k15-zustand.ts#konstForm)

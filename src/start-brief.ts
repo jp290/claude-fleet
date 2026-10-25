@@ -132,6 +132,8 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
   fleetText("zusatz", "appended text", "what Fleet adds to its instructions in this place", text1(jetzt, "liest", "systemzusatz"), text1(normal, "liest", "systemzusatz"), ["skills", "permissions"]);
   fleetText("rolle", "its role card", "what its role tells it", text1(jetzt, "liest", "rolle"), text1(normal, "liest", "rolle"), ["role"]);
   fleetText("eigenes", "its agent file", "what it is for, in your words", text1(jetzt, "liest", "eigenes"), text1(normal, "liest", "eigenes"), ["purpose"]);
+  // the purpose a predecessor wrote for it (POST /api/self/einrichten): its own text, beside the owner's
+  fleetText("zweck", "its purpose", "what it is for, written by the session before it", text1(jetzt, "liest", "zweck"), text1(normal, "liest", "zweck"), ["purpose"]);
   // the rights sentence: appended only when rights are set; without, the Fassung says what holds instead
   const rj = text1(jetzt, "darf", "darf"), rn = text1(normal, "darf", "darf");
   if (rj !== rn) fleetText("rechte", "its rights sentence", "what it may change", rj, null, ["rights"]);
@@ -186,3 +188,10 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
 // how many parts differ from normal (the Fleet group counts its texts)
 export const geaendert = (b: Startbrief): number => [...b.anweisungen, ...b.ersteNachricht, ...b.einstellungen]
   .reduce((n, x) => n + (x.kinder ? x.kinder.filter((k) => k.zeichen).length : x.zeichen ? 1 : 0), 0);
+// WHAT A SUCCESSOR HAS THAT ITS PREDECESSOR DIDN'T (Info → Setup on the board, POST /api/self/einrichten): the same comparison as the start
+// window's, with the predecessor's start in the place of normal, every part that differs, a group's parts one by one. The first message
+// and the git status are the window's own inputs and stay out: a succession's first message is its handover, never a stone.
+export function gegenVorgaengerin(jetzt: Fassung, vorher: Fassung, repo: string): Block[] {
+  const b = startbrief(jetzt, vorher, { repo, gitNormal: null, gitJetzt: null, aufgabe: null, hooksAus: false, ccTokens: null });
+  return [...b.anweisungen, ...b.ersteNachricht, ...b.einstellungen].flatMap((x) => x.kinder ?? [x]).filter((x) => x.zeichen !== null);
+}

@@ -69,6 +69,20 @@ const ic = (n: IconName): SVGSVGElement => { const i = icon(n); i.classList.add(
 
 // ---------- what the server says ----------
 const fassungVon = (a: Answer | null | undefined): Fassung | null => (a as unknown as { fassung?: Fassung } | null)?.fassung ?? null;
+// FLEET'S LIBRARY AS THE PLAN NAMES IT (server.ts#foundingSessionPlan, the rows bibliothek and bibliothek-skills): the guides a start gets when it
+// is on, and the packs sessions wrote (server/eigene-packs.ts), each a stone of its own
+interface EigenerPack { id: string; titel: string; useWhen: string; bytes: number }
+function bibliothekVon(a: Answer | null | undefined): { standard: string[]; eigene: EigenerPack[] } {
+  const d = (id: string) => a?.plan.bausteine.find((b) => b.id === id)?.details as { packs?: unknown; eigene?: unknown } | undefined;
+  const ids = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  const eigene = Array.isArray(d("bibliothek")?.eigene) ? (d("bibliothek")!.eigene as EigenerPack[]).filter((x) => x && typeof x.id === "string") : [];
+  return { standard: [...ids(d("bibliothek")?.packs), ...ids(d("bibliothek-skills")?.packs)], eigene };
+}
+// what the library gives this start without its own packs: Fleet's guides where they are on — chosen, or by the place outside own setup
+const standardVon = (s: St): string[] => {
+  const n = s.sitz.letzte?.n ?? null;
+  return s.sitz.wahl.bibliothek || (n && !eigenesSetup(fassungVon(n))) ? bibliothekVon(n).standard : [];
+};
 const ccTokens = (a: Answer | null | undefined): number | null => {
   const t = (a as unknown as { claudeCode?: { messung?: { tokens?: unknown } } } | null)?.claudeCode?.messung?.tokens;
   return typeof t === "number" ? t : null;
@@ -187,7 +201,7 @@ function urls(s: St): { n: string; a: string } | null {
   if (!s.repo) return null;
   const z = s.sitz, n = planUrl(s.repo, "nur-ordner", {}), rolle = rolleVon(z.agent);
   if (rolle) return { n, a: planUrl(s.repo, rolle, {}) };
-  const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id } : vorschau(z.wahl)).toString();
+  const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id } : vorschau(z.wahl, standardVon(s))).toString();
   return { n, a: q ? `${n}&${q}` : n };
 }
 function plaene(s: St): { a: Answer | null; n: Answer | null; fehler: string | null; laedt: boolean } {
@@ -604,6 +618,11 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
   if (w.bibliothek) { const n = packDateien(fj).length;
     K.set("knowledge", { id: "knowledge", name: "Fleet's guides", icon: "info", wert: fest(n ? mehrzahl(n, "guide") : "On"), satz: "Short guides on how to work well with you.",
       weg: gehalten ? undefined : setze("knowledge", (x) => { x.bibliothek = false; }) }); }
+  // A PACK A SESSION WROTE: a stone of its own, its moment as its sentence
+  const geschrieben = bibliothekVon(z.letzte?.n).eigene;
+  for (const id of w.packs) { const pk = geschrieben.find((x) => x.id === id);
+    K.set(`pack:${id}`, { id: `pack:${id}`, name: pk?.titel ?? id, icon: "info", wert: fest(pk ? KB(pk.bytes) : "Pack"), satz: pk?.useWhen ?? "A pack a session wrote.",
+      weg: gehalten ? undefined : setze(`pack:${id}`, (x) => { x.packs = x.packs.filter((p) => p !== id); }) }); }
   if (w.rechte) { const st = STUFEN.find((x) => x.id === w.rechte)!;
     K.set("rights", { id: "rights", name: "Rights", icon: "keys", gehalten,
       wert: gehalten ? fest(st.wort) : waehler("rights", STUFEN.map((x): [string, string] => [x.id, x.wort]), w.rechte, (v) => { w.rechte = (v as Wahl["rechte"]) ?? "bauen"; aendere(s, ["rights"]); }),
@@ -702,7 +721,9 @@ function zoneCC(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
 function zoneFleet(s: St, fj: Fassung): HTMLElement {
   const z = s.sitz, w = z.wahl, K = kacheln(s, fj, null);
   const FLEET = ["task", "knowledge", "rights", "branch", "notebook", "succession"];
-  const an = FLEET.filter((id) => K.has(id));
+  // ...and each pack a session wrote, after Fleet's guides
+  const eigene = bibliothekVon(z.letzte?.n).eigene;
+  const an = [...FLEET.filter((id) => K.has(id)), ...[...K.keys()].filter((id) => id.startsWith("pack:"))];
   // a role works in your checkout; an agent that starts whole takes only a task beside it
   const moeglich = FLEET.filter((id) => !K.has(id) && (!z.fremd.length || (id === "task" && !rolleVon(z.agent)))
     && (branchGeht(infoDa(s)) || (id !== "branch" && id !== "notebook")));
@@ -728,6 +749,20 @@ function zoneFleet(s: St, fj: Fassung): HTMLElement {
         if (id === "task" || id === "branch") requestAnimationFrame(() => s.shell.detail.querySelector<HTMLElement>(`[data-feld="${id === "task" ? "aufgabe" : "branch"}"]`)?.focus());
       }, howVon(id, eigenesSetup(fj)));
       b.dataset.add = id;
+      adds.append(b);
+    }
+    zone.append(adds);
+  }
+  // the packs not chosen yet: a + each, as the parts above
+  const frei = z.fremd.length ? [] : eigene.filter((pk) => !w.packs.includes(pk.id));
+  if (frei.length) {
+    const adds = el("div", "sfadds");
+    for (const pk of frei) {
+      const b = knopf("sfaddon", [el("span", "sfpl", "+"), ic("info"), el("b", "", pk.titel), el("span", "", pk.useWhen)], () => {
+        w.packs = [...w.packs, pk.id];
+        aendere(s, [`pack:${pk.id}`]);
+      }, `A pack a session wrote (${KB(pk.bytes)}). It goes word for word into what this session reads at its start.`);
+      b.dataset.add = `pack:${pk.id}`;
       adds.append(b);
     }
     zone.append(adds);
@@ -942,7 +977,7 @@ async function speichere(s: St, name: string): Promise<void> {
   const z = s.sitz, n = name.trim();
   if (!n) return;
   const aendern = !!z.agent?.aenderbar;
-  const a = await agentAntwort(s, await post(aendern ? `/api/agenten/${encodeURIComponent(z.agent!.id)}` : "/api/agenten", { name: n, wahlen: wahlenVon(z.wahl) }, aendern ? "PUT" : "POST"));
+  const a = await agentAntwort(s, await post(aendern ? `/api/agenten/${encodeURIComponent(z.agent!.id)}` : "/api/agenten", { name: n, wahlen: wahlenVon(z.wahl, standardVon(s)) }, aendern ? "PUT" : "POST"));
   if (!a) return;
   Object.assign(z, { agent: a, name: a.name, basis: structuredClone(z.wahl), speichern: false, nameEntwurf: null, fehler: null });
   meldung(`Saved as „${a.name}“. It shows under the agents of every repo.`);
@@ -983,7 +1018,7 @@ async function los(s: St): Promise<void> {
   z.fehler = null;
   render();
   const ganz = alsAgent(z), ziel = w.aufgabe?.trim() ?? "", rolle = rolleVon(z.agent);
-  const { goal: _g, ...felder } = tuer(w);
+  const { goal: _g, ...felder } = tuer(w, standardVon(s));
   const wahl = ganz ? {} : felder;
   const dreier = ganz ? {} : { ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}) };
   const agent = ganz ? { agent: z.agent!.id } : {};

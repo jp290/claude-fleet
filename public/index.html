@@ -1152,6 +1152,10 @@
     box-shadow: inset 0 0 0 1px transparent; }
   .slot .stackn.folded { background: none;
     box-shadow: inset 0 0 0 1px hsl(var(--proj-h, 0) var(--proj-s) var(--proj-l) / 0.5); }
+  /* WHAT IT GAVE ITSELF at its start (SlotInfo.gaveItself): the same box as the lane count, a ring in the start window's amber,
+     no pointer — it is a reading; the board's Info → Setup shows the stones */
+  .slot .gave { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 5px; border-radius: 5px;
+    font-size: var(--chat-ui-fs); line-height: 1; color: var(--amber); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 45%, transparent); }
   /* small on purpose: the sidebar is 228px and a lane label is already tight, so the indent buys
      "belongs to the row above" with the least width it can be read at */
   .slot.stacked { margin-left: 10px; }
@@ -3246,6 +3250,21 @@
   #board .bsetup .bsgo { width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none;
     color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
   #board .bsetup .bsgo:hover { background: var(--chat-raised); }
+  /* WHAT IS NEW SINCE THE SESSION BEFORE IT (src/board.ts#neuZeile): sign, name and size on one line, the changed lines under it */
+  #board .bsetup .bsneu { margin: 2px 0 6px; }
+  #board .bsetup .bsneuh { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; color: var(--b-ink2); }
+  #board .bsetup .bsneuz { flex: none; width: 12px; font-family: var(--b-mono); font-weight: 700; color: var(--amber); }
+  #board .bsetup .bsneun { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bsetup .bsneug { flex: none; font-family: var(--b-mono); font-size: 11px; color: var(--b-ink3); }
+  #board .bsetup .bsneul { margin-left: 18px; font-family: var(--b-mono); font-size: 11px; line-height: 1.45; color: var(--b-ink3); }
+  #board .bsetup .bsneuline { display: flex; gap: 6px; }
+  #board .bsetup .bsneuline.add { color: var(--b-ink2); }
+  #board .bsetup .bsneuline.add .bsneug1, #board .bsetup .bsneuline.del .bsneug1 { color: var(--amber); font-weight: 700; }
+  #board .bsetup .bsneuline.del .bsneut { text-decoration: line-through; }
+  #board .bsetup .bsneug1 { flex: none; width: 8px; }
+  #board .bsetup .bsneut { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #board .bsetup .bsneumehr { border: 0; background: none; padding: 1px 0; font: inherit; color: var(--b-ink3); cursor: pointer; }
+  #board .bsetup .bsneumehr:hover { color: var(--chat-ink); }
   #board .bsetup .bsgo:hover .bsval { color: var(--chat-ink); }
   #board .bsetup .bsgopfeil { flex: none; font-size: 12px; color: var(--b-ink3); }
   #board .bsetup .bspack { padding: 1px 5px; border: 1px solid var(--chat-edge-soft); border-radius: 4px; background: var(--chat-surface);
@@ -4043,6 +4062,7 @@
       #msheet .mshrow.lane { padding-left: 24px; }
       #msheet .mshrow.current { background: var(--chat-surface); color: var(--chat-ink); }
       .mshrow .mshw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mshrow .mshgave { color: var(--amber); }
       .mshval { margin-left: auto; flex: none; color: var(--chat-mute); font-size: var(--chat-ui-fs); }
       .mshnm { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .mshname, .mshwhy { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

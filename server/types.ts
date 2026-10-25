@@ -2136,6 +2136,10 @@ interface Slot {
   // what of the user's ~/.claude this start leaves out (door field `weglassen`, server/eigenes-setup.ts#weglassenDerTuer; the seat's own
   // POST /api/self/weglassen): null = nothing. claude only; carried by a generic succession; persisted; cleared on open/kill.
   weglassen: import("./weglassen").Weglassen | null;
+  // what the seat gave itself on top (POST /api/self/einrichten, server/selbst-einrichten.ts): packs and a purpose, only text. `jetzt` is what
+  // this occupancy started with, `naechster` what its successor gets; a restart keeps `jetzt`. claude only; carried by a generic succession
+  // (selbstDerNachfolge); persisted; cleared on open/kill.
+  selbst: import("./selbst-einrichten").SlotSelbst | null;
   // Fleet's environment for the auto-mode classifier (door field `autoModeEnvironment`): null = no choice, on in Fleet's repo, off in its own
   // setup. claude only; carried by a generic succession; persisted; cleared on open/kill.
   autoModeEnvironment: boolean | null;

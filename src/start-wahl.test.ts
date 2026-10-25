@@ -48,3 +48,16 @@ describe("a saved agent and the window's choice", () => {
     expect(gleich(normal(), { ...normal(), hooks: false })).toBe(false);
   });
 });
+
+// A PACK A SESSION WROTE IS A STONE OF ITS OWN (server/eigene-packs.ts): the door gets a list, the guides the start would get plus the chosen packs
+describe("own packs in the window", () => {
+  test("the list is the standard guides plus the chosen packs, once each; without own packs nothing changes", () => {
+    const w = { ...normal(), bibliothek: true, packs: ["mein-agent"] };
+    expect(tuer(w, ["who-it-is-for", "made-with-love"]).bibliothek).toEqual(["who-it-is-for", "made-with-love", "mein-agent"]);
+    expect(vorschau(w, ["who-it-is-for"]).bibliothek).toBe("who-it-is-for,mein-agent");
+    // own setup with the guides off: only the pack
+    expect(tuer({ ...normal(), packs: ["mein-agent"] }).bibliothek).toEqual(["mein-agent"]);
+    expect(tuer({ ...normal(), bibliothek: true }, ["who-it-is-for"]).bibliothek).toBe(true);
+    expect(abweichungen({ ...normal(), packs: ["mein-agent"] }).map((d) => [d.id, d.zeichen])).toEqual([["pack:mein-agent", "+"]]);
+  });
+});

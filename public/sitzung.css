@@ -163,6 +163,10 @@
 .k15sitz .sfaddon .sfpl { color: var(--sf-fl); font-size: 16px; line-height: 1; }
 .k15sitz .sfaddon b { font-weight: 600; font-size: 13px; color: var(--sf-ink); }
 .k15sitz .sfaddon span:last-child { color: var(--sf-ink3); font-size: 12px; white-space: nowrap; }
+.k15sitz .sfaddon.sfpack { display: flex; width: 100%; align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
+.k15sitz .sfaddon.sfpack .sfpkt { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.k15sitz .sfaddon.sfpack .sfpkt span { white-space: normal; }
+.k15sitz .sfaddon.sfpack > .sfpl, .k15sitz .sfaddon.sfpack > svg { flex: none; }
 .k15sitz .sfaddon .sfic { color: #7fa5ee; }
 /* an open block: how it works, what you can set; its words are on the right */
 .k15sitz .sfdrawer { grid-column: 2; margin-top: 10px; background: #151619; border: 1px solid #2c3036; border-radius: 12px; padding: 12px 16px 14px; animation: sffade .2s ease; }

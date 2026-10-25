@@ -50,6 +50,7 @@ export const CONTEXT_PACK_VALIDATION_CODES = [
   "SOURCE_PATH_MISSING",
   "SOURCE_SHAPE_INVALID",
   "SOURCE_UNKNOWN_KEY",
+  "STATT_TARGET_MISSING",
   "STATUS_UNKNOWN",
   "SUPERSEDES_CYCLE",
   "SUPERSEDES_TARGET_MISSING",
@@ -92,7 +93,7 @@ type UnknownRecord = Record<string, unknown>;
 
 const PACK_KEYS = new Set([
   "id", "useWhen", "scope", "audience", "triggers", "hardness", "sources", "requiredCapabilities",
-  "harnesses", "modes", "estimatedBytes", "evidence", "owner", "status", "supersedes",
+  "harnesses", "modes", "estimatedBytes", "evidence", "owner", "status", "supersedes", "statt",
   "privateSourceId", "sourceHash", "observedAt", "group",
   // a Fleet seed's anatomy (context-packs.ts, e.g. verify-e2e's live-bau Kern): judged by
   // context-manifest.ts#packAnatomyIssues, which a manifest pack meets after splitPackAnatomy took
@@ -226,6 +227,10 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
       emit("ESTIMATED_BYTES_INVALID", "error", packId, "estimatedBytes must be finite and nonnegative");
     if ("supersedes" in raw && (typeof raw.supersedes !== "string" || !PACK_ID.test(raw.supersedes)))
       emit("PACK_FIELD_INVALID", "error", packId, "supersedes must be a pack id");
+    if ("statt" in raw && (typeof raw.statt !== "string" || !PACK_ID.test(raw.statt) || raw.statt === raw.id))
+      emit("PACK_FIELD_INVALID", "error", packId, "statt must be the id of another pack");
+    else if ("statt" in raw && !(Array.isArray(raw.triggers) && raw.triggers.includes("seat-choice")))
+      emit("PACK_FIELD_INVALID", "error", packId, "statt is for a pack chosen at a seat's start: it needs the trigger seat-choice");
 
     const isPrivate = raw.audience === "private-ops";
     if (isPrivate) {
@@ -322,6 +327,9 @@ export function validateContextPacks(input: ContextPackValidationInput): Context
     const supersedes = unique.get(id)?.supersedes;
     if (typeof supersedes === "string" && !unique.has(supersedes))
       emit("SUPERSEDES_TARGET_MISSING", "error", id, `supersedes target does not exist uniquely: ${supersedes}`);
+    const statt = unique.get(id)?.statt;
+    if (typeof statt === "string" && statt !== id && !unique.has(statt))
+      emit("STATT_TARGET_MISSING", "error", id, `statt names no pack of this register: ${statt}`);
   }
 
   const state = new Map<string, "visiting" | "done">();

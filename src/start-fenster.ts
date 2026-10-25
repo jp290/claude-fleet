@@ -71,11 +71,13 @@ const ic = (n: IconName): SVGSVGElement => { const i = icon(n); i.classList.add(
 const fassungVon = (a: Answer | null | undefined): Fassung | null => (a as unknown as { fassung?: Fassung } | null)?.fassung ?? null;
 // FLEET'S LIBRARY AS THE PLAN NAMES IT (server.ts#foundingSessionPlan, the rows bibliothek and bibliothek-skills): the guides a start gets when it
 // is on, and the packs sessions wrote (server/eigene-packs.ts), each a stone of its own
-interface EigenerPack { id: string; titel: string; useWhen: string; bytes: number }
+// ...and Fleet's packs to choose (trigger seat-choice), `statt` the guide one takes the place of
+interface EigenerPack { id: string; titel: string; useWhen: string; bytes: number; statt?: string; stattTitel?: string; fleet?: true }
 function bibliothekVon(a: Answer | null | undefined): { standard: string[]; eigene: EigenerPack[] } {
-  const d = (id: string) => a?.plan.bausteine.find((b) => b.id === id)?.details as { packs?: unknown; eigene?: unknown } | undefined;
+  const d = (id: string) => a?.plan.bausteine.find((b) => b.id === id)?.details as { packs?: unknown; eigene?: unknown; zurWahl?: unknown } | undefined;
   const ids = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  const eigene = Array.isArray(d("bibliothek")?.eigene) ? (d("bibliothek")!.eigene as EigenerPack[]).filter((x) => x && typeof x.id === "string") : [];
+  const liste = (v: unknown): EigenerPack[] => Array.isArray(v) ? (v as EigenerPack[]).filter((x) => x && typeof x.id === "string") : [];
+  const eigene = [...liste(d("bibliothek")?.zurWahl).map((x) => ({ ...x, fleet: true as const })), ...liste(d("bibliothek")?.eigene)];
   return { standard: [...ids(d("bibliothek")?.packs), ...ids(d("bibliothek-skills")?.packs)], eigene };
 }
 // what the library gives this start without its own packs: Fleet's guides where they are on — chosen, or by the place outside own setup
@@ -621,7 +623,8 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
   // A PACK A SESSION WROTE: a stone of its own, its moment as its sentence
   const geschrieben = bibliothekVon(z.letzte?.n).eigene;
   for (const id of w.packs) { const pk = geschrieben.find((x) => x.id === id);
-    K.set(`pack:${id}`, { id: `pack:${id}`, name: pk?.titel ?? id, icon: "info", wert: fest(pk ? KB(pk.bytes) : "Pack"), satz: pk?.useWhen ?? "A pack a session wrote.",
+    K.set(`pack:${id}`, { id: `pack:${id}`, name: pk?.titel ?? id, icon: "info", wert: fest(pk ? KB(pk.bytes) : "Pack"),
+      satz: pk ? `${pk.useWhen}${pk.statt ? ` In place of “${pk.stattTitel ?? pk.statt}”.` : ""}` : "A pack a session wrote.",
       weg: gehalten ? undefined : setze(`pack:${id}`, (x) => { x.packs = x.packs.filter((p) => p !== id); }) }); }
   if (w.rechte) { const st = STUFEN.find((x) => x.id === w.rechte)!;
     K.set("rights", { id: "rights", name: "Rights", icon: "keys", gehalten,
@@ -758,10 +761,14 @@ function zoneFleet(s: St, fj: Fassung): HTMLElement {
   if (frei.length) {
     const adds = el("div", "sfadds");
     for (const pk of frei) {
-      const b = knopf("sfaddon", [el("span", "sfpl", "+"), ic("info"), el("b", "", pk.titel), el("span", "", pk.useWhen)], () => {
+      // a pack's name is a whole heading: its stone takes the row, name above, moment below, nothing cut off
+      const text = el("div", "sfpkt");
+      text.append(el("b", "", pk.titel), el("span", "", pk.statt ? `${pk.useWhen} In place of “${pk.stattTitel ?? pk.statt}”.` : pk.useWhen));
+      const b = knopf("sfaddon sfpack", [el("span", "sfpl", "+"), ic("info"), text], () => {
         w.packs = [...w.packs, pk.id];
         aendere(s, [`pack:${pk.id}`]);
-      }, `A pack a session wrote (${KB(pk.bytes)}). It goes word for word into what this session reads at its start.`);
+      }, pk.fleet ? `A guide from Fleet that comes only when chosen (${KB(pk.bytes)}).`
+        : `A pack a session wrote (${KB(pk.bytes)}). It goes word for word into what this session reads at its start.`);
       b.dataset.add = `pack:${pk.id}`;
       adds.append(b);
     }

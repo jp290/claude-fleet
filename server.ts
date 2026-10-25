@@ -42382,7 +42382,12 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
   if (headRead && (headRead.code !== 0 || !headRead.out)) throw new Error(`the HEAD of ${basename(fleetRoot)} could not be read`);
   const head = BIBLIOTHEK.head ?? headRead!.out;
   const tree = await seatTreeOf(cwd);
-  const { repoPlan: plan, blobShas, blobModes } = await repoManifestContextPlan(fleetRoot, head, seatContextFacts(tree, harness, borrow));
+  const { repoPlan: plan, blobShas, blobModes, manifest } = await repoManifestContextPlan(fleetRoot, head, seatContextFacts(tree, harness, borrow));
+  // what the plan does not carry: whether a pack only comes chosen (trigger seat-choice), and which one it takes the place of
+  const wahlVon = new Map((manifest.kind === "packs" ? manifest.packs : []).flatMap((raw): [string, { zurWahl: boolean; statt?: string }][] =>
+    raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string" ? [[(raw as { id: string }).id, {
+      zurWahl: Array.isArray((raw as { triggers?: unknown }).triggers) && ((raw as { triggers: unknown[] }).triggers).includes("seat-choice"),
+      ...(typeof (raw as { statt?: unknown }).statt === "string" ? { statt: (raw as { statt: string }).statt } : {}) }]] : []));
   // each source once and side by side (Abnahme 22.10. (b): read one after the other, a spawn waited for every read in turn);
   // raw, as the borrow door reads it (contextBorrowRoute): the size here is what a borrow delivers
   const root = fleetRoot;
@@ -42405,8 +42410,11 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
       if (section === null) unread = true;
       else sections.push(section);
     }
+    const wahl = wahlVon.get(pack.id);
     packs.push({ id: pack.id, useWhen: pack.useWhen ?? null,
-      sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: unread ? null : sections.join("\n") });
+      sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: unread ? null : sections.join("\n"),
+      // chosen, it goes word for word into the start like a pack of one's own: the start brief shows what the stone added
+      ...(wahl?.zurWahl ? { weg: "start" as const, zurWahl: true as const, ...(wahl.statt ? { statt: wahl.statt } : {}) } : {}) });
   }
   // ...and the packs a session wrote (server/eigene-packs.ts): in the catalog, wörtlich im Start, but only for a seat that chose one
   // (bibliothekGewaehlt); one that shares an id with the register stays out — the register's comes first
@@ -42524,14 +42532,18 @@ async function halteBestandFest(): Promise<number[]> {
 // `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
-  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null }> {
+  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
+    zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
-  const knowledge = bibliothekGewaehlt(sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
-    : (await seatKnowledgeFor(cwd, harness)).knowledge, wahl, dazu, an);
+  const voll = sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
+    : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  const knowledge = bibliothekGewaehlt(voll, wahl, dazu, an);
   const files = seatSkillFiles(knowledge);
   const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
-  return { knowledge, text: renderSeatStart(knowledge), files, skillsDir };
+  // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
+  const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
+  return { knowledge, text: renderSeatStart(knowledge), files, skillsDir, zurWahl, voll: voll.packs };
 }
 // what a seat's claude line carries: the start block and the folder its library skills come from
 interface SeatStart { readonly text: string; readonly skillsDir: string | null }
@@ -42919,7 +42931,14 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
       bytes.bibliothek = Buffer.byteLength(bibliothek.start.text);
       // ...and the packs sessions wrote (server/eigene-packs.ts): none comes by itself, the start window offers each as a stone
       details.bibliothek = { text: bibliothek.start.text, packs: bibliothek.box, head: bibliothek.start.knowledge.head,
-        eigene: liesEigenePacks(STATE_DIR).map((pack) => ({ id: pack.id, titel: pack.titel, useWhen: pack.useWhen, bytes: pack.bytes })) };
+        eigene: liesEigenePacks(STATE_DIR).map((pack) => ({ id: pack.id, titel: pack.titel, useWhen: pack.useWhen, bytes: pack.bytes })),
+        // ...and Fleet's packs to choose (trigger seat-choice): a stone each too, `statt` names the guide it takes the place of
+        zurWahl: bibliothek.start.zurWahl.map((pack) => {
+          const titel = (p: { id: string; sources: readonly { anchor: string }[] }) => (p.sources[0]?.anchor ?? p.id).replace(/^#+\s*/, "");
+          const statt = pack.statt ? bibliothek.start.voll.find((x) => x.id === pack.statt) : undefined;
+          return { id: pack.id, titel: titel(pack), useWhen: pack.useWhen ?? "", bytes: Buffer.byteLength(pack.text ?? ""),
+            ...(pack.statt ? { statt: pack.statt, stattTitel: statt ? titel(statt) : pack.statt } : {}) };
+        }) };
       bytes["bibliothek-skills"] = Buffer.byteLength(bibliothek.skillListe);
       details["bibliothek-skills"] = { text: bibliothek.skillListe, packs: bibliothek.skills };
     } else if (bibliothek) details.bibliothek = details["bibliothek-skills"] = { grund: bibliothek.grund };

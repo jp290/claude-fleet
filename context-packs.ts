@@ -26,6 +26,9 @@ export const CONTEXT_PACK_TRIGGERS = [
   // DER START EINES SITZES OHNE STEHENDE ROLLE (server/sitz-wissen.ts): Branch-Session, freie Session, Sitz in
   // einem anderen Repo. `seat-start` nur im Fleet-Repo, `seat-start-any-repo` überall. Nur dieser Start trägt sie.
   "seat-start", "seat-start-any-repo",
+  // EIN PACK ZUR WAHL (server/sitz-wissen.ts#bibliothekGewaehlt): er steht im Katalog eines Sitzes, kommt aber nur, wenn ihn jemand
+  // im Startfenster oder an der Tür wählt; mit `statt` nimmt er beim Wählen einen anderen Pack aus der Liste.
+  "seat-choice",
 ] as const;
 export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 
@@ -189,6 +192,8 @@ interface ContextPackBase {
   readonly owner: "owner";
   readonly status: ContextPackStatus;
   readonly supersedes?: string;
+  /** nur mit dem Auslöser seat-choice: wer diesen Pack wählt, bekommt den hier genannten nicht (eine Variante, kein Nachfolger) */
+  readonly statt?: string;
   readonly fassung?: ContextPackFassung;
 }
 

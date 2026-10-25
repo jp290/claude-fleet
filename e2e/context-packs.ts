@@ -150,6 +150,18 @@ export async function run(externalCheck?: ContextPackCheck): Promise<void> {
       cycleResult.verdict === "fail" && hasCode(cycleResult, "SUPERSEDES_CYCLE"),
       issueSummary(cycleResult));
 
+    // statt: a pack to choose takes the place of another of the same register, and only a pack chosen at a seat's start carries it
+    const repo = fixture.facts;
+    const statt = (mut: (packs: MutablePack[]) => void) => { const packs = clonePacks(); mut(packs);
+      return validateContextPacks({ packs, repo, capabilities }); };
+    const stattOk = statt((p) => { p[0].triggers = ["seat-choice"]; p[0].statt = p[1].id; });
+    const stattFehlt = statt((p) => { p[0].triggers = ["seat-choice"]; p[0].statt = "kein-solcher-pack"; });
+    const stattOhneWahl = statt((p) => { p[0].statt = p[1].id; });
+    check("context packs: statt names another pack of the register and needs the trigger seat-choice",
+      stattOk.verdict !== "fail" && hasCode(stattFehlt, "STATT_TARGET_MISSING") && stattOhneWahl.verdict === "fail"
+        && stattOhneWahl.issues.some((issue) => issue.detail.includes("seat-choice")),
+      [stattOk, stattFehlt, stattOhneWahl].map(issueSummary).join(" | "));
+
     const missingCapabilities = fullCapabilities();
     const codexCapabilities = missingCapabilities.get("codex")!.filter((capability) => capability !== "tracked-source-read");
     missingCapabilities.set("codex", codexCapabilities);

@@ -89,8 +89,8 @@ describe("Die Regel: welche Packs zu welchem Sitz kommen, und wie", () => {
     // das Systemkonzept ist der ganze Text, als Wissen (runde4 §3)
     expect(pack("system-concept").sources).toEqual([expect.objectContaining({ path: "docs/start/system-concept.md", sorte: "wissen" })]);
     expect(textOf("system-concept")).toBe(atHead("docs/start/system-concept.md"));
-    expect(seatContextFacts("foreign", "claude", true).triggers).toEqual(["seat-start-any-repo"]);
-    expect(seatContextFacts("fleet", "claude").triggers).toEqual(["seat-start", "seat-start-any-repo"]);
+    expect(seatContextFacts("foreign", "claude", true).triggers).toEqual(["seat-start-any-repo", "seat-choice"]);
+    expect(seatContextFacts("fleet", "claude").triggers).toEqual(["seat-start", "seat-start-any-repo", "seat-choice"]);
   });
   test("was wörtlich im Start steht, erreicht jeden Sitz seines Baums und hat einen Grund: für wen, mit dem Owner, in wenigen Aufrufen, seine Nachfolgerin bauen", () => {
     expect(Object.keys(SEAT_BOX).sort()).toEqual(["building-an-agent", "who-it-is-for", "working-in-few-calls", "working-with-the-owner"]);
@@ -403,6 +403,11 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     expect(bibliothekGewaehlt(mit, ["a", "eigen"]).packs.map((x) => x.id)).toEqual(["a", "eigen"]);
     expect(bibliothekGewaehlt(mit, null, ["eigen"]).packs.map((x) => x.id)).toContain("eigen");
     expect(bibliothekGewaehlt(mit, false, ["eigen"], false).packs.map((x) => x.id)).toEqual(["eigen"]);
+    // ein Pack zur Wahl (Auslöser seat-choice) kommt nie von selbst; gewählt nimmt er den heraus, den `statt` nennt
+    const hart = { ...k, packs: [...k.packs, { id: "hart", useWhen: "w", sources: [], text: "# H", zurWahl: true as const, statt: "b" }] };
+    expect(bibliothekGewaehlt(hart, true).packs.map((x) => x.id)).toEqual(["a", "b", "c"]);
+    expect(bibliothekGewaehlt(hart, ["a", "b", "c", "hart"]).packs.map((x) => x.id)).toEqual(["a", "c", "hart"]);
+    expect(bibliothekGewaehlt(hart, null, ["hart"]).packs.map((x) => x.id)).toEqual(["a", "c", "hart"]);
     expect(packAuswahlFehlt(["a", "zz"], k)).toEqual(["zz"]);
     expect(packAuswahlFehlt(true, k)).toEqual([]);
   });
@@ -449,5 +454,38 @@ describe("einzelne Packs aus Fleets Bibliothek", () => {
     const wieder = await startOf(10);
     expect(wieder.appended).toContain(textOf(gewaehlt));
     expect(wieder.appended).not.toContain(textOf(weg));
+  }, LIFE_DEADLINE_MS * 3);
+  // EIN PACK ZUR WAHL (Auslöser seat-choice, Feld statt): das Fenster bietet ihn als Stein an, ein Sitz mit der ganzen Bibliothek bekommt ihn nicht, und wer ihn
+  // wählt (das Fenster schickt die Standardpacks mit), bekommt ihn statt des genannten
+  test("die harte Fassung steht zur Wahl: ohne Wahl kommt die sanfte als Skill, gewählt kommt nur die harte, wörtlich im Start", async () => {
+    const zurWahl = register.filter((p) => p.triggers.includes("seat-choice"));
+    const hart = zurWahl.find((p) => (p as RegisterPack & { statt?: string }).statt);
+    if (!hart) throw new Error("kein Pack mit statt im Register");
+    const sanft = (hart as RegisterPack & { statt: string }).statt;
+    expect(skills(false)).toContain(sanft);
+    expect(erwartet(true)).not.toContain(hart.id);
+    const f = fixture();
+    const other = join(TMP, "wahl-repo");
+    mkdirSync(other);
+    sh(other, "init", "-q", "-b", "main");
+    writeFileSync(join(other, "README"), "anderes Repo\n");
+    sh(other, "add", "README");
+    sh(other, "commit", "-q", "-m", "start");
+    const [plan, ohne, mit] = await life(f, [get(`/api/founding-plan?repo=${encodeURIComponent(other)}&role=nur-ordner&harness=claude`),
+      post("/api/slots/12/open", { cwd: other, bibliothek: true }), post("/api/slots/13/open", { cwd: other, bibliothek: [...erwartet(false), hart.id] })]);
+    const details = (plan?.body.plan as { bausteine: { id: string; details?: { zurWahl?: unknown } }[] } | undefined)
+      ?.bausteine.find((z) => z.id === "bibliothek")?.details;
+    expect(details?.zurWahl).toEqual(zurWahl.map((p) => expect.objectContaining({ id: p.id,
+      titel: p.sources[0]!.anchor.replace(/^#+\s*/, ""), useWhen: p.useWhen })));
+    expect(details?.zurWahl).toContainEqual(expect.objectContaining({ id: hart.id, statt: sanft,
+      stattTitel: pack(sanft).sources[0]!.anchor.replace(/^#+\s*/, "") }));
+    expect([ohne?.status, mit?.status]).toEqual([200, 200]);
+    // gewählt steht er wörtlich im Start, wie ein eigener Pack: der Start-Brief zeigt, was der Stein hinzufügt
+    const ohne12 = await startOf(12), mit13 = await startOf(13);
+    expect(skillsIn(ohne12.addDirs).has(sanft)).toBe(true);
+    expect(ohne12.appended).not.toContain(textOf(hart.id));
+    expect(mit13.appended).toContain(textOf(hart.id));
+    expect(skillsIn(mit13.addDirs).has(sanft)).toBe(false);
+    expect(mit13.appended).not.toContain(textOf(sanft));
   }, LIFE_DEADLINE_MS * 3);
 });

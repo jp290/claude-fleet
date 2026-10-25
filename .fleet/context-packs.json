@@ -282,6 +282,25 @@
     "status": "active"
   },
   {
+    "id": "no-longer-humans-hard",
+    "useWhen": "Before you give work to another agent, or decide how much proof a result needs: ask for proof every time.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-choice"],
+    "statt": "no-longer-humans-gentle",
+    "hardness": "guidance",
+    "sources": [
+      { "id": "no-longer-humans-hard.text", "path": "docs/packs/no-longer-humans-hard.md", "anchor": "# Don't forget: you're no longer working with humans (hard)", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2151,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "your-seat-in-fleet",
     "useWhen": "Before you call work on a Fleet branch done or land it: check command, landing, audit, mailbox, handover.",
     "scope": "repo-contract",

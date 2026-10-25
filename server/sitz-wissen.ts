@@ -37,8 +37,9 @@ export function bibliothekQuelle(eigen: string | null, kopie: { repo?: string; h
 }
 
 export const SEAT_TRIGGERS: Readonly<Record<SeatTree, readonly ContextPackTrigger[]>> = {
-  fleet: ["seat-start", "seat-start-any-repo"],
-  foreign: ["seat-start-any-repo"],
+  // seat-choice: im Katalog jedes Sitzes, aber nur gewählt (bibliothekGewaehlt)
+  fleet: ["seat-start", "seat-start-any-repo", "seat-choice"],
+  foreign: ["seat-start-any-repo", "seat-choice"],
 };
 
 // WAS WÖRTLICH IM START STEHT, je Pack ein Satz, warum. Nach Pack-Id, nicht nach Pfad: die Bibliothek zieht um.
@@ -78,6 +79,10 @@ export interface SeatPack {
   readonly weg?: "start" | "skill";
   /** ein eigener Pack (server/eigene-packs.ts): seine Quelle ist eine Datei in Fleets Zustand, und er kommt nur, wenn er gewählt ist */
   readonly privat?: true;
+  /** ein Pack des Registers mit dem Auslöser seat-choice: er steht im Katalog und kommt nur, wenn er gewählt ist */
+  readonly zurWahl?: true;
+  /** sein Feld `statt`: wer ihn wählt, bekommt diesen Pack nicht */
+  readonly statt?: string;
 }
 
 export interface SeatKnowledge {
@@ -182,11 +187,14 @@ export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge):
   return Array.isArray(wahl) ? wahl.filter((id) => !da.has(id)) : [];
 }
 /** Die Bibliothek eines Sitzes, wie seine Wahl sie lässt: bei einer Liste nur ihre Packs, sonst jeder Pack des Registers, ein eigener
- *  nie von selbst; in der Reihenfolge des Katalogs. `dazu`: was der Sitz sich selbst gab (server/selbst-einrichten.ts), kommt immer
- *  dazu; `an` false = die Bibliothek ist für ihn aus, dann nur das. Rein. */
+ *  oder einer zur Wahl nie von selbst; in der Reihenfolge des Katalogs. `dazu`: was der Sitz sich selbst gab (server/selbst-einrichten.ts),
+ *  kommt immer dazu; `an` false = die Bibliothek ist für ihn aus, dann nur das. Ein gewählter Pack mit `statt` nimmt den genannten heraus,
+ *  auch wenn die Liste ihn trägt: das Startfenster schickt die Standardpacks mit. Rein. */
 export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null, dazu: readonly string[] = [], an = true): SeatKnowledge {
   const ids = Array.isArray(wahl) ? new Set(wahl) : null, extra = new Set(dazu);
-  return { ...k, packs: k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat)) };
+  const da = k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat && !pack.zurWahl));
+  const weg = new Set(da.flatMap((pack) => pack.statt ? [pack.statt] : []));
+  return { ...k, packs: da.filter((pack) => !weg.has(pack.id)) };
 }
 
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste
@@ -206,7 +214,7 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`
-        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : "so mitgereist")}`)),
+        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : "so mitgereist")}`)),
     ...skills.map((pack) => textAbschnitt("wissen", `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills/${pack.id}/SKILL.md\n`
       + pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,

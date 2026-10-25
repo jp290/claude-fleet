@@ -32,9 +32,9 @@ export function taskContextTriggers(texts: readonly string[], possible: readonly
     ["measurement", /\b(?:mess(?:en|e|t|auftrag|ung(?:en)?|notiz(?:en)?)|misst|vermess\w*|measur(?:e(?:ment(?:s)?|s|d)?|ing))\b|docs\/messungen\//i],
     ["visible-surface", visibleSurface],
   ];
-  // `orchestrator-start` is passed by the orchestrator's own founding only, the two seat triggers by a
+  // `orchestrator-start` is passed by the orchestrator's own founding only, the seat triggers by a
   // seat's start only (server/sitz-wissen.ts). None is a baseline trigger of a task; no card text turns one on.
-  const callerOnly = new Set<ContextPackTrigger>(["orchestrator-start", "seat-start", "seat-start-any-repo"]);
+  const callerOnly = new Set<ContextPackTrigger>(["orchestrator-start", "seat-start", "seat-start-any-repo", "seat-choice"]);
   const selected = new Set(possible.filter((trigger) => !callerOnly.has(trigger)
     && !taskTriggers.some(([taskTrigger]) => taskTrigger === trigger)));
   for (const [trigger, pattern] of taskTriggers) {

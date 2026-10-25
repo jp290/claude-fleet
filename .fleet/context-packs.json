@@ -312,7 +312,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 5161,
+    "estimatedBytes": 5356,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

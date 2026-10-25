@@ -47,6 +47,8 @@ new order next to the old one.
 5. **The last line:** "Run /sharpen3 on this whole message, word for word, show your refined order, then do it."
    Without "show your refined order" a session sharpens in silence and goes straight to work, and you have
    nothing to check.
+   Ask for the refined order only, never for the reasoning behind it. The weighing stays silent, so the session
+   decides freely instead of building a case for its choice; you judge the result.
 
 Send it through the mailbox as you send any message to that session. An example, for a session that is fixing a
 red test:

@@ -1,6 +1,8 @@
 import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
+import { COLUMN_FULL, SIZE_SPEC, chatSize, onChatSize } from "./chatsize";
+import { currentRailScale, initRails, onRailScale } from "./rails";
 import { popover } from "./popover";
 import { openK15Entwurf } from "./k15-lader";
 import { boardBranch, boardRepo, branchBusy, branchCharge, loadBranches, lookedLine, mayCheck,
@@ -770,6 +772,45 @@ export function applyBoard() {
     b.classList.toggle("active", boardOpen);
     b.setAttribute("aria-pressed", boardOpen ? "true" : "false");
   }
+  fitBoardZoom();
+}
+
+// THE COLUMN'S ZOOM (branch/layout, 22.10.): „[Zitat entfernt]“ scales the info column as one piece
+// (public/index.html, --board-scale), but it only takes width the panes beside it do not use, so no
+// conversation gets narrower than at Oberfläche 11. A chat pane's text is --chat-col wide while both
+// paddings, max(18px | 52px, (100% − --chat-col) / 2), are past 52, so from --chat-col + 2 × 52 on;
+// a terminal limited to the column needs --chat-col, an unlimited one all of its pane. Panes in one
+// row share what the column gives back, hence the count per row. Since 25.10. the base is not 1 but the
+// window's own rail scale (src/rails.ts): Oberfläche 11 is the column at that scale, and Oberfläche
+// grows it by its ratio from there.
+const BOARD_W = 336;
+const CHAT_PAD = 2 * 52;
+let boardFit = "";
+function fitBoardZoom(): void {
+  const board = $("board");
+  if (!document.body.classList.contains("board") || isMobile()) { boardFit = ""; return; }
+  const rail = currentRailScale();
+  const want = rail * chatSize("ui") / SIZE_SPEC.ui.def;
+  const base = BOARD_W * rail;
+  const now = board.getBoundingClientRect().width;
+  const shown = [...document.querySelectorAll<HTMLElement>("#panes .pane")]
+    .map((p) => ({ p, r: p.getBoundingClientRect() })).filter((x) => x.r.width > 0);
+  // the column's own changes move #main by the same amount, so this sum and the panes' kinds say
+  // whether anything but the column moved (it also keeps the observer below from answering itself)
+  const key = [want, chatSize("width"), Math.round($("main").getBoundingClientRect().width + now),
+    ...shown.map((x) => `${x.p.className}@${Math.round(x.r.top)}`)].join("|");
+  if (key === boardFit) return;
+  boardFit = key;
+  const col = chatSize("width") >= COLUMN_FULL ? Infinity : chatSize("width");
+  const rooms = shown.map(({ p, r }) => {
+    const inRow = shown.filter((x) => Math.abs(x.r.top - r.top) < 2).length;
+    // clientWidth: the padding percentages are of the pane's inner box, inside its 1px border
+    const at11 = p.clientWidth + (now - base) / inRow;
+    const need = p.classList.contains("chat") ? col + CHAT_PAD : p.classList.contains("tcolim") ? col : Infinity;
+    return inRow * Math.max(0, at11 - need);
+  });
+  const room = rooms.length ? Math.min(...rooms) : 0;
+  board.style.setProperty("--board-scale", String(Math.min(want, (base + room) / BOARD_W)));
 }
 export function setBoard(on: boolean) {
   boardOpen = on;
@@ -4714,6 +4755,15 @@ export function initBoard(): void {
     const own = panes[focused]?.root.querySelector<HTMLButtonElement>(".boardtoggle") ?? null;
     (own ?? document.querySelector<HTMLButtonElement>(".boardtoggle"))?.focus();
   };
+  initRails();
+  onRailScale(fitBoardZoom);
+  onChatSize(fitBoardZoom);
+  new ResizeObserver(fitBoardZoom).observe($("main"));
+  // a pane switching between conversation and terminal changes what it needs without resizing
+  const panesEl = $("panes");
+  new MutationObserver((recs) => {
+    if (recs.some((r) => r.target === panesEl || r.target.parentNode === panesEl)) fitBoardZoom();
+  }).observe(panesEl, { childList: true, attributes: true, attributeFilter: ["class"], subtree: true });
   applyBoard();
 }
 

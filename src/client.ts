@@ -6887,6 +6887,9 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   row.appendChild(depth);
 
   let W = 0, frame = 0, want = 0, snapEnd = 0;
+  // the bar is zoomed with the window (src/rails.ts), so a pointer's px are not the band's px: its strokes count in the band's own
+  let Z = 1;
+  const bx = (e: PointerEvent): number => e.clientX / Z;
   const put = (dx: number, spring: boolean, mouse = false) => {
     track.classList.toggle("snap", spring);
     track.classList.toggle("mouse", spring && mouse);
@@ -6951,11 +6954,12 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
   view.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || held) return;
     W = view.clientWidth;
+    Z = view.getBoundingClientRect().width / W || 1;
     const mouse = e.pointerType === "mouse";
     // a finger grabs the band where the eye sees it; the mouse lets a running snap land first
     const from = mouse ? 0 : seen();
     if (!mouse) put(from, false);
-    g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, from, dir: null, mouse, s: [[e.timeStamp, e.clientX]] };
+    g = { id: e.pointerId, x0: bx(e), y0: e.clientY, from, dir: null, mouse, s: [[e.timeStamp, bx(e)]] };
   });
   // the mouse leans the row, it never carries it: past T px the next session snaps in, and the stroke
   // is spent. A press during a running snap counts its pull from where that snap lands.
@@ -6975,7 +6979,7 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
       if (view.hasPointerCapture(e.pointerId)) view.releasePointerCapture(e.pointerId);
       return;
     }
-    const dx = e.clientX - g.x0, dy = e.clientY - g.y0;
+    const dx = bx(e) - g.x0, dy = e.clientY - g.y0;
     if (!g.dir) {
       if (Math.hypot(dx, dy) < BAND_SLOP) return;
       g.dir = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
@@ -6987,10 +6991,10 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
       row.classList.add("dragging");
       bandGesture++;
     }
-    g.s.push([e.timeStamp, e.clientX]);
+    g.s.push([e.timeStamp, bx(e)]);
     if (g.s.length > 12) g.s.shift();
-    if (g.mouse) { lean(e.clientX); return; }
-    put(resist(g.from + e.clientX - g.x0), false);
+    if (g.mouse) { lean(bx(e)); return; }
+    put(resist(g.from + bx(e) - g.x0), false);
   });
   const end = (e: PointerEvent, cancelled: boolean) => {
     if (!g || e.pointerId !== g.id) return;
@@ -7003,10 +7007,10 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     else if (was.mouse) {
       // a stroke that stepped is spent; under the threshold only a flick still switches, otherwise
       // the lean springs back
-      const v = speed(was.s), raw = e.clientX - was.x0;
+      const v = speed(was.s), raw = bx(e) - was.x0;
       const flick = !was.stepped && Math.abs(v) > BAND_FLICK && Math.sign(v) === Math.sign(raw);
       if (flick || (!was.stepped && performance.now() >= snapEnd)) go(idx + (flick ? (raw > 0 ? -1 : 1) : 0), true);
-    } else go(idx + decide(was.from + e.clientX - was.x0, speed(was.s)));
+    } else go(idx + decide(was.from + bx(e) - was.x0, speed(was.s)));
   };
   view.addEventListener("pointerup", (e) => end(e, false));
   view.addEventListener("pointercancel", (e) => end(e, true));

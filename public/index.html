@@ -158,7 +158,18 @@
      the one thing that is not a word: an ADDRESS. The accepted draft is
      docs/design/sidebar/v6.html; the model it draws (a band is a slot number, a lane is named
      after its band) is docs/messungen/2026-09-18-slot-system-und-linke-leiste.md §3.1. */
-  #side { width: 250px; flex: none; display: flex; flex-direction: column;
+  /* THE RAIL KEEPS ITS OWN TYPE SCALE (owner 22.10.: „[Zitat entfernt]“
+     ): the text sliders size the conversation, not the rail. It
+     read them until then, and at text 19 a fixed 250px cut "Notizbuch-je-Setup" to "Notizbuc…". The
+     values are the sliders' defaults (src/chatsize.ts SIZE_SPEC), scoped like #shell-queue's. */
+  #side { --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px; }
+  /* THE RAIL'S SIZE HANGS ON THE WINDOW ALONE, never on what is open beside it or on the browser's zoom (owner
+     22.10.: „[Zitat entfernt]“; 25.10.: on the workhorse board it was „[Zitat entfernt]“
+     , on the Mac's „[Zitat entfernt]“ — one browser that zooms each address on its own).
+     It is designed at 288px: that leaves the fullest row (a two-digit place, ⎇+, a two-digit context) a 135px
+     name, which holds "Import-Klassifizierer"; 250 left 97. src/rails.ts scales the whole bar by the window's
+     width (--rail-scale, 0.8 to 1.25), so the names stay whole and the bar keeps its share of the screen. */
+  #side { width: 288px; zoom: var(--rail-scale, 1); flex: none; display: flex; flex-direction: column;
     background: var(--chat-void); border-right: 1px solid var(--chat-edge-soft);
     font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
   /* row 1: collapse toggle FIRST (leftmost) so its click target barely moves between the
@@ -385,8 +396,10 @@
   .slot .act.wait, #mtop .act.wait, #msheet .act.wait { border-radius: 0; background: var(--chat-mute);
     clip-path: polygon(0 0, 100% 0, 62% 50%, 100% 100%, 0 100%, 38% 50%); }
   .slot .act.wait.owner, #mtop .act.wait.owner, #msheet .act.wait.owner { background: var(--q-wait); }
-  /* the word beside it when the wait is Claude Code's permission question (client.ts, rueckfrage) */
-  .slot .frage { flex: none; margin-right: 4px; font: 500 11px var(--chat-mono); color: var(--q-wait); }
+  /* the word beside it when the wait is Claude Code's permission question (client.ts, rueckfrage): a word a
+     person reads, so the sans, and the row's 4px gap to its glyph — in mono with 4px more it cut a name that
+     the same row without the question holds whole ("Aufraeumen-Vorlauf", branch/layout 22.10.) */
+  .slot .frage { flex: none; font: 500 11px var(--chat-sans); color: var(--q-wait); }
   /* Actions replace the row's right edge on a solid matching surface, never overpaint facts. */
   /* ...and it HIDES the reading zone (ctx + state) instead of painting over a guessed width of it.
      It used to be a solid strip of min-width 62px ("ctx 78%" + gap + the state box) — which on a
@@ -1098,7 +1111,10 @@
      threshold colour, so the row never implies an action nobody built. `?` (unknown) is dimmer
      still, and is never an empty bar — a blank meter would read as a fresh session. Mono because
      it is a number, which is the same reason the address is mono. */
-  .slot .ctxfill { flex: none; display: inline-flex; align-items: center; height: 18px; line-height: 1;
+  /* three characters wide at least ("16%"), set to the right: ⎇+ and the name's end stand on one
+     line down the bar whether a session reads 8% or 53% */
+  .slot .ctxfill { flex: none; display: inline-flex; align-items: center; justify-content: flex-end;
+    min-width: 3ch; height: 18px; line-height: 1;
     font-family: var(--chat-mono); font-size: var(--chat-ui-fs);
     color: var(--chat-mute); font-variant-numeric: tabular-nums; }
   .slot .ctxfill.unknown { color: var(--chat-faint); }
@@ -2596,6 +2612,14 @@
 
   /* --- right sideboard: session brief. Desktop-only; mirrors #side's structure.
      Renders only deterministic data (git facts, prompt outline) — no derived state to drift */
+  /* THE INFO COLUMN FOLLOWS "Oberfläche" AS ONE PIECE (branch/layout, 22.10.): its labels read
+     --chat-ui-fs while its values are fixed px, so at Oberfläche 16 one row stood in two sizes. The
+     sizes inside stay at the defaults and the body zooms by --board-scale instead, labels and values
+     together; the column's width grows by the same factor, so its rows keep their 336 px layout. The
+     factor is the slider's ratio, held down to what the panes beside it can give
+     (src/board.ts#fitBoardZoom): no conversation gets narrower than at Oberfläche 11. */
+  #board { --chat-fs: 14px; --chat-code-fs: 12.5px; --chat-ui-fs: 11px; }
+  #board #boardbody { zoom: var(--board-scale, var(--rail-scale, 1)); }
   #board { width: 264px; flex: none; display: none; flex-direction: column;
     background: var(--chat-void); border-left: 1px solid var(--line-soft); }
   body.board #board { display: flex; }
@@ -2621,8 +2645,9 @@
        ) — the token, never a literal, so it stays one definition. */
     /* 360 px (owner 2026-10-08): a lane's whole state fits its row; 336 px with its own type a step smaller
        (owner 2026-10-09: „[Zitat entfernt]“
-       ) — the row still holds the same */
-    width: 336px; background: var(--chat-void); border-left: 1px solid var(--b-rule);
+       ) — the row still holds the same.
+       Times the body's zoom (#boardbody below), so a larger "Oberfläche" keeps the same 336 px layout. */
+    width: calc(336px * var(--board-scale, var(--rail-scale, 1))); background: var(--chat-void); border-left: 1px solid var(--b-rule);
     font-family: var(--b-sans); color: var(--b-ink); -webkit-font-smoothing: antialiased; }
   #board button { font-family: inherit; }
   #board :focus-visible { outline: 1.5px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
@@ -3564,6 +3589,9 @@
   /* ⎇+ — its box is the shared chip box above; the ring is a box-shadow, not a border, so it adds
      no width to the box and cannot shift its neighbours */
   .slot .quicklane { color: var(--chat-faint); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  /* a session that waits on the owner's answer (.frage, client.ts#slotRow) starts no lane: ⎇+ gives its
+     place to the name before the name is cut (expert eye, 22.10.) */
+  .slot .r1:has(.frage) .quicklane { display: none; }
   .slot .quicklane:hover { color: var(--chat-ink); background: var(--chat-raised); }
 
   #gate .panel { width: 380px; }
@@ -3633,7 +3661,7 @@
     .mimg img { max-width: 132px; }
 
     #side { position: fixed; z-index: 30; top: 0; bottom: 0; left: 0;
-      width: min(80vw, 300px); border-right: 1px solid var(--line);
+      width: min(86vw, 330px); border-right: 1px solid var(--line);
       padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
       transform: translateX(-105%); transition: transform 0.22s ease; will-change: transform; }
     body.drawer #side { transform: none; }
@@ -3665,7 +3693,10 @@
     #shell-board .shelllist, #shell-board .shelltools, #shell-board .shellfoot, #shell-board #boardhead { display: none; }
     #shell-board .shelldetail { display: flex; padding: 0; }
     #shell-board #board { display: flex !important; width: auto; flex: 1; min-width: 0; border-left: none; }
-    #side.collapsed { width: min(80vw, 300px); } /* the desktop-only rail must never shrink the drawer */
+    /* the phone's window is the screen's width and cannot grow with the zoom, so it keeps the default */
+    #shell-board #board #boardbody { zoom: 1; }
+    #side { zoom: 1; }
+    #side.collapsed { width: min(86vw, 330px); } /* the desktop-only rail must never shrink the drawer */
     /* ONE LINE PER SESSION IN THE DRAWER (row 69bdf591; owner 2026-09-22: „[Zitat entfernt]“
        ). A row used to be three lines — the readings, ✕ on a line of its own, and a strip of
        big ⤴ ⇩ ✎ (✔ ⏏ ⇲ on a lane) — 132–176px, three and a half sessions per screen. Now line 1 and

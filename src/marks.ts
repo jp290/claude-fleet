@@ -483,18 +483,26 @@ function paintFree(ctx: Pen, s: number): void {
 // as big as the marks' column (never the list's scrollHeight, which would feed back into itself).
 // A box the CSS hides (collapsed rail) measures 0 and gets no cell.
 export interface MarkItem { el: HTMLElement; facts: MarkFacts | null }
+// The bar is zoomed (src/rails.ts, #side { zoom }): getBoundingClientRect reports zoomed px, while the canvas, scrollTop and the
+// borders are in the host's own px. z is the factor between the two; every measured length is divided by it.
+export interface Box { left: number; bottom: number; width: number; height: number }
+export function markCell(r: Box, hr: { left: number; top: number }, scroll: { left: number; top: number }, border: { left: number; top: number }, z: number): { x: number; y: number; size: number } {
+  const size = Math.round(r.width / z);
+  const x = Math.round((r.left - hr.left) / z + scroll.left - border.left);
+  // a free place's box is flatter than wide: the soil line sits on its bottom edge
+  const y = Math.round((r.bottom - hr.top) / z + scroll.top - border.top) - size;
+  return { x, y, size };
+}
 export function placeMarks(stage: MarkStage, host: HTMLElement, items: MarkItem[]): void {
   if (stage.canvas.parentElement !== host) host.prepend(stage.canvas);
   const hr = host.getBoundingClientRect();
+  const z = host.offsetWidth ? hr.width / host.offsetWidth || 1 : 1;
   const rows: MarkRow[] = [];
   let w = 0, h = 0;
   for (const it of items) {
     const r = it.el.getBoundingClientRect();
     if (!r.width || !r.height) continue;
-    const size = Math.round(r.width);
-    const x = Math.round(r.left - hr.left + host.scrollLeft - host.clientLeft);
-    // a free place's box is flatter than wide: the soil line sits on its bottom edge
-    const y = Math.round(r.bottom - hr.top + host.scrollTop - host.clientTop) - size;
+    const { x, y, size } = markCell(r, hr, { left: host.scrollLeft, top: host.scrollTop }, { left: host.clientLeft, top: host.clientTop }, z);
     rows.push({ x, y, size, facts: it.facts });
     w = Math.max(w, x + size);
     h = Math.max(h, y + size);

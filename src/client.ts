@@ -32,6 +32,7 @@ import { popover } from "./popover";
 import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
+import { syncWichte } from "./wicht";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
@@ -1239,17 +1240,18 @@ function sendState(kind: SendState): HTMLElement {
   return s;
 }
 // THE CLICK INTO THE COMPOSER (Tranche 2, owner: „[Zitat entfernt]“
-// ). A plain click lands in the
-// composer when it hits the free space under the last message, or anywhere in the view's bottom
-// third — unless it made a selection, was a double click, or hit something that has its own click
-// (a link, a button, a fold, an entity reference, an image, a field).
+// ; 25.10.: „[Zitat entfernt]“
+// ). A plain click lands in the composer when it
+// hits the free space under the last message, or anywhere in the view's lower half — unless it made a
+// selection, was a double click, or hit something that has its own click (a link, a button, a fold, an
+// entity reference, an image, a field). The band around the composer does the same (src/chatfloor.ts).
 const CHAT_CLICK_OWN = "a, button, summary, input, textarea, select, label, img, [data-ent], [contenteditable]";
 function chatClickToComposer(e: { detail: number; clientY: number; target: EventTarget | null },
   view: { top: number; height: number }, lastBottom: number, selected: boolean): boolean {
   if (selected || e.detail > 1) return false;
   const t = e.target as Element | null;
   if (t && typeof t.closest === "function" && t.closest(CHAT_CLICK_OWN)) return false;
-  return e.clientY >= lastBottom || e.clientY >= view.top + (view.height * 2) / 3;
+  return e.clientY >= lastBottom || e.clientY >= view.top + view.height / 2;
 }
 type ChatAnchor = "end" | { node: ChatKid; off: number };
 type ChatBox = { scrollTop: number; readonly clientHeight: number; readonly scrollHeight: number };
@@ -1402,6 +1404,8 @@ class Pane {
   private view: "term" | "chat" = "term";
   // what the session is doing, read from its pane (null = not read yet; "unknown" = no Claude input on screen)
   get liveTurn(): LiveState["turn"] | null { return this.live?.turn ?? null; }
+  // the live state as the chat view shows it (src/wicht.ts): null in the terminal view and on a past session
+  get liveShown(): LiveState | null { return this.view === "chat" && this.pastN === null ? this.live : null; }
   private chatTotal = 0;
   // when the newest transcript entry this pane has loaded was written (its `ts`, any role — a tool
   // result or a harness-injected turn is an API round trip too), 0 until one with a time arrived.
@@ -2411,13 +2415,15 @@ class Pane {
   // THE STATUS LINE (src/livestate.ts): the very last thing in the view, where the terminal paints its
   // spinner. Not a message: it never counts as new and never moves a released view.
   private syncLive(): void {
+    if (focused === this.index) syncWichte(this.liveShown, isMobile());
     let line = this.chatEl.querySelector<HTMLElement>(":scope > .mlive");
     const w = this.live && this.pastN === null && this.view === "chat" ? liveWord(this.live) : null;
     if (!w) { line?.remove(); return; }
     line ??= liveLine();
     paintLiveLine(line, w);
     const esc = line.querySelector(".mliveesc");
-    if (w.kind === "work" && isMobile()) { if (!esc) line.appendChild(recallButton(() => void this.recall("esc"))); }
+    // Esc stops the turn, not what it left running in the background: the button stands only while the turn runs
+    if (this.live?.turn === "working" && isMobile()) { if (!esc) line.appendChild(recallButton(() => void this.recall("esc"))); }
     else esc?.remove();
     if (line.parentNode !== this.chatEl || line.nextSibling !== null) {
       this.chatEl.appendChild(line);

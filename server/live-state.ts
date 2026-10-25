@@ -19,9 +19,16 @@ import { readCommandLine, type PendingCommand } from "./model-switch";
 export type Turn = "working" | "ready" | "asking" | "interrupted" | "unknown";
 export type TurnDetail = "thinking" | "hooks" | null;
 export interface QueuedPrompt { text: string; at: string | null }
+// what the session started to run on its own beside its turn and has not heard back from: a subagent
+// (the Agent tool) or a shell command it put in the background — the work the turn alone does not show.
+// `at` = when its start was written (ms), null when the line carries no time
+export interface BackgroundTask { id: string; kind: "agent" | "shell"; at: number | null }
 export interface LiveState {
   turn: Turn;
   detail: TurnDetail;
+  // running in the background now, by kind (owner 25.10.: „[Zitat entfernt]“
+  // )
+  background: { agents: number; shells: number };
   // Claude Code's own queue, oldest first: what the session holds back, whoever sent it
   queued: QueuedPrompt[];
   // what Claude Code's input field holds now ("" empty, null not on screen)
@@ -47,6 +54,18 @@ const INTERRUPTED_RE = /Interrupted · What should Claude do instead\?/;
 // "Enter to confirm · Esc to cancel", the rewind list "Enter to continue · Esc to cancel"
 const DIALOG_RE = /^\s*Enter to (?:select|confirm|continue)\b.*Esc to cancel\s*$/;
 const CLAUDE_COMPOSER = { kind: "glyph" as const, re: /^❯/ };
+// THE FOOTER under the input field (measured 2026-10-25 on Claude Code 2.1.310) counts what runs beside the turn:
+// „· 1 shell“ / „· 2 shells“ in the mode line, the shells of its subagents included, and one row per running
+// subagent under „⏺ main“ („◯ general-purpose  Probe   11s · ↓ 21.5k tokens“). With nothing running neither stands
+// there; a subagent that waits on its own background work keeps its row.
+const SHELLS_RE = /\b(\d+) shells?\b/;
+const AGENTS_HEAD_RE = /^\s*⏺ main\s*$/;
+function footerBackground(footer: string[]): FrameRead["background"] {
+  if (footer.length === 0) return null;
+  const shells = footer.reduce((n, l) => n || Number(SHELLS_RE.exec(l)?.[1] ?? 0), 0);
+  const head = footer.findIndex((l) => AGENTS_HEAD_RE.test(l));
+  return { shells, agents: head === -1 ? 0 : footer.length - head - 1 };
+}
 
 export interface FrameRead {
   // "text" = no spinner and no end mark above the input field: answer text streams, or the frame
@@ -54,15 +73,18 @@ export interface FrameRead {
   shape: "spinner" | "done" | "interrupted" | "dialog" | "text" | "unknown";
   detail: TurnDetail;
   composer: string | null;
+  // what the footer says runs in the background; null = no footer to read (a dialog, not Claude Code's screen)
+  background: { shells: number; agents: number } | null;
 }
 export function readFrame(frame: string): FrameRead {
   const plain = frame.split("\n").map((l) => l.replace(SGR_RE, ""));
   const lines = plain.filter((l) => l.trim() !== "");
-  if (lines.slice(-6).some((l) => DIALOG_RE.test(l))) return { shape: "dialog", detail: null, composer: null };
+  if (lines.slice(-6).some((l) => DIALOG_RE.test(l))) return { shape: "dialog", detail: null, composer: null, background: null };
   const rules = lines.flatMap((l, i) => (RULE_RE.test(l) ? [i] : []));
-  if (rules.length < 2) return { shape: "unknown", detail: null, composer: null };
+  if (rules.length < 2) return { shape: "unknown", detail: null, composer: null, background: null };
   const top = rules[rules.length - 2]!;
   const composer = composerBuffer(CLAUDE_COMPOSER, frame);
+  const background = footerBackground(lines.slice(rules[rules.length - 1]! + 1));
   // the spinner sits right above the input field, under the queued prompts and over a "⎿ Tip:" line
   for (const l of lines.slice(Math.max(0, top - 6), top).reverse()) {
     const m = SPINNER_RE.exec(l);
@@ -70,12 +92,12 @@ export function readFrame(frame: string): FrameRead {
     const parts = (m[1] ?? "").split(" · ");
     const detail: TurnDetail = parts.some((p) => /^running \S+ hooks/.test(p)) ? "hooks"
       : parts.some((p) => p === "thinking" || p === "still thinking") ? "thinking" : null;
-    return { shape: "spinner", detail, composer };
+    return { shape: "spinner", detail, composer, background };
   }
   const last = lines[top - 1]?.trim() ?? "";
-  if (DONE_RE.test(last)) return { shape: "done", detail: null, composer };
-  if (INTERRUPTED_RE.test(last)) return { shape: "interrupted", detail: null, composer };
-  return { shape: "text", detail: null, composer };
+  if (DONE_RE.test(last)) return { shape: "done", detail: null, composer, background };
+  if (INTERRUPTED_RE.test(last)) return { shape: "interrupted", detail: null, composer, background };
+  return { shape: "text", detail: null, composer, background };
 }
 
 // --- the transcript ----------------------------------------------------------------------------
@@ -88,9 +110,10 @@ export interface TailState {
   withdrawn: number[];
   // the newest real prompt as Claude Code stored it (a plain-text line only): what Esc puts back
   last: { n: number; text: string } | null;
+  background: BackgroundTask[];
   lines: number;
 }
-export const emptyTail = (): TailState => ({ open: [], request: false, prompts: new Map(), withdrawn: [], last: null, lines: 0 });
+export const emptyTail = (): TailState => ({ open: [], request: false, prompts: new Map(), withdrawn: [], last: null, background: [], lines: 0 });
 
 const sharedTail = (a: string, b: string): number => {
   let n = 0;
@@ -105,6 +128,8 @@ const PLUMBING = /^<(command-(name|message|args)|local-command-(stdout|stderr|ca
 const ENDS = new Set(["end_turn", "stop_sequence", "max_tokens", "refusal"]);
 
 type Line = { type?: unknown; operation?: unknown; content?: unknown; timestamp?: unknown; isMeta?: unknown;
+  toolUseResult?: { backgroundTaskId?: unknown; status?: unknown; agentId?: unknown };
+  attachment?: { type?: unknown; commandMode?: unknown; prompt?: unknown };
   isSidechain?: unknown; isCompactSummary?: unknown; isApiErrorMessage?: unknown; uuid?: unknown; parentUuid?: unknown;
   message?: { content?: unknown; stop_reason?: unknown } };
 // a user line's text blocks (reminders dropped, as server.ts#viewEntry drops them) and whether it
@@ -120,14 +145,36 @@ function userParts(d: Line): { texts: string[]; results: boolean; plain: boolean
   };
 }
 
+// BACKGROUND WORK (measured 2026-10-25 on Claude Code 2.1.310): the start is the tool result's own record —
+// `toolUseResult.backgroundTaskId` for a shell command, `status: "async_launched"` with `agentId` for a subagent;
+// the end is a `<task-notification>` whose `<task-id>` is that id, whatever its status (completed, failed,
+// killed). 2.1.310 writes it as a queue-operation enqueue and a queued_command attachment, older versions as a
+// plain user line; the first one seen ends the task. A notification QUOTED inside a tool result is not one.
+const NOTIFIED_RE = /^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/;
+function foldBackground(t: TailState, d: Line): TailState {
+  const r = d.type === "user" ? d.toolUseResult : undefined;
+  const at = typeof d.timestamp === "string" && Number.isFinite(Date.parse(d.timestamp)) ? Date.parse(d.timestamp) : null;
+  const started: BackgroundTask | null = typeof r?.backgroundTaskId === "string" && r.backgroundTaskId ? { id: r.backgroundTaskId, kind: "shell", at }
+    : r?.status === "async_launched" && typeof r.agentId === "string" && r.agentId ? { id: r.agentId, kind: "agent", at } : null;
+  if (started) return t.background.some((b) => b.id === started.id) ? t : { ...t, background: [...t.background, started] };
+  const c = d.message?.content;
+  const text = d.type === "queue-operation" && d.operation === "enqueue" ? d.content
+    : d.type === "attachment" && d.attachment?.type === "queued_command" && d.attachment.commandMode === "task-notification" ? d.attachment.prompt
+    : d.type === "user" && typeof c === "string" ? c : null;
+  const id = typeof text === "string" ? NOTIFIED_RE.exec(text)?.[1] : undefined;
+  return id && t.background.some((b) => b.id === id) ? { ...t, background: t.background.filter((b) => b.id !== id) } : t;
+}
+
 // One line at a time, in file order; `n` is its 1-based number among the non-empty lines.
 export function foldLine(t: TailState, raw: string, n: number): TailState {
   const queueLine = raw.includes('"queue-operation"');
   const userLine = raw.includes('"user"');
-  if (!queueLine && !userLine && !raw.includes('"assistant"')) return { ...t, lines: n };
+  const bgLine = raw.includes('"backgroundTaskId"') || raw.includes('"async_launched"') || raw.includes("<task-notification>");
+  if (!queueLine && !userLine && !bgLine && !raw.includes('"assistant"')) return { ...t, lines: n };
   let d: Line;
   try { d = JSON.parse(raw) as Line; } catch { return { ...t, lines: n }; }
   if (d.isSidechain === true) return { ...t, lines: n };
+  if (bgLine) t = foldBackground(t, d);
   if (d.type === "queue-operation") {
     const text = typeof d.content === "string" ? d.content : "";
     const at = typeof d.timestamp === "string" ? d.timestamp : null;
@@ -167,7 +214,7 @@ export function foldLine(t: TailState, raw: string, n: number): TailState {
   const parent = typeof d.parentUuid === "string" ? d.parentUuid : null;
   const sibling = parent !== null ? t.prompts.get(parent) : undefined;
   const prompts = parent !== null ? new Map(t.prompts).set(parent, n) : t.prompts;
-  return { open, request, prompts, lines: n, last: plain ? { n, text: first } : null,
+  return { open, request, prompts, lines: n, last: plain ? { n, text: first } : null, background: t.background,
     withdrawn: sibling !== undefined && sibling !== n && !t.withdrawn.includes(sibling) ? [...t.withdrawn, sibling] : t.withdrawn };
 }
 
@@ -252,6 +299,20 @@ export function viewFolder(from?: ViewFacts) {
 // Claude Code is still writing (it fails to parse and caps `total` there, or it parses and counts)
 export interface TranscriptLines { lines: string[]; total: number; facts: ViewFacts }
 
+// BACKGROUND, from both witnesses: the footer says what runs now, and it alone notices that a task ended
+// without its notification (the session restarted while a subagent ran: the transcript would keep it open for
+// good). The transcript bridges what the footer cannot show yet — a start of the last FOOTER_LAG_MS, before the
+// next capture — and a screen without a footer.
+const FOOTER_LAG_MS = 10_000;
+function backgroundOf(frame: FrameRead, tail: TailState, at: number): LiveState["background"] {
+  const count = (kind: BackgroundTask["kind"], seen: number | undefined): number => {
+    const open = tail.background.filter((b) => b.kind === kind);
+    if (seen === undefined) return open.length;
+    return Math.max(seen, open.filter((b) => b.at !== null && at - b.at < FOOTER_LAG_MS).length);
+  };
+  return { agents: count("agent", frame.background?.agents), shells: count("shell", frame.background?.shells) };
+}
+
 export function combine(frame: FrameRead, tail: TailState, at: number): LiveState {
   const turn: Turn = frame.shape === "spinner" ? "working"
     : frame.shape === "dialog" ? "asking"
@@ -260,7 +321,7 @@ export function combine(frame: FrameRead, tail: TailState, at: number): LiveStat
     : frame.shape === "text" ? (tail.request ? "working" : "ready")
     : "unknown";
   return { turn, detail: turn === "working" ? frame.detail : null, queued: queueOf(tail), composer: frame.composer,
-    withdrawn: tail.withdrawn, at };
+    withdrawn: tail.withdrawn, background: backgroundOf(frame, tail, at), at };
 }
 
 // --- the reader --------------------------------------------------------------------------------
@@ -375,7 +436,7 @@ export function createLiveReader(deps: LiveDeps, now: () => number = Date.now) {
         || t - seat.frameAt >= IDLE_RECHECK_MS;
       if (stale) {
         const frame = await deps.capture(slot);
-        seat.frame = frame === null ? { shape: "unknown", detail: null, composer: null } : readFrame(frame);
+        seat.frame = frame === null ? { shape: "unknown", detail: null, composer: null, background: null } : readFrame(frame);
         seat.frameMark = mark;
         seat.frameAt = t;
       }

@@ -502,6 +502,14 @@
      pair therefore lives on the chat pane's own root and the colours follow the surface. */
   .pane.chat { --sb-thumb: var(--chat-edge); --sb-thumb-h: var(--chat-faint); --sb-track: transparent; }
   .pane.chat .chatflakes { display: block; }
+  /* THE FLOOR (src/chatfloor.ts, owner 25.10.: the flakes all the way down): a second sky under the panes,
+     behind the composer band, while the focused pane shows the chat view. The band turns transparent at the
+     desk; on the phone it is the raised island (#main #bar wins by its second id) and the sky shows around it. */
+  .barflakes { position: absolute; left: 0; right: 0; bottom: 0; height: var(--floor-h, 0px); width: 100%;
+    display: none; pointer-events: none; z-index: 0; }
+  #main.chatfloor > .barflakes { display: block; }
+  #main.chatfloor > #bar { position: relative; z-index: 1; }
+  .chatfloor > #bar { background: transparent; }
   /* top 56px: the first message starts below the pane's corner group (↻ ℹ 💬 ↑ ↓ Aa ⚙ in one row
      at 8–34px; one value everywhere, so a scrolled-back transcript never slides under the wider
      group — the review of 2026-09-22 caught it on the desktop shot); right at

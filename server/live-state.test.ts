@@ -319,3 +319,78 @@ describe("Modell und Effort: der Wechsel zählt, sobald Claude Code ihn schreibt
     expect(facts(opus, LC.modelSet, LC.effortSet, fable)).toEqual({ model: "claude-fable-5-1", effort: "xhigh" });
   });
 });
+
+// Owner 25.10.: „[Zitat entfernt]“
+// . Die Zeilen haben die Form, die Claude Code 2.1.310 schreibt (aufgezeichnet
+// 25.10. in einer Fleet-Session: ein Hintergrund-Befehl, ein Subagent), ohne Pfade und ohne Text drumherum.
+describe("Hintergrund: was die Session neben ihrem Zug laufen hat", () => {
+  const note = (id: string, status = "completed") =>
+    `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>${status}</status>\n<summary>…</summary>\n</task-notification>`;
+  const B = {
+    shell: { type: "user", isSidechain: false, message: { role: "user", content: [{ tool_use_id: "toolu_s", type: "tool_result", content: "Command running in background with ID: b3hnqm7w1." }] },
+      toolUseResult: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "b3hnqm7w1" } },
+    agent: { type: "user", isSidechain: false, message: { role: "user", content: [{ tool_use_id: "toolu_a", type: "tool_result", content: [{ type: "text", text: "Async agent launched successfully." }] }] },
+      toolUseResult: { isAsync: true, status: "async_launched", agentId: "a94ca281a314267ba", description: "Probe" } },
+    shellDone: { type: "queue-operation", operation: "enqueue", content: note("b3hnqm7w1") },
+    agentDoneAttachment: { type: "attachment", isSidechain: false, attachment: { type: "queued_command", commandMode: "task-notification", prompt: note("a94ca281a314267ba") } },
+    agentDoneOld: { type: "user", isSidechain: false, message: { role: "user", content: note("a94ca281a314267ba", "killed") } },
+  };
+  // was das Transkript offen hält, für sich (ohne Fußzeile: im Dialog zählt nur es)
+  const bg = (...lines: object[]) => combine(readFrame(F.ask!), fold(lines.map((l) => JSON.stringify(l))), 1);
+
+  test("ein Subagent läuft, der Zug ist fertig: bereit, aber ein Agent im Hintergrund", () => {
+    const now = Date.parse("2026-10-25T14:00:00Z");
+    const t = fold([JSON.stringify({ ...B.agent, timestamp: "2026-10-25T13:59:58Z" })]);
+    expect(combine(readFrame(F.done!), t, now)).toMatchObject({ turn: "ready", background: { agents: 1, shells: 0 } });
+  });
+  test("ein Hintergrund-Befehl zählt als Befehl", () => {
+    expect(bg(B.shell).background).toEqual({ agents: 0, shells: 1 });
+  });
+  test("die Meldung mit derselben Kennung beendet ihn, in jeder Form, die Claude Code schreibt", () => {
+    expect(bg(B.shell, B.shellDone).background).toEqual({ agents: 0, shells: 0 });
+    expect(bg(B.agent, B.agentDoneAttachment).background).toEqual({ agents: 0, shells: 0 });
+    expect(bg(B.agent, B.agentDoneOld).background).toEqual({ agents: 0, shells: 0 });
+  });
+  test("fertig ist nur, wessen Kennung gemeldet wurde", () => {
+    expect(bg(B.agent, B.shell, B.shellDone).background).toEqual({ agents: 1, shells: 0 });
+  });
+  test("eine Meldung, die nur in einer Befehlsausgabe zitiert wird, beendet nichts", () => {
+    const quoted = { type: "user", isSidechain: false, message: { role: "user", content: [{ tool_use_id: "toolu_q", type: "tool_result", content: note("a94ca281a314267ba") }] },
+      toolUseResult: { stdout: `${note("a94ca281a314267ba")} "backgroundTaskId": "zzz"`, stderr: "" } };
+    expect(bg(B.agent, quoted).background).toEqual({ agents: 1, shells: 0 });
+  });
+  test("was ein Subagent selbst im Hintergrund startet, zählt nicht doppelt", () => {
+    expect(bg({ ...B.shell, isSidechain: true }).background).toEqual({ agents: 0, shells: 0 });
+  });
+  test("der Zug arbeitet weiter, während etwas im Hintergrund läuft", () => {
+    expect(combine(readFrame(F.bg_shell_agent!), emptyTail(), 1)).toMatchObject({ turn: "working", background: { agents: 1, shells: 1 } });
+  });
+
+  // Die Fußzeile unter dem Eingabefeld zählt, was gerade läuft (aufgezeichnet 25.10. auf Claude Code 2.1.310 in
+  // einer Fleet-Session: „· 1 shell“ und eine Zeile je Subagent unter „⏺ main“; ohne beides, wenn nichts läuft).
+  describe("die Fußzeile ist der Zeuge für jetzt", () => {
+    const now = Date.parse("2026-10-25T14:00:00Z");
+    const at = (iso: string, ...lines: object[]) => fold(lines.map((l) => JSON.stringify({ ...l, timestamp: iso })));
+    test("sie zählt Befehle und Subagenten, und nichts, wenn nichts läuft", () => {
+      expect(readFrame(F.bg_shell_agent!).background).toEqual({ shells: 1, agents: 1 });
+      expect(readFrame(F.bg_none!).background).toEqual({ shells: 0, agents: 0 });
+      expect(readFrame(F.done!).background).toEqual({ shells: 0, agents: 0 });
+      expect(readFrame(F.ask!).background).toBeNull();
+    });
+    test("die Session startete neu, während ein Subagent lief: ohne Meldung zählt er nicht weiter, sobald die Fußzeile nichts zeigt", () => {
+      const t = at("2026-10-25T13:50:00Z", B.agent, B.shell);
+      expect(t.background).toHaveLength(2);
+      expect(combine(readFrame(F.bg_none!), t, now)).toMatchObject({ turn: "working", background: { agents: 0, shells: 0 } });
+      expect(combine(readFrame(F.done!), t, now)).toMatchObject({ turn: "ready", background: { agents: 0, shells: 0 } });
+    });
+    test("ein Start der letzten Sekunden zählt, bevor die Fußzeile ihn zeigt", () => {
+      expect(combine(readFrame(F.bg_none!), at("2026-10-25T13:59:57Z", B.agent), now).background).toEqual({ agents: 1, shells: 0 });
+    });
+    test("was nur die Fußzeile kennt, zählt auch: ein Befehl, den ein Subagent im Hintergrund startete", () => {
+      expect(combine(readFrame(F.bg_shell_agent!), at("2026-10-25T13:50:00Z", B.agent), now).background).toEqual({ agents: 1, shells: 1 });
+    });
+    test("ohne Fußzeile (ein Dialog) bleibt es beim Transkript", () => {
+      expect(combine(readFrame(F.ask!), at("2026-10-25T13:50:00Z", B.agent), now).background).toEqual({ agents: 1, shells: 0 });
+    });
+  });
+});

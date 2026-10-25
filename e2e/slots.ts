@@ -1833,7 +1833,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
       && /wait: "wartet", done: "durch"/.test(cliSrc),
     "addPending / doSend / appendEntry / sendState in src/client.ts");
-  // (D) the click into the composer: the free space under the last message and the bottom third,
+  // (D) the click into the composer: the free space under the last message and the lower half,
   // never a selection, a double click or something with its own click
   {
     const src = /\nconst CHAT_CLICK_OWN = [^\n]*\n/.exec(cliSrc)?.[0] ?? "";
@@ -1845,15 +1845,16 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         (e: { detail: number; clientY: number; target: unknown }, v: { top: number; height: number }, last: number, sel: boolean) => boolean;
       const plain = { closest: () => null }, link = { closest: (q: string) => (q.includes("a,") ? {} : null) };
       const v = { top: 100, height: 600 };
-      got.push(f({ detail: 1, clientY: 650, target: plain }, v, 900, false)); // bottom third, over a message → composer
-      got.push(f({ detail: 1, clientY: 300, target: plain }, v, 900, false)); // upper two thirds, over a message → no
+      got.push(f({ detail: 1, clientY: 650, target: plain }, v, 900, false)); // lower half, over a message → composer
+      got.push(f({ detail: 1, clientY: 300, target: plain }, v, 900, false)); // upper half, over a message → no
+      got.push(f({ detail: 1, clientY: 420, target: plain }, v, 900, false)); // just under the middle, over a message → composer (25.10.)
       got.push(f({ detail: 1, clientY: 320, target: plain }, v, 280, false)); // under the last message → composer
       got.push(f({ detail: 1, clientY: 650, target: plain }, v, 900, true)); // a selection → no
       got.push(f({ detail: 2, clientY: 650, target: plain }, v, 900, false)); // a double click → no
       got.push(f({ detail: 1, clientY: 650, target: link }, v, 900, false)); // a link → no
     } catch (e) { clickErr = e instanceof Error ? e.message : String(e); }
-    check("chat eingabe (D): a click under the last message or in the bottom third goes to the composer — never a selection, a double click or a link",
-      !clickErr && got.join(",") === "true,false,true,false,false,false"
+    check("chat eingabe (D): a click under the last message or in the lower half goes to the composer — never a selection, a double click or a link",
+      !clickErr && got.join(",") === "true,false,true,true,false,false,false"
         && /if \(chatClickToComposer\(e, \{ top: box\.top, height: box\.height \}, lastBottom, !!sel && !sel\.isCollapsed\)\) ta\.focus\(\);/.test(cliSrc),
       clickErr || got.join(","));
   }

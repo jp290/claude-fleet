@@ -8,6 +8,8 @@ import { popover } from "./popover";
 import { runningEffort, runningModel } from "./running";
 import { askRisk } from "./dialog";
 import { RUECKFRAGE_SATZ, VERTRAUEN_SATZ } from "./pendingsend";
+import { initChatFloor, syncChatFloor } from "./chatfloor";
+import { syncWichte } from "./wicht";
 
 // --- THE ONE COMPOSER ------------------------------------------------------------------------
 // Owner 2026-09-19: the conversation view's input REPLACES the box under the terminal — there is
@@ -89,6 +91,8 @@ export function mountComposer(): void {
   renderHeldHint();
   renderTarget();
   renderWorkplaceField();
+  syncChatFloor();
+  syncWichte(pane?.liveShown ?? null, isMobile());
 }
 
 // THE PLACEHOLDER no longer names the session (owner 2026-10-07: the name stood three times at the
@@ -789,6 +793,7 @@ export function renderChips(chips: string[]) {
 export function initComposer(): void {
   compEl = $("comp"); compOpts = $("compopts"); compTray = $("comptray"); compFiles = $("compfiles");
   compSurface = $("compsurface");
+  initChatFloor();
   live = $("live"); livebar = $("livebar"); livein = $("livein") as HTMLInputElement;
   popover({
     panel: () => compOpts.querySelector<HTMLElement>(".optpop.open"),

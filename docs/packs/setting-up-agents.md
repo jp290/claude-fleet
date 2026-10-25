@@ -5,7 +5,8 @@ Read this before you set up an agent or a constellation. It covers what to decid
 ## The five parts
 
 Every agent gets five things when it starts. Decide the ones that matter for this work and leave the rest at
-their defaults.
+their defaults. The start window shows what fills each part as stones (a purpose, a context pack, a rule file, a
+right) and settings (harness, model, effort).
 
 - **Who:** harness, model and effort. Choose for the work. Does it need judgment, breadth, speed or low cost? What
   this machine can run right now: `GET /api/harnesses`. Pass model and effort explicitly on every open and every
@@ -30,7 +31,7 @@ their defaults.
 One well set-up agent is the default. A second seat earns its place only if it brings one of these:
 
 - an independent check
-- another model (for a second judgment here that is Sonnet 5.5; Fable doesn't run in this Fleet)
+- another model
 - other rights
 - more breadth than one agent can hold
 
@@ -71,10 +72,9 @@ It never says how to do the work.
   The opener and the branch session form a pair that may message each other. Open it with your own self token,
   never with the owner credential: a branch session opened the other way has no mailbox back to you, and you none
   to it. If the worktree holds an earlier conversation, the open resumes it; pass `"fresh": true` for a new start.
-- **A model from another provider:** pi on the workhorse, inside the bwrap fence, in rounds. One round is one run
-  with the task and the last verdict, and report and verdict are stored as files. Example:
-  `~/local-notes/agent-objekt-bau/runde.sh`. The cost of a round is the sum of `cost.total` over the
-  `message_end` lines of its `pi.jsonl`; report it per run. A pi call with tools started from a Claude session's
+- **A model from another provider:** pi, inside the bwrap fence, in rounds. One round is one run with the task and
+  the last verdict, and report and verdict are stored as files. The cost of a round is the sum of `cost.total` over
+  the `message_end` lines of its `pi.jsonl`; report it per run. A pi call with tools started from a Claude session's
   shell is blocked by the classifier. The owner starts it or sets a rule; you don't work around it.
 - **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 2000 characters (characters, not bytes; cut a
   longer message into numbered parts). A lane gets a 409 there; its result arrives as a fleet-report.
@@ -92,8 +92,9 @@ size of a brief or a start window is not its context.
 
 ## Two examples
 
-- **One agent.** The free agent on slot 16. Its whole setup is a 0.7 KB `CLAUDE.md` in its own folder, with no role
-  card. It starts with about a third fewer tokens than the orchestrator.
-- **Two seats.** A builder and a checker for a server change. The builder is DeepSeek Flash, working in rounds on
-  the workhorse. The checker is Sonnet on the Mac, the only seat that can test against real transcripts. The
-  second seat brings another model, an independent check and access the builder doesn't have.
+- **One agent.** A free session whose whole setup is a `CLAUDE.md` of under 1 KB in its own folder, with no role
+  card. It starts with far fewer tokens than a seat with a role.
+- **Two seats.** A builder and a checker for a server change. The builder is a model from another provider, working
+  in rounds through pi. The checker is a Claude seat on the machine that holds the real transcripts, the only one
+  that can test against them. The second seat brings another model, an independent check and access the builder
+  doesn't have.

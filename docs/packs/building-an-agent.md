@@ -26,9 +26,10 @@ complements the agent for a task or for a domain. Nothing else is hidden in it.
 - **Branch & land:** its own branch, whose commits it lands when the work is done.
 - **First task:** what it is told when it starts, or nothing.
 
-Model and effort are settings, not stones; they shape the agent without words. Two agents that
-look very different, a careful reviewer and a builder that works for hours on its own branch, differ only in their
-stones and settings. So the question is never "which agent", but "which context is missing for this task or
+Model and effort are settings, not stones; they shape the agent without words. Fleet's system concept names the
+five parts of a setup (who, start, reads, may, works with); stones and settings fill them. Two agents that look very
+different, a careful reviewer and a builder that works for hours on its own branch, differ only in their stones and
+settings. So the question is never "which agent", but "which context is missing for this task or
 domain".
 
 Before any start, Fleet shows the start brief: every stone with its source and size, word for word, compared with a
@@ -57,7 +58,8 @@ fact about this repository in the repository's rules.
 1. **Start from the agent they know.** Ask what it should do better or differently, in their words, and what they
    would notice afterwards.
 2. **Write the smallest stone that brings it.** Usually a purpose sentence or a context pack. A stone earns its place
-   when it holds what the model can't infer; `making-a-pack` says how to write a pack and where it lives.
+   when it holds what the model can't infer. A context pack names in its first line the moment to read it, and gives
+   each rule with its reason and each trap with what you see when you are in it.
 3. **Show it** before it acts: the stone itself and the + lines it will add.
 4. **Give it to your successor and hand over** at a good moment: after a finished step, never in the middle of a
    thought. A succession hands your work to a fresh session in your place, with your setup and your handover. You
@@ -96,7 +98,8 @@ working with it, not by reading it.
 ## Where a stone lives
 
 - **True on any Fleet:** Fleet's library, so it travels with every shared setup. A pack gets there as a file in
-  Fleet's repository and an entry in its register, through a branch and a land; `making-a-pack` says how.
+  Fleet's repository and an entry in its register, through a branch and a land; a session in Fleet's repository
+  borrows `making-a-pack` for it.
 - **True for this project:** the repository's own rules, its `AGENTS.md` or `CLAUDE.md`, which every session there
   reads. Change them in a branch like any other file.
 - **Only for this person or this machine:** a private context pack (`POST /api/self/packs`), in Fleet's own state, valid at
@@ -117,8 +120,9 @@ which one it was derived from, so the person who takes it can see what was chang
 - **A stone in an awkward place.** A rule that must always hold, given as a skill, may never be opened; a how-to for
   one rare moment, given with every request, costs attention on every turn. Check where it sits in the start brief.
 - **Several stones at once.** The person can't tell which one helped. One stone per round.
-- **Changing yourself by memory.** What you only decide to do differently dies with your context. If it should last,
-  it is a stone.
+- **Changing yourself by memory.** What you only decide to do differently dies with your context, and a note in your
+  notebook doesn't reach the next agent's start. How the agent works is a stone. Only a stone stands as a + line in the
+  start and travels with a shared setup.
 
 ## Done
 

@@ -10,16 +10,18 @@ You have a notebook: Claude Code's memory. Write in it while you work, at the mo
 the end, because your context may run out first.
 
 - One fact per note, and a name that says what it is about.
-- Write the rule and why it holds. Leave out the story. If the incident matters, it goes into a measurement note
-  in `docs/messungen/`, and the note points there.
+- Write the rule and why it holds. Leave out the story; if the incident matters, the note points to where it is
+  written down.
+- How an agent works, you or your successor, is not a note. It is a stone of its setup, a purpose sentence or a
+  context pack: only a stone stands as a + line in the start and travels with a shared setup.
 - Before you add a note, check whether one already covers it. If so, update that one.
 
 ## From notebook to knowledge
 
 A note that should hold for others doesn't stay in your notebook. It becomes knowledge, in one of three places:
 
-- **An owner decision that holds beyond your task** goes to the owner's corrections, `k-owner-korrekturen`. Each
-  entry there names the roles it applies to.
+- **An owner decision that holds beyond your task** goes to the owner's corrections, as an entry that names the
+  roles it applies to.
 - **How to do a kind of work** goes to a context pack.
 - **What something is and why it matters** goes to a concept.
 

@@ -1,6 +1,6 @@
 # Claude Fleet
 
-**Fleet is the harness where hard agentic tasks get solved, shared and improved together.** It starts from the coding agent you already use. A session in Fleet is your own Claude Code with what Fleet adds on top: a few texts and settings, each one switchable, each one shown word for word before the session starts. Your own files stay as they are.
+**Fleet is the harness where one agent becomes very capable, constellations of such agents solve hard tasks in the highest quality, and many people build on each other's setups.** It starts from the coding agent you already use. A session in Fleet is your own Claude Code with what Fleet adds on top: a few texts and settings, each one switchable, each one shown word for word before the session starts. Your own files stay as they are.
 
 *Set up an agent well. See exactly what it gets. Share it.*
 

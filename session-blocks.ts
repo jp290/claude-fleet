@@ -208,7 +208,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     lieferart: ["Prompt"],
     rollenDefault: {"lane": "aus", "main": "aus", "orchestratorin": "an", "nur-ordner": "aus"},
     source: "server/orchestrator-start.ts#readOrchestratorStartParts",
-    belege: ["server/orchestrator-start.ts#readOrchestratorStartParts", "docs/start/direction.md#Direction: Harness 2.0",
+    belege: ["server/orchestrator-start.ts#readOrchestratorStartParts", "docs/start/direction.md#Direction: your own agent steers Fleet",
       "docs/start/orchestrator.md#Orchestrator", "docs/start/system-concept.md#Claude Fleet",
       "docs/packs/setting-up-agents.md#Setting up an agent", "docs/packs/working-with-the-owner.md#Working with the owner",
       "docs/packs/how-fleet-remembers.md#How Fleet remembers",

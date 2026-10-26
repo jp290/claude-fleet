@@ -7850,7 +7850,7 @@ export async function run(): Promise<void> {
       .map((id) => [id, state?.slots?.[String(id)]?.openedAt] as const));
     const migratePrompts = async (slot: number) => (await plogRead())
       .filter((e) => e.slot === slot && e.openedAt !== undefined && e.openedAt === migrateOccupant.get(slot)
-        && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+        && e.text.startsWith("[fleet] Your context is at "));
     let nudges = await migratePrompts(mainId);
     for (let i = 0; i < 80 && nudges.length === 0; i++) {
       await Bun.sleep(100);
@@ -7863,12 +7863,12 @@ export async function run(): Promise<void> {
     // and cap (the wrapper's FLEET_MIGRATE_PCT 44 moves a session's base, the cap is 5 above), says Fleet does
     // not hand over itself, and asks for the standing handover before self/succeed — no old channel.
     check("the hint names the measured pct+window, the session's threshold 44 and cap 49 as reached, says Fleet does not hand over, asks for the standing handover before self/succeed",
-      nudge.includes("50%") && nudge.includes("1000000 Tokens im Fenster")
-        && nudge.includes("Die Schwelle dieser Session ist 44 %, die Obergrenze 49 %. Die Obergrenze ist erreicht.")
-        && nudge.includes("Fleet übergibt nicht selbst, du wählst den Punkt")
+      nudge.includes("50%") && nudge.includes("1000000 tokens in the window")
+        && nudge.includes("The threshold of this session is 44 %, the cap 49 %. The cap is reached.")
+        && nudge.includes("Fleet does not hand over itself, you choose the point")
         && nudge.indexOf("POST /api/self/handover") >= 0 && nudge.indexOf("POST /api/self/handover") < nudge.indexOf("POST /api/self/succeed")
-        && nudge.includes("`intent` ODER `pointer`")
-        && nudge.includes("x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN")
+        && nudge.includes("`intent` OR `pointer`")
+        && nudge.includes("x-fleet-self-token from the environment variable FLEET_SELF_TOKEN")
         && !/Linien-Record|Watches|HANDOFF\.md/.test(nudge), nudge);
     // THE LANE RAIL, 2026-09-12. Until this cut the check here asserted that a lane received
     // NOTHING — its only exit was to land, which is precisely what a lane too full to work well is
@@ -7887,10 +7887,10 @@ export async function run(): Promise<void> {
       `nudges=${laneNudges.length} delayMs=${laneNudges[0] ? laneNudges[0].ts - migrateCrossedAt : "unknown"}`);
     check("tickMigrate hints an above-threshold LANE exactly once — same measured opening, its own threshold, its own exit in order",
       laneNudges.length === 1 && laneNudge.includes("50%")
-        && laneNudge.includes("1000000 Tokens im Fenster")
-        && laneNudge.includes("Die Schwelle dieser Lane ist 44 %, die Obergrenze 49 %.")
-        && laneNudge.includes("diesem Worktree")
-        && laneNudge.indexOf("committe") < laneNudge.indexOf("status `handoff`")
+        && laneNudge.includes("1000000 tokens in the window")
+        && laneNudge.includes("The threshold of this lane is 44 %, the cap 49 %.")
+        && laneNudge.includes("this worktree")
+        && laneNudge.indexOf("commit") < laneNudge.indexOf("status `handoff`")
         && laneNudge.indexOf("status `handoff`") < laneNudge.indexOf("POST /api/self/succeed"),
       `${laneNudges.length}: ${laneNudge}`);
     check("…and the exit is the lane's own: the lane is not asked for a standing handover, a session not for a handoff report",
@@ -7916,7 +7916,7 @@ export async function run(): Promise<void> {
     }
     check("the Orchestratorin is hinted once on her own row 45/50, not on the env's 44",
       orchId > 0 && orchNudges.length === 1
-        && orchNudges[0]!.text.includes("Die Schwelle dieser Session ist 45 %, die Obergrenze 50 %. Die Obergrenze ist erreicht."),
+        && orchNudges[0]!.text.includes("The threshold of this session is 45 %, the cap 50 %. The cap is reached."),
       `${orchNudges.length}: ${orchNudges[0]?.text.slice(0, 260) ?? ""}`);
     // K9 S3b-2: „nur Hinweis“ chosen per session holds against the fleet's new session — the three panes rest (cat),
     // and an act would come within a second of the hint. Negative proof, so a window: two seconds past the last hint.

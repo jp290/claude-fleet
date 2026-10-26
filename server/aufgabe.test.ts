@@ -11,10 +11,10 @@ describe("aufgabeAus", () => {
   });
   test("lehnt ab: kein Objekt, kein Ziel, ein fremdes Feld, kein Text, zu lang", () => {
     expect(typeof aufgabeAus("Plan lesen")).toBe("string");
-    expect(aufgabeAus({ ziel: "  ", grenze: "x" })).toBe("eine Aufgabe braucht ein Ziel");
-    expect(aufgabeAus({ ziel: "x", wer: "y" })).toBe("aufgabe kennt kein Feld „wer“");
-    expect(aufgabeAus({ ziel: "x", runden: 3 })).toBe("aufgabe kennt kein Feld „runden“");
-    expect(aufgabeAus({ ziel: "x", grenze: 3 })).toBe("jedes Feld der Aufgabe ist Text");
+    expect(aufgabeAus({ ziel: "  ", grenze: "x" })).toBe("a task needs a goal (ziel)");
+    expect(aufgabeAus({ ziel: "x", wer: "y" })).toBe("aufgabe has no field “wer”");
+    expect(aufgabeAus({ ziel: "x", runden: 3 })).toBe("aufgabe has no field “runden”");
+    expect(aufgabeAus({ ziel: "x", grenze: 3 })).toBe("every field of aufgabe is text");
     expect(typeof aufgabeAus({ ziel: "x".repeat(AUFGABE_MAX + 1) })).toBe("string");
   });
 });
@@ -25,7 +25,7 @@ describe("aufgabeAlsText", () => {
   });
   test("mit Feldern je Feld eine Zeile, in fester Reihenfolge", () => {
     expect(aufgabeAlsText({ ziel: "Plan lesen", rueckweg: "an Slot 8", grenze: "nur docs/" }))
-      .toBe("Ziel: Plan lesen\nGrenze: nur docs/\nRückweg: an Slot 8");
+      .toBe("Goal: Plan lesen\nLeave alone: nur docs/\nReport back to: an Slot 8");
   });
 });
 
@@ -42,7 +42,7 @@ describe("die Branch-Tür nimmt eine Aufgabe", () => {
       post("/api/branches/open", { repo: f.repo, branch: "branch/aufgabe-a", aufgabe }), get("/api/k15/historie")]);
     expect(made?.status).toBe(201);
     expect([beide?.status, leer?.status]).toEqual([400, 400]);
-    expect(leer?.body.error).toBe("eine Aufgabe braucht ein Ziel");
+    expect(leer?.body.error).toBe("a task needs a goal (ziel)");
     expect(opened?.status).toBe(200);
     const starts = h?.body.starts as { slot: number; goal: string | null; aufgabe: object | null }[];
     expect(starts[0]).toMatchObject({ slot: Number(opened?.body.slot), aufgabe, goal: aufgabeAlsText(aufgabe) });

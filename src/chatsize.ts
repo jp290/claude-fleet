@@ -12,12 +12,12 @@ import { prefJSON, prefSet } from "./prefs";
 export const SIZE_SPEC: Record<SizeKey, { label: string; min: number; max: number; def: number; step: number; v: string }> = {
   text: { label: "Text", min: 11, max: 24, def: 14, step: 0.5, v: "--chat-fs" },
   code: { label: "Code", min: 10, max: 22, def: 12.5, step: 0.5, v: "--chat-code-fs" },
-  ui: { label: "Oberfläche", min: 9, max: 16, def: 11, step: 0.5, v: "--chat-ui-fs" },
-  width: { label: "Breite", min: 600, max: 1640, def: 780, step: 20, v: "--chat-col" },
+  ui: { label: "Interface", min: 9, max: 16, def: 11, step: 0.5, v: "--chat-ui-fs" },
+  width: { label: "Width", min: 600, max: 1640, def: 780, step: 20, v: "--chat-col" },
 };
 export const COLUMN_FULL = SIZE_SPEC.width.max;
 const cssValue = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "100000px" : `${n}px`);
-const shown = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "voll" : `${n}px`);
+const shown = (k: SizeKey, n: number): string => (k === "width" && n >= COLUMN_FULL ? "full" : `${n}px`);
 
 const KEYS = Object.keys(SIZE_SPEC) as SizeKey[];
 
@@ -129,11 +129,11 @@ export function sizePanel(): HTMLElement {
   termInput.min = String(TERM_SPEC.min);
   termInput.max = String(TERM_SPEC.max);
   termInput.step = String(TERM_SPEC.step);
-  termInput.setAttribute("aria-label", "Terminalschrift");
+  termInput.setAttribute("aria-label", "Terminal font size");
   const termVal = document.createElement("span");
   termVal.className = "sizeval";
   termInput.addEventListener("input", () => setTermSize(Number(termInput.value)));
-  termRow.title = "Schriftgröße im Terminal aller Panes — die Spaltenzahl folgt";
+  termRow.title = "Font size in every pane's terminal — the column count follows";
   termRow.append(termName, termInput, termVal);
   const sync = () => {
     for (const r of rows) {
@@ -149,11 +149,11 @@ export function sizePanel(): HTMLElement {
   const reset = document.createElement("button");
   reset.className = "sizereset";
   reset.textContent = "Reset";
-  reset.title = "Standardgrößen, -breite und Terminalschrift (Strg/⌘ 0 setzt die sichtbare Ansicht zurück)";
+  reset.title = "Default sizes, width and terminal font (Ctrl/⌘ 0 resets the visible view)";
   reset.addEventListener("click", () => { stepChatSizes(0); setTermSize(null); });
   const hint = document.createElement("div");
   hint.className = "sizehint";
-  hint.textContent = "Strg/⌘ + / − / 0";
+  hint.textContent = "Ctrl/⌘ + / − / 0";
   box.append(...rows.map((r) => r.row), termRow, reset, hint);
   panel = box;
   return box;

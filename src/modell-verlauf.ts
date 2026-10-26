@@ -20,7 +20,7 @@ export function modellVerlauf(jsonl: string): ModellAbschnitt[] {
     const zeit = str(o.timestamp);
     if (o.type === "system" && o.subtype === "model_refusal_fallback" && zeit) {
       const von = str(o.originalModel) ?? "?", nach = str(o.fallbackModel) ?? "?", art = str(o.apiRefusalCategory);
-      wechsel = { ab: zeit, grund: `Claude Code stellte nach einer Meldung seiner Sicherung${art ? ` („${art}“)` : ""} von ${von} auf ${nach} um (model_refusal_fallback)` };
+      wechsel = { ab: zeit, grund: `Claude Code switched from ${von} to ${nach} after a safety flag${art ? ` (“${art}”)` : ""} (model_refusal_fallback)` };
       continue;
     }
     const m = o.type === "assistant" ? obj(o.message) : null;

@@ -17,7 +17,7 @@ const eingang = (over: Partial<FassungEingang> = {}): FassungEingang => ({
   anlass: "laufend",
   wer: [textAbschnitt("harness", "Slot.harness", "claude")],
   aufgabe: [textAbschnitt("aufgabe", "Queue-Zeile t1", "ZIEL: zeigen")],
-  liest: [textAbschnitt("rolle", "rollenkarte", "--- ROLLE --- Lane")],
+  liest: [textAbschnitt("rolle", "rollenkarte", "--- ROLE --- Lane")],
   darf: [textAbschnitt("darf", "Slot.rechte", "FLEET-RECHTE ...")],
   arbeitet: [textAbschnitt("arbeitet", "laneExitFooter", "Empfänger: program-main Slot 1")],
   ...over,
@@ -210,7 +210,7 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
       for (const teil of ["--session-id", "FLEET_SELF_TOKEN", "PATH"]) expect(minimum).toContain(teil);
       expect(abschnitt(frei, "darf", "eigenes-setup")).toBeUndefined();
       // ohne Wahl gibt Fleet nichts mit, und das steht als eigener Zustand da (Owner 23.10. ~22:30)
-      expect(abschnitt(eigen, "darf", "mitgegeben")?.text).toBe("nichts");
+      expect(abschnitt(eigen, "darf", "mitgegeben")?.text).toBe("nothing");
       expect(abschnitt(frei, "darf", "mitgegeben")).toBeUndefined();
       expect(abschnitt(codex, "darf", "modus")).toBeUndefined();
       expect(abschnitt(codex, "liest", "systemzusatz")?.text).toBeNull();
@@ -576,10 +576,10 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
 
   test("die Schwelle des Fensters steht im gezeigten und im laufenden Hash; eine spätere Änderung führt die Route nach und nennt sie", () => {
     const l = laeufe.schwelle as Lauf & { patch: number; nachHash: string; nachgefuehrt: string[] | null; startHash: string | null; nachText: string | null };
-    expect(l.umfeld?.schwelle?.text).toBe("Übergabe ab 35 % · fällig ab 40 % · an der Schwelle: Hinweis · Hinweis an");
+    expect(l.umfeld?.schwelle?.text).toBe("Handover at 35 % · due at 40 % · at the threshold: note · note on");
     expect(l.vorschau).not.toBe(laeufe.nackt?.vorschau);
     expect(l.patch).toBe(200);
-    expect(l.nachText).toBe("Übergabe ab 50 % · fällig ab 55 % · an der Schwelle: Hinweis · Hinweis an");
+    expect(l.nachText).toBe("Handover at 50 % · due at 55 % · at the threshold: note · note on");
     expect(l.nachgefuehrt).toEqual(["schwelle"]);
     expect(l.startHash).toBe(l.laufend);
     expect(l.nachHash).not.toBe(l.laufend);
@@ -587,14 +587,14 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
 
   test("der laufende Sitz zeigt seine Hooks, Einstellungen, Plugins und das Warmhalten, das Eigene des Owners mit seiner Marke", () => {
     const u = laeufe.nackt?.umfeld;
-    expect(u?.["hooks-eigene"]).toEqual({ text: expect.stringContaining("PreToolUse · Bash · ~/.claude/hooks/wache.sh\n  Skript ~/.claude/hooks/wache.sh · 17 B"), eigentum: "owner" });
+    expect(u?.["hooks-eigene"]).toEqual({ text: expect.stringContaining("PreToolUse · Bash · ~/.claude/hooks/wache.sh\n  script ~/.claude/hooks/wache.sh · 17 B"), eigentum: "owner" });
     expect(u?.["cc-einstellungen-eigene"]?.eigentum).toBe("owner");
     expect(u?.["cc-einstellungen-eigene"]?.text).toContain('"model": "opus"');
-    expect(u?.hooks).toEqual({ text: "(keine Hooks)", eigentum: null });
-    expect(u?.plugins).toEqual({ text: "(keine Plugins)", eigentum: "owner" });
-    expect(u?.warmhalten).toEqual({ text: "Cache warmhalten aus", eigentum: null });
+    expect(u?.hooks).toEqual({ text: "(no hooks)", eigentum: null });
+    expect(u?.plugins).toEqual({ text: "(no plugins)", eigentum: "owner" });
+    expect(u?.warmhalten).toEqual({ text: "Keep cache warm: off", eigentum: null });
     // die Orchestratorin hält Fleet warm (keepCacheFleetOn)
-    expect(laeufe["orchestratorin-rechte"]?.umfeld?.warmhalten?.text).toStartWith("Cache warmhalten an: nach 50 min Ruhe");
+    expect(laeufe["orchestratorin-rechte"]?.umfeld?.warmhalten?.text).toStartWith("Keep cache warm: on, after 50 min quiet");
   });
 
   test("das Netz allein: eine Fassung, die sich nach der Prüfung der Tür bewegt, gibt 409; keine Pane davor, kein Slot, keine Datei danach", () => {

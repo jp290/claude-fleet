@@ -4431,7 +4431,7 @@
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>
     <span id="mtitle">Claude Fleet</span>
-    <button id="mset" title="Einstellungen öffnen"></button>
+    <button id="mset" title="Open settings"></button>
     <span id="mdot" class="dot off"></span>
   </div>
   <div id="side">
@@ -4453,7 +4453,7 @@
       <button id="opsbtn" title="operations inbox — completions a subscription asked to be filed here instead of typed into a pane (merge / audit / deploy / lane)" style="display:none">📥</button>
       <button id="auditbtn" title="audit trail — what Fleet did to each slot (killed / shelved / self-healed)">🛡</button>
       <button id="outcomebtn" title="outcome feed — what each lane landed, how, and what ③ review said about it">🧾</button>
-      <button id="konstbtn" title="Konstellation — alle laufenden Sessions als Baum; Einzelheiten beim Darüberfahren und per Klick"></button>
+      <button id="konstbtn" title="Constellation — all running sessions as a tree; details on hover and on click"></button>
       </span>
       <span id="toolrow2" class="toolrow">
       <button id="devbtn" title="helper devices — the machines that take suite and audit work off this box" style="display:none">💻</button>
@@ -4473,7 +4473,7 @@
     <div id="bar">
       <!-- the phone upright only (the island block): the grip over the bottom island folds the
            chips and the nine keys in and out; it never takes the field's focus -->
-      <button id="mgrip" type="button" aria-expanded="false" title="Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter"></button>
+      <button id="mgrip" type="button" aria-expanded="false" title="Show your keys — your command chips and ^C, esc, tab, arrows, Enter"></button>
       <div id="keys">
         <button data-k="cc">^C</button>
         <button data-k="esc">esc</button>
@@ -4506,7 +4506,7 @@
             <span id="comptarget"></span>
             <div id="compspace"></div>
             <div id="compopts"></div>
-            <button id="mobmore" type="button" title="Weitere Eingabeoptionen öffnen" aria-expanded="false"></button>
+            <button id="mobmore" type="button" title="Show more input options" aria-expanded="false"></button>
             <button id="send" title="send to this session"></button>
           </div>
         </div>
@@ -4514,9 +4514,9 @@
         <div id="compfoot"></div>
         <div id="comptray"></div>
         <input id="dropfile" type="file" multiple hidden>
-        <button id="live" title="Live-Mitschreiben — jede Taste geht direkt ins Terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
-        <button id="histbtn" title="Prompt-Verlauf — ↑ im leeren Feld holt ihn ebenfalls"><span class="tricon"></span><span class="trlabel">History</span></button>
-        <button id="autobtn" title="Geplante Prompts für diese Session"><span class="tricon"></span><span class="trlabel">Schedule</span></button>
+        <button id="live" title="Live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>
+        <button id="histbtn" title="Prompt history — ↑ in an empty field opens it too"><span class="tricon"></span><span class="trlabel">History</span></button>
+        <button id="autobtn" title="Scheduled prompts for this session"><span class="tricon"></span><span class="trlabel">Schedule</span></button>
       </div>
     </div>
     <div id="droplay">Drop to hand the file to this session</div>
@@ -4524,23 +4524,23 @@
          ⌨ ✎ bottom right, floating over the edge-to-edge transcript -->
     <div id="mread">
       <div id="mreadtl"><button id="mreadmenu" type="button" title="Sessions"></button><span id="mreadtitle"></span></div>
-      <div id="mreadbr"><button id="mreadkeys" type="button" title="Tastenreihe einblenden" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Prompt schreiben"></button></div>
+      <div id="mreadbr"><button id="mreadkeys" type="button" title="Show the key row" aria-pressed="false"></button><button id="mreadwrite" type="button" title="Write a prompt"></button></div>
     </div>
     <!-- the phone upright only: the top island (CSS "THE TOP ISLAND", src/client.ts#renderIsland) —
          closed a pill, open ONE strip with four symbols whose words are their aria-labels and show
          while held (#mhold); a swipe right opens Sessions, left the Info -->
     <div id="mtop" role="group" aria-label="Session">
       <div id="mglas">
-        <button id="mpill" type="button" aria-expanded="false" title="Insel aufklappen"></button>
+        <button id="mpill" type="button" aria-expanded="false" title="Show session controls"></button>
         <div id="mopen">
           <div class="mz1">
-            <button id="mname" type="button" aria-expanded="true" aria-label="Insel zuklappen" title="Insel zuklappen"></button>
+            <button id="mname" type="button" aria-expanded="true" aria-label="Hide session controls" title="Hide session controls"></button>
             <span class="msep" aria-hidden="true"></span>
             <div id="mtools">
               <button id="mview" class="mib" type="button"></button>
-              <button id="mfind" class="mib" type="button" aria-label="Suchen" title="Suchen"></button>
-              <button id="mdirect" class="mib" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="mdirpop" aria-label="Modell und Effort" title="Modell und Effort"></button>
-              <button id="mmore" class="mib" type="button" aria-haspopup="dialog" aria-label="Mehr" title="Mehr"></button>
+              <button id="mfind" class="mib" type="button" aria-label="Search" title="Search"></button>
+              <button id="mdirect" class="mib" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="mdirpop" aria-label="Model and effort" title="Model and effort"></button>
+              <button id="mmore" class="mib" type="button" aria-haspopup="dialog" aria-label="More" title="More"></button>
             </div>
           </div>
         </div>
@@ -4550,16 +4550,16 @@
           <button id="mslot" class="mword" type="button" aria-haspopup="dialog"></button>
           <button id="minfo" class="mword" type="button"></button>
         </div>
-        <div id="mnow"><div id="mnowl"></div><div id="mort" role="group" aria-label="Arbeitsort"></div></div>
+        <div id="mnow"><div id="mnowl"></div><div id="mort" role="group" aria-label="Workplace"></div></div>
       </div>
       <!-- Modell und Effort (src/client.ts#renderDirect, src/composer.ts#optChoices) -->
-      <div id="mdirpop" role="dialog" aria-label="Modell und Effort" hidden></div>
+      <div id="mdirpop" role="dialog" aria-label="Model and effort" hidden></div>
       <span id="mhold" aria-hidden="true"></span>
     </div>
   </div>
   <div id="board">
     <div id="boardhead"><span id="boardtitle">Info</span>
-      <button id="boardclose" title="Info schließen" aria-label="Info schließen" aria-pressed="true"></button></div>
+      <button id="boardclose" title="Close Info" aria-label="Close Info" aria-pressed="true"></button></div>
     <div id="boardbody"></div>
   </div>
 </div>

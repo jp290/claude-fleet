@@ -31,7 +31,7 @@ const opened = (a: Answer | undefined): { slot: number; openedAt: number; frame:
   return { slot: Number(a.body.slot), openedAt: Number(a.body.openedAt), frame: join(FRAMES, basename(String(a.body.cwd))) };
 };
 const hinweise = (f: Fixture): Msg[] => ((persisted(f).messages as { entries?: Msg[] } | undefined)?.entries ?? [])
-  .filter((m) => m.payload.text.startsWith("[fleet · warte-hinweis]"));
+  .filter((m) => m.payload.text.startsWith("[fleet · waiting notice]"));
 const geschrieben = (a: Answer | undefined): unknown[] => (a?.body.geschrieben as unknown[] | undefined) ?? ["kein warte-Schritt"];
 const zeige = (datei: string, text: string, ms = 1500) => ({ datei, text, ms });
 
@@ -62,9 +62,9 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
       expect(m.from).toEqual({ kind: "session", slot: S.slot, openedAt: S.openedAt });
       expect(m.to).toEqual({ kind: "session", slot: L.slot, openedAt: L.openedAt });
     }
-    expect(all[0]?.payload.text).toContain(`Slot ${S.slot} (Sitz) wartet seit `);
-    expect(all[0]?.payload.text).toContain("(3 min) auf eine Antwort in seiner Pane: „Bash command · Do you want to proceed?“");
-    expect(all[1]?.payload.text).toContain("(3 min) auf eine Antwort in seiner Pane: „Bash command · Do you want to proceed?“");
+    expect(all[0]?.payload.text).toContain(`Slot ${S.slot} (Sitz) has been waiting since `);
+    expect(all[0]?.payload.text).toContain('(3 min) for an answer in its pane: "Bash command · Do you want to proceed?"');
+    expect(all[1]?.payload.text).toContain('(3 min) for an answer in its pane: "Bash command · Do you want to proceed?"');
     expect(all.some((m) => m.payload.text.includes(`Slot ${F.slot} `))).toBe(false);
   }, LIFE_DEADLINE_MS * 3);
 

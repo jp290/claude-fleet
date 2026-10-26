@@ -42,35 +42,35 @@ describe("was die Nachfolgerin bekommt", () => {
     standingHandover: null, tail: { state: "read", entries: 0, omitted: 0 }, ...o });
   test("stehende Übergabe und Rest", () => {
     expect(successorSentence(ready({ standingHandover: { ageMs: 12 * 60_000 }, tail: { state: "read", entries: 9, omitted: 0 } })))
-      .toBe("Die Nachfolgerin bekommt die stehende Übergabe von vor 12 min und 9 Einträge Transkript-Rest.");
+      .toBe("The successor gets the standing handover (12 min old) and 9 entries of transcript tail.");
   });
   test("ohne Übergabe nur der Transkript-Rest, und der Satz sagt es", () => {
     expect(successorSentence(ready({ tail: { state: "read", entries: 1, omitted: 0 } })))
-      .toBe("Die Nachfolgerin bekommt 1 Eintrag Transkript-Rest; eine Übergabe hat die Session nicht geschrieben.");
+      .toBe("The successor gets 1 entry of transcript tail; the session wrote no handover.");
     expect(successorSentence(ready({ tail: { state: "read", entries: 30, omitted: 12 } })))
-      .toBe("Die Nachfolgerin bekommt 30 Einträge Transkript-Rest (12 ältere ausgelassen); eine Übergabe hat die Session nicht geschrieben.");
+      .toBe("The successor gets 30 entries of transcript tail (12 older left out); the session wrote no handover.");
   });
   test("eine Übergabe ohne Rest danach, und die Program-Schiene", () => {
     expect(successorSentence(ready({ standingHandover: { ageMs: 30_000 } })))
-      .toBe("Die Nachfolgerin bekommt die stehende Übergabe von eben.");
+      .toBe("The successor gets the standing handover (just written).");
     expect(successorSentence(ready({ rail: "program", standingHandover: { ageMs: 3 * 3_600_000 }, tail: { state: "read", entries: 2, omitted: 0 } })))
-      .toBe("Die Nachfolgerin bekommt den Program-Eintrag, die stehende Übergabe von vor 3 h und 2 Einträge Transkript-Rest.");
+      .toBe("The successor gets the Program record, the standing handover (3 h old) and 2 entries of transcript tail.");
   });
   test("nichts zu lesen ist nur der Start-Brief, ein unlesbares Transkript wird genannt", () => {
-    expect(successorSentence(ready({}))).toBe("Die Nachfolgerin bekommt nur ihren Start-Brief; eine Übergabe hat die Session nicht geschrieben.");
+    expect(successorSentence(ready({}))).toBe("The successor gets only its start brief; the session wrote no handover.");
     expect(successorSentence(ready({ summary: true, tail: { state: "read", entries: 4, omitted: 0 } })))
-      .toBe("Die Nachfolgerin bekommt eine Zusammenfassung des Gesprächs (die Session wird dafür nicht geweckt) und 4 Einträge Transkript-Rest; eine Übergabe hat die Session nicht geschrieben.");
+      .toBe("The successor gets a summary of the conversation (the session is not woken for it) and 4 entries of transcript tail; the session wrote no handover.");
     expect(successorSentence(ready({ standingHandover: { ageMs: 5 * 60_000 }, tail: { state: "none", entries: 0, omitted: 0 } })))
-      .toBe("Die Nachfolgerin bekommt die stehende Übergabe von vor 5 min; das Transkript kann Fleet nicht lesen.");
+      .toBe("The successor gets the standing handover (5 min old); Fleet cannot read the transcript.");
   });
   test("eine abgewiesene Tür sagt den Grund in Worten", () => {
-    expect(successorSentence(ready({ refusal: { reason: "busy" } }))).toBe("Geht gerade nicht: sie arbeitet gerade; sobald sie ruht, geht es.");
-    expect(successorSentence(ready({ refusal: { reason: "lane" } }))).toBe("Geht gerade nicht: eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht.");
-    expect(successorSentence(ready({ refusal: { reason: "neu" } }))).toBe("Geht gerade nicht: neu.");
+    expect(successorSentence(ready({ refusal: { reason: "busy" } }))).toBe("Not possible right now: it is working right now; once it is idle, it works.");
+    expect(successorSentence(ready({ refusal: { reason: "lane" } }))).toBe("Not possible right now: a lane hands over from its own session, with a handover report.");
+    expect(successorSentence(ready({ refusal: { reason: "neu" } }))).toBe("Not possible right now: neu.");
   });
   test("das Alter in Worten", () => {
     expect([0, 59_000, 60_000, 89 * 60_000, 90 * 60_000, 47 * 3_600_000, 48 * 3_600_000, 72 * 3_600_000].map(agoText))
-      .toEqual(["eben", "eben", "vor 1 min", "vor 89 min", "vor 2 h", "vor 47 h", "vor 2 Tagen", "vor 3 Tagen"]);
+      .toEqual(["just written", "just written", "1 min old", "89 min old", "2 h old", "47 h old", "2 days old", "3 days old"]);
   });
 });
 
@@ -119,7 +119,7 @@ describe("die Warm-Entscheidung", () => {
 });
 
 describe("der Text des Warm-Turns", () => {
-  const FLEET = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const FLEET = "[fleet] Keep the cache warm. Answer with ok only — start nothing, call no tool.";
   const TOKEN = "f1e2d3c4b5a6978877665544";
   const input = (v: unknown) => warmTextInput(v, FLEET, [TOKEN, "1"]);
   test("ein eigener Text wird gespeichert, getrimmt, auch mit Zeilenumbruch", () => {
@@ -326,26 +326,26 @@ describe("der Hinweis", () => {
   };
   test("er nennt Füllstand, Schwelle und Obergrenze und bittet um die stehende Übergabe", () => {
     const t = hintText(facts("session", 46));
-    expect(t.startsWith("[fleet] Dein Kontext ist bei 46% (460000 von 1000000 Tokens im Fenster). ")).toBe(true);
-    expect(t).toContain("Die Schwelle dieser Session ist 44 %, die Obergrenze 49 %.");
-    expect(t).toContain("Fleet übergibt nicht selbst, du wählst den Punkt");
+    expect(t.startsWith("[fleet] Your context is at 46% (460000 of 1000000 tokens in the window). ")).toBe(true);
+    expect(t).toContain("The threshold of this session is 44 %, the cap 49 %.");
+    expect(t).toContain("Fleet does not hand over itself, you choose the point");
     expect(t).toContain("POST /api/self/handover");
     expect(t).toContain("POST /api/self/succeed");
-    expect(t).not.toContain("Obergrenze ist erreicht");
+    expect(t).not.toContain("The cap is reached");
   });
   test("ein Text für jede Schiene außer der Lane: die Program-MAIN liest dasselbe wie eine Session", () => {
     expect(hintText(facts("program-main", 46))).toBe(hintText(facts("session", 46)));
   });
   test("die Lane gibt mit ihrem handoff-Report weiter, nicht mit einer stehenden Übergabe", () => {
     const t = hintText(facts("lane", 46));
-    expect(t).toContain("Die Schwelle dieser Lane ist 44 %");
-    expect(t.indexOf("committe")).toBeLessThan(t.indexOf("status `handoff`"));
+    expect(t).toContain("The threshold of this lane is 44 %");
+    expect(t.indexOf("commit")).toBeLessThan(t.indexOf("status `handoff`"));
     expect(t.indexOf("status `handoff`")).toBeLessThan(t.indexOf("POST /api/self/succeed"));
     expect(t).not.toContain("/api/self/handover");
   });
   test("fällig sagt er, warum: Obergrenze oder kalter Cache", () => {
-    expect(hintText(facts("session", 50))).toContain("Die Obergrenze ist erreicht.");
-    expect(hintText(facts("session", 46, "kalt"))).toContain("Dein Cache ist kalt");
+    expect(hintText(facts("session", 50))).toContain("The cap is reached.");
+    expect(hintText(facts("session", 46, "kalt"))).toContain("Your cache is cold");
   });
   test("keine alten Kanäle: weder Watches, Autos noch Linien-Record oder HANDOFF.md", () => {
     for (const k of ["session", "lane", "program-main"] as const)
@@ -354,21 +354,21 @@ describe("der Hinweis", () => {
   });
   test("ein Text je Wahl: er nennt die Handlung und bittet um die stehende Übergabe", () => {
     const compact = hintText(facts("session", 46, "warm", "compact"));
-    expect(compact).toContain("Ab 49 % oder kurz bevor dein Cache kalt wird tippt Fleet `/compact`, sobald du ruhst");
+    expect(compact).toContain("From 49 % or shortly before your cache goes cold Fleet types `/compact` as soon as you are idle");
     expect(compact).toContain("POST /api/self/handover");
-    expect(compact).not.toContain("Fleet übergibt nicht selbst");
+    expect(compact).not.toContain("Fleet does not hand over itself");
     // Owner 07.08. und 18.10.: die Session gibt selbst weiter, Fleets neue Session ist nur der Rückfall
     const succeed = hintText(facts("session", 46, "warm", "succeed"));
-    expect(succeed).toContain("Gib selbst weiter");
+    expect(succeed).toContain("Hand over yourself");
     expect(succeed).toContain("POST /api/self/succeed");
     expect(succeed).toContain("POST /api/self/handover");
-    expect(succeed).toContain("Nur wenn du das nicht tust, öffnet Fleet ab 49 % oder kurz bevor dein Cache kalt wird selbst eine neue Session");
-    expect(succeed.indexOf("POST /api/self/succeed")).toBeLessThan(succeed.indexOf("öffnet Fleet"));
-    expect(hintText(facts("session", 49, "warm", "succeed"))).toContain("öffnet Fleet jetzt oder kurz bevor");
-    expect(hintText(facts("lane", 46, "warm", "compact"))).toContain("Committe vorher deinen Stand.");
+    expect(succeed).toContain("Only if you do not, Fleet opens a new session itself from 49 % or shortly before your cache goes cold");
+    expect(succeed.indexOf("POST /api/self/succeed")).toBeLessThan(succeed.indexOf("Fleet opens a new session"));
+    expect(hintText(facts("session", 49, "warm", "succeed"))).toContain("Fleet opens a new session itself now or shortly before");
+    expect(hintText(facts("lane", 46, "warm", "compact"))).toContain("Commit your state first.");
   });
   test("kurz vor kalt sagt er es", () => {
-    expect(hintText(facts("session", 46, "warm", "succeed", true))).toContain("Dein Cache wird bald kalt.");
+    expect(hintText(facts("session", 46, "warm", "succeed", true))).toContain("Your cache will be cold soon.");
   });
 });
 
@@ -462,8 +462,8 @@ describe("die Handlung", () => {
 describe("die Rollenkarte der Orchestratorin", () => {
   test("Owner: „[Zitat entfernt]“ — ihre Kontext-Zeile nennt ihre Zeile 45/50", () => {
     const line = orchestratorContextLine(thresholdOf("orchestrator", 40, null));
-    expect(line).toContain("Ab 45 % schreibt Fleet dir einen Hinweis");
-    expect(line).toContain("bis 50 % arbeitest du weiter, solange dein Cache warm ist");
+    expect(line).toContain("From 45 % Fleet writes you a hint");
+    expect(line).toContain("up to 50 % you keep working while your cache is warm");
     expect(line).not.toContain("spaetestens bei 45");
     expect(line).not.toContain("FLEET_MIGRATE_PCT");
   });

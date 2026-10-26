@@ -112,7 +112,7 @@ export async function run(check: ContextPlanCheck): Promise<void> {
         check(`context borrow: the client accepts the ${harness} plan with an ambiguous refusal in pack and file parts`,
           part !== undefined && rendered !== undefined && client.validPlan(clientPlan));
         check(`context borrow: the client names the ${harness} ambiguous anchor as fixed outside the file`,
-          part !== undefined && client.partFixed(part) === "Anker nicht eindeutig.");
+          part !== undefined && client.partFixed(part) === "Anchor not unique.");
         check(`context borrow: the client still rejects an unknown refusal in ${harness} plan parts`,
           part !== undefined && !client.validPlan({ ...clientPlan,
             selected: [{ ...clientPlan.selected[0]!, parts: [{ ...part, refusal: "unknown-refusal" }] }] }));

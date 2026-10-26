@@ -3,7 +3,7 @@
 // 6 „[Zitat entfernt]“; 8 „[Zitat entfernt]“;
 // 9 „[Zitat entfernt]“.
 import { describe, expect, test } from "bun:test";
-import { DU, KONST0, PROFILE0, alle, exportJson, exportObjekt, pos, type Konst, type Profil } from "./k15-entwurf-modell";
+import { DU, PROFILE0, alle, exportJson, exportObjekt, pos, type Konst, type Profil } from "./k15-entwurf-modell";
 import { MAX_POSITIONEN, abschnitte, dateiPasst, importKonst, profilAus } from "./k15-import";
 
 const imp = (o: unknown, profile: readonly Profil[] = PROFILE0) => importKonst(JSON.stringify(o), profile, 7);
@@ -11,26 +11,26 @@ const k = (positionen: unknown[]) => ({ fleet: "konstellation", name: "K", posit
 
 describe("eine schiefe Konstellation wird mit einem Satz abgelehnt", () => {
   test.each([
-    ["Kennung als Zahl (der Fall aus der Prüfung)", k([{ id: 1, profil: "lane" }]), /^Session 1 hat keine gültige Kennung$/],
-    ["null statt eines Objekts", null, /^das ist kein Export aus diesem Fenster$/],
-    ["eine Position null", k([null]), /^Session 1 hat keine gültige Kennung$/],
-    ["eine Position ohne id", k([{ name: "x", profil: "lane" }]), /^Session 1 hat keine gültige Kennung$/],
-    ["keine Positionen", k([]), /^die Konstellation hat keine Sessions$/],
-    ["positionen kein Array", { fleet: "konstellation", positionen: { a: 1 } }, /^die Konstellation hat keine Sessions$/],
-    ["meldetAn auf eine Session, die es nicht gibt", k([{ id: "a", profil: "lane", meldetAn: "z" }]), /^a meldet an eine Session, die es im Export nicht gibt$/],
-    ["meldet an sich selbst", k([{ id: "a", profil: "lane", meldetAn: "a" }]), /^a meldet an sich selbst$/],
-    ["ein Kreis", k([{ id: "a", profil: "lane", meldetAn: "b" }, { id: "b", profil: "lane", meldetAn: "a" }]), /^die Meldewege bilden einen Kreis$/],
-    ["zwei gleiche Kennungen", k([{ id: "a", profil: "lane" }, { id: "a", profil: "main" }]), /^zwei Sessions tragen dieselbe Kennung$/],
-    ["Name keine Zeichenkette", k([{ id: "a", name: 5, profil: "lane" }]), /^Session a hat keinen gültigen Namen$/],
-    ["Schalter mit fremdem Wert", k([{ id: "a", profil: "lane", schalter: { x: "vielleicht" } }]), /^Session a: ihre Einstellungen passen nicht$/],
-    ["abweichend mit fremdem Feld", k([{ id: "a", profil: "lane", abweichend: { farbe: "rot" } }]), /^Session a: ihre Einstellungen passen nicht$/],
-    ["zu viele Sessions", k(Array.from({ length: MAX_POSITIONEN + 1 }, (_, i) => ({ id: `p${i}`, profil: "lane" }))), /^25 Sessions sind mehr, als ein Aufbau hier trägt \(höchstens 24\)$/],
+    ["Kennung als Zahl (der Fall aus der Prüfung)", k([{ id: 1, profil: "lane" }]), /^session 1 has no valid id$/],
+    ["null statt eines Objekts", null, /^this is not a Fleet export$/],
+    ["eine Position null", k([null]), /^session 1 has no valid id$/],
+    ["eine Position ohne id", k([{ name: "x", profil: "lane" }]), /^session 1 has no valid id$/],
+    ["keine Positionen", k([]), /^the constellation has no sessions$/],
+    ["positionen kein Array", { fleet: "konstellation", positionen: { a: 1 } }, /^the constellation has no sessions$/],
+    ["meldetAn auf eine Session, die es nicht gibt", k([{ id: "a", profil: "lane", meldetAn: "z" }]), /^a reports to a session that is not in the export$/],
+    ["meldet an sich selbst", k([{ id: "a", profil: "lane", meldetAn: "a" }]), /^a reports to itself$/],
+    ["ein Kreis", k([{ id: "a", profil: "lane", meldetAn: "b" }, { id: "b", profil: "lane", meldetAn: "a" }]), /^the reporting lines form a cycle$/],
+    ["zwei gleiche Kennungen", k([{ id: "a", profil: "lane" }, { id: "a", profil: "main" }]), /^two sessions share one id$/],
+    ["Name keine Zeichenkette", k([{ id: "a", name: 5, profil: "lane" }]), /^session a has no valid name$/],
+    ["Schalter mit fremdem Wert", k([{ id: "a", profil: "lane", schalter: { x: "vielleicht" } }]), /^session a: its settings do not fit$/],
+    ["abweichend mit fremdem Feld", k([{ id: "a", profil: "lane", abweichend: { farbe: "rot" } }]), /^session a: its settings do not fit$/],
+    ["zu viele Sessions", k(Array.from({ length: MAX_POSITIONEN + 1 }, (_, i) => ({ id: `p${i}`, profil: "lane" }))), /^25 sessions are more than a setup can hold here \(at most 24\)$/],
   ])("%s", (_, o, satz) => {
     expect(imp(o)).toMatch(satz);
   });
-  test("kein JSON", () => expect(importKonst("{kaputt", PROFILE0, 7)).toBe("kein gültiges JSON"));
+  test("kein JSON", () => expect(importKonst("{kaputt", PROFILE0, 7)).toBe("not valid JSON"));
   test("ein Verweis auf ein Profil, das es hier nicht gibt, fällt nicht still auf ein anderes zurück", () => {
-    expect(imp(k([{ id: "a", profil: "review@2" }]))).toBe("a: das Profil „review“ gibt es hier nicht; exportier vollständig, dann reist es mit");
+    expect(imp(k([{ id: "a", profil: "review@2" }]))).toBe("a: the profile \"review\" does not exist here; export in full and it travels along");
   });
 });
 
@@ -70,14 +70,19 @@ describe("der vollständige Export verliert nichts (Punkt 6)", () => {
     const anders = { ...review, effort: "low" };
     const r = importKonst(text, [...PROFILE0, anders], 7);
     if (typeof r === "string") throw new Error(r);
-    expect(r.neueProfile.map((p) => [p.name, p.effort])).toEqual([["Review (importiert)", "high"]]);
+    expect(r.neueProfile.map((p) => [p.name, p.effort])).toEqual([["Review (imported)", "high"]]);
     expect(r.neueProfile[0].id).not.toBe("md1");
-    expect(r.hinweise).toContain("Review ist hier anders und kommt als „Review (importiert)“ dazu");
+    expect(r.hinweise).toContain("Review differs here and is added as \"Review (imported)\"");
   });
 });
 
+// Orchestrator -> MAIN -> two lanes, the second with its own model and effort
+const ORCH: Konst = { id: "orch", name: "Orchestrator → MAIN → lanes", v: 4, satz: "the whole system",
+  wurzeln: [pos("o", "Orchestrator", "orchestratorin", { kids: [pos("m", "MAIN", "main", { kids: [pos("l1", "Lane 1", "lane", { wann: "when a card needs more than the MAIN" }),
+    pos("l2", "Lane 2", "lane", { abw: { modell: "claude-sonnet-5-5", effort: "medium" } })] })] })] };
+
 describe("eine gespeicherte Konstellation (Konstellation Stück 1) kommt als derselbe Aufbau zurück", () => {
-  const orch = KONST0.find((x) => x.id === "orch")!;
+  const orch = ORCH;
   const eigene: Konst = { ...structuredClone(orch), id: "n1", name: "Orchestratorin → freie Session", v: 3, eigen: true };
   const roh = { id: eigene.id, ...exportObjekt({ ebene: "konst", voll: true, konst: [eigene], k: eigene, profile: PROFILE0, q: null, p: PROFILE0[0] }) };
   test("Kennung, Fassung, Positionen und ihre Kennungen bleiben, und kein Profil kommt doppelt", () => {
@@ -95,7 +100,7 @@ describe("eine gespeicherte Konstellation (Konstellation Stück 1) kommt als der
     expect([r.k.id, alle(r.k.wurzeln)[0]?.id]).toEqual(["i7", "o"]);
   });
   test("eine schiefe gespeicherte Konstellation wird abgelehnt wie ein Import", () => {
-    expect(importKonst(JSON.stringify({ ...roh, positionen: [] }), PROFILE0, 7, "n1")).toBe("die Konstellation hat keine Sessions");
+    expect(importKonst(JSON.stringify({ ...roh, positionen: [] }), PROFILE0, 7, "n1")).toBe("the constellation has no sessions");
   });
 });
 
@@ -130,13 +135,13 @@ describe("welche Dateien das Fenster annimmt (Punkt 9)", () => {
   test("nur .md und .json bis 1 MB", () => {
     expect(dateiPasst("agent.md", 2_000)).toBeNull();
     expect(dateiPasst("k.fleet.json", 2_000)).toBeNull();
-    expect(dateiPasst("film.mp4", 2_000)).toBe("film.mp4: Nur eine .md (Agent-MD) oder eine exportierte .json lässt sich hineinziehen.");
-    expect(dateiPasst("gross.md", 2_500_000)).toBe("gross.md: 2.500 KB sind zu groß; mehr als 1 MB liest das Fenster nicht.");
+    expect(dateiPasst("film.mp4", 2_000)).toBe("film.mp4: only an .md (agent MD) or an exported .json can be dropped in.");
+    expect(dateiPasst("gross.md", 2_500_000)).toBe("gross.md: 2,500 KB is too large; nothing over 1 MB is read.");
   });
 });
 
 describe("das Protokoll einer Konstellation (Harness 2.0 Schritt 3) reist mit", () => {
-  const orch = KONST0.find((x) => x.id === "orch")!;
+  const orch = ORCH;
   const form = (k: Konst) => exportObjekt({ ebene: "konst", voll: true, konst: [k], k, profile: PROFILE0, q: null, p: PROFILE0[0] });
   test("Endbedingung, Rundendeckel und Prüfregel kommen gleich zurück", () => {
     const protokoll = { ende: "Die CI des Repos ist grün.", runden: 3, regel: "Der Gegenspieler bricht den Schnitt nicht mehr." };
@@ -154,9 +159,9 @@ describe("das Protokoll einer Konstellation (Harness 2.0 Schritt 3) reist mit", 
   });
   test("ein schiefes Protokoll wird abgelehnt", () => {
     const roh = form(structuredClone(orch));
-    expect(imp({ ...roh, protokoll: { ende: 3, runden: null, regel: null } })).toBe("das Protokoll passt nicht");
-    expect(imp({ ...roh, protokoll: { ende: null, runden: 0, regel: null } })).toBe("das Protokoll passt nicht");
-    expect(imp({ ...roh, protokoll: "CI" })).toBe("das Protokoll passt nicht");
+    expect(imp({ ...roh, protokoll: { ende: 3, runden: null, regel: null } })).toBe("the protocol does not fit");
+    expect(imp({ ...roh, protokoll: { ende: null, runden: 0, regel: null } })).toBe("the protocol does not fit");
+    expect(imp({ ...roh, protokoll: "CI" })).toBe("the protocol does not fit");
   });
 });
 
@@ -196,7 +201,7 @@ describe("ein Import startet nie als Orchestratorin", () => {
     const p = [...PROFILE0, ...r.neueProfile].find((x) => x.id === ids[0]);
     expect([p?.rolle, p?.schiene, ids[1]]).toEqual(["nur-ordner", "session", ids[0]]);
     expect(r.neueProfile.filter((x) => x.rolle === "orchestratorin")).toEqual([]);
-    expect(r.hinweise.some((h) => h.startsWith("Leitung kam als") && h.includes("nie in bypassPermissions"))).toBe(true);
+    expect(r.hinweise.some((h) => h.startsWith("Leitung arrived as") && h.includes("never starts in bypassPermissions"))).toBe(true);
   });
   test("das eigene Laden (behalte) behält die Rolle", () => {
     const r = importKonst(JSON.stringify(k([{ id: "o", profil: "orchestratorin@2" }])), PROFILE0, 7, "eigen1");

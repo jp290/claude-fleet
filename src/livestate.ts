@@ -11,12 +11,12 @@ export type LiveKind = "work" | "wait" | "stop" | "idle";
 export const backgroundCount = (s: Partial<Pick<LiveState, "background">>): number => s.background?.agents ?? 0;
 
 export function liveWord(s: Pick<LiveState, "turn" | "detail"> & Partial<Pick<LiveState, "background">>): { word: string; kind: LiveKind } | null {
-  if (s.turn === "working") return { word: s.detail === "thinking" ? "denkt" : s.detail === "hooks" ? "Hooks laufen" : "arbeitet", kind: "work" };
-  if (s.turn === "asking") return { word: "wartet auf dich", kind: "wait" };
-  if (s.turn === "interrupted") return { word: "unterbrochen", kind: "stop" };
+  if (s.turn === "working") return { word: s.detail === "thinking" ? "thinking" : s.detail === "hooks" ? "hooks running" : "working", kind: "work" };
+  if (s.turn === "asking") return { word: "waiting for you", kind: "wait" };
+  if (s.turn === "interrupted") return { word: "interrupted", kind: "stop" };
   // owner 25.10.: the turn is over, but a subagent still runs (a background command alone does not count) — that is work, not „[Zitat entfernt]“
-  if ((s.turn === "ready" || s.turn === "unknown") && backgroundCount(s) > 0) return { word: "arbeitet im Hintergrund", kind: "work" };
-  if (s.turn === "ready") return { word: "bereit", kind: "idle" };
+  if ((s.turn === "ready" || s.turn === "unknown") && backgroundCount(s) > 0) return { word: "working in the background", kind: "work" };
+  if (s.turn === "ready") return { word: "ready", kind: "idle" };
   return null;
 }
 

@@ -27,7 +27,7 @@ describe("welches Modell wirklich antwortete", () => {
     expect(modellVerlauf(TRANSKRIPT_MIT_WECHSEL)).toEqual([
       { modell: "claude-opus-5-5", ab: "2026-10-23T02:03:54.938Z", aufrufe: 2, grund: null },
       { modell: "claude-opus-4-8", ab: "2026-10-23T02:14:42.416Z", aufrufe: 3,
-        grund: "Claude Code stellte nach einer Meldung seiner Sicherung („cyber“) von claude-opus-5-5[1m] auf claude-opus-4-8 um (model_refusal_fallback)" },
+        grund: "Claude Code switched from claude-opus-5-5[1m] to claude-opus-4-8 after a safety flag (“cyber”) (model_refusal_fallback)" },
     ]);
   });
   test("ohne Wechsel ein Abschnitt; ein Wechsel ohne Meldung (etwa /model) steht ab seiner ersten Antwort, ohne Grund", () => {
@@ -47,7 +47,7 @@ describe("welches Modell wirklich antwortete", () => {
     expect(typeof mit === "string" ? mit : mit.sitze[0]?.modelle).toEqual(verlauf);
     const ohne = laufBerichtAus(lauf(undefined), ["beweiser"]);
     expect(typeof ohne === "string" ? ohne : "modelle" in ohne.sitze[0]!).toBe(false);
-    expect(laufBerichtAus(lauf([{ modell: "claude-opus-4-8", ab: "gestern", aufrufe: 3, grund: null }]), ["beweiser"])).toBe("hat keine gültigen Sitze");
+    expect(laufBerichtAus(lauf([{ modell: "claude-opus-4-8", ab: "gestern", aufrufe: 3, grund: null }]), ["beweiser"])).toBe("has no valid sitze");
     expect(modellAbschnittAus({ modell: "m", ab: "2026-10-23T02:00:00Z", aufrufe: -1, grund: null })).toBeNull();
     expect(modellAbschnittAus({ modell: "m", ab: "2026-10-23T02:00:00Z", aufrufe: 1, grund: "" })).toBeNull();
   });

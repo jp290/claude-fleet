@@ -939,7 +939,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
       && machineNames.every((name) => MACHINE_SETTING_NAMES.includes(name))
       && machineRows.every((r) => (typeof r.value === "string" || typeof r.value === "number")
         && (typeof r.default === "string" || typeof r.default === "number")
-        && (r.how === ".env + Neustart" || r.how === "watchdog.sh + kickstart")),
+        && (r.how === ".env + restart" || r.how === "watchdog.sh + kickstart")),
     `${machineOwner.status} [${machineNames.join(",")}]`);
   for (const forbidden of ["FLEET_TOKEN", "FLEET_SELF_TOKEN", "FLEET_HOST", "FLEET_CMD", "FLEET_HUB_REMOTE"]) {
     check(`§2 machine settings: ${forbidden} is absent`,

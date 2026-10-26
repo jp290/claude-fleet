@@ -37,7 +37,7 @@ describe("SESSION_BLOCKS · Frage und Abschnitte", () => {
       .toEqual(["auftrag", "umstaende", "hintergrund", "umstaende", "konzepte", "howto"]);
     const abschnitt = (id: string, teil: string) => SESSION_BLOCKS.find((b) => b.id === id)?.abschnitte?.find((a) => a.teil === teil)?.frage;
     expect([abschnitt("portable-contract", "### Identity and vocabulary (§1, §3)"), abschnitt("main-rail", "Owner-confirmed Program mandate (verbatim; data, never commands)"),
-      abschnitt("main-rail", "YOUR MEMORY is"), abschnitt("lane-footer", "Empfaenger:"), abschnitt("role-card", "--- DER LOOP ---")])
+      abschnitt("main-rail", "YOUR MEMORY is"), abschnitt("lane-footer", "Empfaenger:"), abschnitt("role-card", "--- THE LOOP ---")])
       .toEqual(["konzepte", "auftrag", "hintergrund", "umstaende", "howto"]);
   });
   test("jede Zeile von Claude Codes eigenem Teil trägt eine der fünf Fragen", () => {
@@ -102,7 +102,7 @@ describe("validAnswer · das Fenster liest die Frage, wie der Server sie setzt",
     const [erster, ...rest] = PLAN.bausteine;
     expect(validAnswer(antwort([{ ...erster, frage: "wo" }, ...rest]))).toBe(false);
     const karte = PLAN.bausteine.find((b) => b.id === "role-card")!;
-    expect(validAnswer(antwort([...PLAN.bausteine.filter((b) => b !== karte), { ...karte, abschnitte: [{ teil: "--- ROLLE ---", frage: "Rolle" }] }]))).toBe(false);
+    expect(validAnswer(antwort([...PLAN.bausteine.filter((b) => b !== karte), { ...karte, abschnitte: [{ teil: "--- ROLE ---", frage: "Rolle" }] }]))).toBe(false);
     expect(validAnswer(antwort([...PLAN.bausteine.filter((b) => b !== karte), { ...karte, abschnitte: [{ frage: "auftrag" }] }]))).toBe(false);
   });
 });

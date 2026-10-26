@@ -761,7 +761,7 @@ function runLinks(): void {
     over.ws = pane.ws;
     over.flushHeld(); over.flushHeld();
     const overSaid = sent.join("|") === "ls -la\r|ab" && over.dropped === 0 && toasts.length === 1
-      && toasts[0]!.includes("2 Zeichen nach dem Verbinden gesendet, 1024 verworfen");
+      && toasts[0]!.includes("2 chars sent after connecting, 1024 dropped");
     const none = new P(); none.slot = 0; none.sendRaw("x"); // an unassigned pane holds nothing
     holdResult = JSON.stringify({ cases, heldWhileDown, once, overDown, overSaid, unassigned: none.held === "" && none.paints === 0, sent: sent.map((t) => t.length), toasts });
     check("terminal: keys typed while disconnected wait (at most 1024 B, whole writes, a prefix) and are sent exactly once after the seed",

@@ -144,7 +144,7 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     expect(String(r[1]?.body.error)).toBe("gate=blocked-screen: claude permission question — nothing typed");
     // UI-Abnahme 22.10.: der Satz nennt die Tasten und steht 6 s; die übrigen Toasts behalten ihre Dauer
     const satz = sendFailureMessage(409, r[1]?.body);
-    expect(satz).toBe("Die Session wartet an einer Rechte-Frage — im Terminal beantworten (1 oder Esc); nichts wurde getippt");
+    expect(satz).toBe("The session waits at a permission question — answer it in the terminal (1 or Esc); nothing was typed");
     expect(sendFailureToastMs(satz)).toBe(6000);
     // …die Vertrauensfrage ebenso (fremdes-repo-rund, Punkt 3): ihr Satz nennt die Wahl und ist am Telefon genauso lang
     expect(sendFailureToastMs(sendFailureMessage(409, { error: "gate=blocked-screen: claude trust dialog — nothing typed",
@@ -158,8 +158,8 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     expect(rows.filter((x) => x.slot === S.slot && (x.event === "send_parked" || (x.event === "send" && x.path === "postfach")))).toEqual([]);
     expect((r[7]?.body.geschrieben as unknown[] | undefined)?.length).toBe(1);
     const hinweis = ((persisted(f).messages as { entries?: { payload: { text: string } }[] } | undefined)?.entries ?? [])
-      .find((m) => m.payload.text.startsWith("[fleet · warte-hinweis]"));
-    expect(hinweis?.payload.text).toContain("„Create file · Do you want to create 2026-10-22-lang.md?“");
+      .find((m) => m.payload.text.startsWith("[fleet · waiting notice]"));
+    expect(hinweis?.payload.text).toContain('"Create file · Do you want to create 2026-10-22-lang.md?"');
   }, LIFE_DEADLINE_MS * 3);
 
   // Owner 22.10. 08:30: der Öffner (oder die Orchestratorin) gibt eine wartende Frage BEWUSST frei oder lehnt ab. Bewusst

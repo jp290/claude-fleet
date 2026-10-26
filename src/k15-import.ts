@@ -17,8 +17,8 @@ export const MAX_DATEI_BYTES = 1_000_000;
 export const MAX_POSITIONEN = 24;
 // welche Dateien das Fenster annimmt, und warum eine andere nicht
 export function dateiPasst(name: string, bytes: number): string | null {
-  if (!/\.(md|json)$/i.test(name)) return `${name}: Nur eine .md (Agent-MD) oder eine exportierte .json lässt sich hineinziehen.`;
-  if (bytes > MAX_DATEI_BYTES) return `${name}: ${Math.round(bytes / 1000).toLocaleString("de-DE")} KB sind zu groß; mehr als 1 MB liest das Fenster nicht.`;
+  if (!/\.(md|json)$/i.test(name)) return `${name}: only an .md (agent MD) or an exported .json can be dropped in.`;
+  if (bytes > MAX_DATEI_BYTES) return `${name}: ${Math.round(bytes / 1000).toLocaleString("en-US")} KB is too large; nothing over 1 MB is read.`;
   return null;
 }
 
@@ -61,7 +61,7 @@ export function quelleAus(v: unknown): Quelle | null {
     abschnitte.push({ titel: t, text, ...(Number.isSafeInteger(bytes) && Number(bytes) >= 0 ? { bytes: Number(bytes) } : {}) });
   }
   const id = str(o.id, 80);
-  return { ...(id ? { id } : {}), titel, v: Math.max(1, Math.floor(zahl(o.v) ?? 1)), pfad: str(o.pfad, 200) ?? "eigene Datei", abschnitte };
+  return { ...(id ? { id } : {}), titel, v: Math.max(1, Math.floor(zahl(o.v) ?? 1)), pfad: str(o.pfad, 200) ?? "own file", abschnitte };
 }
 const schalterAus = (v: unknown): Schalter | null => {
   const o = obj(v);
@@ -152,18 +152,18 @@ const kern = (p: Profil): string => JSON.stringify([p.rolle, p.schiene, p.agent,
 export interface KonstImport { k: Konst; neueProfile: Profil[]; hinweise: string[]; laeufe: LaufBericht[] }
 export function importKonst(text: string, profile: readonly Profil[], jetzt: number, behalte?: string): KonstImport | string {
   let roh: unknown;
-  try { roh = JSON.parse(text); } catch { return "kein gültiges JSON"; }
+  try { roh = JSON.parse(text); } catch { return "not valid JSON"; }
   const o = obj(roh);
-  if (!o) return "das ist kein Export aus diesem Fenster";
-  if (o.fleet !== "konstellation") return `Ebene „${typeof o.fleet === "string" ? o.fleet.slice(0, 40) : "unbekannt"}“ erkannt; einsetzen lässt sich hier nur eine Konstellation`;
+  if (!o) return "this is not a Fleet export";
+  if (o.fleet !== "konstellation") return `level "${typeof o.fleet === "string" ? o.fleet.slice(0, 40) : "unknown"}" found; only a constellation can be imported here`;
   const ps = o.positionen;
-  if (!Array.isArray(ps) || !ps.length) return "die Konstellation hat keine Sessions";
-  if (ps.length > MAX_POSITIONEN) return `${ps.length} Sessions sind mehr, als ein Aufbau hier trägt (höchstens ${MAX_POSITIONEN})`;
+  if (!Array.isArray(ps) || !ps.length) return "the constellation has no sessions";
+  if (ps.length > MAX_POSITIONEN) return `${ps.length} sessions are more than a setup can hold here (at most ${MAX_POSITIONEN})`;
   const roheP = ps.map(obj);
   const i = roheP.findIndex((x) => !x || !str(x.id, 60));
-  if (i >= 0) return `Session ${i + 1} hat keine gültige Kennung`;
+  if (i >= 0) return `session ${i + 1} has no valid id`;
   const ids = roheP.map((x) => String(x?.id).slice(0, 60));
-  if (new Set(ids).size !== ids.length) return "zwei Sessions tragen dieselbe Kennung";
+  if (new Set(ids).size !== ids.length) return "two sessions share one id";
   const neueProfile: Profil[] = [];
   const hinweise: string[] = [];
   const bekannt = (id: string) => [...profile, ...neueProfile].find((p) => p.id === id);
@@ -173,42 +173,42 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   const gestutzt = new Map<string, string>();
   const ohneBypass = (p: Profil, wer: string): Profil => {
     if (behalte || p.rolle !== "orchestratorin") return p;
-    hinweise.push(`${wer} kam als ${p.name}: ein Import startet nie in bypassPermissions, die Session startet ohne Rolle, bis du ihr eine gibst`);
+    hinweise.push(`${wer} arrived as ${p.name}: an import never starts in bypassPermissions, so the session starts without a role until you give it one`);
     return { ...p, rolle: "nur-ordner", schiene: "session" };
   };
   const profilFuer = (v: unknown, wer: string): string | { id: string } => {
     if (typeof v === "string") {
       const [id, ver] = v.split("@");
       const da = bekannt(id);
-      if (!da) return `${wer}: das Profil „${id.slice(0, 60)}“ gibt es hier nicht; exportier vollständig, dann reist es mit`;
-      if (ver && Number(ver) !== da.v) hinweise.push(`${wer} nimmt ${da.name} v${da.v}, exportiert war v${ver}`);
+      if (!da) return `${wer}: the profile "${id.slice(0, 60)}" does not exist here; export in full and it travels along`;
+      if (ver && Number(ver) !== da.v) hinweise.push(`${wer} takes ${da.name} v${da.v}; the export had v${ver}`);
       const ohne = ohneBypass(da, wer);
       if (ohne === da) return { id: da.id };
       const schon = gestutzt.get(da.id);
       if (schon) return { id: schon };
-      if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: zu viele Profile`;
-      const neu: Profil = { ...ohne, id: `${da.id}-i${jetzt}-${neueProfile.length}`, name: `${da.name} (importiert)`, nativ: null };
+      if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: too many profiles`;
+      const neu: Profil = { ...ohne, id: `${da.id}-i${jetzt}-${neueProfile.length}`, name: `${da.name} (imported)`, nativ: null };
       neueProfile.push(neu);
       gestutzt.set(da.id, neu.id);
       return { id: neu.id };
     }
     const roh = profilAus(v);
-    if (!roh) return `${wer}: das mitgereiste Profil ist unvollständig`;
+    if (!roh) return `${wer}: the profile that came along is incomplete`;
     const p = ohneBypass(roh, wer);
     const da = bekannt(p.id);
     if (da && kern(da) === kern(p)) return { id: da.id };
-    if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: zu viele Profile`;
-    const neu: Profil = { ...p, id: da ? `${p.id}-i${jetzt}-${neueProfile.length}` : p.id, name: da ? `${p.name} (importiert)` : p.name,
+    if (neueProfile.length + profile.length >= MAX_PROFILE + PROFILE0.length) return `${wer}: too many profiles`;
+    const neu: Profil = { ...p, id: da ? `${p.id}-i${jetzt}-${neueProfile.length}` : p.id, name: da ? `${p.name} (imported)` : p.name,
       nativ: da?.nativ ?? null };
     neueProfile.push(neu);
-    hinweise.push(da ? `${p.name} ist hier anders und kommt als „${neu.name}“ dazu` : `das Profil ${p.name} kommt dazu`);
+    hinweise.push(da ? `${p.name} differs here and is added as "${neu.name}"` : `the profile ${p.name} is added`);
     return { id: neu.id };
   };
   const neu: Position[] = [];
   for (const [n, x] of roheP.entries()) {
-    if (!x) return `Session ${n + 1} ist leer`;
+    if (!x) return `session ${n + 1} is empty`;
     const name = x.name === undefined ? ids[n] : str(x.name, 80);
-    if (!name) return `Session ${ids[n]} hat keinen gültigen Namen`;
+    if (!name) return `session ${ids[n]} has no valid name`;
     const pr = profilFuer(x.profil, name);
     if (typeof pr === "string") return pr;
     const abw = x.abweichend === undefined ? undefined : abwAus(x.abweichend);
@@ -216,20 +216,20 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
     const schalter = x.schalter === undefined ? undefined : schalterAus(x.schalter);
     const ohne = x.ohneTeile;
     if (abw === null || werteAbw === null || schalter === null || (ohne !== undefined && !(Array.isArray(ohne) && ohne.every((t) => typeof t === "string"))))
-      return `Session ${name}: ihre Einstellungen passen nicht`;
-    if (x.wann !== undefined && typeof x.wann !== "string") return `Session ${name}: „wann“ ist kein Text`;
+      return `session ${name}: its settings do not fit`;
+    if (x.wann !== undefined && typeof x.wann !== "string") return `session ${name}: "wann" is not text`;
     // was mit dem Sitz reiste (src/sitz.ts); ein schiefer Block lehnt die ganze Datei ab, wie eine schiefe Einstellung
     const sitzRoh: Sitz | string | undefined = x.sitz === undefined || x.sitz === null ? undefined : sitzAus(x.sitz);
-    if (typeof sitzRoh === "string") return `Session ${name}: ${sitzRoh}`;
+    if (typeof sitzRoh === "string") return `session ${name}: ${sitzRoh}`;
     // aus einer Datei kommt keine Freigabe der Rechte und kein Recht am Sitz vorbei an sitz.darf, das die Tür deckelt (src/sitz.ts#sitzRechte);
     // beides steht nur im eigenen Speicher (behalte)
     const sitz = sitzRoh && !behalte ? { ...sitzRoh, persoenlich: sitzRoh.persoenlich, darf: sitzZumTeilen(sitzRoh).darf } : sitzRoh;
     const rechte = behalte && x.rechte !== undefined ? rechteAus(x.rechte) : null;
     let datei: Quelle | undefined;
-    if (typeof x.eigeneDatei === "string") hinweise.push(`${name}: die eigene Datei ${x.eigeneDatei.slice(0, 80)} war nur genannt, nicht mitgegeben`);
+    if (typeof x.eigeneDatei === "string") hinweise.push(`${name}: the own file ${x.eigeneDatei.slice(0, 80)} was only named, not included`);
     else if (x.eigeneDatei !== undefined) {
       const d = quelleAus(x.eigeneDatei);
-      if (!d) return `Session ${name}: ihre eigene Datei ist unvollständig`;
+      if (!d) return `session ${name}: its own file is incomplete`;
       datei = d;
     }
     neu.push(pos(ids[n], name, pr.id, { ...(abw ? { abw } : {}), ...(werteAbw ? { werteAbw } : {}), ...(schalter ? { schalter } : {}),
@@ -241,14 +241,14 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   for (const [n, x] of roheP.entries()) {
     const m = x?.meldetAn;
     if (m === undefined || m === null) continue;
-    if (typeof m !== "string" || !ids.includes(m)) return `${neu[n].name} meldet an eine Session, die es im Export nicht gibt`;
-    if (m === ids[n]) return `${neu[n].name} meldet an sich selbst`;
+    if (typeof m !== "string" || !ids.includes(m)) return `${neu[n].name} reports to a session that is not in the export`;
+    if (m === ids[n]) return `${neu[n].name} reports to itself`;
     vater.set(ids[n], m);
   }
   for (const id of ids) {
     const weg = new Set<string>();
     for (let x: string | undefined = id; x !== undefined; x = vater.get(x)) {
-      if (weg.has(x)) return "die Meldewege bilden einen Kreis";
+      if (weg.has(x)) return "the reporting lines form a cycle";
       weg.add(x);
     }
   }
@@ -261,17 +261,17 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
   });
   const autor = str(o.autor, 40)?.trim();
   const protokoll = o.protokoll === undefined ? undefined : protokollAus(o.protokoll);
-  if (protokoll === null) return "das Protokoll passt nicht";
+  if (protokoll === null) return "the protocol does not fit";
   const aufgabe = o.aufgabe === undefined ? undefined : aufgabeAus(o.aufgabe);
-  if (typeof aufgabe === "string") return `die Aufgabe passt nicht: ${aufgabe}`;
+  if (typeof aufgabe === "string") return `the task does not fit: ${aufgabe}`;
   const laeufe = o.laeufe === undefined ? [] : laufBerichteAus(o.laeufe, ids);
   if (typeof laeufe === "string") return laeufe;
-  if (laeufe.length) hinweise.push(`${laeufe.length === 1 ? "ein Lauf reist" : `${laeufe.length} Läufe reisen`} als Bericht mit, nur zum Lesen`);
+  if (laeufe.length) hinweise.push(`${laeufe.length === 1 ? "one run travels" : `${laeufe.length} runs travel`} along as a report, read only`);
   // woraus sie exportiert wurde: der sha256 der Fassung dort (server/konst-fassungen.ts#fassungsHash)
   if (o.abgeleitetVon !== undefined && !(typeof o.abgeleitetVon === "string" && /^[0-9a-f]{64}$/.test(o.abgeleitetVon)))
-    return "abgeleitetVon ist der sha256 der Fassung, aus der exportiert wurde";
+    return "abgeleitetVon is the sha256 of the version it was exported from";
   const abgeleitetVon = typeof o.abgeleitetVon === "string" ? o.abgeleitetVon : undefined;
-  return { k: { id: behalte ?? `i${jetzt}`, name: str(o.name, 80) ?? "Importiert", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "importiert", eigen: true,
+  return { k: { id: behalte ?? `i${jetzt}`, name: str(o.name, 80) ?? "Imported", v: Math.max(1, Math.floor(zahl(o.version) ?? 1)), satz: str(o.satz, 300) ?? "imported", eigen: true,
     ...(autor ? { autor } : {}), ...(typeof o.quer === "string" ? { quer: o.quer.slice(0, 300) } : {}),
     ...(abgeleitetVon ? { abgeleitetVon } : {}), ...(protokoll ? { protokoll } : {}), ...(aufgabe ? { aufgabe } : {}), ...(laeufe.length ? { laeufe } : {}),
     wurzeln }, neueProfile, hinweise, laeufe };

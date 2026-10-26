@@ -52,7 +52,7 @@ function welt(o: { repoName?: string; ownerSettings?: Record<string, unknown>; s
 }
 const abschnitte = (w: Welt) => umfeldAbschnitte(leseUmfeld({ configDir: w.config, home: w.home, cwd: w.cwd, managed: null }), w.home, w.cwd);
 const SCHWELLE: SchwelleFakten = { art: "bau", basePct: 35, capPct: 45, von: "session", envName: "FLEET_MIGRATE_PCT", aus: null, wahl: "hint", hinweis: true };
-const WARM: WarmFakten = { an: false, von: "fleet", ausGrund: null, ruheMin: 50, text: "[fleet] Cache warmhalten.", hoechstens: 24, jeStunde: 2, lebensdauerMin: 60 };
+const WARM: WarmFakten = { an: false, von: "fleet", ausGrund: null, ruheMin: 50, text: "[fleet] Keep the cache warm.", hoechstens: 24, jeStunde: 2, lebensdauerMin: 60 };
 const fassung = (w: Welt, o: { schwelle?: SchwelleFakten; warm?: WarmFakten } = {}) => {
   const u = abschnitte(w);
   const e: FassungEingang = { slot: 4, anlass: "laufend", wer: [textAbschnitt("harness", "Slot.harness", "claude")], aufgabe: [],
@@ -73,25 +73,25 @@ describe("die vier Teile stehen in der Fassung, jeder an seinem Ort", () => {
   test("jeder Hook nennt Ereignis, Matcher, Befehl, Skript mit Bytes und seine Quelle", () => {
     const f = fassung(welt());
     expect(abschnitt(f, "hooks").text).toBe("PermissionRequest · bun \"$CLAUDE_PROJECT_DIR/.claude/hooks/perm.ts\" decide\n"
-      + "  Skript .claude/hooks/perm.ts · 15 B · sha256 " + abschnitt(f, "hooks").text!.match(/sha256 ([0-9a-f]{12})/)![1] + "\n  aus .claude/settings.json");
+      + "  script .claude/hooks/perm.ts · 15 B · sha256 " + abschnitt(f, "hooks").text!.match(/sha256 ([0-9a-f]{12})/)![1] + "\n  from .claude/settings.json");
     expect(abschnitt(f, "hooks").dateien).toEqual([{ pfad: ".claude/hooks/perm.ts", bytes: 15 }]);
     const eigene = abschnitt(f, "hooks-eigene").text!;
-    expect(eigene).toContain("PreToolUse · Bash · ~/.claude/hooks/guard.sh\n  Skript ~/.claude/hooks/guard.sh · 17 B");
-    expect(eigene).toContain("aus ~/.claude/settings.json");
+    expect(eigene).toContain("PreToolUse · Bash · ~/.claude/hooks/guard.sh\n  script ~/.claude/hooks/guard.sh · 17 B");
+    expect(eigene).toContain("from ~/.claude/settings.json");
     // der Hook des Plugins läuft mit und steht bei den eigenen, mit dem Plugin als Quelle
-    expect(eigene).toContain("Stop · bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"\n  Skript ~/.claude/plugins/cache/m/p1/1.0.0/hooks/stop.sh · 10 B");
-    expect(eigene).toContain("aus ~/.claude/plugins/cache/m/p1/1.0.0/hooks/hooks.json");
+    expect(eigene).toContain("Stop · bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"\n  script ~/.claude/plugins/cache/m/p1/1.0.0/hooks/stop.sh · 10 B");
+    expect(eigene).toContain("from ~/.claude/plugins/cache/m/p1/1.0.0/hooks/hooks.json");
   });
 
   test("Schwelle und Warmhalten nennen Wert und Quelle", () => {
     const f = fassung(welt());
-    expect(abschnitt(f, "schwelle")).toMatchObject({ quelle: "Slot.handover (für diese Session gesetzt)",
-      text: "Übergabe ab 35 % · fällig ab 45 % · an der Schwelle: Hinweis · Hinweis an" });
+    expect(abschnitt(f, "schwelle")).toMatchObject({ quelle: "Slot.handover (set for this session)",
+      text: "Handover at 35 % · due at 45 % · at the threshold: note · note on" });
     expect(abschnitt(fassung(welt(), { schwelle: { ...SCHWELLE, von: "env" } }), "schwelle").quelle).toBe("FLEET_MIGRATE_PCT (.env)");
-    expect(abschnitt(f, "warmhalten")).toMatchObject({ text: "Cache warmhalten aus", bytes: 0 });
+    expect(abschnitt(f, "warmhalten")).toMatchObject({ text: "Keep cache warm: off", bytes: 0 });
     const an = abschnitt(fassung(welt(), { warm: { ...WARM, an: true } }), "warmhalten");
-    expect(an.text).toBe("Cache warmhalten an: nach 50 min Ruhe (Cache lebt 60 min) tippt Fleet höchstens 24 Züge, 2 je Stunde:\n[fleet] Cache warmhalten.");
-    expect(an.bytes).toBe(Buffer.byteLength("[fleet] Cache warmhalten."));
+    expect(an.text).toBe("Keep cache warm: on, after 50 min quiet (the cache lives 60 min) Fleet types at most 24 turns, 2 per hour:\n[fleet] Keep the cache warm.");
+    expect(an.bytes).toBe(Buffer.byteLength("[fleet] Keep the cache warm."));
   });
 });
 
@@ -113,7 +113,7 @@ describe("was sich ändert, ändert den Hash", () => {
     expect(fassung(w, { schwelle: { ...SCHWELLE, basePct: 40, capPct: 50 } }).hash).not.toBe(a);
     expect(fassung(w, { schwelle: { ...SCHWELLE, wahl: "compact" } }).hash).not.toBe(a);
     expect(fassung(w, { schwelle: { ...SCHWELLE, hinweis: false } }).hash).not.toBe(a);
-    expect(fassung(w, { schwelle: { ...SCHWELLE, aus: "FLEET_MIGRATE_PCT ist 0, Fleet hat keinen Übergabe-Takt" } }).hash).not.toBe(a);
+    expect(fassung(w, { schwelle: { ...SCHWELLE, aus: "FLEET_MIGRATE_PCT is 0, Fleet has no handover tick" } }).hash).not.toBe(a);
     expect(fassung(w, { schwelle: { ...SCHWELLE, von: "env" } }).hash).toBe(a);
   });
   test("Warmhalten an, eine andere Ruhezeit, ein anderer Text", () => {
@@ -136,12 +136,12 @@ describe("das übrige Eigene in ~/.claude", () => {
   test("Agenten, Skills (auch vom Konto), Befehle, Regeln und MCP-Server stehen mit Bytes; ein Schlüssel und das Konto nicht", () => {
     const f = fassung(welt());
     const t = abschnitt(f, "claude-eigenes").text!;
-    expect(t).toMatch(/^Agenten 1: pruefer \d+ B [0-9a-f]{12}$/m);
-    expect(t).toMatch(/^Skills 2: eins \d+ B [0-9a-f]{12}, zwei \(vom Konto\) \d+ B [0-9a-f]{12}$/m);
-    expect(t).toMatch(/^Befehle 1: los 5 B /m);
-    expect(t).toMatch(/^Regeln 1: ts\.md \(bei passenden Pfaden\) /m);
-    expect(t).toContain("MCP-Server aus ~/.claude.json 1: suche · stdio npx suche-mcp · env SUCHE_TOKEN");
-    expect(t).toContain("Konnektoren des claude.ai-Kontos: stehen in keiner Datei");
+    expect(t).toMatch(/^Agents 1: pruefer \d+ B [0-9a-f]{12}$/m);
+    expect(t).toMatch(/^Skills 2: eins \d+ B [0-9a-f]{12}, zwei \(from your account\) \d+ B [0-9a-f]{12}$/m);
+    expect(t).toMatch(/^Commands 1: los 5 B /m);
+    expect(t).toMatch(/^Rules 1: ts\.md \(for matching paths\) /m);
+    expect(t).toContain("MCP servers from ~/.claude.json 1: suche · stdio npx suche-mcp · env SUCHE_TOKEN");
+    expect(t).toContain("Connectors of your claude.ai account: in no file");
     expect(t).not.toContain("sk-mcp-");
     expect(t).not.toContain("geheim@example.org");
     expect(abschnitt(f, "claude-eigenes").eigentum).toBe("owner");
@@ -208,7 +208,7 @@ describe("Schwelle und Warmhalten nach dem Start", () => {
     const nach = fuehreNach(f, "arbeitet", [schwelleAbschnitt({ ...SCHWELLE, basePct: 50, capPct: 60 }), warmhaltenAbschnitt(WARM)]);
     expect(nach.geaendert).toEqual(["schwelle"]);
     expect(nach.fassung.hash).not.toBe(f.hash);
-    expect(abschnitt(nach.fassung, "schwelle").text).toStartWith("Übergabe ab 50 %");
+    expect(abschnitt(nach.fassung, "schwelle").text).toStartWith("Handover at 50 %");
   });
   test("unverändert bleibt der Hash des Starts", () => {
     const f = fassung(welt());
@@ -229,29 +229,29 @@ describe("ein Sitz im eigenen Setup", () => {
     const teile = [{ id: "darf", abschnitte: [{ id: "eigenes-setup", quelle: null, bytes: 0 as const,
       text: "Eigenes Setup: so wie von Hand.\n- --session-id bzw. --resume: damit Fleet das Gespräch findet\n- FLEET_SELF_TOKEN: der Ausweis" },
       { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "model: claude-haiku-5-5\nnotizbuch: aus" }] }];
-    const gewaehlt = "Beim Öffnen dieser Sitzung gewählt. Ohne Wahl gibt Fleet nichts mit.";
+    const gewaehlt = "Chosen when this session was opened. With no choice, Fleet passes nothing along.";
     expect(umfeldZeilen(teile).map((z) => [z.label, z.wert, z.titel])).toEqual([
-      ["Modus", "eigenes Setup — dein Claude Code, wie du es selbst startest", "Eigenes Setup: so wie von Hand."],
-      ["Fleet legt dazu", "--session-id bzw. --resume", "damit Fleet das Gespräch findet"],
+      ["Mode", "your own setup — Claude Code as you start it yourself", "Eigenes Setup: so wie von Hand."],
+      ["Fleet adds", "--session-id bzw. --resume", "damit Fleet das Gespräch findet"],
       ["", "FLEET_SELF_TOKEN", "der Ausweis"],
-      ["Mitgegeben", "model: claude-haiku-5-5", gewaehlt],
+      ["Passed along", "model: claude-haiku-5-5", gewaehlt],
       ["", "notizbuch: aus", gewaehlt],
     ]);
     const ohne = [{ id: "darf", abschnitte: [teile[0]!.abschnitte[0]!, { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "nichts" }] }];
-    expect(umfeldZeilen(ohne).filter((z) => z.label === "Mitgegeben").map((z) => z.wert)).toEqual(["nichts"]);
+    expect(umfeldZeilen(ohne).filter((z) => z.label === "Passed along").map((z) => z.wert)).toEqual(["nichts"]);
     // was aus ~/.claude wegbleibt, je Teil eine Zeile unter „Weggelassen“
     const weg = [{ id: "darf", abschnitte: [...ohne[0]!.abschnitte, { id: "weggelassen", quelle: null, bytes: 0 as const,
-      text: "claudeMd: ~/.claude/CLAUDE.md\nhooks: alle (auch Statuszeile und @-Vorschlag)" }] }];
-    expect(umfeldZeilen(weg).filter((z) => z.label === "Weggelassen" || z.wert.startsWith("hooks:")).map((z) => [z.label, z.wert]))
-      .toEqual([["Weggelassen", "claudeMd: ~/.claude/CLAUDE.md"], ["", "hooks: alle (auch Statuszeile und @-Vorschlag)"]]);
-    expect(umfeldZeilen([]).find((z) => z.label === "Modus")).toBeUndefined();
+      text: "claudeMd: ~/.claude/CLAUDE.md\nhooks: all (also the status line and the @ suggestion)" }] }];
+    expect(umfeldZeilen(weg).filter((z) => z.label === "Left out" || z.wert.startsWith("hooks:")).map((z) => [z.label, z.wert]))
+      .toEqual([["Left out", "claudeMd: ~/.claude/CLAUDE.md"], ["", "hooks: all (also the status line and the @ suggestion)"]]);
+    expect(umfeldZeilen([]).find((z) => z.label === "Mode")).toBeUndefined();
   });
   test("das Board zeigt, was die Schemas der Werkzeuge am Start kosten, je Werkzeug", () => {
     const teile = [{ id: "darf", abschnitte: [{ id: "eigenes-setup", quelle: null, bytes: 0 as const, text: "Eigenes Setup: so wie von Hand." },
       { id: "mitgegeben", quelle: null, bytes: 0 as const, text: "tools: Bash,Read" },
       { id: "werkzeuge", quelle: "server/eigenes-setup.ts#eigenesSetup", bytes: 0 as const, text: "--tools Bash,Read\n--disallowedTools keine",
         grund: "Schemas am Start: 9 000 B von 74 818 B (Bash 7 000, Read 2 000) · gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)" }] }];
-    const zeile = umfeldZeilen(teile).find((z) => z.label === "Werkzeuge");
+    const zeile = umfeldZeilen(teile).find((z) => z.label === "Tools");
     expect(zeile?.wert).toBe("Schemas am Start: 9 000 B von 74 818 B (Bash 7 000, Read 2 000)");
     expect(zeile?.titel).toContain("gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)");
     expect(zeile?.titel).toContain("--tools Bash,Read");

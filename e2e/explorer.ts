@@ -379,8 +379,8 @@ export async function run(): Promise<void> {
     && cut.fxMoveDrop(7, ["src/client.ts"], "src", dropEvent(7, "src/client.ts")) === null
     && cut.fxMoveDrop(7, ["src/client.ts"], "e2e", dropEvent(7, "src/client.ts", ["Files"])) === null,
     "foreign, untracked, same-path or desktop data accepted");
-  // the dialog speaks German (card 3e6342e2); the kind stays the internal route word
-  const WORD: Record<string, string> = { "New file": "Neue Datei", Rename: "Umbenennen", Move: "Verschieben", Delete: "Löschen" };
+  // the dialog names each kind in English (card 3e6342e2); the kind stays the internal route word
+  const WORD: Record<string, string> = { "New file": "New file", Rename: "Rename", Move: "Move", Delete: "Delete" };
   for (const kind of ["New file", "Rename", "Move", "Delete"]) {
     risk.active = kind !== "Rename";
     const before = risk.calls.length;
@@ -394,8 +394,8 @@ export async function run(): Promise<void> {
         + (kind === "Delete" ? "" : kind === "Rename" ? " 'src/new '\\''name.ts'" : " 'e2e/new.ts'");
     check(`${kind}: one pending risk question names the exact command and four risk rows before any write`,
       dialogBody.children.length === 1 && risk.calls.length === before && risk.spec?.title.startsWith(WORD[kind]) === true && preview === expected
-      && ["Führt aus", "Wo", "Danach", "Bleibt"].every((label) => body?.children.some((r) => r.children[0]?.textContent === label))
-      && risk.spec?.buttons.map((b) => b.label).join("|") === `Abbrechen|${WORD[kind]}`
+      && ["Runs", "Where", "Afterwards", "Stays"].every((label) => body?.children.some((r) => r.children[0]?.textContent === label))
+      && risk.spec?.buttons.map((b) => b.label).join("|") === `Cancel|${WORD[kind]}`
       && !!body?.querySelector(".ocwarn") === risk.active, JSON.stringify({ preview, expected, body: body && textOf(body) }));
     risk.resolve?.(true);
     const result = await changing;
@@ -726,7 +726,7 @@ export async function run(): Promise<void> {
   const readsBefore = files.reads, callsBefore = risk.calls.length;
   rowsOf(list).find((r) => r.title.startsWith("e2e/ —"))?.ondrop?.(dropEvent(7, "src/client.ts"));
   check("Explorer folder drop opens Move without writing or refreshing before confirmation",
-    risk.spec?.title === "Verschieben — src/client.ts" && files.reads === readsBefore && risk.calls.length === callsBefore, risk.spec?.title ?? "missing");
+    risk.spec?.title === "Move — src/client.ts" && files.reads === readsBefore && risk.calls.length === callsBefore, risk.spec?.title ?? "missing");
   risk.resolve?.(false); await settle();
   check("Explorer cancelled drop preserves its source row and read/write counts",
     rowsOf(list).some((r) => r.title === "src/client.ts") && files.reads === readsBefore && risk.calls.length === callsBefore, String(files.reads));
@@ -745,7 +745,7 @@ export async function run(): Promise<void> {
   const moveMenu = fileMenu("e2e/client.ts");
   click(moveMenu?.children.find((b) => b.textContent === "Move"));
   check("Explorer Move button opens the same risk dialog as a folder drop",
-    risk.spec?.title === "Verschieben — e2e/client.ts" && files.reads === readsBefore + 2, risk.spec?.title ?? "missing");
+    risk.spec?.title === "Move — e2e/client.ts" && files.reads === readsBefore + 2, risk.spec?.title ?? "missing");
   risk.resolve?.(false); await settle();
   const renameMenu = fileMenu("e2e/client.ts");
   click(renameMenu?.children.find((b) => b.textContent === "Rename"));
@@ -758,7 +758,7 @@ export async function run(): Promise<void> {
   const deleteMenu = fileMenu("e2e/renamed.ts");
   click(deleteMenu?.children.find((b) => b.textContent === "Delete"));
   check("Explorer Delete button waits for confirmation with its tracked source still visible",
-    risk.spec?.title === "Löschen — e2e/renamed.ts" && files.reads === readsBefore + 3
+    risk.spec?.title === "Delete — e2e/renamed.ts" && files.reads === readsBefore + 3
     && rowsOf(list).some((r) => r.title === "e2e/renamed.ts"), textOf(list));
   risk.resolve?.(true); await settle();
   check("Explorer Delete confirmation re-reads and removes the tracked source row",

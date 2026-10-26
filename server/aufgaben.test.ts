@@ -61,7 +61,7 @@ describe("eine Aufgaben-Datei geht in eine frische Fleet", () => {
     expect(imp.laeufe[0]?.fassung).toBe(fassungsHash(form(imp.k, [...PROFILE0, ...imp.neueProfile])));
     expect(imp.laeufe[0]?.befunde.map((b) => b.urteil)).toEqual(["bestaetigt", "plausibel", "nicht verfolgt"]);
     expect(imp.laeufe[0]?.sitze.map((s) => [s.pos, s.ablehnungen])).toEqual([["beweiser", []], ["finder", []]]);
-    expect(imp.hinweise).toContain("ein Lauf reist als Bericht mit, nur zum Lesen");
+    expect(imp.hinweise).toContain("one run travels along as a report, read only");
   });
   test.each(DATEIEN)("%s: kein Token, kein privater Pfad, kein Rechnername, kein Personenname", async (f) => {
     const text = await lies(f);
@@ -81,23 +81,23 @@ describe("eine schiefe Aufgabe oder ein schiefer Lauf wird mit einem Satz abgele
     return importKonst(JSON.stringify(o), PROFILE0, 7);
   };
   test("eine Aufgabe ohne Ziel", async () => {
-    expect(await mit((o) => { o.aufgabe = { fertig: "x" }; })).toBe("die Aufgabe passt nicht: eine Aufgabe braucht ein Ziel");
+    expect(await mit((o) => { o.aufgabe = { fertig: "x" }; })).toBe("the task does not fit: a task needs a goal (ziel)");
   });
   test("eine Aufgabe mit fremdem Feld", async () => {
-    expect(await mit((o) => { o.aufgabe = { ziel: "x", farbe: "rot" }; })).toBe("die Aufgabe passt nicht: aufgabe kennt kein Feld „farbe“");
+    expect(await mit((o) => { o.aufgabe = { ziel: "x", farbe: "rot" }; })).toBe("the task does not fit: aufgabe has no field “farbe”");
   });
   test("ein Lauf ohne Fassung", async () => {
-    expect(await mit((o) => { (o.laeufe as Record<string, unknown>[])[0]!.fassung = "abc"; })).toBe("Lauf 1 nennt keine Fassung (sha256 der Konstellation)");
+    expect(await mit((o) => { (o.laeufe as Record<string, unknown>[])[0]!.fassung = "abc"; })).toBe("Run 1 has no fassung (sha256 of the constellation)");
   });
   test("ein Lauf, der eine Position nennt, die es nicht gibt", async () => {
     expect(await mit((o) => { ((o.laeufe as Record<string, unknown>[])[0]!.sitze as Record<string, unknown>[])[0]!.pos = "dritter"; }))
-      .toBe("Lauf 1 nennt „dritter“, das keine Position dieser Konstellation ist");
+      .toBe("Run 1 names “dritter”, which is no position of this constellation");
   });
   test("ein Befund mit fremdem Urteil", async () => {
     expect(await mit((o) => { ((o.laeufe as Record<string, unknown>[])[0]!.befunde as Record<string, unknown>[])[0]!.urteil = "sicher"; }))
-      .toBe("Lauf 1 hat einen Befund ohne titel, beleg oder gültiges urteil");
+      .toBe("Run 1 has a finding missing titel, beleg or a valid urteil");
   });
   test("laeufe ist keine Liste", async () => {
-    expect(await mit((o) => { o.laeufe = {}; })).toBe("laeufe ist eine Liste");
+    expect(await mit((o) => { o.laeufe = {}; })).toBe("laeufe is a list");
   });
 });

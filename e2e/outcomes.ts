@@ -1589,19 +1589,19 @@ export async function run(): Promise<void> {
     // streak recorded no confirmedByHuman, the sub-count chip is accompanied by the unknown count.
     // Source-level like the rest of (9d)–(9f) — no DOM harness here.
     check("client: the criteria header surfaces the unknown lands next to the sub-count",
-      /davon \$\{k\.noConfirmStep\}\/10/.test(kBlock)
+      /of which \$\{k\.noConfirmStep\}\/10/.test(kBlock)
       && /if \(k\.unknown\) kel\.appendChild\(chip\(`\$\{k\.unknown\} unknown`, "warn"/.test(kBlock),
-      kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 60));
+      kBlock.slice(kBlock.indexOf("of which"), kBlock.indexOf("of which") + 60));
     // TRUTH IN LABELS. `confirmedByHuman:false` records that no second confirm click was needed; it
     // is NOT evidence that nobody was attending, because every caller of mergeJob is a ROUTE — since
     // 2026-08-24 two of them, the owner merge route and the Program-MAIN self-land route, and no
     // tick (pinned in e2e/pins.ts). §1 wants UNATTENDED lands, so the chip that counts toward it
     // must not use the word the criterion uses for a property this data cannot show.
     check("client: the sub-count chip names the confirm step and never claims an unattended land",
-      /ohne Confirm-Schritt|no confirm step/i.test(kBlock)
+      /no confirm step/i.test(kBlock)
       && /nicht|not evidence|NOT evidence/.test(kBlock)
       && /one caller|POST \/api\/slots\/:id\/merge/.test(kBlock)
-      && !/clean auto-land/.test(kBlock), kBlock.slice(kBlock.indexOf("davon"), kBlock.indexOf("davon") + 120));
+      && !/clean auto-land/.test(kBlock), kBlock.slice(kBlock.indexOf("of which"), kBlock.indexOf("of which") + 120));
     // and the K2 chip sits OUTSIDE the anchored branch, matching the counter: §2 asks for no anchor,
     // so an unanchorable ledger still shows its shadow verdicts instead of hiding them behind §1.
     check("client: the K2 chip is rendered outside the anchored branch (§2 needs no anchor)",

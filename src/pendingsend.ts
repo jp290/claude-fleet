@@ -72,10 +72,10 @@ export function isInterruptMark(text: string): boolean {
 
 // THE PERMISSION-QUESTION REFUSAL stands longer than the other toasts (UI-Abnahme 22.10.: 88 characters, four lines on a
 // phone over the input field, and whoever looks at the terminal while sending missed it at 2.6 s)
-export const RECHTE_FRAGE_SATZ = "Die Session wartet an einer Rechte-Frage — im Terminal beantworten (1 oder Esc); nichts wurde getippt";
+export const RECHTE_FRAGE_SATZ = "The session waits at a permission question — answer it in the terminal (1 or Esc); nothing was typed";
 export const RECHTE_FRAGE_TOAST_MS = 6000;
 // what the board says BEFORE a send, while the focused session stands on the question (composer, island, row tooltip)
-export const RUECKFRAGE_SATZ = "Wartet an einer Rechte-Frage — im Terminal antworten (1 oder Esc)";
+export const RUECKFRAGE_SATZ = "Waiting at a permission question — answer in the terminal (1 or Esc)";
 // Claude Code's TRUST QUESTION in a folder it was never trusted in (server.ts#CLAUDE_TRUST_DIALOG): Fleet never answers it, the
 // person does in the terminal; a goal Fleet holds for the session follows once it is answered (server.ts#deliverBranchGoal)
 export const VERTRAUEN_SATZ = "Claude Code asks whether you trust this folder — in the terminal choose “Yes, I trust this folder”, then Enter";

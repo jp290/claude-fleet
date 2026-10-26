@@ -131,13 +131,13 @@ export type FoundingRightsRole = "leer" | "lane" | "orch" | "main";
 export function foundingRights(role: FoundingRightsRole, program: string | null): HTMLElement {
   const box = el("div", "fdrights");
   const own: Record<FoundingRightsRole, string> = {
-    leer: "Keine — sie ist an nichts gebunden.",
-    lane: "Ihren Auftrag, sobald einer sie startet. Von Hand gegründet: keinen.",
-    orch: "Keine — die Rolle bindet nichts.",
-    main: program ? `Ihr Program „${program}“ und seine Aufträge.` : "Ihr Program, sobald du eines wählst.",
+    leer: "None — it is bound to nothing.",
+    lane: "Its task, once one starts it. Founded by hand: none.",
+    orch: "None — the role binds nothing.",
+    main: program ? `Its Program “${program}” and its tasks.` : "Its Program, once you pick one.",
   };
   const ex = el("span", "rgv");
-  ex.append(el("span", "", "Fleet-Standard"), sub("Befehle und Dateien. Hier nicht wählbar.", true));
-  box.append(kv("Ausführung", ex), kv("Eigene Arbeit", own[role]));
+  ex.append(el("span", "", "Fleet standard"), sub("Commands and files. Not selectable here.", true));
+  box.append(kv("Execution", ex), kv("Own work", own[role]));
   return box;
 }

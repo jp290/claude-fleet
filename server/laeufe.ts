@@ -213,15 +213,15 @@ export async function k15Laeufe(req: Request, url: URL, server: LaufServer, dir:
   if (unter) {
     const [, id = "", was] = unter;
     const l = (await liesLaeufe(dir)).find((x) => x.id === id);
-    if (!l) return json({ error: `kein Lauf „${id.slice(0, 40)}“` }, 404);
+    if (!l) return json({ error: `no run “${id.slice(0, 40)}”` }, 404);
     if (was === "ende") {
-      if (req.method !== "POST") return json({ error: "nur POST" }, 405);
-      if (l.ende) return json({ error: `der Lauf ist schon zu Ende (${l.ende.wie === "hand" ? "von Hand" : "seine Sessions sind zu"})` }, 409);
+      if (req.method !== "POST") return json({ error: "POST only" }, 405);
+      if (l.ende) return json({ error: `the run has already ended (${l.ende.wie === "hand" ? "by hand" : "all its sessions are closed"})` }, 409);
       await appendEventStrict(datei, { art: "ende", id, at: jetzt(), wie: "hand" });
       server.loese(id);
       return json({ lauf: (await liesLaeufe(dir)).find((x) => x.id === id) });
     }
-    if (req.method !== "GET") return json({ error: "nur GET" }, 405);
+    if (req.method !== "GET") return json({ error: "GET only" }, 405);
     if (was === "nachrichten") return json(await liesLaufNachrichten(dir, id));
     // dazu die Namen der Positionen in seiner Fassung, damit das Fenster nicht Kennungen zeigt
     const f = await fassungVon(l.konst, l.hash, dir).catch(() => null);
@@ -232,14 +232,14 @@ export async function k15Laeufe(req: Request, url: URL, server: LaufServer, dir:
     const alle = await liesLaeufe(dir);
     if (einer === null) return json({ laeufe: alle });
     const l = alle.find((x) => x.id === einer);
-    return l ? json({ lauf: l }) : json({ error: `kein Lauf „${einer.slice(0, 40)}“` }, 404);
+    return l ? json({ lauf: l }) : json({ error: `no run “${einer.slice(0, 40)}”` }, 404);
   }
-  if (req.method !== "POST" || einer !== null) return json({ error: "nur GET, und POST auf die Liste" }, 405);
+  if (req.method !== "POST" || einer !== null) return json({ error: "GET only, and POST on the list" }, 405);
   const b: unknown = await req.json().catch(() => null);
   const o = b && typeof b === "object" && !Array.isArray(b) ? b as Record<string, unknown> : null;
   if (!o || typeof o.konst !== "string" || typeof o.pos !== "string" || !o.pos || !Number.isInteger(o.slot)
     || (o.openedAt !== undefined && zahl(o.openedAt) === null) || (o.lauf !== undefined && typeof o.lauf !== "string"))
-    return json({ error: "erwartet { konst, pos, slot, openedAt?, lauf?, aufgabe? }" }, 400);
+    return json({ error: "expects { konst, pos, slot, openedAt?, lauf?, aufgabe? }" }, 400);
   const aufgabe = o.aufgabe === undefined ? null : aufgabeAus(o.aufgabe);
   if (typeof aufgabe === "string") return json({ error: aufgabe }, 400);
   const r = await bindePosition({ konst: o.konst, pos: o.pos, slot: Number(o.slot), openedAt: zahl(o.openedAt), lauf: typeof o.lauf === "string" ? o.lauf : null, aufgabe },
@@ -256,21 +256,21 @@ export async function bindePosition(o: Bindung, server: LaufServer, dir: string,
   const aufgabe = o.aufgabe;
   const alle = await liesLaeufe(dir);
   const da = typeof o.lauf === "string" ? alle.find((x) => x.id === o.lauf) : undefined;
-  if (typeof o.lauf === "string" && !da) return fehler(404, `kein Lauf „${o.lauf.slice(0, 40)}“`);
-  if (da && da.konst !== o.konst) return fehler(409, `der Lauf gehört zu „${da.name}“, nicht zu dieser Konstellation`);
-  if (da?.ende) return fehler(409, "der Lauf ist zu Ende; ein neuer Start beginnt einen neuen");
-  if (da && aufgabe) return fehler(400, "ein laufender Lauf hat seine Aufgabe schon");
+  if (typeof o.lauf === "string" && !da) return fehler(404, `no run “${o.lauf.slice(0, 40)}”`);
+  if (da && da.konst !== o.konst) return fehler(409, `the run belongs to “${da.name}”, not to this constellation`);
+  if (da?.ende) return fehler(409, "the run has ended; a new start begins a new one");
+  if (da && aufgabe) return fehler(400, "a running run already has its task");
   // die Fassung, auf der der Lauf steht: seine eigene, oder für einen neuen die gespeicherte, mit der gestartet wird
   const f = da ? await fassungVon(o.konst, da.hash, dir)
     : await fassungVon(o.konst, await gespeicherterHash(o.konst, dir), dir) ?? await fassungVon(o.konst, null, dir);
-  if (!f) return fehler(404, "diese Konstellation hat keine gespeicherte Fassung; erst speichern, dann starten");
+  if (!f) return fehler(404, "this constellation has no saved version; save it first, then start");
   const positionen = Array.isArray(f.form.positionen) ? f.form.positionen : [];
   if (!positionen.some((p: unknown) => !!p && typeof p === "object" && (p as Record<string, unknown>).id === o.pos))
-    return fehler(400, `„${o.pos.slice(0, 40)}“ ist keine Position der Fassung ${f.hash.slice(0, 8)}`);
-  if (da?.positionen.some((p) => p.pos === o.pos && p.slot === o.slot)) return fehler(409, "diese Position sitzt schon auf diesem Slot");
+    return fehler(400, `“${o.pos.slice(0, 40)}” is not a position of version ${f.hash.slice(0, 8)}`);
+  if (da?.positionen.some((p) => p.pos === o.pos && p.slot === o.slot)) return fehler(409, "this position already sits on this slot");
   const id = da?.id ?? `l${crypto.getRandomValues(new Uint8Array(6)).reduce((t, x) => t + x.toString(16).padStart(2, "0"), "")}`;
   const sitz = server.binde(o.slot, o.openedAt, { id, pos: o.pos });
-  if (!sitz) return fehler(409, `Slot ${String(o.slot)} ist nicht (mehr) diese Session`);
+  if (!sitz) return fehler(409, `Slot ${String(o.slot)} is not (or no longer) this session`);
   const ort = sitz.branch ? sitz : { ...sitz, ...await ortAusHistorie(o.slot, sitz.openedAt, dir) };
   if (!da) {
     const pr = f.form.protokoll;

@@ -42,7 +42,7 @@ const voll = (pfad: string, cwd: string | null): string => pfad.startsWith("/") 
 const titel = (a: UmfeldAbschnitt): string => [a.text ?? a.grund ?? "", a.quelle ? `Source: ${a.quelle}` : ""].filter(Boolean).join("\n\n");
 // eine Hook-Zeile beginnt am Rand; ihre Skript- und Quellzeilen sind eingerückt
 const hookZahl = (a: UmfeldAbschnitt | undefined): number =>
-  a?.text && a.text !== "(keine Hooks)" ? a.text.split("\n").filter((z) => z && !z.startsWith(" ") && !z.startsWith("(")).length : 0;
+  a?.text ? a.text.split("\n").filter((z) => z && !z.startsWith(" ") && !z.startsWith("(")).length : 0;
 const liste = (namen: readonly string[], n = namen.length): string => n === 0 ? "none" : `${n} · ${namen.join(", ")}`;
 
 const ARTEN = [
@@ -56,13 +56,13 @@ const artVon = (pfad: string): (typeof ARTEN)[number] | undefined => ARTEN.find(
 const kurzName = (pfad: string): string => pfad.endsWith("/SKILL.md") ? pfad.split("/").at(-2) ?? pfad : ohneEndung(pfad);
 
 const HOOKS_KEY = "\"hooks\"";
-const MCP_ZEILE = /^MCP-Server aus ~\/\.claude\.json (\d+)(?:: (.*))?$/;
+const MCP_ZEILE = /^MCP(?: servers from|-Server aus) ~\/\.claude\.json (\d+)(?:: (.*))?$/;
 const mcpNamen = (eigenes: UmfeldAbschnitt | undefined): string[] => {
   const z = (eigenes?.text ?? "").split("\n").map((x) => MCP_ZEILE.exec(x)).find(Boolean);
-  return z?.[2] ? z[2].split(/, (?=[^\s,]+(?: \(nur dieser Ordner\))? · )/).map((e) => e.split(" · ")[0]!.replace(/ \(nur dieser Ordner\)$/, "")) : [];
+  return z?.[2] ? z[2].split(/, (?=[^\s,]+(?: \((?:this folder only|nur dieser Ordner)\))? · )/).map((e) => e.split(" · ")[0]!.replace(/ \((?:this folder only|nur dieser Ordner)\)$/, "")) : [];
 };
 const pluginNamen = (plugins: UmfeldAbschnitt | undefined): string[] =>
-  (plugins?.text ?? "").split("\n").filter((z) => / · an /.test(z)).map((z) => z.split(" ")[0]!.split("@")[0]!);
+  (plugins?.text ?? "").split("\n").filter((z) => / · (?:on|an)\b/.test(z)).map((z) => z.split(" ")[0]!.split("@")[0]!);
 
 /** Die Einträge des Setup-Fensters, in der Reihenfolge, in der es sie zeigt. */
 export function setupDateien(teile: readonly UmfeldTeil[], cwd: string | null): SetupDatei[] {
@@ -88,7 +88,7 @@ export function setupDateien(teile: readonly UmfeldTeil[], cwd: string | null): 
     out.push({ key: `eigen:hook:${d.pfad}`, gruppe: "eigen", art: "Hook script", name: name(d.pfad), pfad: voll(d.pfad, cwd),
       aendern: "Runs on the tool calls its hook names in your settings.json. Turn hooks on and off with /hooks in Claude Code." });
   const plugins = alle.get("plugins"), eigeneEinst = alle.get("cc-einstellungen-eigene")?.dateien?.[0];
-  if (plugins?.text && plugins.text !== "(keine Plugins)") out.push({ key: "eigen:plugins", gruppe: "eigen", art: "Plugins", name: "Plugins",
+  if (plugins?.text && !plugins.text.startsWith("(")) out.push({ key: "eigen:plugins", gruppe: "eigen", art: "Plugins", name: "Plugins",
     pfad: null, text: plugins.text, aendern: "Turn plugins on and off with /plugin in Claude Code, or under enabledPlugins in your settings.json.",
     ...(eigeneEinst ? { auch: { label: "enabledPlugins in settings.json", pfad: voll(eigeneEinst.pfad, cwd), finde: "\"enabledPlugins\"" } } : {}) });
   for (const d of alle.get("claude-eigenes")?.dateien ?? []) {
@@ -106,11 +106,11 @@ export function setupDateien(teile: readonly UmfeldTeil[], cwd: string | null): 
 // Nachfolge-Block darüber
 function nachfolgeWert(schwelle: UmfeldAbschnitt | undefined, warm: UmfeldAbschnitt | undefined): string {
   const s = schwelle?.text ?? "";
-  const m = /ab (\d+) % · fällig ab (\d+) %/.exec(s);
-  const teil1 = m ? `hand over at ${m[1]} %, due at ${m[2]} %` : /aus/.test(s) ? "no handover" : schwelle ? "unknown" : null;
+  const m = /(?:at|ab) (\d+) % · (?:due at|fällig ab) (\d+) %/.exec(s);
+  const teil1 = m ? `hand over at ${m[1]} %, due at ${m[2]} %` : /threshold off|Schwelle aus/.test(s) ? "no handover" : schwelle ? "unknown" : null;
   const w = warm?.text ?? "";
-  const r = /nach (\d+) min Ruhe/.exec(w);
-  const teil2 = r ? `cache kept warm after ${r[1]} min quiet` : /^Cache warmhalten aus/.test(w) ? "cache not kept warm" : null;
+  const r = /(?:after|nach) (\d+) min (?:quiet|Ruhe)/.exec(w);
+  const teil2 = r ? `cache kept warm after ${r[1]} min quiet` : /^(?:Keep cache warm: off|Cache warmhalten aus)/.test(w) ? "cache not kept warm" : null;
   return [teil1, teil2].filter(Boolean).join(" · ");
 }
 
@@ -124,26 +124,26 @@ export function umfeldZeilen(teile: readonly UmfeldTeil[], cwd: string | null = 
   const eigenesSetup = alle.get("eigenes-setup");
   if (eigenesSetup?.text) {
     const [satz = "", ...dazu] = eigenesSetup.text.split("\n");
-    zeilen.push({ label: "Modus", wert: "eigenes Setup — dein Claude Code, wie du es selbst startest", titel: satz, gruppe: "fleet", ziel: null });
+    zeilen.push({ label: "Mode", wert: "your own setup — Claude Code as you start it yourself", titel: satz, gruppe: "fleet", ziel: null });
     dazu.filter((z) => z.startsWith("- ")).forEach((z, i) => {
       const [was = "", ...warum] = z.slice(2).split(": ");
-      zeilen.push({ label: i === 0 ? "Fleet legt dazu" : "", wert: was, titel: warum.join(": "), gruppe: "fleet", ziel: null });
+      zeilen.push({ label: i === 0 ? "Fleet adds" : "", wert: was, titel: warum.join(": "), gruppe: "fleet", ziel: null });
     });
     // was beim Öffnen gewählt ist, je Zugabe eine Zeile „<feld>: <wert>“; ohne Wahl genau „nichts“
     const mitgegeben = alle.get("mitgegeben");
-    if (mitgegeben?.text) mitgegeben.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Mitgegeben" : "", wert: z,
-      titel: "Beim Öffnen dieser Sitzung gewählt. Ohne Wahl gibt Fleet nichts mit.", gruppe: "fleet", ziel: null }));
+    if (mitgegeben?.text) mitgegeben.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Passed along" : "", wert: z,
+      titel: "Chosen when this session was opened. With no choice, Fleet passes nothing along.", gruppe: "fleet", ziel: null }));
     // was die Schemas der eingebauten Werkzeuge am Start kosten, je Werkzeug; Messung und Zeile im Tooltip
     const werkzeuge = alle.get("werkzeuge");
     if (werkzeuge?.grund) {
       const [kosten = "", ...herkunft] = werkzeuge.grund.split(" · ");
-      zeilen.push({ label: "Werkzeuge", wert: kosten, titel: [herkunft.join("\n"), titel(werkzeuge)].filter(Boolean).join("\n\n"), gruppe: "fleet", ziel: null });
+      zeilen.push({ label: "Tools", wert: kosten, titel: [herkunft.join("\n"), titel(werkzeuge)].filter(Boolean).join("\n\n"), gruppe: "fleet", ziel: null });
     }
   }
   // was aus ~/.claude für diesen Sitz wegbleibt, je Teil eine Zeile; ohne Wahl genau „nichts“ (nur im eigenen Setup)
   const weggelassen = alle.get("weggelassen");
-  if (weggelassen?.text) weggelassen.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Weggelassen" : "", wert: z,
-    titel: "Aus deinem ~/.claude für diesen Sitz weggelassen, nur auf seiner Zeile. Deine Dateien bleiben, wie sie sind.", gruppe: "fleet", ziel: null }));
+  if (weggelassen?.text) weggelassen.text.split("\n").forEach((z, i) => zeilen.push({ label: i === 0 ? "Left out" : "", wert: z,
+    titel: "Left out of your ~/.claude for this session, on its command line only. Your files stay as they are.", gruppe: "fleet", ziel: null }));
 
   const schwelle = alle.get("schwelle"), warm = alle.get("warmhalten");
   if (schwelle || warm) zeilen.push({ label: "Succession", wert: nachfolgeWert(schwelle, warm), gruppe: "fleet", ziel: { art: "nachfolge" },

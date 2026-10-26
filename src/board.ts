@@ -912,7 +912,7 @@ export function gateSection(): HTMLElement | null {
   const g = gateInfo;
   if (!g) return null;
   const sec = el("div", "bsec");
-  sec.appendChild(el("h3", "", "Prüfsperre"));
+  sec.appendChild(el("h3", "", "Check lock"));
   sec.appendChild(gateLockHead(g.lock));
   return sec;
 }
@@ -930,7 +930,7 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   const ownerName = lk?.owner?.slot === null ? "Fleet" : lk?.owner?.slot
     ? laneDisplayName(laneBandNames(stacksOf()).get(lk.owner.slot) ?? `Slot ${lk.owner.slot}`, ownerTitle) : "Fleet";
   // a lane with a title is named by it; its branch's four hex move to the tooltip below
-  const owner = ownerTitle ? ownerName : `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "Branch unbekannt"}`;
+  const owner = ownerTitle ? ownerName : `${ownerName} · ${lk?.owner?.branch ? laneTail(lk.owner.branch) : "branch unknown"}`;
   const age = gateAge(lk?.ageMs ?? lk?.heldMs ?? 0);
   const id = lk?.identityProven === true ? "identity proven"
     : lk?.identityProven === false ? "identity mismatch"
@@ -940,19 +940,19 @@ export function gateLockHead(lk: GateInfo["lock"]): HTMLElement {
   const head = el("div", "bstate",
     !lk ? "· check runs · idle"
       : state === "parked" ? `⏸ check runs · parked by hand (no pid) · ${age}`
-      : state === "held" ? `${owner} · läuft seit ${age} · check run busy · ${who}`
-      : state === "overdue" ? `${owner} · läuft seit ${age} · Prüfsperre überfällig (${who})`
-      : state === "unknown" ? `${owner} · Halter unbekannt · ${age} · Prüfsperre (${who})`
+      : state === "held" ? `${owner} · running for ${age} · check run busy · ${who}`
+      : state === "overdue" ? `${owner} · running for ${age} · check lock held too long (${who})`
+      : state === "unknown" ? `${owner} · holder unknown · ${age} · check lock (${who})`
       // NEUTRAL on purpose: every finished run leaves its dir behind (release is implicit), so
       // this is what an idle machine looks like — it was a ⚠ for one day and shouted constantly.
       : `· check runs · none running · stale lock (${who}, ${id}, claimed ${age} ago)`);
   head.title = (ownerTitle && lk?.owner?.branch ? `${ownerTitle} — ${lk.owner.branch} · ` : "")
-    + (state === "free" ? "Kein Check hält gerade die maschinenweite Sperre (intern: suite mutex)."
+    + (state === "free" ? "No check holds the machine-wide lock right now (internal: suite mutex)."
     : lk?.reason || lk?.effect
-      ? `Grund: ${lk.reason ?? "unknown"}; Nächstes: ${lk.nextAction ?? "unknown"}; Wirkung: ${lk.effect ?? "unknown"} (intern: lock reason/nextAction/effect)`
-    : state === "stale" ? "Nichts läuft — ein beendeter Check lässt sein Sperr-Verzeichnis absichtlich zurück, der nächste räumt es weg (intern: stale lock)."
-    : state === "overdue" ? "Der Halter lebt noch, hält aber viel länger als jeder Check auf dieser Maschine braucht — prüfe, ob er feststeckt (intern: overdue)."
-    : "Die maschinenweite Sperre, von der Platte gelesen — Fleet liest nur, das Aufräumen eines toten Halters ist Sache der Wrapper (intern: suite mutex).");
+      ? `Reason: ${lk.reason ?? "unknown"}; next: ${lk.nextAction ?? "unknown"}; effect: ${lk.effect ?? "unknown"} (internal: lock reason/nextAction/effect)`
+    : state === "stale" ? "Nothing is running — a finished check leaves its lock directory behind on purpose, and the next one clears it (internal: stale lock)."
+    : state === "overdue" ? "The holder is still alive but has held the lock far longer than any check on this machine needs — check whether it is stuck."
+    : "The machine-wide lock, read from disk — Fleet only reads it; clearing a dead holder is the wrappers' job (internal: suite mutex).");
   return head;
 }
 
@@ -2260,7 +2260,7 @@ function changesSection(c: BoardCtx, brief: BriefInfo): HTMLElement {
       if ((note as HTMLDetailsElement).open) landAlarmOpens.add(alarmKey);
       else landAlarmOpens.delete(alarmKey);
     });
-    const kind = l.status === "blocked" ? "Land blockiert" : l.status === "interrupted" ? "Land unterbrochen" : "Land fehlgeschlagen";
+    const kind = l.status === "blocked" ? "Land blocked" : l.status === "interrupted" ? "Land interrupted" : "Land failed";
     note.appendChild(el("summary", "", `${kind} · ${laneNameOfBranch(l.branch)}`));
     note.appendChild(el("div", "bmergedetail", l.detail));
     note.appendChild(verifyBadge(l.verify));
@@ -2496,7 +2496,7 @@ const FASSUNG_TITLE = "what this session was started with, as a short hash — t
 function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
   v.textContent = fassungKurz(f.hash);
   const r = v.closest(".bsrow") as HTMLElement | null;
-  if (r) r.title = f.nachgefuehrt.length ? `${f.hash}\nseit dem Start geändert: ${f.nachgefuehrt.join(", ")}` : f.hash;
+  if (r) r.title = f.nachgefuehrt.length ? `${f.hash}\nchanged since the start: ${f.nachgefuehrt.join(", ")}` : f.hash;
   // die Zeilen darunter stehen genau einmal: eine Neulesung ersetzt sie
   let n = r?.nextElementSibling ?? null;
   while (n?.classList.contains("bsumfeld")) { const weg = n; n = n.nextElementSibling; weg.remove(); }
@@ -2587,7 +2587,7 @@ function setupBody(c: BoardCtx, su: HTMLElement): void {
   if (s.openedAt) {
     const key = `${slot}:${s.openedAt}`, gehalten = fassungLaeuft.get(key);
     if (gehalten !== null) {
-      const v = row("Fassung", "…", FASSUNG_TITLE);
+      const v = row("Start hash", "…", FASSUNG_TITLE);
       if (gehalten) fassungZeigen(v, gehalten, c);
       if (!gehalten || Date.now() - gehalten.at > FASSUNG_FRISCH_MS) fassungLesen(c, s.openedAt, v);
     }
@@ -2725,9 +2725,9 @@ export function renderWorkplaceField(): void {
     if (!rebuild && !restart) return null;
     const d = el("span", "wtdot");
     d.setAttribute("role", "img");
-    d.setAttribute("aria-label", rebuild ? "Seite neu bauen" : "Neustart fällig");
-    d.title = [rebuild ? "Seite neu bauen: der Code in diesem Browser ist älter als der Quellcode" : "",
-      restart ? "Neustart fällig: der Server läuft auf älterem Code als der Checkout" : ""].filter(Boolean).join(" · ");
+    d.setAttribute("aria-label", rebuild ? "Rebuild the page" : "Restart due");
+    d.title = [rebuild ? "Rebuild the page: the code in this browser is older than the source" : "",
+      restart ? "Restart due: the server runs older code than the checkout" : ""].filter(Boolean).join(" · ");
     return d;
   };
   const build = (id: string): HTMLButtonElement | null => {
@@ -2740,7 +2740,7 @@ export function renderWorkplaceField(): void {
     const d = dot();
     if (d) b.appendChild(d);
     if (up) b.appendChild(el("span", "wtsq"));
-    b.title = `Senden geht an ${name}${branch ? ` auf ${branch}` : ""}${up ? " · Testinstanz läuft" : ""} — Klick zeigt den Arbeitsort in Info`;
+    b.title = `Sends to ${name}${branch ? ` on ${branch}` : ""}${up ? " · test instance running" : ""} — click to show the worktree in Info`;
     b.setAttribute("aria-label", b.title);
     b.onclick = show;
     return b;
@@ -2764,7 +2764,7 @@ export function renderWorkplaceField(): void {
     b.append(icon("branch"), el("span", "wtname", where));
     if (branch) b.append(el("span", "wtsep", "·"), el("span", "wtref", branch));
     if (up) b.appendChild(el("span", "wtsq"));
-    b.title = `Arbeitsort: ${where}${branch ? ` auf ${branch}` : ""}${up ? " · Testinstanz läuft" : ""} — zeigt ihn in Info`;
+    b.title = `Worktree: ${where}${branch ? ` on ${branch}` : ""}${up ? " · test instance running" : ""} — shows it in Info`;
     b.setAttribute("aria-label", b.title);
     b.onclick = show;
     mort.replaceChildren(b);
@@ -2846,12 +2846,12 @@ export function isLiveLane(branch: string | null | undefined): boolean {
 // worktree has no node_modules, and testinstanz.sh links the worktree's own, so its build fails
 // without them (measured in this lane 2026-10-09: „[Zitat entfernt]“).
 export const LIVE_SESSION_NOTE = [
-  "Live-Session: Der Owner arbeitet in deiner Testinstanz mit und spricht in diese Pane. Seine Worte gehen vor.",
-  "Zuerst bun install --frozen-lockfile (falls das Repo eine package.json hat): deine Testinstanz startet von selbst und baut aus diesem Worktree.",
-  "Zwischen den Runden nur ./testinstanz.sh refresh und Durchklicken, keine Suiten.",
-  "Vor einem Report ein Commit; berichtet wird an der Rundengrenze.",
-  "Gemergt wird erst, wenn der Owner an deiner Lane „Mergen“ drückt.",
-  "Nachlesen: docs/design/live-bau-profil-2026-10.md §2.",
+  "Live session: the owner works in your test instance and talks into this pane. The owner's words come first.",
+  "First run bun install --frozen-lockfile (if the repo has a package.json): your test instance starts by itself and builds from this worktree.",
+  "Between rounds only run ./testinstanz.sh refresh and click through, no suites.",
+  "Commit before a report; report at the round boundary.",
+  "Nothing merges until the owner presses “Merge” at your lane.",
+  "Read more: docs/design/live-bau-profil-2026-10.md §2.",
 ].join("\n");
 // WHAT STARTEN DOES, from the sentence to Mergen (owner 2026-10-09: „[Zitat entfernt]“
 // 
@@ -3225,16 +3225,16 @@ export function branchDay(branch: string): string | null {
   return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31 ? `${String(dd).padStart(2, "0")}.${String(mm).padStart(2, "0")}.` : null;
 }
 // the board speaks German, so its clock does too — "14:26", never "02:26 PM" from a browser's English locale
-const clockOf = (ms: number): string => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const clockOf = (ms: number): string => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 // the same span in the git structure's English (owner Z87: „[Zitat entfernt]“)
 const agoEn = (ms: number): string => ms < 60_000 ? "a moment" : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min`
   : ms < 86_400_000 ? `${Math.round(ms / 3_600_000)} h` : `${Math.round(ms / 86_400_000)} d`;
 export function agoDe(ms: number): string {
   const min = Math.round(Math.max(0, ms) / 60_000);
-  if (min < 1) return "gerade eben";
-  if (min < 60) return `vor ${min} Min.`;
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
   const h = Math.round(min / 60);
-  return h < 36 ? `vor ${h} Std.` : `vor ${Math.round(h / 24)} Tagen`;
+  return h < 36 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 
 const CHECK_WORD: Record<WorkplaceCheck["state"], string> = {
@@ -3718,7 +3718,7 @@ export function machineSigns(): MachineSign[] | null {
   const hereKey = instanceName ? machineKey(instanceName) : null;
   if (hereKey) machines.delete(hereKey);
   const due = !instanceSource && deployGapInfo?.codeBehind === true;
-  const signs: MachineSign[] = [{ glyph: KIND_HERE.glyph, tone: due ? "wait" : "live", name: instanceName ?? "Dieser Rechner", word: due ? "Neustart fällig" : "läuft" }];
+  const signs: MachineSign[] = [{ glyph: KIND_HERE.glyph, tone: due ? "wait" : "live", name: instanceName ?? "This computer", word: due ? "restart due" : "online" }];
   const order: Record<MachineState["tone"], number> = { live: 0, wait: 1, link: 2, off: 3, still: 4 };
   const rest = [...machines].map(([key, list]) => {
     const st = machineState(list);
@@ -3783,7 +3783,7 @@ function testInstanceStandRows(source: InstanceSource): HTMLElement[] {
   // It runs: it is answering this page. Its sign is the test instance's square, filled (owner
   // 2026-10-08: a hollow ring read as "off").
   const port = location.port;
-  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
   const rows = machineRow("testinstanz", "Test instance", { glyph: "laptop", word: port ? `Port\u00a0${port}` : "" }, [],
     { ...HERE_STATE, title: "This page comes from this test instance" }, null,
     [{ label: "State", text: band.text, st: null }, { label: "Note", text: band.title, st: null }],
@@ -3830,13 +3830,13 @@ function machineKind(list: WorkplaceStand[]): MachineKind {
 }
 function machineState(list: WorkplaceStand[]): MachineState {
   const helper = list.filter((st) => st.kind === "helper-daemon" || st.kind === "helper-instance");
-  if (!helper.length) return { tone: "link", word: "verlinkt", title: "A link to this Fleet — this server does not measure it" };
+  if (!helper.length) return { tone: "link", word: "linked", title: "A link to this Fleet — this server does not measure it" };
   const heard = Math.max(...helper.map((st) => st.observedAt ?? 0));
   const ago = heard ? `last heard ${agoEn(Date.now() - heard)} ago` : "never reported";
-  if (machineStill(list)) return { tone: "still", word: "still", title: `No report for more than three days — ${ago}` };
+  if (machineStill(list)) return { tone: "still", word: "quiet", title: `No report for more than three days — ${ago}` };
   // "läuft" like every machine that runs (owner 2026-10-09: „[Zitat entfernt]“)
-  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "läuft", title: `Reports as a helper regularly — ${ago}` };
-  return { tone: "off", word: "nicht angemeldet", title: `Not reporting now — ${ago}` };
+  if (deviceOnlineMs !== null && heard && Date.now() - heard < deviceOnlineMs) return { tone: "live", word: "online", title: `Reports as a helper regularly — ${ago}` };
+  return { tone: "off", word: "offline", title: `Not reporting now — ${ago}` };
 }
 // A DEVICE'S OWN WORD (owner 2026-10-09: „[Zitat entfernt]“
 // ): a device is online or offline — "läuft" is said of a server; a machine
@@ -4546,7 +4546,7 @@ export function sessionWord(slot: number): string {
   return nameWithoutModel(s);
 }
 const VERDICT_WORD: Record<string, string> = { real: "a real failure", flake: "a flake", "stale-test": "an outdated test", unknowable: "not judgeable" };
-const clockDe = (ms: number) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const clockDe = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 // what the owner does, in one sentence
 const plaOwnerTodo = (tone: "red" | "unknown"): string => tone === "red"
   ? "Take the land back or have it repaired."

@@ -235,47 +235,47 @@ export interface InstanceBandText { segments: InstanceBandRun[][]; text: string;
 export function instanceBandText(s: InstanceSource, clock: (ms: number) => string): InstanceBandText {
   if (s.round) return roundBandText(s.round, s.measuredAt, clock);
   const segments: InstanceBandRun[][] = [];
-  segments.push(s.branch ? [{ t: "Zweig " }, { t: s.branch, mono: true }] : [{ t: "Zweig unbekannt" }]);
-  if (!s.head) segments.push([{ t: "Stand unbekannt" }]);
+  segments.push(s.branch ? [{ t: "Branch " }, { t: s.branch, mono: true }] : [{ t: "Branch unknown" }]);
+  if (!s.head) segments.push([{ t: "Head unknown" }]);
   else {
-    segments.push([{ t: "Stand beim Start " }, { t: s.head.slice(0, 7), mono: true }]);
+    segments.push([{ t: "Head at start " }, { t: s.head.slice(0, 7), mono: true }]);
     const target = s.target;
-    if (!target) segments.push([{ t: "Ziel unbekannt" }]);
+    if (!target) segments.push([{ t: "Target unknown" }]);
     else {
       const on = { t: target.branch, mono: true };
-      const commits = target.ahead === null ? null : target.ahead === 1 ? "1 Commit" : `${target.ahead} Commits`;
-      const files = s.dirty === null ? null : s.dirty === 1 ? "1 Datei ohne Commit" : `${s.dirty} Dateien ohne Commit`;
+      const commits = target.ahead === null ? null : target.ahead === 1 ? "1 commit" : `${target.ahead} commits`;
+      const files = s.dirty === null ? null : s.dirty === 1 ? "1 uncommitted file" : `${s.dirty} uncommitted files`;
       // a count is only a comparison when the target's own sha was measured with it
-      if (target.head === null || target.ahead === null) segments.push([{ t: "Abgleich mit " }, on, { t: " unbekannt" }]);
-      else if (target.ahead === 0 && s.dirty === 0) segments.push([{ t: "alles schon auf " }, on]);
-      else if (s.dirty === null) segments.push([{ t: target.ahead === 0 ? "alle Commits schon auf " : `${commits} noch nicht auf ` }, on, { t: ", Dateien ohne Commit: unbekannt" }]);
-      else segments.push([{ t: `${[target.ahead ? commits : null, s.dirty ? files : null].filter(Boolean).join(" und ")} noch nicht auf ` }, on]);
+      if (target.head === null || target.ahead === null) segments.push([{ t: "Comparison with " }, on, { t: " unknown" }]);
+      else if (target.ahead === 0 && s.dirty === 0) segments.push([{ t: "all already on " }, on]);
+      else if (s.dirty === null) segments.push([{ t: target.ahead === 0 ? "all commits already on " : `${commits} not yet on ` }, on, { t: ", uncommitted files: unknown" }]);
+      else segments.push([{ t: `${[target.ahead ? commits : null, s.dirty ? files : null].filter(Boolean).join(" and ")} not yet on ` }, on]);
     }
   }
   const text = segments.map((seg) => seg.map((r) => r.t).join("")).join(" · ");
-  const when = s.measuredAt ? clock(s.measuredAt) : "unbekannt";
+  const when = s.measuredAt ? clock(s.measuredAt) : "unknown";
   const title = s.head
-    ? `Diese Testinstanz zeigt ${s.branch ?? "einen unbekannten Zweig"} so, wie er beim Start war (${when}, Commit ${s.head}). `
-      + "Was danach im Worktree geändert wurde, ist hier nicht enthalten."
-      + (s.target ? ` Verglichen mit ${s.target.branch}${s.target.head ? ` (${s.target.head.slice(0, 7)})` : ""} zum selben Zeitpunkt.` : "")
-    : "Diese Testinstanz konnte beim Start nicht messen, welchen Stand sie zeigt.";
+    ? `This test instance shows ${s.branch ?? "an unknown branch"} as it was at start (${when}, commit ${s.head}). `
+      + "Later changes in the worktree are not included."
+      + (s.target ? ` Compared with ${s.target.branch}${s.target.head ? ` (${s.target.head.slice(0, 7)})` : ""} at the same moment.` : "")
+    : "This test instance could not measure at start what it shows.";
   return { segments, text, title };
 }
 
 // A ROUND'S WORDS: its name, main and every branch in it, then each branch that stayed out with its reason
 function roundBandText(r: NonNullable<InstanceSource["round"]>, measuredAt: number | null, clock: (ms: number) => string): InstanceBandText {
   const list = (names: string[]): InstanceBandRun[] => names.flatMap((b, i) => [...(i ? [{ t: ", " }] : []), { t: b, mono: true }]);
-  const segments: InstanceBandRun[][] = [[{ t: "Runde " }, { t: r.name, mono: true }]];
-  segments.push(r.main ? [{ t: "main " }, { t: r.main.slice(0, 7), mono: true }] : [{ t: "main unbekannt" }]);
-  segments.push(r.in.length ? [{ t: "mit " }, ...list(r.in.map((m) => m.branch))] : [{ t: "kein Branch dabei" }]);
-  for (const o of r.out) segments.push([{ t: "ohne " }, { t: o.branch, mono: true }, { t: `: ${o.why}` }]);
+  const segments: InstanceBandRun[][] = [[{ t: "Round " }, { t: r.name, mono: true }]];
+  segments.push(r.main ? [{ t: "main " }, { t: r.main.slice(0, 7), mono: true }] : [{ t: "main unknown" }]);
+  segments.push(r.in.length ? [{ t: "with " }, ...list(r.in.map((m) => m.branch))] : [{ t: "no branch in it" }]);
+  for (const o of r.out) segments.push([{ t: "without " }, { t: o.branch, mono: true }, { t: `: ${o.why}` }]);
   const text = segments.map((seg) => seg.map((x) => x.t).join("")).join(" · ");
-  const when = measuredAt ? clock(measuredAt) : "unbekannt";
-  const title = `Diese Testinstanz zeigt die Runde ${r.name}: main${r.main ? ` (${r.main.slice(0, 7)})` : ""}`
-    + (r.in.length ? ` mit ${r.in.map((m) => m.branch).join(", ")} zusammengeführt` : " ohne Branch")
-    + `, gebaut um ${when}. Bewegt sich main oder einer der Branches, wird sie neu gebaut.`
-    + (r.out.length ? ` Nicht dabei: ${r.out.map((o) => `${o.branch} (${o.why})`).join("; ")}.` : "")
-    + " Gelandet wird weiter Branch für Branch.";
+  const when = measuredAt ? clock(measuredAt) : "unknown";
+  const title = `This test instance shows round ${r.name}: main${r.main ? ` (${r.main.slice(0, 7)})` : ""}`
+    + (r.in.length ? ` merged with ${r.in.map((m) => m.branch).join(", ")}` : " without a branch")
+    + `, built at ${when}. It is rebuilt when main or one of the branches moves.`
+    + (r.out.length ? ` Not included: ${r.out.map((o) => `${o.branch} (${o.why})`).join("; ")}.` : "")
+    + " Landing still goes branch by branch.";
   return { segments, text, title };
 }
 

@@ -319,10 +319,10 @@ void makeCodexCliObserver().tick();
     const textOf = (n: Node): string => n.text + n.children.map(textOf).join(" ");
     render(supplied.links, local, now);
     check("R3c: the original instance renderer displays drift and local measurement",
-      textOf(menu).includes("CLI-Drift") && textOf(menu).includes("Lokal: Codex 0.159.0"));
+      textOf(menu).includes("CLI drift") && textOf(menu).includes("Local: Codex 0.159.0"));
     render([{ ...supplied.links[0]!, codexCli: stale }], local, now);
     check("R3c: the original instance renderer displays stale snapshot unknown",
-      textOf(menu).includes("unknown (stale-snapshot)") && !textOf(menu).includes("CLI-Drift"));
+      textOf(menu).includes("unknown (stale-snapshot)") && !textOf(menu).includes("CLI drift"));
     render([], local, now);
     button.onclick?.();
     check("R3c: a single-host board can open its local CLI measurement", open && textOf(menu).includes(local.binary!));
@@ -10726,7 +10726,7 @@ export async function run(ctx: Ctx): Promise<void> {
       JSON.stringify(spNotes) === JSON.stringify([
         "waiting: after 2f8897ab not landed",
         // deliberately NOT prefixed `waiting:` — no tick can end this one, so it must not read as a wait
-        "after 1ed2f6a0 ist keine Queue-Zeile mehr — MAIN oder Owner entscheidet",
+        "after 1ed2f6a0 is no longer a queue row — the MAIN or the owner decides",
         "waiting: wave partner aa11, bb22 is not released",
         "waiting: collides with lane 3 on server.ts#taskView",
         "waiting: collides with row cc33 ahead in the plan on server.ts",
@@ -10758,11 +10758,11 @@ export async function run(ctx: Ctx): Promise<void> {
     const wGot = Object.fromEntries(deriveWaits(wFacts).map((w) => [w.id, [w.adressat, w.kette, w.grund, w.seit, w.freigegeben]]));
     check("(waits) each waiting row carries its reason and the addressee at the head of its chain — lane, chain, hold without grund, missing after, a lane parked on the owner",
       JSON.stringify(wGot) === JSON.stringify({
-        wb: ["slot:7", ["lane 7 auf lane.ts"], "kollidiert mit lane 7 auf lane.ts", null, true],
-        wc: ["slot:7", ["row wb (after)", "lane 7 auf lane.ts"], "wartet auf wb (after, nicht gelandet)", null, true],
-        wh: ["main:p-wh", [], "gehalten von der MAIN (Slot 9) ohne Grund", 1000, false],
-        wm: ["owner", [], "after gone ist keine Queue-Zeile mehr", null, true],
-        wp: ["owner", ["lane 8 auf park.ts"], "kollidiert mit lane 8 auf park.ts", 500, true],
+        wb: ["slot:7", ["lane 7 on lane.ts"], "collides with lane 7 on lane.ts", null, true],
+        wc: ["slot:7", ["row wb (after)", "lane 7 on lane.ts"], "waiting on wb (after, not landed)", null, true],
+        wh: ["main:p-wh", [], "held by the MAIN (slot 9), no reason given", 1000, false],
+        wm: ["owner", [], "after gone is no longer a queue row", null, true],
+        wp: ["owner", ["lane 8 on park.ts"], "collides with lane 8 on park.ts", 500, true],
       }), JSON.stringify(wGot));
     // THE STALL READING: the same waits are a stall while a lane is free, and NOT one once the lanes
     // fill the cap (a cap wait is capacity, not a stall); a lone cap wait is the tick's, never a stall.
@@ -10792,11 +10792,11 @@ export async function run(ctx: Ctx): Promise<void> {
       const adressat = parked === null ? "slot:7" : parked === "owner" ? "owner" : "main:p-running";
       check(`(waits-lane) after and collision chains to a ${parked ?? "working"} lane keep their heads and links`,
         JSON.stringify(waits.map((w) => [w.id, w.art, w.freigegeben, w.adressat, w.kette, w.seit])) === JSON.stringify([
-          ["first", "after", true, adressat, ["row running (after) auf lane 7"], parked === null ? null : 500],
-          ["second", "after", true, adressat, ["row first (after)", "row running (after) auf lane 7"], parked === null ? null : 500],
-          ["collision", "collision", true, adressat, ["lane 7 auf lane.ts"], parked === null ? null : 500],
-        ]) && waits.every((w) => w.wurzel.includes(parked === null ? "lane 7 arbeitet" : parked === "owner"
-          ? "lane 7 wartet auf den Owner" : "lane 7 wartet auf ihre MAIN")), JSON.stringify(waits));
+          ["first", "after", true, adressat, ["row running (after) on lane 7"], parked === null ? null : 500],
+          ["second", "after", true, adressat, ["row first (after)", "row running (after) on lane 7"], parked === null ? null : 500],
+          ["collision", "collision", true, adressat, ["lane 7 on lane.ts"], parked === null ? null : 500],
+        ]) && waits.every((w) => w.wurzel.includes(parked === null ? "lane 7 is working" : parked === "owner"
+          ? "lane 7 waits on the owner" : "lane 7 waits on its MAIN")), JSON.stringify(waits));
       check(`(waits-lane) after and collision chains to a ${parked ?? "working"} lane ${parked === null ? "are progress" : "remain stuck"} with spare capacity`,
         reading?.lanes === 1 && reading.cap === 5 && reading.stuck === (parked !== null)
           && reading.waits.map((w) => w.id).join(" ") === (parked === null ? "" : "first second collision"), JSON.stringify(reading));
@@ -10820,7 +10820,7 @@ export async function run(ctx: Ctx): Promise<void> {
         held.reading?.stuck === !intentional && dependent?.intentionalHold === intentional
           && dependent.freigegeben === true && dependent.adressat === "main:p-held"
           && dependent.kette.join() === "row held (after)" && dependent.seit === 1000
-          && dependent.wurzel === `held gehalten von der MAIN (Slot 4) — ${grund === null ? "ohne Grund" : `Grund: ${grund}`}`,
+          && dependent.wurzel === `held held by the MAIN (slot 4) — ${grund === null ? "no reason given" : `reason: ${grund}`}`,
         JSON.stringify(held));
     }
     const noHold = hRead(null, "queued");
@@ -13125,7 +13125,7 @@ export async function run(ctx: Ctx): Promise<void> {
     check("(rc3) a valid card that carries the NACH id releases (200) — the plan holds the row behind its predecessor, and its wait names the program's MAIN, whose pending row it is",
       !!rcRow?.card && rcAfterRes.status === 200 && (await mRow(rcAfter))?.status === "queued"
         && JSON.stringify(rcWave?.next) === JSON.stringify({ after: rcPred })
-        && rcWait?.grund === `wartet auf ${rcPred} (after, nicht gelandet)` && rcWait.adressat === `main:${mMainProgram}`
+        && rcWait?.grund === `waiting on ${rcPred} (after, not landed)` && rcWait.adressat === `main:${mMainProgram}`
         && JSON.stringify(rcWait.kette) === JSON.stringify([`row ${rcPred} (after)`]),
       JSON.stringify({ release: rcAfterRes.status, releaseText: rcAfterRes.status === 200 ? "" : await rcAfterRes.text(), next: rcWave?.next ?? null, wait: rcWait ?? null }));
     for (const id of [rcPred, rcBare, rcNach, rcMainCarry, rcAfter]) await post(`/api/tasks/${id}/delete`, {});
@@ -13497,7 +13497,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const stClock1 = st1.stau?.open.find((o) => o.repo === stKey);
     check("(stau) fixture + row: A works on lane N, B collides with it — the released wait stays visible with slot:N, without a stall clock or attention",
       !!stA && !!stB && !!stC && stSlot > 0 && (await stOf(stB))?.status === "queued"
-        && stWaitB?.grund === `kollidiert mit lane ${stSlot} auf f-stau.ts` && stWaitB.adressat === `slot:${stSlot}`
+        && stWaitB?.grund === `collides with lane ${stSlot} on f-stau.ts` && stWaitB.adressat === `slot:${stSlot}`
         && stWaitB.freigegeben === true && st1.stau?.stallMs === 15 * 60_000
         && !stClock1
         && (await stBlocked()).filter((a) => a.status === "open").length === 0,
@@ -13539,7 +13539,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const stWaitC = stA1.waits?.find((w) => w.id === stC);
     const stClockA = stA1.stau?.open.find((o) => o.repo === stKey);
     check("(stau)(a) a stall held past STALL_MS with a free lane raises EXACTLY ONE blocked attention on the program — it names the collision and after rows, parked lane and file; without a bound MAIN the head is owner; the counter reads it",
-      stOpen.length === 1 && stOpen[0]!.text.includes("owner") && stOpen[0]!.text.includes(`lane ${stSlot} wartet auf ihre MAIN`)
+      stOpen.length === 1 && stOpen[0]!.text.includes("owner") && stOpen[0]!.text.includes(`lane ${stSlot} waits on its MAIN`)
         && stOpen[0]!.text.includes("f-stau.ts") && stOpen[0]!.text.includes(stB) && stOpen[0]!.text.includes(stC)
         && stA1.waits?.find((w) => w.id === stB)?.adressat === "owner"
         && stClockA?.stalled === true && stClockA.attentionId === stOpen[0]!.id && (stA1.stau?.detected ?? 0) >= 1,
@@ -13548,7 +13548,7 @@ export async function run(ctx: Ctx): Promise<void> {
       stOpen.length === 1 && stOpen[0]?.stage === "owner" && !stOpen[0].escalation, JSON.stringify(stOpen));
     check("(stau)(f) the chain row → row → parked lane ends at owner without a bound MAIN: C (after B, B behind lane N) still names both links",
       stWaitC?.adressat === "owner" && stWaitC.freigegeben === true
-        && JSON.stringify(stWaitC.kette) === JSON.stringify([`row ${stB} (after)`, `lane ${stSlot} auf f-stau.ts`]),
+        && JSON.stringify(stWaitC.kette) === JSON.stringify([`row ${stB} (after)`, `lane ${stSlot} on f-stau.ts`]),
       JSON.stringify(stWaitC ?? null));
     await Bun.sleep(6 * DISPATCH_TICK_MS);
     const stB2 = (await stBlocked()).filter((a) => a.status === "open");

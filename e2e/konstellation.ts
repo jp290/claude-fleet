@@ -20,21 +20,21 @@ export interface KonstDomResult { width: number; height: number; claims: Record<
 export interface KonstMutant { name: string; claim: string; file: "src/konstellation.ts" | "src/konstellation-model.ts" | "public/index.html"; needle: string; with: string; width?: 1200 | 390 }
 
 export const KONST_CLAIM = {
-  once: "the head row's Konstellation button opens the window, and every active session stands in it exactly once — no free slot",
-  tree: "Orchestratorin → MAIN → its lane, a session → the lane opened from it (as the left bar stacks it); the lane without either, the branch session and the plain sessions stand in their own groups",
+  once: "the head row's Constellation button opens the window, and every active session stands in it exactly once — no free slot",
+  tree: "Orchestrator → MAIN → its lane, a session → the lane opened from it (as the left bar stacks it); the lane without either, the branch session and the plain sessions stand in their own groups",
   aufbau: "at rest the tree is the build only: one line per session with its name, its kind, its state and slot — no value and no branch on it — and all of it in one window height",
   peek: "under the pointer a line shows a small card with model, effort, context, handover and branch; it goes with the pointer and moves no line",
   values: "the properties name model, effort, succession (labelled „Succession“, Fleet's word), rights, agent, binding and place as the wire gives them, in the column's words, and Claude Code's rows as her role's plan names them",
-  unknown: "what Fleet cannot tell stays a sentence: context „nicht messbar“, a brief or a plan that fails „nicht lesbar“, a permission mode the transcript did not name „nicht gemeldet“; a context below 1 % reads „< 1 %“, never 0",
-  wer: "every property row says who decides it, by its own tag or its section's, in K15's three words: model, effort and handover „änderbar“, rights, Maschine and Isolation „Fleet-Standard“, the system prompt „Claude-Code-Standard“, a switch of Fleet's start line „Fleet-Standard“",
-  autonomie: "the role card's three lists stand as in K15: „Entscheidet selbst“, „Fragt zuerst“ (whom she asks), „Nie“, with their counts and the points in reading words; a free session says she has no role card",
+  unknown: "what Fleet cannot tell stays a sentence: context „not measurable“, a brief or a plan that fails „unreadable“, a permission mode the transcript did not name „not reported“; a context below 1 % reads „< 1 %“, never 0",
+  wer: "every property row says who decides it, by its own tag or its section's, in K15's three words: model, effort and handover „settable“, rights, Machine and Isolation „Fleet default“, the system prompt „Claude Code default“, a switch of Fleet's start line „Fleet default“",
+  autonomie: "the role card's three lists stand as in K15: „Decides alone“, „Asks first“ (whom she asks), „Never“, with their counts and the points as the card words them; a free session says she has no role card",
   grund: "a tap on a standard's tag writes its reason under its row and a second tap takes it away — no pointer needed; the tag's title carries the reason and where it follows from; every standard's reason first says whether and where it can be set today (owner 16.10.: a Fleet that should be customizable never says „steht fest“)",
-  start: "a lane shows the role card from her own session file (AGENTS.override.md, „## Rolle“) and says when Fleet gives a new lane another one today; where that file is missing, and for a MAIN and the Orchestratorin, today's card stands marked „Fassung von heute“",
-  phone: "on the phone a row keeps its tag right of its value, so a short value with its tag is one line — also beside the widest tag, „Claude-Code-Standard“, the value never breaks inside a word; an indented line may wrap a value only at a space or after a hyphen",
-  maschine: "Maschine names this Fleet's instance and, gray, that other machines are possible but not connected, with a link to each other Fleet the wire lists; Isolation reads „keine“ with „Sandbox/VM möglich, nicht aktiv“, gray and without a switch",
+  start: "a lane shows the role card from her own session file (AGENTS.override.md, „## Rolle“) and says when Fleet gives a new lane another one today; where that file is missing, and for a MAIN and the Orchestrator, today's card stands marked „Version as of today“",
+  phone: "on the phone a row keeps its tag right of its value, so a short value with its tag is one line — also beside the widest tag, „Claude Code default“, the value never breaks inside a word; an indented line may wrap a value only at a space or after a hyphen",
+  maschine: "Machine names this Fleet's instance and, gray, that other machines are possible but not connected, with a link to each other Fleet the wire lists; Isolation reads „none“ with „Sandbox/VM possible, not active“, gray and without a switch",
   fit: "nothing runs over: a long name gives way with …, the kind always stands whole, and with every property open each line wraps inside the window, no sideways scroll",
-  alles: "„Detailgrad: Alles“ writes the card's values as a quiet second line under every session and opens no sheet, the window keeps the choice when it opens again, „Aufbau“ takes the lines away",
-  click: "a click on a line opens that session's properties — Autonomie, Rechte, Einstellungen, Claude Code, Aufbau — and the line stays where it stood, and „Session zeigen“ there shows it in the pane and closes the window",
+  alles: "„Detail level: All“ writes the card's values as a quiet second line under every session and opens no sheet, the window keeps the choice when it opens again, „Structure“ takes the lines away",
+  click: "a click on a line opens that session's properties — Autonomy, Rights, Settings, Claude Code, Structure — and the line stays where it stood, and „Show session“ there shows it in the pane and closes the window",
   touch: "without hover a first tap on a line shows the small card and opens nothing, a second tap opens the properties",
   calm: "at rest a line paints no fill; the gray fill comes only under the pointer",
 } as const;
@@ -51,20 +51,20 @@ export const KONST_MUTANTS: readonly KonstMutant[] = [
   { name: "the pane footer's model ignored", claim: KONST_CLAIM.values, file: "src/konstellation.ts",
     needle: "runningModel(s.model, pane?.observedModel, s.paneModel)", with: "runningModel(s.model, pane?.observedModel)" },
   { name: "the permission mode on the wire not shown", claim: KONST_CLAIM.values, file: "src/konstellation.ts",
-    needle: `return s.permissionMode ? MODE_WORD[s.permissionMode] ?? s.permissionMode : "nicht gemeldet";`, with: `return "nicht gemeldet";` },
+    needle: `return s.permissionMode ? MODE_WORD[s.permissionMode] ?? s.permissionMode : "not reported";`, with: `return "not reported";` },
   { name: "an unmeasurable context painted as 0 %", claim: KONST_CLAIM.unknown, file: "src/konstellation.ts",
-    needle: `if (s.ctx === null) return "nicht messbar";`, with: `if (s.ctx === null) return "0 %";` },
+    needle: `if (s.ctx === null) return "not measurable";`, with: `if (s.ctx === null) return "0 %";` },
   { name: "the kind gives way before the name", claim: KONST_CLAIM.fit, file: "public/index.html", width: 390,
     needle: ".krole { flex: none; color: var(--chat-mute); font-size: var(--chat-ui-fs); white-space: nowrap; }",
     with: ".krole { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--chat-mute); font-size: var(--chat-ui-fs); white-space: nowrap; } .kname { flex: none !important; }" },
   { name: "a property value does not wrap", claim: KONST_CLAIM.fit, file: "public/index.html", width: 390,
     needle: ".kx { min-width: 0; color: var(--chat-prose); overflow-wrap: anywhere; }",
     with: ".kx { min-width: 0; color: var(--chat-prose); white-space: nowrap; }" },
-  { name: "the Detailgrad is not kept", claim: KONST_CLAIM.alles, file: "src/konstellation.ts",
+  { name: "the detail level is not kept", claim: KONST_CLAIM.alles, file: "src/konstellation.ts",
     needle: "try { localStorage.setItem(DETAIL_KEY, d); }", with: "try { void d; }" },
   { name: "the window grows with a sheet and moves the line", claim: KONST_CLAIM.click, file: "public/index.html",
     needle: "height: min(86vh, 860px); max-height: min(86vh, 860px); }", with: "height: auto; max-height: min(86vh, 860px); }" },
-  { name: "„Session zeigen“ closes without showing the session", claim: KONST_CLAIM.click, file: "src/konstellation.ts",
+  { name: "„Show session“ closes without showing the session", claim: KONST_CLAIM.click, file: "src/konstellation.ts",
     needle: "go.onclick = () => { if (showSlot(s.id)) shell?.close(); };", with: "go.onclick = () => { shell?.close(); };" },
   { name: "the first tap opens the properties", claim: KONST_CLAIM.touch, file: "src/konstellation.ts", width: 390,
     needle: `if (touch && !isOpen(s) && detail === "aufbau" && peek?.key !== keyOf(s)) { showPeek(s, true); return; }`, with: "void touch;" },
@@ -75,7 +75,7 @@ export const KONST_MUTANTS: readonly KonstMutant[] = [
   { name: "a lane read as a free session", claim: KONST_CLAIM.autonomie, file: "src/konstellation.ts",
     needle: `{ orchestrator: "orchestratorin", "program-main": "main", lane: "lane" }`, with: `{ orchestrator: "orchestratorin", "program-main": "main" }` },
   { name: "a standard's reason does not say whether it can be set", claim: KONST_CLAIM.grund, file: "src/konstellation.ts",
-    needle: 'fest("Noch nicht einstellbar: Befehle und Dateien', with: 'fest("Befehle und Dateien' },
+    needle: 'fest("Not settable yet: commands and files', with: 'fest("commands and files' },
   { name: "a tap on a tag writes nothing", claim: KONST_CLAIM.grund, file: "src/konstellation.ts", width: 390,
     needle: "t.onclick = () => { if (why.has(id)) why.delete(id); else why.add(id); paint(); };", with: "t.onclick = () => undefined;" },
   { name: "the lane's own session file not read", claim: KONST_CLAIM.start, file: "src/konstellation.ts",
@@ -125,7 +125,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
   const now = Date.now();
   // seven occupations of every kind; 8–16 free
   const slots = [
-    { id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, lastOutput: 0, model: "claude-opus-5-5[1m]", effort: "high",
+    { id: 1, cwd: "/fixture/orch", label: "Orchestrator", openedAt: 1000, lastOutput: 0, model: "claude-opus-5-5[1m]", effort: "high",
       role: "orchestrator", permissionMode: "auto", ctx: { usedTokens: 316_000, windowTokens: 1_000_000, pct: 31.6 },
       cache: { lastCallAt: now - 60_000, ttlSec: 3600 }, compaction: { at: now - 7_200_000, trigger: "auto", preTokens: 377_619, postTokens: 11_921, idle: true } },
     { id: 2, cwd: "/fixture/main", label: "MAIN Alpha", openedAt: 2000, lastOutput: 0, model: "claude-sonnet-5-5", effort: "medium",
@@ -169,16 +169,16 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
   // the plan per role (GET /api/founding-plan): the role card in the card's own spelling and Claude Code's rows; a free
   // session's plan („Nur Ordner“) writes no session file; the repo /fixture/frei answers no plan at all
   const CARD: Record<string, string> = {
-    lane: ["--- ROLLE --- Lane: fuehrst genau eine Karte aus.", "--- DEIN EMPFAENGER --- deine MAIN: Rueckfragen per POST /api/self/clarifications.",
-      "--- DU ENTSCHEIDEST --- wie du das DONE erreichst, innerhalb von FLAECHE und VERBOTEN.",
-      "--- DEINE GRENZE --- alles ausserhalb der Karte, andere Repos, ~/.claude: stoppen und fragen. Nie landen.",
-      "--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · keine Session schliesst eine fremde · Zugangsdaten nie in einer Ausgabe."].join("\n"),
-    main: ["--- ROLLE --- Program-MAIN: fuehrt genau ein Program.", "--- DEIN EMPFAENGER --- der Owner: im Gespraech.",
-      "--- DU ENTSCHEIDEST --- Zuschnitt, Reihenfolge, Archiv.", "--- DER OWNER ENTSCHEIDET --- Regelwerk, Deploy, Veroeffentlichung.",
-      "--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · Geld beim Owner."].join("\n"),
-    orchestratorin: ["--- ROLLE --- Orchestratorin: uebersetzt Owner-Absicht.", "--- DEIN EMPFAENGER --- der Owner: im Gespraech.",
-      "--- DU ENTSCHEIDEST --- Programs anlegen, Karten schneiden, MAINs wecken.", "--- DER OWNER ENTSCHEIDET --- Regelwerk, Loeschen, Deploy.",
-      "--- BLOCKER (immer) --- nichts landet ohne gruenen Gate · Geld beim Owner."].join("\n"),
+    lane: ["--- ROLE --- Lane: you carry out exactly one card.", "--- YOUR RECIPIENT --- your MAIN: questions via POST /api/self/clarifications.",
+      "--- YOU DECIDE --- how you reach DONE, within FLAECHE and VERBOTEN.",
+      "--- YOUR LIMIT --- everything outside the card, other repos, ~/.claude: stop and ask. Never land.",
+      "--- BLOCKERS (always) --- nothing lands without a green gate · no session closes another · credentials never in an output."].join("\n"),
+    main: ["--- ROLE --- Program-MAIN: leads exactly one Program.", "--- YOUR RECIPIENT --- the owner: in conversation.",
+      "--- YOU DECIDE --- cut, order, archive.", "--- THE OWNER DECIDES --- rule set, deploy, publishing.",
+      "--- BLOCKERS (always) --- nothing lands without a green gate · money stays with the owner."].join("\n"),
+    orchestratorin: ["--- ROLE --- Orchestrator: turns owner intent into Programs and cards.", "--- YOUR RECIPIENT --- the owner: in conversation.",
+      "--- YOU DECIDE --- create Programs, cut cards, wake MAINs.", "--- THE OWNER DECIDES --- rule set, deleting, deploy.",
+      "--- BLOCKERS (always) --- nothing lands without a green gate · money stays with the owner."].join("\n"),
   };
   const cc = (id: string, wort: string, weg: string, wert: string) => ({ id, wort, weg, wert, satz: `Satz ${id}.`, quelle: `quelle#${id}`, bytes: "unknown" });
   const ccRows = (role: string) => [cc("systemprompt", "Systemprompt", "Claude Code", "nur in der Summe gemessen"),
@@ -186,8 +186,8 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
     cc("globale-regeln", "Globale Regeln", "native Datei", "1 Datei"),
     role === "lane" ? cc("mcp", "MCP", "--strict-mcp-config", "kein Server") : cc("mcp", "MCP", "Konfiguration des Accounts", "nicht von Fleet gewählt")];
   // the lane in slot 3 has her own session file; its card asks at four points where today's asks at three
-  const START_CARD = CARD.lane!.replace("andere Repos, ~/.claude:", "andere Repos, ~/.claude, geteilte Ports:");
-  const SESSION_FILE = `## Rolle\n\n${START_CARD}\n\n## Anleitung\n\n\n\n## Wissen\n\nx\n\n## Lane-Ende\n\n--- DEIN EMPFAENGER --- nicht hier.\n`;
+  const START_CARD = CARD.lane!.replace("other repos, ~/.claude:", "other repos, ~/.claude, shared ports:");
+  const SESSION_FILE = `## Rolle\n\n${START_CARD}\n\n## Anleitung\n\n\n\n## Wissen\n\nx\n\n## Lane-Ende\n\n--- YOUR RECIPIENT --- not here.\n`;
   const planReads: string[] = [];
   const planOf = (q: URLSearchParams): { status: number; body: unknown } => {
     const role = q.get("role") ?? "", harness = q.get("harness");
@@ -297,7 +297,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         labels: Object.fromEntries([...p.querySelectorAll('.kv')].map((v) => [v.dataset.k, v.querySelector(':scope > .kk')?.textContent ?? null])),
         words: [...new Set([...p.querySelectorAll('.kwer')].map((t) => t.className.replace('kwer ', '') + '=' + t.textContent))],
         standards: [...p.querySelectorAll('.kwer:not(.du)')].length,
-        unsaid: [...p.querySelectorAll('.kwer:not(.du)')].filter((t) => !/^(Noch nicht (je Session )?einstellbar|Nicht in Fleet einstellbar|Einstellbar beim Öffnen)/.test(t.title)).map((t) => t.dataset.why + ': ' + t.title.split('\\n')[0]),
+        unsaid: [...p.querySelectorAll('.kwer:not(.du)')].filter((t) => !/^(Not settable (per session )?yet|Not settable in Fleet|Settable when you open)/.test(t.title)).map((t) => t.dataset.why + ': ' + t.title.split('\\n')[0]),
         more: Object.fromEntries([...p.querySelectorAll('.kv')].filter((v) => v.querySelector('.kmore')).map((v) => [v.dataset.k, v.querySelector('.kmore').textContent])),
         links: [...p.querySelectorAll('.klink')].map((a) => a.textContent + ' ' + a.getAttribute('href')),
         auto: Object.fromEntries([...p.querySelectorAll('.kag')].map((g) => [g.dataset.art, { wort: g.querySelector('.kagn')?.textContent ?? null,
@@ -348,7 +348,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       await settle(350);
     };
     const seg = (d: string) => evaluate(`${WIN}?.querySelector('.kseg button[data-detail="${d}"]')?.click()`);
-    const briefsRead = () => wait(`${WIN} && ${WIN}.querySelectorAll('.kprops').length > 0 && ![...${WIN}.querySelectorAll('.kprops .kx, .kprops .kleer')].some((x) => x.textContent.startsWith('wird gelesen'))`, 10000);
+    const briefsRead = () => wait(`${WIN} && ${WIN}.querySelectorAll('.kprops').length > 0 && ![...${WIN}.querySelectorAll('.kprops .kx, .kprops .kleer')].some((x) => x.textContent.startsWith('reading …'))`, 10000);
     const results: KonstDomResult[] = [];
     let targetId = "";
     for (const [width, height, phone] of ([[1200, 900, false], [390, 844, true]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
@@ -368,7 +368,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       if (!await wait("document.querySelector('#konstbtn') && document.querySelector('#comptarget')?.dataset.slot === '6'", 15000))
         throw new Error(`konstellation DOM probe ${width}: the board never showed slot 6: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       await evaluate("document.querySelector('#konstbtn').click()");
-      // ready = the whole tree of the fixture: eight lines, the lane under its MAIN under the Orchestratorin, the MAIN by its name
+      // ready = the whole tree of the fixture: eight lines, the lane under its MAIN under the Orchestrator, the MAIN by its name
       facts.ready = await wait(`${WIN} && ${WIN}.querySelectorAll('.kn').length === 8 && !!${WIN}.querySelector('.kn[data-slot="1"] .kn[data-slot="2"] .kn[data-slot="3"]') && ${WIN}.querySelector('.kn[data-slot="2"] .kname')?.textContent.includes('Alpha')`, 10000);
       await settle(200);
 
@@ -377,11 +377,11 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       facts.lines = lines;
       facts.subtitle = await evaluate<string | null>(`${WIN}?.querySelector('.shellsub')?.textContent ?? null`);
       const by = (slot: number) => lines.find((c) => c.slot === slot);
-      claims[KONST_CLAIM.once] = JSON.stringify(lines.map((c) => c.slot).sort((a, b) => a - b)) === JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8]) && facts.subtitle === "8 Sessions laufen";
+      claims[KONST_CLAIM.once] = JSON.stringify(lines.map((c) => c.slot).sort((a, b) => a - b)) === JSON.stringify([1, 2, 3, 4, 5, 6, 7, 8]) && facts.subtitle === "8 sessions running";
       claims[KONST_CLAIM.tree] = by(1)?.group === "orchester" && by(1)?.parent === null
         && by(2)?.parent === 1 && by(3)?.parent === 2 && by(3)?.kind === "lane"
         && by(4)?.group === "lanes" && by(4)?.parent === null
-        && by(5)?.group === "branches" && by(5)?.kind === "bau" && by(5)?.name === "Einstellungen (K16)" && by(5)?.role === "Bau-Session"
+        && by(5)?.group === "branches" && by(5)?.kind === "bau" && by(5)?.name === "Einstellungen (K16)" && by(5)?.role === "Build session"
         && by(6)?.group === "sessions" && by(6)?.role === "Session" && by(7)?.group === "sessions" && by(7)?.kind === "session"
         && by(8)?.parent === 6 && by(8)?.kind === "lane" && by(2)?.role === "Program-MAIN" && by(3)?.role === "Lane" && by(1)?.role === null;
       const glance = await evaluate<{ tree: number; room: number; values: number; pressed: string | null } | null>(`(() => { const w = ${WIN}; if (!w) return null;
@@ -389,9 +389,9 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         return { tree: Math.round(box.height), room: d.clientHeight, values: w.querySelectorAll('.kv, .kprops, .kpeek, .kwerte').length,
           pressed: w.querySelector('.kseg button[aria-pressed="true"]')?.textContent ?? null }; })()`);
       facts.glance = glance;
-      const KINDS = ["Orchestratorin", "Program-MAIN", "Lane", "Bau-Session", "Session"];
+      const KINDS = ["Orchestrator", "Program-MAIN", "Lane", "Build session", "Session"];
       claims[KONST_CLAIM.aufbau] = lines.length === 8 && lines.every((c) => c.act && !c.valuesOnLine && (c.role === null || KINDS.includes(c.role)))
-        && !!glance && glance.values === 0 && glance.pressed === "Aufbau" && glance.tree <= glance.room;
+        && !!glance && glance.values === 0 && glance.pressed === "Structure" && glance.tree <= glance.room;
       await shot(`konstellation-${width}-aufbau`);
 
       if (!phone) {
@@ -412,8 +412,8 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         const gone = await evaluate<Peek>(PEEK);
         facts.peek = { peek, gone };
         claims[KONST_CLAIM.peek] = peek?.slot === 1
-          && JSON.stringify(peek.vals) === JSON.stringify({ modell: "Opus 5.5 · 1M", effort: "high", kontext: "32 %", uebergabe: "ab 45 %" })
-          && peek.hint === "Klick: alle Eigenschaften" && gone === null
+          && JSON.stringify(peek.vals) === JSON.stringify({ modell: "Opus 5.5 · 1M", effort: "high", kontext: "32 %", uebergabe: "from 45 %" })
+          && peek.hint === "Click: all properties" && gone === null
           && JSON.stringify(under.map((c) => [c.slot, c.top])) === JSON.stringify(lines.map((c) => [c.slot, c.top]));
       }
 
@@ -424,29 +424,29 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       const props = (await evaluate<Props | null>(PROPS)) ?? {};
       facts.props = props;
       const p = (slot: number) => props[String(slot)]?.vals ?? {};
-      const LANE_SELBST = ["wie du das Fertig-Kriterium der Karte erreichst, innerhalb ihrer Fläche und Verbote"];
+      const LANE_SELBST = ["how you reach DONE, within FLAECHE and VERBOTEN"];
       claims[KONST_CLAIM.values] =
-        p(1).modell === "Opus 5.5 · 1M" && p(1).effort === "high" && p(1).uebergabe === "ab 45 %" && p(1).befehle === "Fleet-Standard"
+        p(1).modell === "Opus 5.5 · 1M" && p(1).effort === "high" && p(1).uebergabe === "from 45 %" && p(1).befehle === "Fleet default"
         && props["1"]?.labels.uebergabe === "Succession"
-        && p(1).modus === "Auto Mode, ein Prüfmodell sieht Shell- und Netzaktionen" && p(3).modus === "ohne Prüfung (bypass)"
-        && p(1).art === "Orchestratorin" && p(1).haengt === "keiner, sie führt" && p(1).agent === "Claude Code" && !("program" in p(1)) && !("auftrag" in p(1))
-        && p(2).modell?.startsWith("Sonnet 5.5") === true && p(2).effort === "medium" && p(2).uebergabe === "aus · 3. Session der Linie"
-        && p(2).program === "„Alpha“, sie führt es" && p(2).haengt === "Orchestratorin · Slot 1" && p(2)["cc-werkzeuge"] === "15 Werkzeuge" && props["2"]?.wer["cc-werkzeuge"] === "fleet"
-        && p(3).modell?.startsWith("Sonnet 5.5") === true && p(3).effort === "xhigh" && p(3).uebergabe === "ab 50 %, solange der Cache warm ist bis 55 %"
-        && p(3).program === "„Alpha“" && p(3).auftrag === "„Bau A“" && p(3).branch === LONG_BRANCH && p(3).haengt === "MAIN Alpha · Slot 2"
-        && p(3).ordner === "a · eigener Worktree" && props["3"]?.hover.ordner === "/fixture/r.worktrees/a\nRepo /fixture/r"
-        && p(3)["cc-systemprompt"] === "eingebaut" && p(3)["cc-werkzeuge"] === "14 Werkzeuge" && p(3)["cc-mcp"] === "kein Server"
+        && p(1).modus === "Auto Mode, a reviewer model checks shell and network actions" && p(3).modus === "no checks (bypass)"
+        && p(1).art === "Orchestrator" && p(1).haengt === "none, it leads" && p(1).agent === "Claude Code" && !("program" in p(1)) && !("auftrag" in p(1))
+        && p(2).modell?.startsWith("Sonnet 5.5") === true && p(2).effort === "medium" && p(2).uebergabe === "off · session 3 of the succession"
+        && p(2).program === "“Alpha”, this MAIN leads it" && p(2).haengt === "Orchestrator · Slot 1" && p(2)["cc-werkzeuge"] === "15 tools" && props["2"]?.wer["cc-werkzeuge"] === "fleet"
+        && p(3).modell?.startsWith("Sonnet 5.5") === true && p(3).effort === "xhigh" && p(3).uebergabe === "from 50 %, up to 55 % while the cache is warm"
+        && p(3).program === "“Alpha”" && p(3).auftrag === "“Bau A”" && p(3).branch === LONG_BRANCH && p(3).haengt === "MAIN Alpha · Slot 2"
+        && p(3).ordner === "a · own worktree" && props["3"]?.hover.ordner === "/fixture/r.worktrees/a\nRepo /fixture/r"
+        && p(3)["cc-systemprompt"] === "built in" && p(3)["cc-werkzeuge"] === "14 Werkzeuge" && p(3)["cc-mcp"] === "kein Server"
         && props["3"]?.hover["cc-mcp"] === "Satz mcp." && p(5)["cc-werkzeuge"] === "alle eingebauten"
-        && p(4).modell?.startsWith("codex · ") === true && p(4).agent === "codex" && p(4).effort === "Standard" && p(4).befehle === "workspace-write, never"
+        && p(4).modell?.startsWith("codex · ") === true && p(4).agent === "codex" && p(4).effort === "default" && p(4).befehle === "workspace-write, never"
         && !("modus" in p(4)) && !props["4"]?.sections.includes("Claude Code")
-        && p(5).haengt === "nicht gemeldet" && p(5).branch === "bau/einstellungen"
-        && p(6).modell === "Standard des Agenten" && p(6).uebergabe === "ab 45 %" && p(6).ordner === "frei · Haupt-Checkout"
-        && p(8).haengt === "Frei · Slot 6" && p(8).uebergabe === "ab 37 %, der Cache ist kalt: Fleet tippt nichts"
+        && p(5).haengt === "not reported" && p(5).branch === "bau/einstellungen"
+        && p(6).modell === "agent default" && p(6).uebergabe === "from 45 %" && p(6).ordner === "frei · main checkout"
+        && p(8).haengt === "Frei · Slot 6" && p(8).uebergabe === "from 37 %, the cache is cold: Fleet types nothing"
         && planReads.includes("lane@/fixture/r") && planReads.includes("lane@/fixture/r#codex") && planReads.includes("nur-ordner@/fixture/r.worktrees/bau-einstellungen")
         && planReads.includes("main@/fixture/main") && planReads.includes("orchestratorin@/fixture/orch");
-      claims[KONST_CLAIM.unknown] = p(4).uebergabe === "nicht lesbar"
-        && props["6"]?.leer["claude-code"] === "nicht lesbar" && props["8"]?.leer.autonomie === "nicht lesbar"
-        && [2, 5, 6, 7, 8].every((n) => p(n).modus === "nicht gemeldet");
+      claims[KONST_CLAIM.unknown] = p(4).uebergabe === "unreadable"
+        && props["6"]?.leer["claude-code"] === "unreadable" && props["8"]?.leer.autonomie === "unreadable"
+        && [2, 5, 6, 7, 8].every((n) => p(n).modus === "not reported");
       const pr = (slot: number) => props[String(slot)];
       claims[KONST_CLAIM.wer] = Object.keys(props).length === 8 && Object.values(props).every((x) => x.untagged.length === 0)
         && [1, 3, 5].every((n) => pr(n)?.wer.modell === "du" && pr(n)?.wer.effort === "du" && pr(n)?.wer.uebergabe === "du"
@@ -456,24 +456,24 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         && pr(3)?.wer["cc-werkzeuge"] === "fleet" && pr(3)?.wer["cc-mcp"] === "fleet" && pr(5)?.wer["cc-mcp"] === "claude-code"
         && pr(3)?.secWer.autonomie === "fleet" && pr(6)?.secWer.autonomie === "fleet"
         && JSON.stringify([...new Set(Object.values(props).flatMap((x) => x.words))].sort())
-          === JSON.stringify(["claude-code=Claude-Code-Standard", "du=änderbar", "fleet=Fleet-Standard"]);
+          === JSON.stringify(["claude-code=Claude Code default", "du=settable", "fleet=Fleet default"]);
       claims[KONST_CLAIM.autonomie] = JSON.stringify(pr(3)?.auto) === JSON.stringify({
-          selbst: { wort: "Entscheidet selbst", n: "1", satz: "ohne Rückfrage", punkte: LANE_SELBST },
-          fragt: { wort: "Fragt zuerst", n: "4", satz: "fragt ihre MAIN", punkte: ["alles außerhalb der Karte", "andere Repos", "~/.claude", "geteilte Ports"] },
-          nie: { wort: "Nie", n: "3", satz: "gilt für jede Rolle gleich", punkte: ["nichts landet ohne grüne Land-Prüfung", "keine Session schließt eine fremde", "Zugangsdaten nie in einer Ausgabe"] } })
-        && pr(4)?.auto.selbst?.n === "1" && pr(4)?.auto.fragt?.n === "3" && pr(1)?.auto.selbst?.n === "3" && pr(1)?.auto.fragt?.satz === "fragt den Owner" && pr(2)?.auto.fragt?.n === "3"
-        && pr(6)?.leer.autonomie === "Keine Rollenkarte · sie arbeitet nach der AGENTS.md ihres Ordners" && !pr(6)?.auto.selbst
+          selbst: { wort: "Decides alone", n: "1", satz: "without asking", punkte: LANE_SELBST },
+          fragt: { wort: "Asks first", n: "4", satz: "asks its MAIN", punkte: ["everything outside the card", "other repos", "~/.claude", "shared ports"] },
+          nie: { wort: "Never", n: "3", satz: "the same for every role", punkte: ["nothing lands without a green gate", "no session closes another", "credentials never in an output"] } })
+        && pr(4)?.auto.selbst?.n === "1" && pr(4)?.auto.fragt?.n === "3" && pr(1)?.auto.selbst?.n === "3" && pr(1)?.auto.fragt?.satz === "asks the owner" && pr(2)?.auto.fragt?.n === "3"
+        && pr(6)?.leer.autonomie === "No role card · it follows the AGENTS.md in its folder" && !pr(6)?.auto.selbst
         && pr(5)?.leer.autonomie === pr(6)?.leer.autonomie;
-      claims[KONST_CLAIM.start] = pr(3)?.fass === "heute gibt Fleet eine andere"
-        && pr(3)?.autoWhy?.startsWith("Noch nicht einstellbar: Diese Rollenkarte hat Fleet ihr beim Start in die Session-Datei geschrieben") === true
-        && pr(3)?.autoWhy?.endsWith("/fixture/r.worktrees/a/AGENTS.override.md · Abschnitt „Rolle“") === true
-        && [1, 2, 4].every((n) => pr(n)?.fass === "Fassung von heute" && pr(n)?.autoWhy?.startsWith("Noch nicht einstellbar: Fleet gibt jeder ") === true)
+      claims[KONST_CLAIM.start] = pr(3)?.fass === "Fleet gives another one today"
+        && pr(3)?.autoWhy?.startsWith("Not settable yet: Fleet wrote this role card into the session file at start") === true
+        && pr(3)?.autoWhy?.endsWith("/fixture/r.worktrees/a/AGENTS.override.md · section “Rolle”") === true
+        && [1, 2, 4].every((n) => pr(n)?.fass === "Version as of today" && pr(n)?.autoWhy?.startsWith("Not settable yet: Fleet gives every ") === true)
         && pr(5)?.fass === null && pr(8)?.fass === null;
-      // one line where the line stands at the top (Orchestratorin, branch session); the lane two levels in has 34 px less, and a wider
-      // fallback font (DejaVu Sans on the Linux helper) wraps „Fleet-Standard“ there after its hyphen: allowed, a break inside a word not
+      // one line where the line stands at the top (Orchestrator, branch session); the lane two levels in has 34 px less, and a wider
+      // fallback font (DejaVu Sans on the Linux helper) wraps „Fleet default“ there at its space: allowed, a break inside a word not
       claims[KONST_CLAIM.phone] = [1, 5].every((n) => pr(n)?.oneLine === true) && pr(3)?.wordWhole === true;
-      claims[KONST_CLAIM.maschine] = [1, 3, 4, 6].every((n) => p(n).maschine === "mac" && p(n).isolation === "keine"
-          && pr(n)?.more.maschine === "andere Maschinen möglich, nicht verbundenworkhorse" && pr(n)?.more.isolation === "Sandbox/VM möglich, nicht aktiv"
+      claims[KONST_CLAIM.maschine] = [1, 3, 4, 6].every((n) => p(n).maschine === "mac" && p(n).isolation === "none"
+          && pr(n)?.more.maschine === "other machines possible, not connectedworkhorse" && pr(n)?.more.isolation === "Sandbox/VM possible, not active"
           && JSON.stringify(pr(n)?.links) === JSON.stringify(["workhorse http://workhorse.fixture:8790"]) && pr(n)?.gray === true && pr(n)?.switches === 0);
       const fitLines = (await evaluate<Line[] | null>(READ)) ?? [];
       facts.fit = fitLines.map((c) => [c.slot, c.nameCut, c.kindWhole]);
@@ -484,9 +484,9 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       await evaluate(`${WIN}?.querySelector('.shelldetail')?.scrollTo(0, 0)`);
       await settle(150);
 
-      // „Alles“: the card's values as a second line, no sheet; kept across a reopening; „Aufbau“ takes them away
+      // „All“: the card's values as a second line, no sheet; kept across a reopening; „Structure“ takes them away
       await seg("alles");
-      await wait(`${WIN} && ${WIN}.querySelectorAll('.kwerte').length === 8 && ![...${WIN}.querySelectorAll('.kwerte .kx')].some((x) => x.textContent.startsWith('wird gelesen'))`, 5000);
+      await wait(`${WIN} && ${WIN}.querySelectorAll('.kwerte').length === 8 && ![...${WIN}.querySelectorAll('.kwerte .kx')].some((x) => x.textContent.startsWith('reading …'))`, 5000);
       await settle(150);
       const werte = await evaluate<{ lines: number; sheets: number; one: Record<string, string | null>; ctx: Record<string, string | null>; tree: number; room: number }>(`(() => { const w = ${WIN};
         const one = Object.fromEntries([...w.querySelectorAll('.kn[data-slot="1"] > .kline > .kwerte .kv')].map((v) => [v.dataset.k, v.querySelector('.kx')?.textContent.replace(/\\u00a0/g, ' ') ?? null]));
@@ -505,13 +505,13 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       const after = await evaluate<{ lines: number; pressed: string | null }>(`({ lines: ${WIN}?.querySelectorAll('.kwerte').length ?? -1, pressed: ${WIN}?.querySelector('.kseg button[aria-pressed="true"]')?.textContent ?? null })`);
       facts.alles = { werte, closed, reopened, after };
       claims[KONST_CLAIM.alles] = werte.lines === 8 && werte.sheets === 0
-        && JSON.stringify(werte.one) === JSON.stringify({ modell: "Opus 5.5 · 1M", effort: "high", kontext: "32 %", uebergabe: "ab 45 %" })
-        && closed && reopened === 8 && after.lines === 0 && after.pressed === "Aufbau";
+        && JSON.stringify(werte.one) === JSON.stringify({ modell: "Opus 5.5 · 1M", effort: "high", kontext: "32 %", uebergabe: "from 45 %" })
+        && closed && reopened === 8 && after.lines === 0 && after.pressed === "Structure";
       // the context's unknowns stand on the card's values (the properties leave the context to the card)
-      claims[KONST_CLAIM.unknown] = claims[KONST_CLAIM.unknown]! && werte.ctx["2"] === "nicht messbar" && werte.ctx["7"] === "< 1 %"
+      claims[KONST_CLAIM.unknown] = claims[KONST_CLAIM.unknown]! && werte.ctx["2"] === "not measurable" && werte.ctx["7"] === "< 1 %"
         && Object.values(werte.ctx).every((c) => c !== null && !/^0 %|^0$/.test(c));
 
-      // a single line: a click (desktop) or two taps (phone), the line stays, then „Session zeigen“
+      // a single line: a click (desktop) or two taps (phone), the line stays, then „Show session“
       const at3 = await center(3), at6 = await center(6);
       if (phone && at6) {
         await tap(at6.x, at6.y);
@@ -520,7 +520,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         await tap(at6.x, at6.y);
         const second = { peek: await evaluate<Peek>(PEEK), open: Object.keys((await evaluate<Props | null>(PROPS)) ?? {}) };
         facts.touch = { first, second };
-        claims[KONST_CLAIM.touch] = first.peek?.slot === 6 && first.peek.hint === "Noch einmal tippen: alle Eigenschaften" && first.open === 0
+        claims[KONST_CLAIM.touch] = first.peek?.slot === 6 && first.peek.hint === "Tap again: all properties" && first.open === 0
           && second.peek === null && JSON.stringify(second.open) === JSON.stringify(["6"]);
         await tap(at6.x, at6.y);
       }
@@ -542,7 +542,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       await press();
       const hidden = await reason();
       facts.grund = { shown, hidden };
-      const ISO = "Noch nicht einstellbar: Container und VM schneiden den Rückweg zu Fleet ab; Claude Codes Sandbox ginge, ist aber nicht eingeschaltet.";
+      const ISO = "Not settable yet: a container or VM cuts off the way back to Fleet; the Claude Code sandbox would work but is not switched on.";
       claims[KONST_CLAIM.grund] = shown.text === ISO && shown.expanded === "true" && shown.title === `${ISO}\ndocs/neuaufbau/befunde/19-isolation.md`
         && hidden.text === null && hidden.expanded === "false"
         && Object.values(props).reduce((n, x) => n + x.standards, 0) > 0 && Object.values(props).every((x) => x.unsaid.length === 0);
@@ -551,7 +551,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
       facts.click = { open: Object.keys(one), sections: one["3"]?.sections, before3, after3, closed: !await evaluate<boolean>(`!!${WIN}`),
         target: await evaluate<string | null>("document.querySelector('#comptarget')?.dataset.slot ?? null") };
       claims[KONST_CLAIM.click] = JSON.stringify(Object.keys(one)) === JSON.stringify(["3"])
-        && JSON.stringify(one["3"]?.sections) === JSON.stringify(["Autonomie", "Rechte", "Einstellungen", "Claude Code", "Aufbau"])
+        && JSON.stringify(one["3"]?.sections) === JSON.stringify(["Autonomy", "Rights", "Settings", "Claude Code", "Structure"])
         && before3 !== null && before3 === after3
         && !await evaluate<boolean>(`!!${WIN}`) && await evaluate<boolean>("document.querySelector('#comptarget')?.dataset.slot === '3'");
       results.push({ width, height, claims, facts });

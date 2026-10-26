@@ -86,7 +86,7 @@ async function sitzPosition(v: unknown, dir: string, eigene: string | null, selb
   return { konst, form, pos };
 }
 const profilVon = (pos: Record<string, unknown>): Record<string, unknown> | null => rec(pos.profil);
-// WAS DIE DATEI ERBITTET UND IM BRIEF STEHT (src/k15-entwurf-modell.ts#ASPEKTE, wirkung „brief“, etwa „Subagenten: nur lesende.“): Werte der Position
+// WAS DIE DATEI ERBITTET UND IM BRIEF STEHT (src/k15-entwurf-modell.ts#ASPEKTE, wirkung „brief“, etwa „Subagents: read only.“): Werte der Position
 // vor denen ihres Profils, als die Sätze, die das Modell für sie nennt
 export function erbeteneZeilen(pos: Record<string, unknown>): string[] {
   const werte = { ...rec(profilVon(pos)?.werte), ...rec(pos.werteAbw) };

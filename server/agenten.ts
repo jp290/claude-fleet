@@ -36,7 +36,7 @@ export type Wahlen = Partial<Record<WahlFeld, unknown>>;
 const ALLE_FELDER: readonly string[] = [...WAHL_FELDER, ...BEZUG_FELDER];
 /** Die Felder, die nur auf einen Ort dieser Fleet zeigen: ein eigener Agent trägt sie nicht ausgeschrieben, ein Export nie. */
 const NUR_HIER: readonly WahlFeld[] = ["profil", "sitz"];
-export const ROLLEN: Readonly<Record<string, { label: string; name: string }>> = { orchestratorin: { label: "Orchestrator", name: "Orchestratorin" } };
+export const ROLLEN: Readonly<Record<string, { label: string; name: string }>> = { orchestratorin: { label: "Orchestrator", name: "Orchestrator" } };
 
 /** Die Agent-MD eines Agenten. `profil` ist der Name, unter dem sie im Systemprompt steht und dessen Notizbuch der Sitz bekommt. */
 export interface AgentMdTeil { readonly titel: string; readonly text: string; readonly profil: string }
@@ -185,8 +185,8 @@ export function schreibAgenten(dir: string, agenten: readonly Agent[]): void {
 const eingebaut = (id: string, name: string, wahlen: Wahlen, quelle: string): AgentAnsicht =>
   ({ id, name, wahlen, agentMd: null, am: 0, hash: agentHash(wahlen, null), art: "eingebaut", aenderbar: false, quelle });
 export const EINGEBAUTE: readonly AgentAnsicht[] = [
-  eingebaut("repo", "Agent des Repos", {}, "ohne Rolle: liest die AGENTS.md des Repos, in dem er startet"),
-  eingebaut("orchestratorin", "Orchestratorin", { rolle: "orchestratorin" }, "die Rolle der Orchestratorin (Rollenkarte aus Fleets Repo)"),
+  eingebaut("repo", "Repo agent", {}, "no role: reads the AGENTS.md of the repo it starts in"),
+  eingebaut("orchestratorin", "Orchestrator", { rolle: "orchestratorin" }, "the Orchestrator role (role card from Fleet's repo)"),
 ];
 
 // DIE ABGELEITETEN aus dem Speicher des Fensters: je Profil mit Agent-MD und je Position einer gespeicherten Konstellation ein Agent, der auf sie

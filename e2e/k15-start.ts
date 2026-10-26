@@ -1,11 +1,10 @@
 // A START FROM THE START WINDOW AGAINST THIS INSTANCE (owner 24.10., src/start-fenster.ts; the build: K15 Runde 5, owner 17.10. „[Zitat entfernt]“
 // ). A click on a free place opens the start window; a start there
-// gives a session whose door took the Fassung the start brief showed (server.ts#fassungGezeigtPruefung: a hash that moved is a 409), and
-// the build over „Lanes, MAIN and constellations ›“ gives a lane with exactly the chosen repo, agent, model and effort, read back at the
-// session the server made. Nothing here is stubbed: like e2e/slots.ts#runRightsDom the staged server answers every request; the probe's
+// gives a session whose door took the Fassung the start brief showed (server.ts#fassungGezeigtPruefung: a hash that moved is a 409).
+// Nothing here is stubbed: like e2e/slots.ts#runRightsDom the staged server answers every request; the probe's
 // own part is named — the bundles are built from `sourceRoot` and handed to the page in place of the served /app.js, /k15.js, /k15.css
-// and /sitzung.css, so a mutant tree is measured against the same server. Both sessions take the same free place one after the other and
-// live on FLEET_E2E_REPO (a fixture repo, Mangel 91); each is killed again, the lane's worktree removed. Driven by e2e/dom.ts.
+// and /sitzung.css, so a mutant tree is measured against the same server.
+// The session lives on FLEET_E2E_REPO (a fixture repo, Mangel 91) and is killed again at the end. Driven by e2e/dom.ts.
 import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -14,17 +13,13 @@ export interface K15StartLiveResult { claims: Record<string, boolean>; facts: Re
 export interface K15StartLiveMutant { name: string; claim: keyof typeof K15_START_LIVE_CLAIM; file: string; needle: string; with: string }
 
 export const K15_START_LIVE_CLAIM = {
-  opens: "a click on a free place of the bar opens the start window with the repo's own agent; „Lanes, MAIN and constellations ›“ leads to the build with a lane chosen — the old start window does not open",
+  opens: "a click on a free place of the bar opens the start window with the repo's own agent — the old start window does not open",
   fenster: "Start in the start window, on the fixture repo as the repo's agent with „+ Rights“, gives a session on that place in that repo: the door took the Fassung the start brief showed (no 409), and the session's held start Fassung carries the rights sentence",
-  values: "„… starten“ in the build gives a session on that place with the repo, the agent, the model and the effort chosen in the window, as the server reports them",
-  closes: "after each start the window is gone, and the place it started stands with a session",
+  closes: "after the start the window is gone, and the place it started stands with a session",
 } as const;
 
 // each mutant must turn its claim red; a needle that left the source throws
 export const K15_START_LIVE_MUTANTS: readonly K15StartLiveMutant[] = [
-  { name: "the lane door drops the chosen triple", claim: "values", file: "src/start-tuer.ts",
-    needle: `return await tuer(url, { repo: a.repo, ...(a.parent ? { parent: a.parent } : {}), branch: "", ...a.dreier, plan: a.plan }, a.slot);`,
-    with: `return await tuer(url, { repo: a.repo, ...(a.parent ? { parent: a.parent } : {}), branch: "", plan: a.plan }, a.slot);` },
   { name: "a free place opens no window", claim: "opens", file: "src/client.ts",
     needle: `row.onclick = () => openK15Entwurf({ slot: s.id });`, with: `row.onclick = () => undefined;` },
   { name: "the start window sends a Fassung its start brief did not show", claim: "fenster", file: "src/start-fenster.ts",
@@ -65,7 +60,7 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
   const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
   const claims: Record<string, boolean> = {};
   const facts: Record<string, unknown> = { mutant: m?.name ?? null };
-  // one free place: the start window's session takes it, is read back and killed, then the build's lane takes it
+  // one free place: the start window's session takes it, is read back and killed
   const free = (await rows()).find((r) => r.id <= 16 && !r.cwd);
   if (!free) { rmSync(scratch, { recursive: true, force: true }); throw new Error("k15 start: no free band slot"); }
   facts.slot = free.id;
@@ -140,7 +135,6 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     };
     await send("Page.navigate", { url: `${o.base}/?token=${o.token}` });
     await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 15000);
-    await evaluate(`localStorage.setItem('fleet.k15.rundgang', '1')`);
     const repos = JSON.stringify([o.repo, real(o.repo)]);
 
     // 1. the free place opens the start window; on the fixture repo the repo's agent with „+ Rights“ starts there, and the door takes the
@@ -168,61 +162,9 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     facts.fensterSlot = { cwd: amOrt?.cwd ?? null, rechteSatz: rechteSatz?.slice(0, 160) ?? null, festgehalten: !!gehalten?.festgehalten };
     claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo) && !!rechteSatz?.startsWith("FLEET RIGHTS (level “build”");
 
-    // 2. the place free again: the start window, then „Lanes, MAIN and constellations ›“ leads to the build, a lane chosen
-    if (amOrt?.cwd) await own("POST", `/api/slots/${free.id}/kill`, {}).catch(() => undefined);
-    await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 20000);
-    await click(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`);
-    const eine = await wait(`document.querySelector('#shell-found.k15sitz .sfaufbau')`, 10000);
-    if (eine) await click(`document.querySelector('#shell-found .sfaufbau')`);
-    const opened = eine && await wait(`document.querySelector('#shell-found.k15 .k15go')`, 10000);
-    facts.opened = await evaluate(`({ k15: !!document.querySelector('#shell-found.k15'), old: !!document.querySelector('.fdgo, .fdkind'),
-      knopf: document.querySelector('.k15go')?.textContent ?? null })`);
-    claims.opens = fenster && opened && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind') && /^Lane \\d+ starten$/.test(document.querySelector('.k15go')?.textContent ?? '')`);
-
-    // 2. the repo of the start is the fixture repo; then another model and another effort than the role's standard
-    if (opened && real(String(await evaluate<string>(`document.querySelector('.k15wo')?.dataset.repo ?? ''`))) !== real(o.repo)) {
-      await click(`document.querySelector('.k15wo')`);
-      await wait(`document.querySelector('.k15repomenu')`);
-      await click(`[...document.querySelectorAll('.k15repomenu .k15repo')].find((r) => r.dataset.repo && (${JSON.stringify([o.repo, real(o.repo)])}).includes(r.dataset.repo))?.querySelector('.k15repob')`);
-      await wait(`!document.querySelector('.k15repomenu')`);
-    }
-    // the column repaints while a choice re-reads the plan, so a press can land beside the moving switch: up to three presses
-    const choose = async (key: string): Promise<string | null> => {
-      const row = `[...document.querySelectorAll('.k15c3 .k15z')].find((r) => r.querySelector('.k15zk')?.textContent === ${JSON.stringify(key)})`;
-      let open = false;
-      for (let i = 0; i < 3 && !open; i++) {
-        await wait(`!/wird gelesen/.test(document.querySelector('.k15foot')?.textContent ?? '')`, 5000);
-        await click(`${row}?.querySelector('.k15sw')`);
-        open = await wait(`document.querySelector('.k15menu')`, 1500);
-      }
-      if (!open) return null;
-      const pick = await evaluate<string | null>(`(() => { const b = [...document.querySelectorAll('.k15menu button')].find((x) => !x.disabled && x.getAttribute('aria-checked') !== 'true');
-        return b ? b.dataset.wert : null; })()`);
-      if (!pick) return null;
-      await click(`document.querySelector('.k15menu button[data-wert=${JSON.stringify(pick)}]')`);
-      await wait(`!document.querySelector('.k15menu')`);
-      return pick;
-    };
-    const agent = await evaluate<string>(`[...document.querySelectorAll('.k15c3 .k15z')].find((r) => r.querySelector('.k15zk')?.textContent === 'Agent')?.querySelector('.k15zv')?.textContent ?? ''`);
-    const model = await choose("Modell");
-    const effort = await choose("Effort");
-    const chosenRepo = await evaluate<string>(`document.querySelector('.k15wo')?.dataset.repo ?? ''`);
-    facts.chose = { agent, model, effort, repo: chosenRepo };
-    const ready = await wait(`document.querySelector('.k15go') && !document.querySelector('.k15go').disabled`, 15000);
-    facts.foot = await evaluate<string>(`document.querySelector('.k15foot')?.innerText.replace(/\\s+/g, ' ').slice(0, 400) ?? ''`);
-
-    // 3. start, then read the place back at the server — only on the fixture repo (Mangel 91): a window that kept another repo starts nothing
-    const onFixture = real(String(chosenRepo)) === real(o.repo);
-    if (!onFixture) facts.notStarted = "the window's repo is not the fixture repo";
-    if (ready && onFixture) await click(`document.querySelector('.k15go')`);
-    const gone = ready && await wait(`!document.querySelector('#shell-found.k15')`, 20000);
-    const row = (await rows()).find((r) => r.id === free.id);
-    facts.row = row ? { cwd: row.cwd, repo: row.worktree?.repo ?? row.repo ?? null, harness: row.harness ?? null, model: row.model ?? null, effort: row.effort ?? null } : null;
-    // an absent `harness` is the default agent (server.ts: the field is omitted for it); the window names that agent Claude Code
-    const harnessOk = (row?.harness ?? "claude") === "claude" ? /^Claude Code/.test(agent ?? "") : (agent ?? "").toLowerCase().startsWith(String(row?.harness));
-    claims.values = !!row?.cwd && !!row.worktree && real(row.worktree.repo) === real(o.repo) && harnessOk
-      && model !== null && row.model === model && effort !== null && row.effort === effort;
-    claims.closes = fensterZu && !!amOrt?.cwd && gone && !!row?.cwd;
+    // the window is open on a free place with the repo's agent; the old start window does not open
+    claims.opens = fenster && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind')`);
+    claims.closes = fensterZu && !!amOrt?.cwd;
     return { claims, facts };
   } finally {
     socket?.close();

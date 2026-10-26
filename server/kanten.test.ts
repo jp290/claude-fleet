@@ -63,7 +63,7 @@ describe("Kanten: zwei Sessions schreiben sich direkt, auf Zeit, mit Freigabe de
     expect(rows.find((r) => r.id === B)?.kanten?.map((x) => x.slot)).toEqual([A]);
     expect(rows.find((r) => r.id === ORCH)?.kanten).toBeUndefined();
     // ein Satz an jedes Ende
-    expect(texte(inboxA).some((t) => t.startsWith(`Du kannst Slot ${B} bis `) && t.includes("Chat-Ansicht"))).toBe(true);
+    expect(texte(inboxA).some((t) => t.startsWith(`You can write to slot ${B} directly until `) && t.includes("Chat-Ansicht"))).toBe(true);
 
     await Bun.sleep(5_200); // 0,08 Minuten sind 4,8 s
     const [danach, boardDanach] = await life(f, [schreib(f, A, B, "4", "nach dem Ende"), get("/api/sessions")]);
@@ -82,7 +82,7 @@ describe("Kanten: zwei Sessions schreiben sich direkt, auf Zeit, mit Freigabe de
       schreib(f, B, A, "1", "nach dem Schließen"), as(f, B, get("/api/self/messages?unread=1"))]);
     expect(zu?.status).toBe(200);
     expect(danach?.status).toBe(409);
-    expect(texte(inboxB).some((t) => t.startsWith(`Deine Kante zu Slot ${A} ist seit `))).toBe(true);
+    expect(texte(inboxB).some((t) => t.startsWith(`Your edge to slot ${A} has been closed since `))).toBe(true);
   }, LIFE_DEADLINE_MS * 3);
 });
 

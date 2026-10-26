@@ -422,7 +422,9 @@ export function renderCohorts(rows: LaneRow[]): string {
 //   - quality: joined by branch to a land-quality.jsonl (bun tools/land-quality.ts --out), never recomputed.
 //   - nudges: prompts whose text opens with the server's migrate head; armed = the first such delivery.
 
-const MIGRATE_HEAD = "[fleet] Dein Kontext ist bei ";
+// the head the server types, and the older German head that transcripts of earlier sessions still carry
+const MIGRATE_HEADS = ["[fleet] Your context is at ", "[fleet] Dein Kontext ist bei "];
+const isMigrateHead = (text: string | null | undefined): boolean => MIGRATE_HEADS.some((h) => text?.startsWith(h) === true);
 const WAVE_HEAD = /DIESE LANE TRÄGT EINE WELLE: (\d+) QUEUE-ZEILEN/;
 const CARD_SIZE = /GROESSE: (klein|mittel|gross)\b/g;
 /** the lane threshold's default until K9 S3 (now server/succession.ts#thresholdOf, 37); the window of every Opus-5 lane is 1M */
@@ -549,7 +551,7 @@ export async function budgetRows(root: string, projects: string, quality: string
       successions: int(o.successions), waveRows,
       waveUnits: sizes.reduce((n, s) => n + landWaveUnits(s), 0) + landWaveUnits(null) * (waveRows - sizes.length),
       filesTouched: Array.isArray(o.filesTouched) ? o.filesTouched.length : null, sessions: sessions.length, peakSession,
-      nudges: prompts.filter((p) => str(p.text)?.startsWith(MIGRATE_HEAD)).map((p) => int(p.ts)).filter((t): t is number => t !== null),
+      nudges: prompts.filter((p) => isMigrateHead(str(p.text))).map((p) => int(p.ts)).filter((t): t is number => t !== null),
       insertedLines: int(q?.insertedLines), rework3d: int(q?.reworkLines3d),
       fix3d: typeof q?.reworkByFixSubject === "boolean" ? q.reworkByFixSubject : null,
       codeLand: typeof q?.codeLand === "boolean" ? q.codeLand : null, auditRed: typeof q?.auditRed === "boolean" ? q.auditRed : null,
@@ -667,7 +669,7 @@ async function main(argv: string[]): Promise<number> {
     if (!existsSync(quality)) { console.error(`lane-context-cost: ${quality} does not exist — quality is UNKNOWN, not clean`); return 2; }
     const rows = await budgetRows(root, projects, quality, until - days * 86_400_000, until, LANE_THRESHOLD_PCT * (OPUS_WINDOW / 100));
     const nudgeTimes = (await readJsonl(`${root}/streams/prompts.jsonl`))
-      .filter((p) => str(p.text)?.startsWith(MIGRATE_HEAD) && (int(p.ts) ?? Infinity) <= until).map((p) => int(p.ts) ?? 0);
+      .filter((p) => isMigrateHead(str(p.text)) && (int(p.ts) ?? Infinity) <= until).map((p) => int(p.ts) ?? 0);
     console.log(argv.includes("--json") ? JSON.stringify(rows, null, 2) : renderBudget(rows, nudgeTimes, LANE_THRESHOLD_PCT));
     return 0;
   }

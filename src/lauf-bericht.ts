@@ -55,30 +55,30 @@ function liste<T>(v: unknown, eins: (x: unknown) => T | null): T[] | null {
 // Sonst ein Satz, warum nicht
 export function laufBerichtAus(v: unknown, positionen: readonly string[]): LaufBericht | string {
   const o = obj(v);
-  if (!o) return "ist kein Objekt";
+  if (!o) return "is not an object";
   const fassung = typeof o.fassung === "string" && /^[0-9a-f]{64}$/.test(o.fassung) ? o.fassung : null;
-  if (!fassung) return "nennt keine Fassung (sha256 der Konstellation)";
+  if (!fassung) return "has no fassung (sha256 of the constellation)";
   const quelle = text(o.quelle), kosten = text(o.kosten), start = zeit(o.start), ende = zeit(o.ende);
-  if (!quelle || !kosten || !start || !ende) return "braucht quelle, kosten, start und ende";
+  if (!quelle || !kosten || !start || !ende) return "needs quelle, kosten, start and ende";
   const sitze = liste(o.sitze, sitzAus), nachrichten = liste(o.nachrichten, nachrichtAus), befunde = liste(o.befunde, befundAus);
   const ohneBefund = texte(o.ohneBefund), grenzen = texte(o.grenzen);
-  if (!sitze?.length) return "hat keine gültigen Sitze";
-  if (!nachrichten) return "hat eine Nachricht ohne von, an, was oder text";
-  if (!befunde) return "hat einen Befund ohne titel, beleg oder gültiges urteil";
-  if (!ohneBefund || !grenzen) return "ohneBefund und grenzen sind Listen von Sätzen";
+  if (!sitze?.length) return "has no valid sitze";
+  if (!nachrichten) return "has a message missing von, an, was or text";
+  if (!befunde) return "has a finding missing titel, beleg or a valid urteil";
+  if (!ohneBefund || !grenzen) return "ohneBefund and grenzen are lists of sentences";
   const kennt = (x: string) => x === "owner" || positionen.includes(x);
   const fremd = [...sitze.map((s) => s.pos), ...nachrichten.flatMap((n) => [n.von, n.an])].find((x) => !kennt(x));
-  if (fremd !== undefined) return `nennt „${fremd.slice(0, 40)}“, das keine Position dieser Konstellation ist`;
+  if (fremd !== undefined) return `names “${fremd.slice(0, 40)}”, which is no position of this constellation`;
   return { fassung, quelle, start, ende, sitze, nachrichten, befunde, ohneBefund, kosten, grenzen };
 }
 
 export function laufBerichteAus(v: unknown, positionen: readonly string[]): LaufBericht[] | string {
-  if (!Array.isArray(v)) return "laeufe ist eine Liste";
-  if (v.length > MAX_LAEUFE) return `${v.length} Läufe sind mehr, als eine Datei hier trägt (höchstens ${MAX_LAEUFE})`;
+  if (!Array.isArray(v)) return "laeufe is a list";
+  if (v.length > MAX_LAEUFE) return `a file carries at most ${MAX_LAEUFE} runs here, this one has ${v.length}`;
   const out: LaufBericht[] = [];
   for (const [i, x] of v.entries()) {
     const l = laufBerichtAus(x, positionen);
-    if (typeof l === "string") return `Lauf ${i + 1} ${l}`;
+    if (typeof l === "string") return `Run ${i + 1} ${l}`;
     out.push(l);
   }
   return out;

@@ -55,11 +55,11 @@ interface StartSumme { fleetBytes: number; fleetUnbekannt: string[]; fleetTokens
 // the two native rows share the register word "Laedt nativ", which says their way, not what they are
 // (and three more share a word with a neighbour they are listed beside)
 // (and the register writes umlauts as ae/oe/ue, which a name on screen does not)
-const START_WORT: Record<string, string> = { "native-agents": "Regeln des Ordners", "auto-memory": "Notizbuch",
-  "commit-expectation": "Commit-Pflicht", "self-credential": "Self-Zugang", "spawn-profile": "Agent · Modell · Effort",
-  "lane-footer": "Rückweg und Ende", "memory-pointer": "Gedächtnis-Hinweis",
+const START_WORT: Record<string, string> = { "native-agents": "Folder rules", "auto-memory": "Notebook",
+  "commit-expectation": "Commit requirement", "self-credential": "Self credential", "spawn-profile": "Agent · model · effort",
+  "lane-footer": "Return path and end", "memory-pointer": "Memory pointer",
   // three rows share the register word "Auftrag", which is their function, not what each one is
-  "task-brief": "Karte", "main-rail": "Program-Auftrag", "orchestrator-card": "Rolle, Systemkonzept und Packs" };
+  "task-brief": "Card", "main-rail": "Program task", "orchestrator-card": "Role, system concept and packs" };
 const packWord = (id: string): string => PACK_WORDS[id]?.name ?? id;
 export const bausteinName = (b: Baustein): string => b.id.startsWith("pack:") ? `Pack · ${packWord(b.id.slice(5))}` : START_WORT[b.id] ?? b.wort;
 
@@ -168,14 +168,14 @@ function validStartSumme(v: unknown): boolean {
 // the plan's omission reasons are a closed vocabulary (context-plan.ts CONTEXT_PLAN_OMISSION_REASONS);
 // the window says each in owner words — an unknown future reason is shown raw rather than hidden
 export const OMIT_SAY: Record<string, string> = {
-  "manifest-invalid": "Pack-Verzeichnis nicht lesbar",
-  "source-unavailable": "Quelle nicht im Repo",
-  "status-not-active": "abgeschaltet",
-  "harness-unsupported": "nicht für diesen Agenten",
-  "mode-unsupported": "nicht für diese Rolle",
-  "trigger-not-matched": "passt nicht zu diesem Start",
-  "capability-missing": "Fähigkeit fehlt hier",
-  "program-complete": "Program abgeschlossen",
+  "manifest-invalid": "pack directory unreadable",
+  "source-unavailable": "source not in the repo",
+  "status-not-active": "switched off",
+  "harness-unsupported": "not for this agent",
+  "mode-unsupported": "not for this role",
+  "trigger-not-matched": "does not fit this start",
+  "capability-missing": "capability missing here",
+  "program-complete": "program complete",
 };
 
 // the words of the view for the packs (design v3 §0, "Wörter der Ansicht"); a pack without words here
@@ -183,32 +183,32 @@ export const OMIT_SAY: Record<string, string> = {
 // WARUM DER TEXT EINES TEILS NICHT IN DER DATEI STEHT, in Owner-Worten; null = er steht darin. Das Fenster sagt es unter dem Teil
 // (src/k15-packs-ui.ts); e2e/context-borrow.ts liest die Funktion aus der Quelle bis zur Zeile danach
 export const partFixed = (x: FoundingPlanPart): string | null =>
-  x.privateSourceId ? "Privat: der Text dieser Quelle kommt nie in die Datei, nur ihr Hinweis."
-  : x.refusal === "source-unavailable" ? "Die Quelle liegt an diesem Stand nicht im Repo."
-  : x.refusal === "source-anchor-missing" ? "Die Überschrift der Quelle fehlt an diesem Stand."
-  : x.refusal === "source-anchor-ambiguous" ? "Anker nicht eindeutig." : null;
+  x.privateSourceId ? "Private: the text of this source never goes into the file, only its pointer."
+  : x.refusal === "source-unavailable" ? "The source is not in the repo at this revision."
+  : x.refusal === "source-anchor-missing" ? "The heading of the source is missing at this revision."
+  : x.refusal === "source-anchor-ambiguous" ? "Anchor not unique." : null;
 // partFixed ends here
 
 export const PACK_WORDS: Record<string, { name: string; say: string }> = {
-  "portable-core": { name: "Grundregeln", say: "Begriffe und feste Regeln, die jede Session bindet." },
-  "konzept-claude-fleet": { name: "Was Claude Fleet ist", say: "Das Konzept und seine Prinzipien." },
-  "verify-e2e": { name: "Prüfen", say: "Wann eine Änderung als bewiesen gilt." },
-  "land-mechanics": { name: "Landen", say: "Was beim Landen einer Lane wirklich passiert." },
-  "harness-adapter": { name: "Agent-Anbindung", say: "Wie ein Agent-Programm angebunden wird." },
-  "orchestrator-eigenarten": { name: "Eigenarten der Orchestrierung", say: "Watches und Nachfolge, zwei bezahlte Lektionen." },
-  "messnotiz-index": { name: "Frühere Messungen", say: "Erst nachsehen, ob es schon gemessen wurde." },
-  "jev-use": { name: "Jev", say: "Wie Jev verwendet wird." },
-  "owner-instanzweg": { name: "Weg zum Owner", say: "Wie eine Session den Owner erreicht." },
-  "gestaltungsgrammatik": { name: "Gestaltungsgrammatik", say: "docs/design, auf Abruf." },
-  "haltung-worker": { name: "Arbeitshaltung", say: "Ziel hinter der Karte, ganzes Ergebnis, Wirkung selbst sehen." },
-  "haltung-auftraggeber": { name: "Karten schreiben", say: "Wie eine Karte die beste Besetzung hervorholt." },
-  "projekt-aufnahme": { name: "Projekt aufnehmen", say: "Wie ein fremdes Repo ein Fleet-Projekt wird." },
-  "nachfolge-klug": { name: "Nachfolge", say: "Warm sichern und den Zeitpunkt der Nachfolge entscheiden." },
-  "testinstanz-abnahme": { name: "Testinstanz-Abnahme", say: "Sichtbares ist erst mit durchgeklickter Testinstanz, Link und Bild fertig." },
-  "setting-up-agents": { name: "Agenten aufsetzen", say: "Die fünf Teile, ein oder zwei Sitze und das Verbindungsstück." },
-  "working-with-the-owner": { name: "Mit dem Owner arbeiten", say: "Verstehen, antworten und ohne ihn entscheiden." },
-  "running-fleet": { name: "Fleet betreiben", say: "Landen, deployen, ein rotes Audit, den Helfer und lebende Sessions." },
-  "who-it-is-for": { name: "Für wen", say: "Wer die Arbeit trifft und wie sie ihre Leute verfehlt." },
-  "how-fleet-remembers": { name: "Wie Fleet erinnert", say: "Vom Notizbuch in Wissen, das bleibt." },
-  "system-concept": { name: "Das Systemkonzept", say: "Was Fleet ist, wofür es gebaut wird und wohin es geht." },
+  "portable-core": { name: "Core rules", say: "Terms and fixed rules that bind every session." },
+  "konzept-claude-fleet": { name: "What Claude Fleet is", say: "The concept and its principles." },
+  "verify-e2e": { name: "Verifying", say: "When a change counts as proven." },
+  "land-mechanics": { name: "Landing", say: "What really happens when a lane lands." },
+  "harness-adapter": { name: "Agent adapter", say: "How an agent program is connected." },
+  "orchestrator-eigenarten": { name: "Orchestration quirks", say: "Watches and succession: two lessons learned the hard way." },
+  "messnotiz-index": { name: "Earlier measurements", say: "Check first whether it was already measured." },
+  "jev-use": { name: "Jev", say: "How Jev is used." },
+  "owner-instanzweg": { name: "Reaching the owner", say: "How a session reaches the owner." },
+  "gestaltungsgrammatik": { name: "Design grammar", say: "docs/design, on request." },
+  "haltung-worker": { name: "Working stance", say: "The goal behind the card, the whole result, seeing the effect yourself." },
+  "haltung-auftraggeber": { name: "Writing cards", say: "How a card gets the best out of whoever takes it." },
+  "projekt-aufnahme": { name: "Taking on a project", say: "How a foreign repo becomes a Fleet project." },
+  "nachfolge-klug": { name: "Succession", say: "Secure your state while the cache is warm and pick the moment to hand over." },
+  "testinstanz-abnahme": { name: "Test instance acceptance", say: "Visible work is done once the test instance is clicked through, with link and picture." },
+  "setting-up-agents": { name: "Setting up agents", say: "The five parts, one or two seats and the connecting piece." },
+  "working-with-the-owner": { name: "Working with the owner", say: "Understanding, answering and deciding without the owner." },
+  "running-fleet": { name: "Running Fleet", say: "Landing, deploying, a red audit, the helper and live sessions." },
+  "who-it-is-for": { name: "Who it is for", say: "Who meets the work and how work misses its people." },
+  "how-fleet-remembers": { name: "How Fleet remembers", say: "From the notebook to knowledge that stays." },
+  "system-concept": { name: "The system concept", say: "What Fleet is, what it is built for and where it is going." },
 };

@@ -155,10 +155,10 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
   const laneHead = (slot: number, why: string): Head => {
     const lane = lanes[slot];
     if (lane?.parked === "owner")
-      return { adressat: "owner", wurzel: `lane ${slot} wartet auf den Owner (Kriterium oder Rueckfrage) — ${why}`, seit: lane.since };
+      return { adressat: "owner", wurzel: `lane ${slot} waits on the owner (criterion or question) — ${why}`, seit: lane.since };
     if (lane?.parked === "main")
-      return { adressat: programAddressee(lane.programId, mains), wurzel: `lane ${slot} wartet auf ihre MAIN — ${why}`, seit: lane.since };
-    return { adressat: `slot:${slot}`, wurzel: `lane ${slot} arbeitet — ${why}`, seit: null };
+      return { adressat: programAddressee(lane.programId, mains), wurzel: `lane ${slot} waits on its MAIN — ${why}`, seit: lane.since };
+    return { adressat: `slot:${slot}`, wurzel: `lane ${slot} is working — ${why}`, seit: null };
   };
 
   // The ONE edge a row's wait follows, or its head when the row itself is the end of the chain.
@@ -169,36 +169,36 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
     // 1. a row that is not released waits on a release, whatever its wave says after that
     if (at?.release && !at.release.released) {
       if (row?.hold) return { head: { adressat: programAddressee(programId, mains),
-        wurzel: `${id} gehalten von der MAIN (Slot ${row.hold.slot}) — ${row.hold.grund === null ? "ohne Grund" : `Grund: ${row.hold.grund}`}`,
+        wurzel: `${id} held by the MAIN (slot ${row.hold.slot}) — ${row.hold.grund === null ? "no reason given" : `reason: ${row.hold.grund}`}`,
         seit: row.hold.at || null, intentionalHold: !!row.hold.grund?.trim() || (row.hold.until?.kind === "land"
           && !!row.hold.until.task && ["queued", "sent"].includes(rows[row.hold.until.task]?.status)) } };
       return { head: { adressat: programAddressee(programId, mains),
-        wurzel: `${id} nicht freigegeben${at.release.why ? ` — ${at.release.why}` : ""}`, seit: null } };
+        wurzel: `${id} not released${at.release.why ? ` — ${at.release.why}` : ""}`, seit: null } };
     }
     const next = at?.next;
-    if (!next || next === "now") return { head: { adressat: "tick", wurzel: `${id} startet`, seit: null } };
+    if (!next || next === "now") return { head: { adressat: "tick", wurzel: `${id} starts`, seit: null } };
     if ("after" in next) {
       if (next.missing) return { head: { adressat: programAddressee(programId, mains),
-        wurzel: `after ${next.after} ist keine Queue-Zeile mehr — die Kante wird nie von selbst frei`, seit: null } };
+        wurzel: `after ${next.after} is no longer a queue row — the edge never clears on its own`, seit: null } };
       const target = rows[next.after];
       if (inPlan.has(next.after)) return { row: next.after, label: `row ${next.after} (after)` };
       if (target?.status === "sent" && target.slot !== null)
-        return { lane: target.slot, label: `row ${next.after} (after) auf lane ${target.slot}` };
+        return { lane: target.slot, label: `row ${next.after} (after) on lane ${target.slot}` };
       // a target outside the plan that is neither running nor done lands on its own never
       return { head: { adressat: programAddressee(programId, mains),
-        wurzel: `after ${next.after} steht auf ${target?.status ?? "unbekannt"} und wird nicht gelandet`, seit: null } };
+        wurzel: `after ${next.after} is ${target?.status ?? "unknown"} and will not land`, seit: null } };
     }
     if ("unreleased" in next) {
       const partner = next.unreleased.find((p) => p !== id) ?? next.unreleased[0];
-      return { row: partner, label: `row ${partner} (Wellenpartner)` };
+      return { row: partner, label: `row ${partner} (wave partner)` };
     }
     if ("unchecked" in next) return { head: { adressat: "owner",
-      wurzel: `${next.unchecked.join(", ")} hat keine Plan-Zeile — der Plan kann die Welle nicht pruefen`, seit: null } };
+      wurzel: `${next.unchecked.join(", ")} has no plan row — the plan cannot check the wave`, seit: null } };
     if ("collides" in next) {
       const { slot, row: other, file, symbol } = next.collides;
       const on = `${file}${symbol ? `#${symbol}` : ""}`;
-      if (slot !== undefined) return { lane: slot, label: `lane ${slot} auf ${on}` };
-      return { row: other ?? "", label: `row ${other} auf ${on}` };
+      if (slot !== undefined) return { lane: slot, label: `lane ${slot} on ${on}` };
+      return { row: other ?? "", label: `row ${other} on ${on}` };
     }
     return { head: { adressat: "tick", wurzel: next.cap, seit: null } };
   };
@@ -219,16 +219,16 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
     const at = inPlan.get(id);
     const row = rows[id];
     if (at?.release && !at.release.released) return row?.hold
-      ? `gehalten von der MAIN (Slot ${row.hold.slot})${row.hold.grund === null ? " ohne Grund" : `: ${row.hold.grund}`}`
-      : `nicht freigegeben${at.release.why ? ` — ${at.release.why}` : ""}`;
+      ? `held by the MAIN (slot ${row.hold.slot})${row.hold.grund === null ? ", no reason given" : `: ${row.hold.grund}`}`
+      : `not released${at.release.why ? ` — ${at.release.why}` : ""}`;
     const next = at?.next;
-    if (!next || next === "now") return "startet";
-    if ("after" in next) return next.missing ? `after ${next.after} ist keine Queue-Zeile mehr` : `wartet auf ${next.after} (after, nicht gelandet)`;
-    if ("unreleased" in next) return `Wellenpartner ${next.unreleased.join(", ")} nicht freigegeben`;
-    if ("unchecked" in next) return `${next.unchecked.join(", ")} ungeprueft`;
+    if (!next || next === "now") return "starts";
+    if ("after" in next) return next.missing ? `after ${next.after} is no longer a queue row` : `waiting on ${next.after} (after, not landed)`;
+    if ("unreleased" in next) return `wave partner ${next.unreleased.join(", ")} not released`;
+    if ("unchecked" in next) return `${next.unchecked.join(", ")} not checked`;
     if ("collides" in next) {
       const { slot, row: other, file, symbol } = next.collides;
-      return `kollidiert mit ${slot !== undefined ? `lane ${slot}` : `row ${other} weiter vorn`} auf ${file}${symbol ? `#${symbol}` : ""}`;
+      return `collides with ${slot !== undefined ? `lane ${slot}` : `row ${other} ahead`} on ${file}${symbol ? `#${symbol}` : ""}`;
     }
     return next.cap;
   };
@@ -244,7 +244,7 @@ export function deriveWaits(facts: WaitFacts): WaitRow[] {
       if ("head" in edge) return { head: edge.head, kette };
       kette.push(edge.label);
       if ("lane" in edge) return { head: laneHead(edge.lane, edge.label), kette };
-      if (seen.has(edge.row)) return { head: { adressat: "owner", wurzel: `Kreis: ${[...seen].join(" → ")} → ${edge.row}`, seit: null }, kette };
+      if (seen.has(edge.row)) return { head: { adressat: "owner", wurzel: `cycle: ${[...seen].join(" → ")} → ${edge.row}`, seit: null }, kette };
       seen.add(edge.row);
       current = edge.row;
     }

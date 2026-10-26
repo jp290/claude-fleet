@@ -101,15 +101,15 @@ export function kantenGeladen(raw: unknown, now: number): Kante[] {
 
 // „15:30“ in der Zeit des Rechners, auf dem Fleet läuft — die Uhr, die der Owner und die Sitze sehen
 export const uhrzeit = (ms: number): string =>
-  new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
 // DIE SÄTZE AN DIE SESSIONS: einer, wenn die Kante gilt, einer, wenn sie geschlossen wird, einer, wenn sie abweist
 export const kanteGilt = (k: Kante, du: KantenEnde): string => {
   const other = andererSlot(k, du);
-  return `Du kannst Slot ${other} bis ${uhrzeit(k.until)} direkt schreiben (POST /api/self/messages, to {"kind":"session","slot":${other}}); `
-    + `die Orchestratorin liest mit. Grund: ${k.why}`;
+  return `You can write to slot ${other} directly until ${uhrzeit(k.until)} (POST /api/self/messages, to {"kind":"session","slot":${other}}); `
+    + `the Orchestrator reads along. Reason: ${k.why}`;
 };
 export const kanteGeschlossen = (k: Kante, du: KantenEnde): string =>
-  `Deine Kante zu Slot ${andererSlot(k, du)} ist seit ${uhrzeit(kanteEnde(k))} geschlossen; schreib wieder über die Orchestratorin.`;
+  `Your edge to slot ${andererSlot(k, du)} has been closed since ${uhrzeit(kanteEnde(k))}; write through the Orchestrator again.`;
 export const kanteAbgelaufen = (k: Kante, du: KantenEnde): string =>
   `your edge to slot ${andererSlot(k, du)} ended at ${uhrzeit(kanteEnde(k))} — ask the Orchestrator for a new one`;

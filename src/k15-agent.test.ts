@@ -11,7 +11,7 @@ const ANTWORT = {
   harnesses: [
     h("claude", { default: true, models: ["c-gross", "c-gross-alt", "c-mittel"], effortLevels: ["low", "medium", "high", "xhigh", "max"] }),
     h("pi", { models: [] }),
-    h("pi-zai", { models: ["z-eins"], hier: false, grund: "auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)" }),
+    h("pi-zai", { models: ["z-eins"], hier: false, grund: "switched off on this machine (FLEET_HARNESSES_OFF)" }),
     h("pi-ox", { models: ["o-frei"], supports: { model: true, effort: false }, effortLevels: [] }),
     h("pi-unfenced", { allowsLanes: false }),
     h("container", { role: "place" }),
@@ -34,9 +34,9 @@ describe("katalogAus liest GET /api/harnesses", () => {
     expect(standardAgent(K)).toBe("claude");
     expect(K.standardModell).toBe("c-gross");
   });
-  test("was dieser Rechner nicht startet, heißt „nur auf einem anderen Rechner“ mit dem Grund des Servers; ein pausierter Agent „pausiert“", () => {
-    expect(K.agenten.find((a) => a.id === "pi-zai")?.aus).toEqual({ wort: "nur auf einem anderen Rechner", grund: "auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)" });
-    expect(K.agenten.find((a) => a.id === "fern")?.aus).toEqual({ wort: "pausiert", grund: "pausiert bis zum Kontingent-Reset" });
+  test("was dieser Rechner nicht startet, heißt “only on another machine” mit dem Grund des Servers; ein pausierter Agent „pausiert“", () => {
+    expect(K.agenten.find((a) => a.id === "pi-zai")?.aus).toEqual({ wort: "only on another machine", grund: "switched off on this machine (FLEET_HARNESSES_OFF)" });
+    expect(K.agenten.find((a) => a.id === "fern")?.aus).toEqual({ wort: "paused", grund: "pausiert bis zum Kontingent-Reset" });
     expect(K.agenten.find((a) => a.id === "codex")?.aus).toBeNull();
   });
   test("lehnt ab, was nicht die Form des Katalogs hat; ein Eintrag ohne ID fällt einzeln heraus", () => {
@@ -80,10 +80,10 @@ describe("die Agenten zur Wahl", () => {
   test("alle Agenten stehen darin; was hier nicht startet, ist nicht wählbar und sagt warum", () => {
     const o = agentOptionen(K, false);
     expect(o.map((x) => x.wort)).toEqual(["Claude Code", "Pi", "Pi-zai", "Pi-ox", "Pi-unfenced", "Codex", "Fern"]);
-    expect(o.filter((x) => x.aus).map((x) => [x.wert, x.aus])).toEqual([["pi-zai", "nur auf einem anderen Rechner"], ["fern", "pausiert"]]);
+    expect(o.filter((x) => x.aus).map((x) => [x.wert, x.aus])).toEqual([["pi-zai", "only on another machine"], ["fern", "paused"]]);
   });
   test("für eine Lane ist ein Agent ohne Lanes nicht wählbar, für eine MAIN schon", () => {
-    expect(agentOptionen(K, true).find((x) => x.wert === "pi-unfenced")?.aus).toBe("keine Lanes");
+    expect(agentOptionen(K, true).find((x) => x.wert === "pi-unfenced")?.aus).toBe("no lanes");
     expect(agentOptionen(K, false).find((x) => x.wert === "pi-unfenced")?.aus).toBeUndefined();
   });
   test("Claude Code heißt so, die übrigen wie im Startfenster", () => {

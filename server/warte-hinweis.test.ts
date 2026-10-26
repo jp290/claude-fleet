@@ -104,10 +104,10 @@ describe("warteSchritt", () => {
 // Dialog lesen (GET), dann mit dessen Kennung wählen; der Dialog selbst steht nie im Hinweis
 test("warteHinweisText nennt Slot, Name, Frage und wie lange schon, und wie man bewusst freigibt oder ablehnt", () => {
   const t = warteHinweisText({ slot: 5, label: "Sperren im Lauf", frage: "Bash command · Do you want to proceed?", seit: 0, now: 4 * 60_000 + 5 });
-  expect(t).toStartWith("[fleet · warte-hinweis] Slot 5 (Sperren im Lauf) wartet seit ");
-  expect(t).toContain("(4 min) auf eine Antwort in seiner Pane: „Bash command · Do you want to proceed?“");
-  expect(t).toContain('GET /api/self/rueckfrage?slot=5, dann POST /api/self/rueckfrage mit {"slot":5,"kennung":"<kennung aus dem GET>","wahl":"freigeben"} oder "wahl":"ablehnen"');
-  expect(warteHinweisText({ slot: 5, label: null, frage: "F", seit: 0, now: 0 })).toStartWith("[fleet · warte-hinweis] Slot 5 wartet seit ");
+  expect(t).toStartWith("[fleet · waiting notice] Slot 5 (Sperren im Lauf) has been waiting since ");
+  expect(t).toContain('(4 min) for an answer in its pane: "Bash command · Do you want to proceed?"');
+  expect(t).toContain('GET /api/self/rueckfrage?slot=5, then POST /api/self/rueckfrage with {"slot":5,"kennung":"<kennung from the GET>","wahl":"freigeben"} or "wahl":"ablehnen"');
+  expect(warteHinweisText({ slot: 5, label: null, frage: "F", seit: 0, now: 0 })).toStartWith("[fleet · waiting notice] Slot 5 has been waiting since ");
 });
 
 // Abnahme 76c28e2a2: zwei Bash-Fragen haben dieselbe Frage; die Freigabe muss an den ganzen Dialog gebunden sein

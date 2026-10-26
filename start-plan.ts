@@ -517,7 +517,7 @@ export function startPlanWaitNote(next: Exclude<StartPlanNext, "now">): string {
   // NOT prefixed `waiting:` — that prefix is the vocabulary of a wait something will end. This one
   // names a decision instead, because no tick can resolve it.
   if ("after" in next) return next.missing
-    ? `after ${next.after} ist keine Queue-Zeile mehr — MAIN oder Owner entscheidet`
+    ? `after ${next.after} is no longer a queue row — the MAIN or the owner decides`
     : `waiting: after ${next.after} not landed`;
   if ("unreleased" in next) return `waiting: wave partner ${next.unreleased.join(", ")} is not released`;
   if ("unchecked" in next) return `waiting: ${next.unchecked.join(", ")} not checked — the plan was handed no row for it`;

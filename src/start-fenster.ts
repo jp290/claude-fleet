@@ -216,7 +216,7 @@ function agentSatz(a: AgentZeile): string {
 function agentHer(a: AgentZeile): string {
   if (a.id === "repo") return "from the repo";
   if (a.importiert || a.abgeleitetVon) return "imported";
-  if (a.kopieVon) return `copy of ${a.kopieVon.name === "Agent des Repos" ? "the repo's agent" : a.kopieVon.name}`;
+  if (a.kopieVon) return `copy of ${a.kopieVon.name === "Agent des Repos" || a.kopieVon.name === "Repo agent" ? "the repo's agent" : a.kopieVon.name}`;
   if (a.art === "eingebaut") return "built in";
   return a.zuletzt ? `used here ${vor(a.zuletzt)}` : a.art === "eigen" ? "yours" : "";
 }
@@ -449,7 +449,7 @@ function held(s: St, p: ReturnType<typeof plaene>): HTMLElement {
   const wozu = typeof a?.wahlen.rolle === "string" ? "Plans the work, opens the branches and brings back the results." : a?.agentMd?.titel ?? null;
   links.append(el("div", "sfpurpose", wozu ?? "Your Claude Code with what Fleet adds on top."));
   const her = a?.importiert || a?.abgeleitetVon ? `Imported from a file · derived from ${(a.abgeleitetVon ?? a.hash).slice(0, 12)}. It brings its choices; your rules, skills and connectors stay yours.`
-    : a?.kopieVon ? `Copy of ${a.kopieVon.name === "Agent des Repos" ? "the repo's agent" : a.kopieVon.name} · ${a.hash.slice(0, 12)}` : null;
+    : a?.kopieVon ? `Copy of ${a.kopieVon.name === "Agent des Repos" || a.kopieVon.name === "Repo agent" ? "the repo's agent" : a.kopieVon.name} · ${a.hash.slice(0, 12)}` : null;
   const offen = ungesichert(z);
   if (her || offen) {
     const l = el("div", "sflineage", her ?? "");
@@ -1292,7 +1292,6 @@ async function los(s: St): Promise<void> {
 // Escape closes what is open in the window first: the name field, the open block, the start brief over the session
 export function startSchliesst(s: St): boolean {
   const z = s.sitz;
-  if (s.ansicht !== "sitzung") return false;
   if (z.speichern) { z.speichern = false; z.nameEntwurf = null; render(); return true; }
   if (z.loeschen) { z.loeschen = false; render(); return true; }
   if (z.offen) { z.offen = null; render(); return true; }

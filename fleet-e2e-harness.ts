@@ -226,7 +226,7 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
       codexRecovery: { state: "bound" as const, sessionId: a.sessionId, disconnectSeenAt: null } };
     checkFixture("first model turn: client shows alive model-400 as broken with provenance",
       display.outputState(uiA, epoch + 24, true) === "bad" && display.codexTurnLine(uiA).includes("bad_request")
-      && display.codexTurnLine(uiA).includes("Quelle: codex-rollout"), display.codexTurnLine(uiA));
+      && display.codexTurnLine(uiA).includes("Source: codex-rollout"), display.codexTurnLine(uiA));
     checkFixture("first model turn: sessions wire projects the occupant-bound observation",
       source.includes("}, codexFirstTurn: codexFirstTurnView(s) } : {})"), "GET /api/sessions source projection");
     a.openedAt = epoch + 30; a.selfToken = "token-C";
@@ -338,7 +338,7 @@ export async function checkCodexFirstTurnFixtures(source: string, client: string
         codexRecovery: { ...uiA.codexRecovery, sessionId: lane.sessionId } };
       checkFixture(`first model turn: ${terminal} orphan error remains visible despite alive`,
         display.outputState(uiOrphan, epoch + 24, true) === "bad" && display.codexTurnLine(uiOrphan).includes("bad_request")
-        && display.codexTurnLine(uiOrphan).includes("Quelle: codex-rollout"), display.codexTurnLine(uiOrphan));
+        && display.codexTurnLine(uiOrphan).includes("Source: codex-rollout"), display.codexTurnLine(uiOrphan));
     }
     const orphanSuccess = readCodexFirstTurn([success(23, "orphan"), start(24, "later"), success(25, "later")], epoch + 20);
     checkFixture("first model turn: success without start cannot become a later first success",

@@ -18,17 +18,17 @@ export function recalledText(texts: readonly string[], draft: string): string {
 
 // what the owner reads when nothing (or not all) came back; null = nothing to say
 const NOTICE: Record<string, string> = {
-  "Claude's input field holds text": "Im Terminal-Feld steht Text — nichts zurückgeholt.",
-  "Claude's input field is not readable": "Das Terminal-Feld ist gerade nicht lesbar — nichts zurückgeholt.",
-  "nothing waits in the queue": "Es wartet keine Nachricht.",
-  "a Fleet delivery waits in the queue": "Eine Fleet-Zustellung wartet — sie bleibt, wo sie ist.",
-  "a Fleet delivery waits in the queue — Esc would start it": "Eine Fleet-Zustellung wartet, Esc würde sie losschicken — im Terminal abbrechen.",
-  "the queue was taken before ↑ reached it": "Die Session hat die Nachricht schon genommen.",
+  "Claude's input field holds text": "The terminal field holds text — nothing recalled.",
+  "Claude's input field is not readable": "The terminal field can't be read right now — nothing recalled.",
+  "nothing waits in the queue": "No message is waiting.",
+  "a Fleet delivery waits in the queue": "A Fleet delivery is waiting — it stays where it is.",
+  "a Fleet delivery waits in the queue — Esc would start it": "A Fleet delivery is waiting and Esc would start it — cancel in the terminal.",
+  "the queue was taken before ↑ reached it": "The session already took the message.",
 };
 export function recallNotice(r: RecallResult): string | null {
   if (r.result === "recalled" || r.result === "interrupted" || r.result === "sent-now") return null;
   if (r.result === "refused" && r.why === "the session is not working") return null;
-  return NOTICE[r.why] ?? (r.result === "kept" ? "Im Terminal-Feld steht noch Text — bitte dort ansehen." : r.why);
+  return NOTICE[r.why] ?? (r.result === "kept" ? "Text is still in the terminal field — look there." : r.why);
 }
 
 // the phone's Esc: one button on the status line while the session works (desktop: the Esc key)
@@ -36,8 +36,8 @@ export function recallButton(onPress: () => void): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "mliveesc";
-  b.textContent = "abbrechen";
-  b.title = "Wie Esc im Terminal: bricht ab und holt deine Nachricht zurück in die Eingabe";
+  b.textContent = "Cancel";
+  b.title = "Like Esc in the terminal: cancels and brings your message back into the input";
   b.addEventListener("click", (e) => { e.stopPropagation(); onPress(); });
   return b;
 }
@@ -46,8 +46,8 @@ export function sendNowButton(onPress: () => void): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "msendnow";
-  b.textContent = "jetzt senden";
-  b.title = "Wie ctrl+x ctrl+s im Terminal: bricht den laufenden Schritt ab und schickt die wartende Nachricht sofort";
+  b.textContent = "Send now";
+  b.title = "Like ctrl+x ctrl+s in the terminal: cancels the running step and sends the waiting message at once";
   b.addEventListener("click", (e) => { e.stopPropagation(); onPress(); });
   return b;
 }

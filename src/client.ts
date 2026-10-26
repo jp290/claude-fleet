@@ -5,7 +5,7 @@ import { perfRebuild } from "./perfmarks";
 import { initQueue, taskText, briefByMain, taskTextBusy, taskTextWaiters, qShell, qPick, qView, qDetailKey, taskCardFull, loadTaskTexts, ProgramDigest, programsPoll, programsList, programsStale, loadPrograms, programMark, qGroupOf, qFirstLine, taskSourceLabel, qWaveProjectionKey, qLaneKey, qLaneJoinOf, renderQueueDetail, qSelect, renderQueue, openQueue, setQueueTreeOn, invalidateQueueList, setProgramsPoll, setProgramsStale, setQueueDetailKey } from "./queue";
 import { initFieldPerf } from "./fieldperf";
 import { pasteText } from "./paste";
-import { initBoard, machineSigns, agoDe, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, reloadGsView, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
+import { initBoard, machineSigns, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, reloadGsView, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderFrageHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, closeAttnDlg, closeOpsDlg } from "./attention";
@@ -123,9 +123,9 @@ function linkFacts(uri: string): EntFacts | null {
   let url: URL;
   try { url = new URL(uri); } catch { return null; }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  return { title: url.host, meta: `Link · ${uri.length} Zeichen · ${APPLE ? "⌘" : "Strg"}-Klick öffnet direkt`,
+  return { title: url.host, meta: `Link · ${uri.length} characters · ${APPLE ? "⌘" : "Ctrl"}-click opens directly`,
     lines: [uri.length > 160 ? `${uri.slice(0, 160)}…` : uri],
-    openLabel: "Öffnen", open: () => openTermLink(null, uri), copy: () => copyText(uri) };
+    openLabel: "Open", open: () => openTermLink(null, uri), copy: () => copyText(uri) };
 }
 function termLinkHover(e: MouseEvent, uri: string): void {
   clearTimeout(linkCardTimer);
@@ -206,8 +206,8 @@ let instanceCodexCli: CodexCliSnapshot | null = null;
 let instanceObservedNow = 0;
 function codexCliLabel(snapshot: CodexCliSnapshot | null, now: number): string {
   const reason = codexCliUnknown(snapshot, now);
-  const age = snapshot?.observedAt === null || !snapshot ? "nicht beobachtet"
-    : `${Math.max(0, Math.floor((now - snapshot.observedAt) / 60_000))} min alt · ${new Date(snapshot.observedAt).toISOString()}`;
+  const age = snapshot?.observedAt === null || !snapshot ? "not observed"
+    : `${Math.max(0, Math.floor((now - snapshot.observedAt) / 60_000))} min old · ${new Date(snapshot.observedAt).toISOString()}`;
   return `Codex ${reason ? `unknown (${reason})` : snapshot!.version} · ${age}`
     + (snapshot ? ` · ${snapshot.source} · Binary ${snapshot.binary ?? "unknown"} · Boot ${new Date(snapshot.bootAt).toISOString()}` : "");
 }
@@ -227,8 +227,8 @@ const instOriginOf = (url: string): string => new URL(url).origin;
 // The chip in the title row: a two-screens sign and "1/2" when a list names several computers, one
 // screen and a "+" on a single host — the "+" is the hint, its title says what it means (there is
 // no setup path in the board yet, so it is not a button of its own). The menu adds one sentence.
-const MORE_HOSTS = "Claude Fleet kann mehrere Computer zugleich führen — jeder mit eigenen Sessions. "
-  + "Verbunden werden sie über FLEET_INSTANCES.";
+const MORE_HOSTS = "Claude Fleet can run several computers at once, each with its own sessions. "
+  + "They connect through FLEET_INSTANCES.";
 const DEV_SIGNS_MAX = 5;
 function hostSign(name: IconName, text: string): HTMLElement[] {
   const ic = el("span", "tricon");
@@ -253,9 +253,9 @@ function renderInstanceBand(source: InstanceSource | null) {
   tiBand.hidden = !source;
   // the browser tab names the copy (owner 14.10.: „[Zitat entfernt]“
   // ): „[Zitat entfernt]“; the live fleet keeps its name
-  document.title = source ? `${source.round ? `Runde ${source.round.name}` : source.branch ?? "Testinstanz"}${location.port ? ` · :${location.port}` : ""}` : "Claude Fleet";
+  document.title = source ? `${source.round ? `Round ${source.round.name}` : source.branch ?? "Test instance"}${location.port ? ` · :${location.port}` : ""}` : "Claude Fleet";
   if (!source) { tiBand.replaceChildren(); tiBand.removeAttribute("title"); return; }
-  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }));
+  const band = instanceBandText(source, (ms) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
   const parts: Node[] = [];
   band.segments.forEach((seg, i) => {
     const span = el("span", "tiseg");
@@ -309,12 +309,12 @@ function renderInstanceHead(switches: readonly SwitchLink[] = []) {
     el("span", "devcount", n > 1 ? `${at >= 0 ? at + 1 : "?"}/${n}` : "+"),
     ...(switches.length ? [el("span", "devcount", back ? "⇄ live" : `⇄ ${tis}`)] : []));
   const answering = signs ? signs.filter((sg) => sg.tone === "live" || sg.tone === "wait").length : 0;
-  instBtn.title = (signs ? `${answering} von ${signs.length} ${signs.length === 1 ? "Gerät antwortet" : "Geräten antworten"}: `
+  instBtn.title = (signs ? `${answering} of ${signs.length} ${signs.length === 1 ? "device answers" : "devices answer"}: `
       + `${signs.map((sg) => `${sg.name} ${sg.word}`).join(", ")}. ` : "")
-    + (n > 1 ? `Computer ${at >= 0 ? at + 1 : "?"} von ${n} — ${instanceName ?? "unbenannt"}. Klick zeigt die anderen.` : MORE_HOSTS);
+    + (n > 1 ? `Computer ${at >= 0 ? at + 1 : "?"} of ${n} — ${instanceName ?? "unnamed"}. Click shows the others.` : MORE_HOSTS);
   instBtn.setAttribute("aria-label", instBtn.title);
-  if (switches.length) instBtn.title += back ? " · Umschalter: zurück zum Live-Fleet"
-    : ` · Umschalter: ${tis} ${tis === 1 ? "Testinstanz" : "Testinstanzen"} dieser Maschine`;
+  if (switches.length) instBtn.title += back ? " · Switch: back to the live fleet"
+    : ` · Switch: ${tis} ${tis === 1 ? "test instance" : "test instances"} on this machine`;
   instBtn.title += ` · ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`;
   instBtn.classList.add("pick");
   instBtn.onclick = () => setInstMenu(!instMenuOpen());
@@ -324,38 +324,38 @@ function renderInstanceHead(switches: readonly SwitchLink[] = []) {
     row.append(el("span", "instname", link.name), el("span", "insturl", here ? "you are here" : link.url));
     const snapshot = here ? instanceCodexCli : codexCliSnapshotFrom(link.codexCli);
     const comparison = compareCodexCli(instanceCodexCli, snapshot, instanceObservedNow);
-    const drift = here ? "lokal" : comparison.state === "drift" ? "CLI-Drift"
-      : comparison.state === "same" ? "gleiche CLI-Version" : `unknown (${comparison.reason})`;
+    const drift = here ? "local" : comparison.state === "drift" ? "CLI drift"
+      : comparison.state === "same" ? "same CLI version" : `unknown (${comparison.reason})`;
     row.style.flexWrap = "wrap";
     const detail = el("span", "insturl", `${drift} · ${codexCliLabel(snapshot, instanceObservedNow)}`);
     Object.assign(detail.style, { flexBasis: "100%", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" });
     row.appendChild(detail);
-    row.title = here ? `${link.name} — dieses Board` : `${link.name} öffnen · expliziter Snapshot · ${link.url}`;
+    row.title = here ? `${link.name} — this board` : `Open ${link.name} · explicit snapshot · ${link.url}`;
     row.onclick = go(link);
     return row;
   }));
   if (switches.length) {
     // the Umschalter: same tab, same `go`, a bare origin — on the live board each running
     // test instance, on a test instance the way back
-    instMenu.appendChild(el("div", "hint instnote", back ? "Umschalter · zurück" : "Umschalter · Testinstanzen dieser Maschine"));
+    instMenu.appendChild(el("div", "hint instnote", back ? "Switch · back" : "Switch · test instances on this machine"));
     for (const link of switches) {
       const row = el("button", "instrow");
       row.style.flexWrap = "wrap";
       // name and origin each on their own line: a worktree name is long, and a phone that cut the
       // origin off would hide the one fact that says where the tap goes
-      const name = el("span", "instname", link.kind === "live" ? "Live-Fleet" : link.name);
+      const name = el("span", "instname", link.kind === "live" ? "Live fleet" : link.name);
       const origin = el("span", "insturl", link.url);
       for (const part of [name, origin])
         Object.assign(part.style, { flexBasis: "100%", minWidth: "0", whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" });
       row.append(name, origin);
-      row.title = link.kind === "live" ? `zurück zum Live-Fleet · ${link.url}` : `Testinstanz ${link.name} · ${link.url}`;
+      row.title = link.kind === "live" ? `back to the live fleet · ${link.url}` : `Test instance ${link.name} · ${link.url}`;
       row.onclick = go(link);
       instMenu.appendChild(row);
     }
     if (!back) instMenu.appendChild(el("div", "hint instnote",
-      "Erster Besuch je Gerät: „öffnen“ in der Karte Testinstanzen, danach schaltet der Chip direkt um."));
+      "First visit per device: use “open” in the Test instances card, then the chip switches directly."));
   }
-  instMenu.appendChild(el("div", "hint instnote", `Lokal: ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`));
+  instMenu.appendChild(el("div", "hint instnote", `Local: ${codexCliLabel(instanceCodexCli, instanceObservedNow)}`));
   instMenu.appendChild(el("div", "hint instnote", MORE_HOSTS));
 }
 
@@ -786,35 +786,35 @@ export function paneCommand(h: HarnessInfo | null, field: "model" | "effort", va
 export const switchesInPane = (h: HarnessInfo | null): boolean => paneCommand(h, "model", "") !== null;
 // `switched`: the switch the server started for exactly this value — the sentence then follows its row state
 export async function setSlotSetting(slot: number, field: "model" | "effort", value: string): Promise<{ text: string; switched?: ModelSwitch }> {
-  const what = field === "model" ? "Modell" : "Effort";
+  const what = field === "model" ? "Model" : "Effort";
   if (switchesInPane(harnessEntry(slot))) {
     // one request: the server records the value, types the command and answers Claude Code's question for exactly
     // this value (server/model-switch.ts, Mangel 53); what follows rides the slot row as `modelSwitch` (switchText)
     const res = await post(`/api/slots/${slot}/model`, { [field]: value, push: true });
     const j = (await res.json().catch(() => null)) as { error?: string; modelSwitch?: ModelSwitch } | null;
-    if (res.status === 400) return { text: `Nicht umgestellt: ${j?.error ?? "HTTP 400"} — die Session läuft unverändert` };
-    if (!res.ok) return { text: `Vermerkt, aber nicht getippt: ${j?.error ?? `HTTP ${res.status}`}` };
-    return j?.modelSwitch ? { text: switchText(j.modelSwitch), switched: j.modelSwitch } : { text: `${what} ${value} — getippt` };
+    if (res.status === 400) return { text: `Not switched: ${j?.error ?? "HTTP 400"} — the session runs unchanged` };
+    if (!res.ok) return { text: `Recorded, but not typed: ${j?.error ?? `HTTP ${res.status}`}` };
+    return j?.modelSwitch ? { text: switchText(j.modelSwitch), switched: j.modelSwitch } : { text: `${what} ${value} — typed` };
   }
   const rec = await post(`/api/slots/${slot}/model`, { [field]: value });
   if (!rec.ok) {
     const why = ((await rec.json().catch(() => null)) as { error?: string } | null)?.error ?? `HTTP ${rec.status}`;
-    return { text: `Nicht umgestellt: ${why} — die Session läuft unverändert` };
+    return { text: `Not switched: ${why} — the session runs unchanged` };
   }
   const r = await post(`/api/slots/${slot}/restart`, {});
   const j = (await r.json().catch(() => null)) as { resumed?: boolean; error?: string } | null;
-  if (!r.ok) return { text: `Vermerkt, aber der Neustart ging nicht: ${j?.error ?? `HTTP ${r.status}`} — sie läuft noch mit dem alten ${what}` };
-  return { text: `${what} ${value} — neu gestartet${j?.resumed ? ", das Gespräch geht weiter" : ", FRISCH (das Gespräch ließ sich nicht fortsetzen)"}` };
+  if (!r.ok) return { text: `Recorded, but the restart failed: ${j?.error ?? `HTTP ${r.status}`} — it still runs with the old ${what}` };
+  return { text: `${what} ${value} — restarted${j?.resumed ? ", the conversation continues" : ", FRESH (the conversation could not be resumed)"}` };
 }
 // the sentence under the switch for what Claude Code made of it
 export function switchText(sw: ModelSwitch): string {
   const what = sw.field === "model" ? modelLabel(sw.want) : `Effort ${sw.want}`;
   switch (sw.state) {
-    case "typed": return `${what} — getippt, die Session stellt um, wenn der laufende Schritt endet`;
-    case "set": return `${what} — umgestellt`;
-    case "kept": return sw.field === "model" ? "Claude Code hat das alte Modell behalten" : "Claude Code hat die alte Stufe behalten";
-    case "asks": return "Claude Code fragt im Terminal — dort beantworten";
-    case "not-set": return `${what} — nicht umgestellt`;
+    case "typed": return `${what} — typed, the session switches when the current step ends`;
+    case "set": return `${what} — switched`;
+    case "kept": return sw.field === "model" ? "Claude Code kept the old model" : "Claude Code kept the old level";
+    case "asks": return "Claude Code asks in the terminal — answer it there";
+    case "not-set": return `${what} — not switched`;
   }
 }
 
@@ -850,7 +850,7 @@ export interface TEntry { n: number; role: "user" | "assistant"; ts: string | nu
 // markdown rendering shared with the guest reader — see src/md.ts
 
 
-const kanteClock = (ms: number) => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const kanteClock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 const fmtClock = (ts: string | null) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
@@ -995,7 +995,7 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
       const row = cached;
       row.later = loadFile({ path: key }).then((r) => {
         row.text = r?.text;
-        row.error = r?.error ?? (!r?.text ? "Datei konnte nicht gelesen werden" : undefined);
+        row.error = r?.error ?? (!r?.text ? "File could not be read" : undefined);
         row.later = undefined;
       });
     }
@@ -1007,7 +1007,7 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
     return {
       meta: `${ref.path}${line ? `:${line}` : `#${ref.symbol ?? ""}`}`,
       title: ref.path.split("/").pop() ?? ref.path,
-      lines: cached.error ? [cached.error] : cached.later ? ["…"] : excerpt.length ? excerpt : ["Stelle nicht gefunden"],
+      lines: cached.error ? [cached.error] : cached.later ? ["…"] : excerpt.length ? excerpt : ["Location not found"],
       later: cached.later,
       open: () => { openExplorer(slot, cwd, ref.path, line || undefined); closeEntityCard(); },
     };
@@ -1132,7 +1132,7 @@ export function describeEntity(kind: string, id: string, slot = 0): EntFacts | n
       ...(sl.awaiting ? [`awaiting ${sl.awaiting}`] : []),
       ...(taskLine ? [taskLine] : []),
       ...(sl.lastOutput ? [`last output ${fmtDur(Math.max(0, now - sl.lastOutput))} ago`] : []),
-      "Slot-Belegung kann sich seit dieser Nachricht geändert haben.",
+      "Who sits in this slot may have changed since this message.",
     ],
   };
 }
@@ -1231,11 +1231,11 @@ const chatStill = matchMedia("(prefers-reduced-motion: reduce)");
 // "durch" = the transcript has it (the entry that retired the bubble). Nothing more is claimed: not
 // read, not answered.
 type SendState = "sending" | "wait" | "done";
-const SEND_WORD: Record<SendState, string> = { sending: "wird gesendet …", wait: "wartet", done: "durch" };
+const SEND_WORD: Record<SendState, string> = { sending: "sending …", wait: "waiting", done: "arrived" };
 const SEND_TITLE: Record<SendState, string> = {
-  sending: "Geht gerade an die Session.",
-  wait: "Gesendet, aber noch nicht im Verlauf der Session — läuft dort gerade ein Schritt, nimmt sie die Nachricht danach.",
-  done: "Im Verlauf der Session angekommen — sie arbeitet damit.",
+  sending: "On its way to the session.",
+  wait: "Sent, but not in the session's history yet. If a step is running, the session takes the message after it.",
+  done: "In the session's history. The session is working on it.",
 };
 function sendState(kind: SendState): HTMLElement {
   const s = el("div", `msend ${kind}`);
@@ -1325,7 +1325,7 @@ function dropStrip(slot: number, images: DropImage[]): HTMLElement {
     const url = `/api/slots/${slot}/drop?path=${encodeURIComponent(d.path)}`;
     const open = el("button", "mimg") as HTMLButtonElement;
     open.type = "button";
-    open.title = `${d.name} — groß öffnen`;
+    open.title = `${d.name} — open full size`;
     const img = document.createElement("img");
     img.alt = d.name;
     img.decoding = "async";
@@ -1531,12 +1531,12 @@ class Pane {
     // CSS side). The onclick paths are untouched.
     this.reloadBtn = el("button", "panereload") as HTMLButtonElement;
     this.reloadBtn.appendChild(icon("reload"));
-    this.reloadBtn.title = "Neu verbinden — holt den Verlauf dieser Session neu vom Server";
+    this.reloadBtn.title = "Reconnect — fetches this session's history from the server again";
     this.reloadBtn.style.display = "none";
     this.reloadBtn.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
     this.boardBtn = el("button", "boardtoggle") as HTMLButtonElement;
     this.boardBtn.appendChild(icon("info"));
-    this.boardBtn.title = "Info-Spalte öffnen — Brief, Änderungen, Checks, Verlauf";
+    this.boardBtn.title = "Open the info column — brief, changes, checks, history";
     this.boardBtn.style.display = "none";
     this.boardBtn.classList.toggle("active", boardOpen);
     // board toggle describes the FOCUSED session, and clicking a pane focuses it first (root mousedown)
@@ -1551,7 +1551,7 @@ class Pane {
     };
     this.viewBtn = el("button", "viewtoggle") as HTMLButtonElement;
     this.viewBtn.appendChild(icon("chat"));
-    this.viewBtn.title = "Konversation anzeigen";
+    this.viewBtn.title = "Show the conversation";
     this.viewBtn.style.display = "none";
     this.viewBtn.setAttribute("aria-pressed", "false");
     this.viewBtn.onclick = (e) => {
@@ -1562,17 +1562,17 @@ class Pane {
     // the phone never sees this button (mobile CSS hides it outright)
     this.widthBtn = el("button", "termwidth") as HTMLButtonElement;
     this.widthBtn.appendChild(icon("width"));
-    this.widthBtn.title = "Terminal auf Chat-Breite begrenzen";
+    this.widthBtn.title = "Limit the terminal to the chat width";
     this.widthBtn.style.display = "none";
     this.widthBtn.setAttribute("aria-pressed", "false");
     this.widthBtn.onclick = (e) => { e.stopPropagation(); setTermLimit(!termLimitOn); this.refit(); };
     const navUp = el("button", "promptnav up") as HTMLButtonElement;
     navUp.appendChild(icon("up"));
-    navUp.title = "Dein vorheriger Prompt";
+    navUp.title = "Your previous prompt";
     navUp.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(-1); };
     const navDn = el("button", "promptnav dn") as HTMLButtonElement;
     navDn.appendChild(icon("down"));
-    navDn.title = "Dein nächster Prompt";
+    navDn.title = "Your next prompt";
     navDn.onclick = (e) => { e.stopPropagation(); this.jumpPrompt(1); };
     // THE END BUTTON (Tranche 2) replaces Tranche 1's "zum Anfang" — owner: „[Zitat entfernt]“
     // 
@@ -1585,7 +1585,7 @@ class Pane {
     this.endBtn.onclick = (e) => { e.stopPropagation(); this.followEnd(true); };
     const navEnd = this.endBtn;
     this.sizeBtn = el("button", "chatsizebtn", "Aa") as HTMLButtonElement;
-    this.sizeBtn.title = "Schrift und Spalte — in den Einstellungen (Strg/⌘ + / − / 0)";
+    this.sizeBtn.title = "Font and column — in settings (Ctrl/⌘ + / − / 0)";
     // the Aa panel's ONE home is the settings window's "Schrift" section (G5.3, kein zweites
     // Zuhause); the button is the shortcut that opens the window right there
     this.sizeBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.sizeBtn, "schrift"); };
@@ -1594,11 +1594,11 @@ class Pane {
     // upright #mhead is gone and this one comes back behind the top island's ⋯ (index.html)
     this.gearBtn = el("button", "panegear") as HTMLButtonElement;
     this.gearBtn.appendChild(icon("gear"));
-    this.gearBtn.title = "Einstellungen öffnen";
+    this.gearBtn.title = "Open settings";
     this.gearBtn.onclick = (e) => { e.stopPropagation(); openSettings(this.gearBtn); };
     this.hoverBtn = el("button", "panehover") as HTMLButtonElement;
     this.hoverBtn.appendChild(el("span", "loupe"));
-    this.hoverBtn.title = "Referenzen erklären";
+    this.hoverBtn.title = "Explain references";
     this.hoverBtn.setAttribute("aria-pressed", String(this.hoverOn));
     this.hoverBtn.onclick = (e) => {
       e.stopPropagation();
@@ -1622,15 +1622,15 @@ class Pane {
     this.pastBar = el("div", "pastbar");
     this.downBar = el("div", "panedown");
     this.downMsg = el("span", "downmsg");
-    const downNow = el("button", "downnow", "jetzt verbinden") as HTMLButtonElement;
-    downNow.title = "Nicht auf den nächsten Versuch warten — sofort neu verbinden";
+    const downNow = el("button", "downnow", "reconnect now") as HTMLButtonElement;
+    downNow.title = "Don't wait for the next try — reconnect now";
     downNow.onclick = (e) => { e.stopPropagation(); this.reconnect(); };
     this.downBar.append(this.downMsg, downNow);
-    this.copyPop = el("button", "termcopy", "Kopieren") as HTMLButtonElement;
+    this.copyPop = el("button", "termcopy", "Copy") as HTMLButtonElement;
     this.copyPop.onclick = (e) => {
       e.stopPropagation();
       copyText(this.pressText);
-      this.copyPop.textContent = "Kopiert";
+      this.copyPop.textContent = "Copied";
       setTimeout(() => this.hideCopy(), 700);
     };
     // THE SCROLLBACK SEARCH (card K8, T7): the canvas and WebGL renderers paint pixels, so the
@@ -1641,8 +1641,8 @@ class Pane {
     this.findBar.setAttribute("role", "search");
     this.findInput = el("input", "termfindin") as HTMLInputElement;
     this.findInput.type = "text";
-    this.findInput.placeholder = "Im Verlauf suchen";
-    this.findInput.setAttribute("aria-label", "Im Terminalverlauf suchen");
+    this.findInput.placeholder = "Search the scrollback";
+    this.findInput.setAttribute("aria-label", "Search the terminal scrollback");
     this.findInput.spellcheck = false;
     this.findCount = el("span", "termfindn");
     this.findCount.setAttribute("aria-live", "polite");
@@ -1661,9 +1661,9 @@ class Pane {
       else if (e.key === "Enter") { e.preventDefault(); this.findStep(e.shiftKey ? 1 : -1); }
     });
     this.findBar.append(this.findInput, this.findCount,
-      findBtn("up", "Älterer Treffer (Enter)", () => this.findStep(-1)),
-      findBtn("down", "Neuerer Treffer (Shift+Enter)", () => this.findStep(1)),
-      findBtn("x", "Suche schließen (Esc)", () => this.closeSearch()));
+      findBtn("up", "Older hit (Enter)", () => this.findStep(-1)),
+      findBtn("down", "Newer hit (Shift+Enter)", () => this.findStep(1)),
+      findBtn("x", "Close search (Esc)", () => this.closeSearch()));
     this.root.append(termEl, this.flakes.canvas, this.chatEl, this.pastBar, this.hint, this.jump, this.downBar, this.copyPop, this.findBar, this.toolsBox);
     this.sizeObserver = new ResizeObserver(() => {
       clearTimeout(this.observedRefit);
@@ -1832,13 +1832,13 @@ class Pane {
         if (this.rendererAddon !== webgl) return;
         webgl.dispose();
         this.rendererAddon = null;
-        this.loadCanvasRenderer("canvas (WebGL-Kontext verloren)");
+        this.loadCanvasRenderer("canvas (WebGL context lost)");
       });
       this.term.loadAddon(webgl);
       this.rendererAddon = webgl;
       this.renderer = "webgl";
     } catch {
-      this.loadCanvasRenderer("canvas (kein WebGL)");
+      this.loadCanvasRenderer("canvas (no WebGL)");
     }
     this.markRenderer();
   }
@@ -1877,7 +1877,7 @@ class Pane {
     // the view toggle's two faces: the conversation bubble and, on the way back, the terminal
     // (G0.6 glyphs; "an" state as aria-pressed, CSS paints it in ink — G1.3, not blue)
     this.viewBtn.replaceChildren(icon(this.view === "chat" ? "keys" : "chat"));
-    this.viewBtn.title = this.view === "chat" ? "Zum Terminal zurück" : "Konversation anzeigen";
+    this.viewBtn.title = this.view === "chat" ? "Back to the terminal" : "Show the conversation";
     this.viewBtn.setAttribute("aria-pressed", this.view === "chat" ? "true" : "false");
     this.syncCornerButtons();
     this.flakes.setActive(v === "chat");
@@ -1929,7 +1929,7 @@ class Pane {
     this.root.classList.toggle("tcolim", lim);
     this.widthBtn.style.display = this.slot && layout === 1 && !isMobile() ? "flex" : "none";
     this.widthBtn.setAttribute("aria-pressed", lim ? "true" : "false");
-    this.widthBtn.title = lim ? "Volle Breite wiederherstellen" : "Terminal auf Chat-Breite begrenzen";
+    this.widthBtn.title = lim ? "Restore full width" : "Limit the terminal to the chat width";
   }
 
   private resetChat() {
@@ -2156,7 +2156,7 @@ class Pane {
     if (this.pastN === null) { this.viewBeforePast = this.view; this.shelveChat(); }
     this.pastN = n;
     this.root.classList.add("past");
-    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${n}`), el("span", "pastmeta", "lädt…"));
+    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${n}`), el("span", "pastmeta", "loading …"));
     this.resetChat();
     if (this.view !== "chat") this.setView("chat");
     else void this.pollChat();
@@ -2173,14 +2173,14 @@ class Pane {
   }
   private paintPastBar(d: { session: number; startedAt: number | null; handedAt: number | null;
     ctx: { usedTokens: number; windowTokens: number; pct: number } | null }) {
-    const back = el("button", "pastback", "↩ laufende Session") as HTMLButtonElement;
-    back.title = "zurück zur laufenden Session dieses Slots (Esc auf der Zeile)";
+    const back = el("button", "pastback", "↩ running session") as HTMLButtonElement;
+    back.title = "back to this slot's running session (Esc on the row)";
     back.onclick = (e) => { e.stopPropagation(); this.showPast(null); };
-    const bits = [`begann ${whenLong(d.startedAt)}`, `übergab ${whenLong(d.handedAt)}`];
-    if (d.ctx) bits.push(`ctx ${Math.round(d.ctx.pct)}% beim Übergeben`);
+    const bits = [`started ${whenLong(d.startedAt)}`, `handed over ${whenLong(d.handedAt)}`];
+    if (d.ctx) bits.push(`ctx ${Math.round(d.ctx.pct)}% at handover`);
     const meta = el("span", "pastmeta", bits.join(" · "));
-    if (d.ctx) meta.title = `Kontext beim Übergeben — ${ctxLine(d.ctx)}`;
-    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${d.session} · nur lesend`), meta, back);
+    if (d.ctx) meta.title = `Context at handover — ${ctxLine(d.ctx)}`;
+    this.pastBar.replaceChildren(el("span", "pastwho", `Session ${d.session} · read-only`), meta, back);
   }
 
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
@@ -2265,7 +2265,7 @@ class Pane {
     const own = who === "fleet" ? /^\[(fleet(?: [A-Za-z][\w-]*){0,3})\] /.exec(lead) : null;
     const first = own ? lead.slice(own[0].length) : lead;
     sum.append(el("span", "msyswho", own?.[1] ?? who), el("span", "msystext", first));
-    sum.title = [ts && fmtClock(ts), who === "fleet" ? null : `Nachricht der Claude-Session „${who}“`,
+    sum.title = [ts && fmtClock(ts), who === "fleet" ? null : `Message from the Claude session “${who}”`,
       header && `fleet-delivery · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
@@ -2285,7 +2285,7 @@ class Pane {
     if (!waiting) {
       line.className = "msys mcmd";
       const sum = document.createElement("summary");
-      sum.append(el("span", "msyswho", cmd?.name ?? "befehl"), el("span", "msystext", ""));
+      sum.append(el("span", "msyswho", cmd?.name ?? "command"), el("span", "msystext", ""));
       line.append(sum, el("div", "msysbody", ""));
       this.chatAdd(line);
     }
@@ -2293,7 +2293,7 @@ class Pane {
     if (out) delete line.dataset.wait;
     const ran = line.dataset.name !== undefined ? { name: line.dataset.name, args: line.dataset.args ?? "" } : null;
     const [sum, text, body] = [line.querySelector("summary"), line.querySelector(".msystext"), line.querySelector(".msysbody")];
-    if (sum) sum.title = `Claude Code hat diesen Befehl selbst ausgeführt${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`;
+    if (sum) sum.title = `Claude Code ran this command itself${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`;
     if (text) text.textContent = slashSentence(ran, out);
     if (body) body.textContent = [ran && `${ran.name} ${ran.args}`.trim(), out?.text].filter(Boolean).join("\n");
   }
@@ -2308,7 +2308,7 @@ class Pane {
     line.className = "msys mstop";
     const sum = document.createElement("summary");
     sum.append(el("span", "msyswho", "esc"), el("span", "msystext", `interrupted${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`));
-    sum.title = `Die Session wurde mitten im Schritt unterbrochen — Claude Code schreibt das selbst, nicht du.\n${e.blocks.map((b) => b.text).join("\n")}`;
+    sum.title = `The session was interrupted mid-step — Claude Code writes this line itself, not you.\n${e.blocks.map((b) => b.text).join("\n")}`;
     line.appendChild(sum);
     this.chatAdd(line);
   }
@@ -2328,7 +2328,7 @@ class Pane {
     mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
     bodySource.set(body, drops.rest);
     const meta = el("div", "mmeta");
-    meta.appendChild(el("span", "mwho", "you · wird gesendet…"));
+    meta.appendChild(el("span", "mwho", "you · sending …"));
     msg.append(body, sendState("sending"), meta);
     this.chatAdd(msg);
     this.pending = [...this.pending, { text, el: msg }];
@@ -2383,9 +2383,9 @@ class Pane {
     let line = this.chatEl.querySelector<HTMLElement>(":scope > .mheld");
     if (!hd) { line?.remove(); return; }
     const text = heldDeliveriesLine(hd);
-    const title = `Fleet hält ${hd.count === 1 ? "diese Zustellung" : "diese Zustellungen"} gebündelt zurück und tippt `
-      + `sie ${hd.dueAt === null ? "mit dem nächsten Senden" : "zur genannten Zeit"} in die Session — `
-      + `Senden nimmt sie früher mit. Wege: ${hd.paths.join(", ")}`;
+    const title = `Fleet holds ${hd.count === 1 ? "this delivery" : "these deliveries"} back as a bundle and types `
+      + `them ${hd.dueAt === null ? "with the next send" : "at the stated time"} into the session — `
+      + `Send takes them along sooner. Paths: ${hd.paths.join(", ")}`;
     if (!line) {
       line = document.createElement("details");
       line.className = "msys mheld";
@@ -2459,7 +2459,7 @@ class Pane {
     try {
       const res = await post(`/api/slots/${slot}/recall`, { kind });
       const r = res.ok ? ((await res.json()) as RecallResult) : null;
-      if (!r) { toast(`Zurückholen ging nicht (${res.status}).`); return; }
+      if (!r) { toast(`Recall failed (${res.status}).`); return; }
       const texts = r.result === "recalled" ? r.texts : r.result === "kept" ? r.texts ?? [] : [];
       if (texts.length && this.slot === slot) {
         // the bubbles of what came back go: a withdrawn line, a composer bubble, a "wartet" bubble — the
@@ -2476,7 +2476,7 @@ class Pane {
       const note = recallNotice(r);
       if (note) toast(note);
     } catch {
-      toast("Zurückholen ging nicht — keine Verbindung.");
+      toast("Recall failed — no connection.");
     } finally {
       this.recalling = false;
     }
@@ -2602,7 +2602,7 @@ class Pane {
         this.paintPastBar({ session: past, startedAt: data.startedAt ?? null, handedAt: data.handedAt ?? null,
           ctx: data.ctx ?? null });
         if (data.assigned !== true) {
-          this.chatEl.replaceChildren(el("div", "chatempty", data.reason ?? "Transkript nicht zugeordnet"));
+          this.chatEl.replaceChildren(el("div", "chatempty", data.reason ?? "Transcript not assigned"));
           return;
         }
         // a past file does not grow: what it names about model, effort and cache is not the
@@ -2623,7 +2623,7 @@ class Pane {
       this.chatSource = data.source;
       if (data.source === null && !this.chatEl.childElementCount) {
         this.chatEl.replaceChildren(el("div", "chatempty", past !== null
-          ? "Die Transkript-Datei dieser Session liegt nicht mehr auf der Platte"
+          ? "This session's transcript file is no longer on disk"
           : "no transcript yet — say something in the terminal"));
       }
       if (data.entries.length) {
@@ -2905,8 +2905,8 @@ class Pane {
   openSearch(): void {
     if (this.view !== "term" && this.view !== "chat") return;
     const chat = this.view === "chat";
-    this.findInput.placeholder = chat ? "Im Gespräch suchen" : "Im Verlauf suchen";
-    this.findInput.setAttribute("aria-label", chat ? "Im Gespräch suchen" : "Im Terminalverlauf suchen");
+    this.findInput.placeholder = chat ? "Search chat" : "Search scrollback";
+    this.findInput.setAttribute("aria-label", chat ? "Search chat" : "Search terminal scrollback");
     this.findBar.classList.add("open");
     this.findInput.focus();
     this.findInput.select();
@@ -2991,8 +2991,8 @@ class Pane {
 
   private paintFindCount(index: number, count: number): void {
     if (!this.findInput.value) { this.findCount.textContent = ""; return; }
-    this.findCount.textContent = count === 0 ? "keine Treffer"
-      : index < 0 ? `über ${count}` : `${index + 1} von ${count}`;
+    this.findCount.textContent = count === 0 ? "no matches"
+      : index < 0 ? `over ${count}` : `${index + 1} of ${count}`;
   }
 
   scrollToEnd(chat = true) {
@@ -3052,12 +3052,12 @@ class Pane {
     const b = this.endBtn, n = this.chatStuck ? 0 : this.chatUnseen;
     b.setAttribute("aria-pressed", String(this.chatStuck));
     b.classList.toggle("news", n > 0);
-    this.endCount.textContent = n ? `${n} neu` : "";
+    this.endCount.textContent = n ? `${n} new` : "";
     b.title = this.chatStuck
-      ? "Haftet an der neuesten Nachricht — neue Nachrichten erscheinen hier live. Hochscrollen löst das."
-      : n ? `${n} neue Nachricht${n === 1 ? "" : "en"} unten — klicken führt hin, die Ansicht haftet dann dort`
-      : "Zur neuesten Nachricht — die Ansicht haftet dann dort und folgt neuen Nachrichten";
-    b.setAttribute("aria-label", n ? `${n} neue Nachrichten unten` : this.chatStuck ? "Haftet am Ende" : "Zur neuesten Nachricht");
+      ? "Following the newest message — new messages appear here live. Scroll up to let go."
+      : n ? `${n} new message${n === 1 ? "" : "s"} below — click to jump there, the view then follows from that point`
+      : "Jump to the newest message — the view then follows new messages";
+    b.setAttribute("aria-label", n ? `${n} new messages below` : this.chatStuck ? "Following the newest message" : "Jump to the newest message");
   }
 
   // the reload/refresh button: forces a fresh WS connection that always re-seeds from a
@@ -3126,7 +3126,7 @@ class Pane {
     this.pressText = text;
     this.pressFired = true;
     const box = this.root.getBoundingClientRect();
-    this.copyPop.textContent = link ? "Link kopieren" : "Kopieren";
+    this.copyPop.textContent = link ? "Copy link" : "Copy";
     this.copyPop.style.display = "block";
     const w = this.copyPop.offsetWidth;
     this.copyPop.style.left = `${Math.max(4, Math.min(box.width - w - 4, x - box.left - w / 2))}px`;
@@ -3152,9 +3152,9 @@ class Pane {
     if (!this.root.classList.contains("down")) return;
     const s = Math.ceil((this.retryAt - Date.now()) / 1000);
     const n = [...this.held].length;
-    const wait = n ? ` · ${n} Zeichen warten, werden nach dem Verbinden gesendet` : "";
-    const lost = this.dropped ? ` · ${this.dropped} Zeichen verworfen (über ${HELD_MAX_BYTES} B)` : "";
-    this.downMsg.textContent = `${s > 0 ? `getrennt — neuer Versuch in ${s} s` : "getrennt — verbinde…"}${wait}${lost}`;
+    const wait = n ? ` · ${n} chars waiting, sent once connected` : "";
+    const lost = this.dropped ? ` · ${this.dropped} chars dropped (over ${HELD_MAX_BYTES} B)` : "";
+    this.downMsg.textContent = `${s > 0 ? `disconnected — retrying in ${s} s` : "disconnected — connecting …"}${wait}${lost}`;
   }
 
   private hideDown() {
@@ -3172,7 +3172,7 @@ class Pane {
     this.dropped = 0;
     if (held) this.sendRaw(held);
     // what arrived shows in the terminal itself; only a loss needs saying (toast is the error colour)
-    if (lost) toast(`Slot ${this.slot}: ${[...held].length} Zeichen nach dem Verbinden gesendet, ${lost} verworfen (über ${HELD_MAX_BYTES} B)`);
+    if (lost) toast(`Slot ${this.slot}: ${[...held].length} chars sent after connecting, ${lost} dropped (over ${HELD_MAX_BYTES} B)`);
   }
 
   // called from the seed's write callback (see connect()). The buffer is already at
@@ -3235,7 +3235,7 @@ class Pane {
   // A canvas fallback stays visible until ⟳ retries WebGL through loadRenderer().
   private markRenderer() {
     this.reloadBtn.classList.toggle("degraded", this.renderer !== "webgl");
-    this.reloadBtn.title = `Neu verbinden — Verlauf neu laden\nRenderer: ${this.renderer}`;
+    this.reloadBtn.title = `Reconnect — reload scrollback\nRenderer: ${this.renderer}`;
   }
 
   dispose() {
@@ -3281,9 +3281,9 @@ let layout = 1;
 // renamed label renames the control, nobody keeps a copied string in sync.
 let settingsShell: Shell | null = null;
 let settingsTab = "device";
-const SET_TABS: [string, string][] = [["device", "Dieses Gerät"], ["schrift", "Schrift"], ["fleet", "Fleet"], ["machine", "Diese Maschine"], ["usage", "Verbrauch"]];
-const SET_CHOICE_WORDS: Record<string, string> = { tree: "Baum", line: "Zeile", all: "alle" };
-const setOnOff = (on: boolean): string => on ? "an" : "aus";
+const SET_TABS: [string, string][] = [["device", "This device"], ["schrift", "Font"], ["fleet", "Fleet"], ["machine", "This machine"], ["usage", "Usage"]];
+const SET_CHOICE_WORDS: Record<string, string> = { tree: "Tree", line: "Line", all: "all" };
+const setOnOff = (on: boolean): string => on ? "on" : "off";
 // one DOM id per label of the window — the window exists once, a key's dots become dashes
 const setId = (part: string): string => `set-${part.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 // what a keyboard can reach inside an element right now: enabled, rendered, not under [hidden] — and
@@ -3318,10 +3318,10 @@ const PREF_APPLY: Record<string, () => void> = {
 
 // what a value row shows right now (mono, G5.3)
 const SET_VALUE: Record<string, () => string> = {
-  "fleet.board.folds": () => `${boardFolds.size} zugeklappt`,
-  "fleet.stacks.closed": () => `${stackClosed.size} zugeklappt`,
+  "fleet.board.folds": () => `${boardFolds.size} collapsed`,
+  "fleet.stacks.closed": () => `${stackClosed.size} collapsed`,
   "fleet.view": () => `${layout} ${layout === 1 ? "Pane" : "Panes"}`,
-  "fleet.plaudit.ack": () => { const at = prefNumber(PLA_ACK_KEY); return at ? fmtTs(at) : "keine"; },
+  "fleet.plaudit.ack": () => { const at = prefNumber(PLA_ACK_KEY); return at ? fmtTs(at) : "none"; },
 };
 
 function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): void {
@@ -3331,7 +3331,7 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
   }
   settingsTab = at ?? "device";
   const shell = openShell({
-    id: "settings", title: "Einstellungen",
+    id: "settings", title: "Settings",
     onClose: () => { settingsShell = null; trigger?.focus(); },
   });
   settingsShell = shell;
@@ -3346,10 +3346,10 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
     win.setAttribute("aria-labelledby", title.id);
   }
   const closeBtn = shell.root.querySelector<HTMLButtonElement>(".shellclose");
-  if (closeBtn) { closeBtn.title = "Schließen (Esc)"; closeBtn.setAttribute("aria-label", "Einstellungen schließen"); }
+  if (closeBtn) { closeBtn.title = "Close (Esc)"; closeBtn.setAttribute("aria-label", "Close settings"); }
 
   const tabs = el("nav", "settabs");
-  tabs.setAttribute("aria-label", "Abschnitte");
+  tabs.setAttribute("aria-label", "Sections");
   const tabBtns = SET_TABS.map(([id, word]) => {
     const b = el("button", "settab", word) as HTMLButtonElement;
     b.type = "button";
@@ -3401,10 +3401,10 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
       discard = el("div", "setdiscard");
       discard.setAttribute("role", "alertdialog");
       discard.setAttribute("aria-labelledby", "settings-discard-question");
-      const question = el("div", "", `${n} Änderungen verwerfen?`);
+      const question = el("div", "", `Discard ${n} change${n === 1 ? "" : "s"}?`);
       question.id = "settings-discard-question";
       const buttons = el("div", "riskbtns");
-      const keep = el("button", "riskbtn", "Weiter bearbeiten") as HTMLButtonElement;
+      const keep = el("button", "riskbtn", "Keep editing") as HTMLButtonElement;
       // back to the control the staged value lives in: the one the reader was on, if it is one of
       // the Fleet section's; after ✕ or a backdrop click the first staged control
       keep.onclick = () => {
@@ -3413,14 +3413,14 @@ function openSettings(trigger?: HTMLElement | null, at?: "schrift" | "fleet"): v
         settingsTab = "fleet"; syncTabs(false);
         back?.focus();
       };
-      const drop = el("button", "riskbtn danger", "Verwerfen") as HTMLButtonElement;
+      const drop = el("button", "riskbtn danger", "Discard") as HTMLButtonElement;
       drop.onclick = () => { shell.setCloseGuard(null); shell.close(); };
       buttons.append(keep, drop);
       discard.append(question, buttons);
       shell.detail.prepend(discard);
       keep.focus();
     }
-    discard.querySelector("#settings-discard-question")!.textContent = `${n} Änderungen verwerfen?`;
+    discard.querySelector("#settings-discard-question")!.textContent = `Discard ${n} change${n === 1 ? "" : "s"}?`;
     shell.detail.scrollTop = 0;
     return true;
   });
@@ -3528,11 +3528,11 @@ function settingsRow(d: PrefDef): HTMLElement {
     sync.push(() => { val.textContent = SET_VALUE[d.key]?.() ?? prefText(d.key); });
     control = val;
   }
-  const reset = el("button", "setreset", "Standard") as HTMLButtonElement;
+  const reset = el("button", "setreset", "Default") as HTMLButtonElement;
   reset.type = "button";
   reset.id = setId(`r-${d.key}`);
   reset.setAttribute("aria-labelledby", `${reset.id} ${label.id}`);
-  reset.title = std !== null ? `${d.label}: zurück auf den Standard (${std})` : `${d.label}: zurück auf den Standard`;
+  reset.title = std !== null ? `${d.label}: reset to default (${std})` : `${d.label}: reset to default`;
   reset.onclick = () => {
     const ring = visibleFocusables(row.closest<HTMLElement>(".shellwin") ?? document.body);
     const at = ring.indexOf(reset);
@@ -3570,54 +3570,54 @@ type UsageTarget = "local" | "provider";
 // them dated and stale instead of blank or 0. Page memory only — nothing of it is stored.
 let usageSeen: { primary: SubscriptionWindow | null; secondary: SubscriptionWindow | null;
   measuredAt: number; provenance: string | null } | null = null;
-const USAGE_STATUS: Record<string, string> = { measured: "aktuell", stale: "veraltet", unknown: "unbekannt", error: "Fehler" };
+const USAGE_STATUS: Record<string, string> = { measured: "current", stale: "stale", unknown: "unknown", error: "Error" };
 // the reader's reason codes (codex-quota.ts) as one short sentence each; an unknown code shows as it came
 const USAGE_REASON: Record<string, string> = {
-  "not-observed": "Die Sitzungsdateien wurden noch nicht gelesen.",
-  "missing-windows": "Codex hat keine Limits mitgeschickt.",
-  "event-older-than-15-minutes": "Der letzte Stand ist älter als 15 Minuten.",
-  "event-time-ahead-of-server": "Die Zeitangabe des Stands liegt in der Zukunft.",
-  "invalid-json-line": "Eine Zeile in den Sitzungsdateien ist beschädigt.",
-  "invalid-rate-limits": "Die Verbrauchsangaben in den Sitzungsdateien sind ungültig.",
-  "invalid-window": "Ein Zeitfenster in den Sitzungsdateien ist ungültig.",
-  "missing-or-invalid-event-time": "Dem Stand fehlt eine gültige Uhrzeit.",
-  "no-codex-rate-limits": "In den Sitzungsdateien steht kein Codex-Verbrauch.",
-  "no-codex-rate-limits-in-observed-tails": "In den neuesten Sitzungsdateien steht kein Codex-Verbrauch.",
-  "source-identity-changed": "Die Dateien haben sich beim Lesen geändert.",
-  "missing-source": "Auf dieser Maschine liegt kein Codex-Sitzungsordner.",
-  "unreadable-source": "Die Sitzungsdateien lassen sich nicht lesen.",
-  "read-timeout": "Das Lesen hat länger als 5 s gedauert und wurde abgebrochen.",
-  "read-failed": "Das Lesen ist fehlgeschlagen.",
+  "not-observed": "The session files have not been read yet.",
+  "missing-windows": "Codex sent no limits.",
+  "event-older-than-15-minutes": "The latest reading is older than 15 minutes.",
+  "event-time-ahead-of-server": "The reading's timestamp is in the future.",
+  "invalid-json-line": "A line in the session files is corrupt.",
+  "invalid-rate-limits": "The usage figures in the session files are invalid.",
+  "invalid-window": "A time window in the session files is invalid.",
+  "missing-or-invalid-event-time": "The reading has no valid time.",
+  "no-codex-rate-limits": "The session files hold no Codex usage.",
+  "no-codex-rate-limits-in-observed-tails": "The newest session files hold no Codex usage.",
+  "source-identity-changed": "The files changed while being read.",
+  "missing-source": "This machine has no Codex session folder.",
+  "unreadable-source": "The session files can't be read.",
+  "read-timeout": "Reading took longer than 5 s and was cancelled.",
+  "read-failed": "Reading failed.",
 };
 // the wire's three prose reasons (server.ts#subscriptionUsage, codex-quota.ts#PROVIDER_UNSUPPORTED)
 // as the sentence the owner reads; a changed sentence shows as the server wrote it
 const USAGE_PROSE: Record<string, string> = {
   "installed schema proves account/rateLimits/read, but no account-bound reader or authorized account connection is evidenced":
-    "Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen.",
+    "Fleet has no access to query the account at the provider.",
   "no measured subscription sensor; dated owner availability messages have no machine-readable source or validity contract":
-    "Für andere Abos erfasst die Fleet noch keinen Verbrauch.",
+    "Fleet does not record usage for other plans yet.",
   "no dated owner preference source with scope and validity":
-    "Von dir ist keine Modell-Vorgabe hinterlegt.",
+    "You have not set a model preference.",
 };
 // what a refresh did, as the server line names it
-const USAGE_REFRESH: Record<string, string> = { refreshing: "läuft", ok: "erledigt", error: "fehlgeschlagen", timeout: "abgebrochen", unsupported: "nicht möglich" };
+const USAGE_REFRESH: Record<string, string> = { refreshing: "running", ok: "done", error: "failed", timeout: "timed out", unsupported: "not possible" };
 const usageReason = (r: string | null): string => r === null ? "" : USAGE_REASON[r] ?? r;
 const usageProse = (r: string): string => USAGE_PROSE[r] ?? r;
 const usageClock = (ms: number): string => {
   const d = new Date(ms);
-  const time = d.toLocaleTimeString("de-DE");
-  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} ${time}`;
+  const time = d.toLocaleTimeString("en-GB");
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${time}`;
 };
 function usageSpan(ms: number): string {
   const min = Math.floor(ms / 60_000);
-  if (min < 1) return "unter 1 min";
+  if (min < 1) return "under 1 min";
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60);
   if (h < 48) return min % 60 ? `${h} h ${min % 60} min` : `${h} h`;
-  return h % 24 ? `${Math.floor(h / 24)} Tage ${h % 24} h` : `${Math.floor(h / 24)} Tage`;
+  return h % 24 ? `${Math.floor(h / 24)} days ${h % 24} h` : `${Math.floor(h / 24)} days`;
 }
-const usageLength = (m: number): string => m % 1440 === 0 ? `${m / 1440} ${m === 1440 ? "Tag" : "Tage"}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`;
-const usagePct = (p: number): string => `${p.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`;
+const usageLength = (m: number): string => m % 1440 === 0 ? `${m / 1440} ${m === 1440 ? "day" : "days"}` : m % 60 === 0 ? `${m / 60} h` : `${m} min`;
+const usagePct = (p: number): string => `${p.toLocaleString("en-GB", { maximumFractionDigits: 1 })} %`;
 // a served answer is used only in the shape the wire promises; anything else is "nicht lesbar"
 function usageOf(raw: unknown): SubscriptionUsage | null {
   const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
@@ -3654,17 +3654,17 @@ function usageSection(sec: HTMLElement): void {
     sec.appendChild(row);
     return { row, v, more };
   };
-  sec.appendChild(el("h4", "setsub", "Codex-Abo"));
-  const state = stat("state", "Zustand");
-  const wins = { primary: stat("primary", "Erstes Fenster"), secondary: stat("secondary", "Zweites Fenster") };
-  const source = stat("source", "Quelle");
-  const measured = stat("measured", "Gemessen");
-  const age = stat("age", "Alter");
-  const fetched = stat("fetched", "Gelesen");
+  sec.appendChild(el("h4", "setsub", "Codex subscription"));
+  const state = stat("state", "State");
+  const wins = { primary: stat("primary", "First window"), secondary: stat("secondary", "Second window") };
+  const source = stat("source", "Source");
+  const measured = stat("measured", "Measured");
+  const age = stat("age", "Age");
+  const fetched = stat("fetched", "Read");
 
   // the refresh: a native radio group picks the target, one button reads, one status line answers
   const box = el("fieldset", "usetarget");
-  const legend = el("legend", "", "Neu lesen aus");
+  const legend = el("legend", "", "Read again from");
   legend.id = setId("use-target");
   const radios = el("div", "useradios");
   const radio = (value: UsageTarget, word: string): HTMLInputElement => {
@@ -3677,11 +3677,11 @@ function usageSection(sec: HTMLElement): void {
     radios.appendChild(label);
     return input;
   };
-  radio("local", "Gespeicherter Stand");
-  radio("provider", "Konto beim Anbieter");
+  radio("local", "Stored data");
+  radio("provider", "Account at the provider");
   const hint = el("div", "hint setnote");
   hint.id = setId("use-hint");
-  const btn = el("button", "setreset usebtn", "Neu lesen") as HTMLButtonElement;
+  const btn = el("button", "setreset usebtn", "Read again") as HTMLButtonElement;
   btn.type = "button";
   btn.setAttribute("aria-describedby", hint.id);
   btn.onclick = () => { if (btn.getAttribute("aria-disabled") !== "true") void read(target); };
@@ -3693,20 +3693,20 @@ function usageSection(sec: HTMLElement): void {
   box.append(legend, radios, hint, ctl, server);
   sec.appendChild(box);
 
-  sec.appendChild(el("h4", "setsub", "Andere Abos"));
-  const others = stat("others", "Zustand");
+  sec.appendChild(el("h4", "setsub", "Other subscriptions"));
+  const others = stat("others", "State");
 
-  sec.appendChild(el("h4", "setsub", "Modell"));
-  const pref = stat("preference", "Deine Vorgabe");
-  const defaults = stat("defaults", "Standard");
-  const selected = stat("selected", "An Sessions gewählt");
-  const turn = stat("turn", "Wirklich benutzt");
-  sec.appendChild(el("div", "hint setnote", "Freies Kontingent wählt kein Modell. Ein Modell wechselst du wie bisher an seiner Session."));
+  sec.appendChild(el("h4", "setsub", "Model"));
+  const pref = stat("preference", "Your preference");
+  const defaults = stat("defaults", "Default");
+  const selected = stat("selected", "Set on sessions");
+  const turn = stat("turn", "Actually used");
+  sec.appendChild(el("div", "hint setnote", "Free quota does not pick a model. You change a model on its session, as before."));
 
   function pick(value: UsageTarget) {
     target = value;
     // a target switch ends the wait: the answer of the other target no longer belongs on screen
-    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Antwort verworfen, weil du die Quelle gewechselt hast."; failed = false; }
+    if (pending && pendingTarget !== value) { pending = 0; pendingTarget = null; outcome = "Answer discarded because you switched the source."; failed = false; }
     paint();
   }
   async function read(kind: "open" | UsageTarget) {
@@ -3730,53 +3730,53 @@ function usageSection(sec: HTMLElement): void {
         usageSeen = { primary: c.primary, secondary: c.secondary, measuredAt: c.source.measuredAt, provenance: c.source.provenance };
       if (kind !== "open") outcome = refreshWords(got, seenBefore);
     } else {
-      const why = !res ? "Der Server ist nicht erreichbar." : res.status === 409 ? "Der Server liest gerade schon. Versuch es gleich noch einmal."
-        : res.ok ? "Die Antwort des Servers ist nicht lesbar." : `Der Server antwortet mit Fehler ${res.status}.`;
+      const why = !res ? "The server is not reachable." : res.status === 409 ? "The server is already reading. Try again in a moment."
+        : res.ok ? "The server's answer is not readable." : `The server answers with error ${res.status}.`;
       if (kind === "open") openFailed = why;
-      else { failed = true; outcome = `Neu lesen fehlgeschlagen. ${why}`; }
+      else { failed = true; outcome = `Reading again failed. ${why}`; }
     }
     paint();
   }
   // what one refresh answer says about itself — a local read is a READ: same event, same measurement
   function refreshWords(u: SubscriptionUsage, before: typeof usageSeen): string {
     const r = u.codex.refresh, src = u.codex.source;
-    const at = r.finishedAt !== null ? ` um ${usageClock(r.finishedAt)}` : "";
-    if (r.status === "unsupported") return `Noch nicht möglich. ${usageProse(r.reason ?? u.codex.provider.reason)}`;
-    if (r.status === "error" || r.status === "timeout") { failed = true; return `Neu lesen${at} fehlgeschlagen. ${usageReason(r.reason) || "Der Grund ist nicht bekannt."}`; }
-    if (r.status !== "ok") return `Der Server meldet „${USAGE_REFRESH[r.status] ?? r.status}“.`;
-    if (src.measuredAt === null) return `Neu gelesen${at} — kein Stand gefunden.`;
+    const at = r.finishedAt !== null ? ` at ${usageClock(r.finishedAt)}` : "";
+    if (r.status === "unsupported") return `Not possible yet. ${usageProse(r.reason ?? u.codex.provider.reason)}`;
+    if (r.status === "error" || r.status === "timeout") { failed = true; return `Reading again${at} failed. ${usageReason(r.reason) || "The reason is not known."}`; }
+    if (r.status !== "ok") return `The server reports “${USAGE_REFRESH[r.status] ?? r.status}”.`;
+    if (src.measuredAt === null) return `Read again${at} — no reading found.`;
     return before && before.provenance !== null && before.provenance === src.provenance
-      ? `Neu gelesen${at} — nichts Neues, der Stand von ${usageClock(src.measuredAt)} gilt weiter.`
-      : `Neu gelesen${at} — Stand von ${usageClock(src.measuredAt)}.`;
+      ? `Read again${at} — nothing new, the reading from ${usageClock(src.measuredAt)} still holds.`
+      : `Read again${at} — reading from ${usageClock(src.measuredAt)}.`;
   }
   function paintWindow(x: ReturnType<typeof stat>, w: SubscriptionWindow | null, at: number | null, stale: boolean, why: string) {
     x.v.replaceChildren(); x.more.textContent = "";
     x.row.classList.toggle("stale", stale && w !== null);
-    if (!w) { x.v.textContent = "unbekannt"; x.more.textContent = why; return; }
+    if (!w) { x.v.textContent = "unknown"; x.more.textContent = why; return; }
     const bar = el("span", "usebar");
     bar.setAttribute("aria-hidden", "true");
     const fill = el("i", "");
     fill.style.width = `${Math.max(0, Math.min(100, w.used_percent))}%`;
     bar.appendChild(fill);
-    x.v.append(`${usagePct(w.used_percent)} verbraucht`, bar);
+    x.v.append(`${usagePct(w.used_percent)} used`, bar);
     const reset = w.resets_at * 1000;
     // the reset against the server's clock at the read, never this device's
     const left = at !== null ? reset - at : null;
-    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (schon vorbei, der Wert ist vielleicht schon zurückgesetzt)";
-    x.more.textContent = `Fenster ${usageLength(w.window_minutes)} · beginnt neu um ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
+    const when = left === null ? "" : left > 0 ? ` (in ${usageSpan(left)})` : " (already past, the value may have been reset)";
+    x.more.textContent = `Window ${usageLength(w.window_minutes)} · resets at ${usageClock(reset)}${when}${stale ? ` · ${why}` : ""}`;
   }
   function paint() {
     const c = usage?.codex ?? null;
     if (!c) {
-      state.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; state.more.textContent = openFailed;
+      state.v.textContent = openFailed ? "unknown" : "Reading …"; state.more.textContent = openFailed;
       const seen = usageSeen;
-      const missing = "Es fehlt eine lesbare Antwort des Servers.";
+      const missing = "No readable answer from the server.";
       for (const k of ["primary", "secondary"] as const)
-        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : missing);
+        paintWindow(wins[k], seen?.[k] ?? null, null, !!seen, seen ? `Reading from ${usageClock(seen.measuredAt)}, stale` : missing);
       // the first read still running and nothing seen: the windows wait like every other row
-      if (!openFailed && !seen) for (const k of ["primary", "secondary"] as const) { wins[k].v.textContent = "wird gelesen …"; wins[k].more.textContent = ""; }
+      if (!openFailed && !seen) for (const k of ["primary", "secondary"] as const) { wins[k].v.textContent = "Reading …"; wins[k].more.textContent = ""; }
       for (const x of [source, measured, age, fetched, others, pref, defaults, selected, turn]) {
-        x.v.textContent = openFailed ? "unbekannt" : "wird gelesen …"; x.more.replaceChildren(openFailed ? missing : "");
+        x.v.textContent = openFailed ? "unknown" : "Reading …"; x.more.replaceChildren(openFailed ? missing : "");
       }
     } else {
       const s = c.source;
@@ -3786,24 +3786,24 @@ function usageSection(sec: HTMLElement): void {
       if (c.primary || c.secondary) {
         const stale = c.status === "stale";
         for (const k of ["primary", "secondary"] as const)
-          paintWindow(wins[k], c[k], now, stale, c[k] ? "veraltet" : "Codex hat für dieses Fenster nichts mitgeschickt.");
+          paintWindow(wins[k], c[k], now, stale, c[k] ? "stale" : "Codex sent nothing for this window.");
       } else {
         // nothing measured in this answer: the last windows this page saw, dated and stale — or unknown
         const seen = usageSeen;
         for (const k of ["primary", "secondary"] as const)
           paintWindow(wins[k], seen?.[k] ?? null, null, !!seen,
-            seen ? `Stand von ${usageClock(seen.measuredAt)}, veraltet` : usageReason(s.reason) || "Beim letzten Lesen wurde kein Stand gefunden.");
+            seen ? `Reading from ${usageClock(seen.measuredAt)}, stale` : usageReason(s.reason) || "Nothing was found at the last read.");
       }
       const sel = s.selection;
-      source.v.textContent = "Codex-Sitzungsdateien dieser Maschine";
-      source.more.textContent = `Nicht direkt vom Konto: die ${sel.maxFiles} neuesten Dateien, jeweils die letzten ${Math.round(sel.maxBytesPerFile / 1024)} KiB`
-        + `${sel.historyComplete ? "." : ". Ältere Einträge bleiben ungelesen."}`;
-      measured.v.textContent = s.measuredAt !== null ? usageClock(s.measuredAt) : "unbekannt";
-      measured.more.textContent = s.measuredAt !== null ? "Wann Codex diesen Stand gemeldet hat." : "Beim letzten Lesen wurde kein Stand gefunden.";
-      age.v.textContent = s.ageMs !== null ? usageSpan(s.ageMs) : "unbekannt";
-      age.more.textContent = s.ageMs !== null ? `Gilt nach ${usageSpan(s.staleAfterMs)} als veraltet.` : "Ohne gefundenen Stand gibt es kein Alter.";
-      fetched.v.textContent = s.fetchedAt !== null ? usageClock(s.fetchedAt) : "noch nicht gelesen";
-      fetched.more.textContent = s.fetchedAt !== null ? "Wann die Fleet die Dateien gelesen hat." : "Die Fleet hat die Dateien noch nicht gelesen.";
+      source.v.textContent = "Codex session files on this machine";
+      source.more.textContent = `Not read from the account directly: the ${sel.maxFiles} newest files, the last ${Math.round(sel.maxBytesPerFile / 1024)} KiB of each`
+        + `${sel.historyComplete ? "." : ". Older entries stay unread."}`;
+      measured.v.textContent = s.measuredAt !== null ? usageClock(s.measuredAt) : "unknown";
+      measured.more.textContent = s.measuredAt !== null ? "When Codex reported this reading." : "Nothing was found at the last read.";
+      age.v.textContent = s.ageMs !== null ? usageSpan(s.ageMs) : "unknown";
+      age.more.textContent = s.ageMs !== null ? `Counts as stale after ${usageSpan(s.staleAfterMs)}.` : "Without a reading there is no age.";
+      fetched.v.textContent = s.fetchedAt !== null ? usageClock(s.fetchedAt) : "not read yet";
+      fetched.more.textContent = s.fetchedAt !== null ? "When Fleet read the files." : "Fleet has not read the files yet.";
       const o = usage!.otherSubscriptions;
       others.v.textContent = USAGE_STATUS[o.status] ?? o.status;
       others.more.textContent = usageProse(o.reason);
@@ -3814,7 +3814,7 @@ function usageSection(sec: HTMLElement): void {
       defaults.v.textContent = `Worker ${modelLabel(d.worker.id)} · MAIN ${modelLabel(d.main.id)}`;
       defaults.more.replaceChildren();
       const dDet = el("details", "setwhy");
-      dDet.appendChild(el("summary", "", `alle ${Object.keys(d).length} Rollen`));
+      dDet.appendChild(el("summary", "", `all ${Object.keys(d).length} roles`));
       for (const [role, x] of Object.entries(d)) {
         const line = el("div", "setwait");
         line.append(el("span", "setids", role), ` ${x.harness} · ${modelLabel(x.id)}${x.effort ? ` · ${x.effort}` : ""}`);
@@ -3826,39 +3826,39 @@ function usageSection(sec: HTMLElement): void {
       selected.more.replaceChildren();
       if (m.selected.length) {
         const sDet = el("details", "setwhy");
-        sDet.appendChild(el("summary", "", "je Session"));
+        sDet.appendChild(el("summary", "", "per session"));
         for (const row of m.selected) {
           const slot = fleet.find((x) => x.id === row.slot && x.cwd);
           const line = el("div", "setwait");
           line.append(slot ? laneLabel(slot) : `Slot ${row.slot}`,
-            ` — ${row.harness ?? "Programm unbekannt"} · ${row.model ? modelLabel(row.model) : "Modell unbekannt"}`);
+            ` — ${row.harness ?? "Program unknown"} · ${row.model ? modelLabel(row.model) : "Model unknown"}`);
           line.title = row.model ?? "";
           sDet.appendChild(line);
         }
         selected.more.appendChild(sDet);
       }
       const why = [...new Set(m.selected.map((r) => r.decisionSource))];
-      selected.more.append(why.length === 1 && why[0] === "unknown" ? "Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst." : `Gewählt von: ${why.join(" · ") || "—"}`);
+      selected.more.append(why.length === 1 && why[0] === "unknown" ? "Whether you chose these models on purpose is not recorded." : `Chosen by: ${why.join(" · ") || "—"}`);
       const used = m.selected.filter((r) => r.usedTurnModel !== null).length;
-      turn.v.textContent = used ? `bei ${used} ${used === 1 ? "Session" : "Sessions"} erfasst` : "unbekannt";
-      turn.more.textContent = used ? "Die Wahl an einer Session sagt nicht, welches Modell wirklich geantwortet hat."
-        : "Welches Modell wirklich geantwortet hat, ist nicht erfasst.";
+      turn.v.textContent = used ? `recorded for ${used} ${used === 1 ? "session" : "sessions"}` : "unknown";
+      turn.more.textContent = used ? "A session's setting does not say which model actually answered."
+        : "Which model actually answered is not recorded.";
       const r = c.refresh;
-      server.textContent = r.status === "not-requested" ? "Noch nicht neu gelesen."
-        : `Zuletzt neu gelesen: ${r.target === "provider" ? "Konto beim Anbieter" : r.target === "local" ? "gespeicherter Stand" : "—"} · ${USAGE_REFRESH[r.status] ?? r.status}`
-          + `${r.finishedAt !== null ? ` · ${usageClock(r.finishedAt)}` : r.startedAt !== null ? ` · seit ${usageClock(r.startedAt)}` : ""}`;
+      server.textContent = r.status === "not-requested" ? "Not read again yet."
+        : `Last read again: ${r.target === "provider" ? "account at the provider" : r.target === "local" ? "stored data" : "—"} · ${USAGE_REFRESH[r.status] ?? r.status}`
+          + `${r.finishedAt !== null ? ` · ${usageClock(r.finishedAt)}` : r.startedAt !== null ? ` · since ${usageClock(r.startedAt)}` : ""}`;
     }
     // the button: reading, unsupported, retry — aria-disabled keeps the focus on it while it reads
     const unsupported = target === "provider" && (!c || c.provider.status === "unsupported");
     const busy = pending !== 0;
-    btn.textContent = busy ? "Liest …" : failed && target === "local" ? "Erneut lesen" : "Neu lesen";
+    btn.textContent = busy ? "Reading …" : failed && target === "local" ? "Try again" : "Read again";
     btn.setAttribute("aria-disabled", busy || unsupported ? "true" : "false");
     btn.setAttribute("aria-busy", busy ? "true" : "false");
     hint.textContent = target === "local"
-      ? "Liest die gespeicherten Sitzungsdateien noch einmal, ohne beim Anbieter nachzufragen. Neues gibt es nur, wenn Codex inzwischen etwas gemeldet hat."
-      : c ? (c.provider.status === "unsupported" ? `Noch nicht möglich. ${usageProse(c.provider.reason)}` : "Fragt das Konto beim Anbieter ab.")
-      : "Ob das Konto abgefragt werden kann, sagt erst die Antwort des Servers.";
-    status.textContent = busy ? (pendingTarget === "local" ? "Liest den gespeicherten Stand …" : "Fragt den Anbieter …") : outcome;
+      ? "Reads the stored session files again without asking the provider. There is something new only if Codex has reported since."
+      : c ? (c.provider.status === "unsupported" ? `Not possible yet. ${usageProse(c.provider.reason)}` : "Asks the provider for the account.")
+      : "Whether the account can be queried is known only once the server answers.";
+    status.textContent = busy ? (pendingTarget === "local" ? "Reading the stored data …" : "Asking the provider …") : outcome;
   }
   paint();
   void read("open");
@@ -3868,7 +3868,7 @@ interface MachineSetting {
   name: string;
   value: string | number;
   default: string | number;
-  how: ".env + Neustart" | "watchdog.sh + kickstart";
+  how: ".env + restart" | "watchdog.sh + kickstart";
 }
 
 // THE "DIESE MASCHINE" SECTION (G5.3, card D-5): server-start values are observations, not form
@@ -3876,9 +3876,9 @@ interface MachineSetting {
 // input, toggle, Reset or Apply path. The route itself owns the security allowlist. A row is a
 // group named by its label element, so the later rename of these labels renames it with them.
 function machineSection(sec: HTMLElement): void {
-  const status = el("div", "hint setnote", "Lädt die Startwerte dieser Maschine …");
+  const status = el("div", "hint setnote", "Loading this machine's start values …");
   status.setAttribute("role", "status");
-  status.title = "Lädt die wirksamen Startwerte dieses Servers.";
+  status.title = "Loading the effective start values of this server.";
   sec.appendChild(status);
   void (async () => {
     const res = await api("/api/machine-settings").catch(() => null);
@@ -3888,21 +3888,21 @@ function machineSection(sec: HTMLElement): void {
       const x = raw as Partial<MachineSetting>;
       return typeof x.name === "string" && (typeof x.value === "string" || typeof x.value === "number")
         && (typeof x.default === "string" || typeof x.default === "number")
-        && (x.how === ".env + Neustart" || x.how === "watchdog.sh + kickstart");
+        && (x.how === ".env + restart" || x.how === "watchdog.sh + kickstart");
     }) : [];
     if (!res?.ok || !body || settings.length === 0) {
-      status.textContent = "Startwerte nicht lesbar.";
-      status.title = "Die Startwerte konnten nicht vom Server gelesen werden.";
+      status.textContent = "Start values not readable.";
+      status.title = "The start values could not be read from the server.";
       return;
     }
     status.remove();
     for (const setting of settings) {
       const row = el("div", "setrow machrow");
-      row.title = "Zeigt den wirksamen Startwert dieses Servers und den Weg zu seiner Änderung.";
+      row.title = "Shows this server's effective start value and how to change it.";
       const main = el("div", "setmain");
       const label = el("div", "setlabel", setting.name);
       label.id = setId(`m-${setting.name}`);
-      const hint = el("div", "hint setnote", `ändern: ${setting.how}; Standard: ${setting.default}`);
+      const hint = el("div", "hint setnote", `change: ${setting.how}; default: ${setting.default}`);
       hint.id = setId(`m-${setting.name}-h`);
       row.setAttribute("role", "group");
       row.setAttribute("aria-labelledby", label.id);
@@ -3943,11 +3943,11 @@ type SetPlan = StartPlan & { waits?: WaitRow[] };
 type SetPlanWait = Exclude<StartPlanNext, "now">;
 // the wait kinds in the owner's words, one per step of start-plan.ts#projectStartPlan
 function setWaitKind(n: SetPlanWait): string {
-  if ("cap" in n) return /\bin program\b/.test(n.cap) ? "Program-Deckel voll" : "Repo-Deckel voll";
-  if ("after" in n) return n.missing ? "Reihenfolge, Ziel fehlt" : "Reihenfolge";
-  if ("unreleased" in n) return "nicht freigegeben";
-  if ("collides" in n) return "Überschneidung mit laufender Arbeit";
-  return "ungeprüft";
+  if ("cap" in n) return /\bin program\b/.test(n.cap) ? "Program cap full" : "Repo cap full";
+  if ("after" in n) return n.missing ? "Order, target missing" : "Order";
+  if ("unreleased" in n) return "not released";
+  if ("collides" in n) return "Overlaps running work";
+  return "unchecked";
 }
 function fleetSection(sec: HTMLElement): FleetSection {
   let caps: Record<string, number> = {};
@@ -3961,7 +3961,7 @@ function fleetSection(sec: HTMLElement): FleetSection {
   let planAt = 0;
   const repos = [...new Set([dispatch.repo, ...fleet.map((s) => s.cwd ? s.repo ?? s.worktree?.repo ?? "" : "")]
     .filter((r): r is string => !!r))].sort();
-  const onOff = (v: boolean | null) => v === null ? "unbekannt" : setOnOff(v);
+  const onOff = (v: boolean | null) => v === null ? "unknown" : setOnOff(v);
   const hh = (h: number) => `${String(h).padStart(2, "0")}:00`;
   const rows: FleetSetRow[] = [];
   let seq = 0;
@@ -3981,7 +3981,7 @@ function fleetSection(sec: HTMLElement): FleetSection {
     err.hidden = true;
     main.append(lab, note, err);
     const val = el("span", "setval");
-    val.title = "Wert, wie ihn der Server zuletzt gemeldet hat";
+    val.title = "Value as the server last reported it";
     const ctl = el("div", "setctl");
     row.append(main, val, ctl);
     sec.appendChild(row);
@@ -4013,12 +4013,12 @@ function fleetSection(sec: HTMLElement): FleetSection {
     return c;
   }
 
-  sub("Parallelität");
+  sub("Parallelism");
   // 1 · dispatcher — the master
   {
     const s = shell("Master",
-      "An: freigegebene Zeilen dürfen ohne dich als Lane starten — für alle Repos und Sessions dieser Fleet. Startet nichts sofort: Reihenfolge, Freigabe, Karte, Deckel, Ruhezeit und Gate gelten weiter; Programs mit „darf starten: an“ starten auch bei aus.",
-      "Schaltet den Dispatcher der ganzen Fleet — derselbe Schalter wie am Fuß der Queue. intern: tickDispatch", "master");
+      "On: released rows may start as lanes without you — for all repos and sessions of this fleet. Nothing starts at once: order, release, card, cap, quiet hours and gate still apply; programs set to “may start: on” start even when this is off.",
+      "Switches the dispatcher for the whole fleet — the same switch as at the foot of the queue. internal: tickDispatch", "master");
     let want: boolean | null = null;
     const b = toggle();
     s.name(b);
@@ -4034,14 +4034,14 @@ function fleetSection(sec: HTMLElement): FleetSection {
     function sync() {
       const on = want ?? dispatch.on;
       paintToggle(b, on, want !== null);
-      s.val.textContent = !dispatch.available ? "nicht verfügbar" : want !== null ? `Server: ${onOff(dispatch.on)}` : "";
+      s.val.textContent = !dispatch.available ? "unavailable" : want !== null ? `Server: ${onOff(dispatch.on)}` : "";
       syncStaged();
     }
     rows.push({ ...r, paint: () => { r.paint(); sync(); } });
   }
   // the repo every row below the picker speaks about — one picker for cap, occupancy, waits, branch
-  const repoRow = shell("Repo", "Deckel, Belegung, Wartegründe und Branch darunter gelten für dieses Repo.",
-    "Wählt das Repo, über das die Zeilen darunter sprechen; schreibt nichts.", "repo");
+  const repoRow = shell("Repo", "Cap, occupancy, wait reasons and branch below apply to this repo.",
+    "Picks the repo the rows below are about; writes nothing.", "repo");
   const pick = el("select", "setin") as HTMLSelectElement;
   repoRow.name(pick);
   for (const r of repos) {
@@ -4051,13 +4051,13 @@ function fleetSection(sec: HTMLElement): FleetSection {
   }
   pick.value = dispatch.repo && repos.includes(dispatch.repo) ? dispatch.repo : repos[0] ?? "";
   repoRow.ctl.appendChild(pick);
-  repoRow.val.title = "Pfad des gewählten Repos";
+  repoRow.val.title = "Path of the chosen repo";
   // two lists on purpose: a REPAINT keeps what the reader staged, a CHANGE of repo drops the staged
   // cap and branch typed for the old repo (they would be written to the wrong one)
   const repoPaints: (() => void)[] = [];
   const repoChanged: (() => void)[] = [];
   pick.onchange = () => { for (const f of repoChanged) f(); for (const f of repoPaints) f(); };
-  repoPaints.push(() => { repoRow.val.textContent = pick.value || "kein Repo"; });
+  repoPaints.push(() => { repoRow.val.textContent = pick.value || "no repo"; });
 
   // 2 · lane cap of the chosen repo: effective value, its source, the staged wish — three facts apart
   const effectiveCap = (): { n: number; src: "repo" | "default" } | null => {
@@ -4067,9 +4067,9 @@ function fleetSection(sec: HTMLElement): FleetSection {
     return capDefault !== null ? { n: capDefault, src: "default" } : null;
   };
   {
-    const s = shell("Lane-Deckel",
-      "Höchstens so viele Lanes startet die Fleet in diesem Repo ohne dich. Ein Deckel ist eine Obergrenze, keine Zusage; leer oder „Standard“ heißt Maschinen-Standard.",
-      "Setzt den Deckel für unbeaufsichtigte Lanes in einem Repo, für alle Sessions.", "cap");
+    const s = shell("Lane cap",
+      "Fleet starts at most this many lanes in this repo without you. A cap is an upper limit, not a promise; empty or “Default” means the machine default.",
+      "Sets the cap for unattended lanes in a repo, for all sessions.", "cap");
     const facts = el("div", "hint setnote setfacts");
     facts.id = setId(`f-${++seq}-facts`);
     s.note.after(facts);
@@ -4079,11 +4079,11 @@ function fleetSection(sec: HTMLElement): FleetSection {
     n.setAttribute("aria-describedby", `${facts.id} ${s.note.id}`);
     let typed: string | null = null;
     n.oninput = () => { typed = n.value.trim(); sync(); };
-    const std = el("button", "setreset", "Standard") as HTMLButtonElement;
+    const std = el("button", "setreset", "Default") as HTMLButtonElement;
     std.type = "button";
     std.id = setId(`f-${++seq}-std`);
     std.setAttribute("aria-labelledby", `${std.id} ${s.lab.id}`);
-    std.title = "Repo-Override löschen (vormerken) — danach gilt der Maschinen-Standard";
+    std.title = "Clear the repo override (staged) — the machine default applies after that";
     std.onclick = () => { typed = ""; n.value = ""; sync(); n.focus(); };
     s.ctl.append(n, std);
     const stored = () => caps[pick.value] ?? null;
@@ -4091,11 +4091,11 @@ function fleetSection(sec: HTMLElement): FleetSection {
     function sync() {
       n.classList.toggle("staged", staged());
       const eff = effectiveCap();
-      const machineWord = capDefault !== null ? `Maschinen-Standard ${capDefault}` : "Maschinen-Standard unbekannt";
-      const parts = eff?.src === "repo" ? [`wirksam ${eff.n} — Repo-Override`, machineWord]
-        : eff ? [`wirksam ${eff.n} — Maschinen-Standard, kein Repo-Override`]
-        : [capsRead === "fail" ? "wirksam unbekannt — Deckel nicht lesbar" : !pick.value ? "kein Repo" : "wirksam unbekannt", machineWord];
-      if (staged()) parts.push(`vorgemerkt ${typed === "" ? "Maschinen-Standard" : typed}, gilt erst nach Übernehmen`);
+      const machineWord = capDefault !== null ? `Machine default ${capDefault}` : "Machine default unknown";
+      const parts = eff?.src === "repo" ? [`effective ${eff.n} — repo override`, machineWord]
+        : eff ? [`effective ${eff.n} — machine default, no repo override`]
+        : [capsRead === "fail" ? "effective unknown — cap not readable" : !pick.value ? "no repo" : "effective unknown", machineWord];
+      if (staged()) parts.push(`staged ${typed === "" ? "machine default" : typed}, applies only after Apply`);
       facts.textContent = parts.join(" · ");
       std.hidden = stored() === null || typed === "";
       syncStaged();
@@ -4126,9 +4126,9 @@ function fleetSection(sec: HTMLElement): FleetSection {
     sec.appendChild(row);
     return { v, more };
   };
-  const load = stat("load", "Belegung");
-  const start = stat("start", "Startbar jetzt");
-  const waits = stat("wait", "Wartet");
+  const load = stat("load", "Occupancy");
+  const start = stat("start", "Startable now");
+  const waits = stat("wait", "Waiting");
   // A ROW BY ITS KURZTITEL (owner 02.10.: „[Zitat entfernt]“ named row ids): the derivation the lane names
   // use — src/suitemeter.ts#laneTitleOf over the row's card goal or its own [TITEL], cut by
   // shortTitle — read on every paint, never stored; the id rides in the tooltip. A row nothing can
@@ -4146,13 +4146,13 @@ function fleetSection(sec: HTMLElement): FleetSection {
   };
   function paintPlan() {
     for (const x of [load, start, waits]) { x.v.textContent = ""; x.more.replaceChildren(); }
-    if (!pick.value) { for (const x of [load, start, waits]) x.v.textContent = "kein Repo"; return; }
+    if (!pick.value) { for (const x of [load, start, waits]) x.v.textContent = "no repo"; return; }
     if (planRead !== "ok" || !plan) {
-      const why = planRead === "fail" ? "unbekannt — Startplan nicht lesbar" : "wird gelesen …";
+      const why = planRead === "fail" ? "unknown — start plan not readable" : "Reading …";
       for (const x of [load, start, waits]) x.v.textContent = why;
       return;
     }
-    const at = `Startplan gelesen ${new Date(planAt).toLocaleTimeString("de-DE")}`;
+    const at = `Start plan read ${new Date(planAt).toLocaleTimeString("en-GB")}`;
     // the plan keys a repo by the rows' own repo string; a picker path with another spelling of the
     // same repo is matched by its unique base name, never guessed beyond that
     const exact = plan.repos.find((r) => r.repo === pick.value);
@@ -4160,25 +4160,25 @@ function fleetSection(sec: HTMLElement): FleetSection {
     const pr = exact ?? (byName.length === 1 ? byName[0] : null);
     const eff = effectiveCap();
     if (!pr) {
-      load.v.textContent = "unbekannt — der Startplan führt dieses Repo nicht (keine offene Zeile)";
+      load.v.textContent = "unknown — the start plan does not list this repo (no open row)";
       start.v.textContent = "0";
-      start.more.textContent = "keine offene Zeile in diesem Repo";
+      start.more.textContent = "no open row in this repo";
       waits.v.textContent = "0";
       return;
     }
-    load.v.textContent = `${pr.lanes} von ${eff?.n ?? pr.cap?.max ?? "?"} Lanes belegt`;
+    load.v.textContent = `${pr.lanes} of ${eff?.n ?? pr.cap?.max ?? "?"} lanes busy`;
     load.more.textContent = at;
     const now = pr.waves.filter((w) => w.next === "now").flatMap((w) => w.ids);
     start.v.textContent = String(now.length);
-    const holds = [!dispatch.on ? "Master aus" : "", autosOnSrv === false ? "Not-Aus" : "", dispatch.quiet ? "Ruhezeit" : ""].filter(Boolean);
-    if (now.length) start.more.append(ids(now), holds.length ? ` — hält gerade: ${holds.join(" · ")}` : " — der nächste Takt darf sie starten");
+    const holds = [!dispatch.on ? "master off" : "", autosOnSrv === false ? "kill switch" : "", dispatch.quiet ? "quiet hours" : ""].filter(Boolean);
+    if (now.length) start.more.append(ids(now), holds.length ? ` — held by: ${holds.join(" · ")}` : " — the next tick may start them");
     const waiting = pr.waves.filter((w): w is typeof w & { next: SetPlanWait } => w.next !== "now");
     waits.v.textContent = String(waiting.reduce((n, w) => n + w.ids.length, 0));
     // one line per wait kind, one name per row; the order target is named the same way
     const groups = new Map<string, (string | HTMLElement)[]>();
     for (const w of waiting) {
       const kind = setWaitKind(w.next);
-      const tail = (): (string | HTMLElement)[] => "after" in w.next ? [" nach ", rowName(w.next.after)]
+      const tail = (): (string | HTMLElement)[] => "after" in w.next ? [" after ", rowName(w.next.after)]
         : "collides" in w.next ? [` · ${w.next.collides.file}`] : [];
       const list = groups.get(kind) ?? [];
       for (const id of w.ids) list.push(...(list.length ? [" · "] : []), rowName(id), ...tail());
@@ -4192,25 +4192,25 @@ function fleetSection(sec: HTMLElement): FleetSection {
     const why = (plan.waits ?? []).filter((w) => w.repo === pr.repo);
     if (why.length) {
       const det = el("details", "setwhy");
-      det.appendChild(el("summary", "", "Gründe je Zeile"));
+      det.appendChild(el("summary", "", "Reasons per row"));
       for (const w of why) {
         const line = el("div", "setwait");
-        line.append(rowName(w.id), ` ${w.grund} — wartet auf ${w.adressat}`);
+        line.append(rowName(w.id), ` ${w.grund} — waiting for ${w.adressat}`);
         det.appendChild(line);
       }
       waits.more.appendChild(det);
     }
     waits.more.appendChild(el("div", "hint setnote",
-      "Ein Program kann eine eigene, kleinere Grenze haben; sie steht am Program und erscheint hier als „Program-Deckel voll“."));
+      "A program can have its own, smaller limit; it is set on the program and shows here as “Program cap full”."));
   }
   repoPaints.push(paintPlan);
 
-  sub("Automatik");
+  sub("Automation");
   // 4 · automatic prompts (the kill-switch)
   {
-    const s = shell("Automatik",
-      "Aus ist der Not-Aus: hält jeden geplanten Prompt in jeder Session an und startet keine Lane mehr, bis du sie wieder einschaltest; einmalige Handlungen von dir bleiben möglich.",
-      "Not-Aus für alle geplanten Prompts und Lane-Starts der Fleet — auch Programs mit „darf starten: an“ halten.");
+    const s = shell("Automation",
+      "Off is the kill switch: stops every scheduled prompt in every session and starts no more lanes until you switch it back on; one-off actions by you stay possible.",
+      "Kill switch for all scheduled prompts and lane starts of the fleet — programs set to “may start: on” stop too.");
     let want: boolean | null = null;
     const b = toggle();
     s.name(b);
@@ -4231,16 +4231,16 @@ function fleetSection(sec: HTMLElement): FleetSection {
   }
   // 5 · quiet hours
   {
-    const s = shell("Ruhezeit",
-      "In diesem Fenster (Uhrzeit dieses Rechners) schickt die Fleet keiner Session wiederkehrende Prompts und startet keine Lane; einmalige Prompts bleiben.",
-      "Setzt das Ruhefenster für wiederkehrende Prompts und Lane-Starts aller Sessions; ein Program mit „darf starten: an“ startet darin nur, was die Fleet selbst freigegeben hat.");
+    const s = shell("Quiet hours",
+      "In this window (this computer's clock) Fleet sends no session recurring prompts and starts no lane; one-off prompts still go out.",
+      "Sets the quiet window for recurring prompts and lane starts of all sessions; a program set to “may start: on” starts in it only what Fleet itself released.");
     const from = el("select", "setin") as HTMLSelectElement;
     const to = el("select", "setin") as HTMLSelectElement;
-    const fromWord = caption("von");
-    const dash = caption("bis");
+    const fromWord = caption("from");
+    const dash = caption("to");
     s.name(from, fromWord.id);
     s.name(to, dash.id);
-    const off = el("option", "", "aus") as HTMLOptionElement;
+    const off = el("option", "", "off") as HTMLOptionElement;
     off.value = "";
     from.appendChild(off);
     for (let h = 0; h < 24; h++) {
@@ -4259,7 +4259,7 @@ function fleetSection(sec: HTMLElement): FleetSection {
       dash.hidden = to.hidden = from.value === "";
       from.classList.toggle("staged", staged());
       to.classList.toggle("staged", staged());
-      s.val.textContent = staged() ? `Server: ${quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "aus"}` : "";
+      s.val.textContent = staged() ? `Server: ${quietHoursSrv ? `${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}` : "off"}` : "";
       syncStaged();
     }
     rows.push({ ...s, focus: from, staged,
@@ -4278,9 +4278,9 @@ function fleetSection(sec: HTMLElement): FleetSection {
   // 6 · integration branch of the chosen repo
   sub("Integration");
   {
-    const s = shell("Integrations-Branch",
-      "In diesen Branch landen alle Lanes des oben gewählten Repos; leer heißt: der Branch, auf dem der Haupt-Checkout steht.",
-      "Setzt den Integrations-Branch eines Repos, für alle Sessions.", "branch");
+    const s = shell("Integration branch",
+      "All lanes of the repo chosen above land in this branch; empty means: the branch the main checkout is on.",
+      "Sets the integration branch of a repo, for all sessions.", "branch");
     const t = el("input", "setin setbranch") as HTMLInputElement;
     t.type = "text"; t.spellcheck = false; t.autocapitalize = "off"; t.placeholder = "Branch";
     s.name(t);
@@ -4292,8 +4292,8 @@ function fleetSection(sec: HTMLElement): FleetSection {
       t.classList.toggle("staged", staged());
       const known = bases.has(pick.value);
       const v = bases.get(pick.value) ?? null;
-      s.val.textContent = !pick.value ? "kein Repo" : !known ? "unbekannt"
-        : staged() ? `Server: ${v ?? "nicht gesetzt"}` : v === null ? "nicht gesetzt" : "";
+      s.val.textContent = !pick.value ? "no repo" : !known ? "unknown"
+        : staged() ? `Server: ${v ?? "not set"}` : v === null ? "not set" : "";
       syncStaged();
     }
     function paintRow() {
@@ -4317,16 +4317,16 @@ function fleetSection(sec: HTMLElement): FleetSection {
   const foot = el("div", "setfoot");
   const note = el("span", "hint setnote", "");
   note.setAttribute("role", "status");
-  const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
+  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
   apply.type = "button";
-  apply.title = "Schreibt alle vorgemerkten Werte an den Server und zeigt danach, was er gespeichert hat.";
+  apply.title = "Writes all staged values to the server, then shows what it stored.";
   foot.append(note, apply);
   sec.appendChild(foot);
   function syncStaged() {
     const n = rows.filter((r) => r.staged()).length;
     for (const r of rows) r.row.classList.toggle("staged", r.staged());
     apply.disabled = n === 0;
-    note.textContent = n ? `${n} vorgemerkt — gilt erst nach Übernehmen` : "";
+    note.textContent = n ? `${n} staged — applies only after Apply` : "";
   }
   async function readCaps() {
     const r = await api("/api/repo-lane-caps").catch(() => null);
@@ -4372,7 +4372,7 @@ function fleetSection(sec: HTMLElement): FleetSection {
         r.done(j);
       } else {
         r.err.hidden = false;
-        r.err.textContent = `Server lehnt ab: ${j?.error ?? (res ? `HTTP ${res.status}` : "keine Verbindung")}`;
+        r.err.textContent = `Server refuses: ${j?.error ?? (res ? `HTTP ${res.status}` : "no connection")}`;
         refused ??= r;
       }
     }
@@ -4436,7 +4436,7 @@ function fxActions(slot: number, rel: string, writes?: (menu: HTMLElement) => vo
   const actions = el("div", "fxacts");
   const more = el("button", "fxmore") as HTMLButtonElement;
   more.appendChild(icon("dots"));
-  more.title = `Handlungen für ${rel}`;
+  more.title = `Actions for ${rel}`;
   more.setAttribute("aria-label", more.title);
   more.onclick = (e) => {
     e.preventDefault();
@@ -4452,11 +4452,11 @@ function fxActions(slot: number, rel: string, writes?: (menu: HTMLElement) => vo
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); run(b); };
       menu.appendChild(b);
     };
-    item("Mention", `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`, () => {
+    item("Mention", `Inserts ${rel} into the draft of slot ${slot} — writes no file`, () => {
       mentionExplorerPath(slot, rel);
       closeFxMenu(false);
     });
-    item("Copy path", `Kopiert den relativen Pfad ${rel}`, (b) => { copyText(rel); b.textContent = "Copied"; });
+    item("Copy path", `Copies the relative path ${rel}`, (b) => { copyText(rel); b.textContent = "Copied"; });
     writes?.(menu);
     actions.appendChild(menu);
     more.classList.add("on");
@@ -4582,10 +4582,10 @@ export function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void
     if (untracked) row.className += " fxuntr";
     const letter = untracked ? "?" : (xy[1] !== " " ? xy[1] : xy[0]) ?? "M";
     const b = el("span", `fxst ${untracked ? "fxnew" : "fxmod"}`, letter);
-    const what: Record<string, string> = { M: "geändert", A: "neu hinzugefügt", D: "gelöscht",
-      R: "umbenannt", C: "kopiert", T: "Typ geändert", U: "Konflikt" };
-    b.title = untracked ? "ungetrackt — git kennt diese Datei noch nicht; committet ist sie erst nach git add"
-      : `${what[letter] ?? "verändert"}, nicht committet (git status: ${xy.replace(/ /g, "·")})`;
+    const what: Record<string, string> = { M: "modified", A: "added", D: "deleted",
+      R: "renamed", C: "copied", T: "type changed", U: "conflict" };
+    b.title = untracked ? "untracked — git does not know this file yet; it can be committed only after git add"
+      : `${what[letter] ?? "changed"}, not committed (git status: ${xy.replace(/ /g, "·")})`;
     row.appendChild(b);
     row.title = `${rel} — ${b.title}`;
   };
@@ -4637,11 +4637,11 @@ export function paintTree(into: HTMLElement, root: TreeNode, o: PaintOpts): void
       row.appendChild(el("span", "fxname", name));
       if (dirty.has(rel)) {
         const dot = el("span", "fxdot");
-        dot.title = "enthält Änderungen, die noch nicht committet sind";
+        dot.title = "contains changes that are not committed yet";
         row.appendChild(dot);
       }
       row.appendChild(el("span", "fxcount", String(countOf(kid))));
-      row.title = `${rel}/ — ${open ? "zuklappen" : "aufklappen"}`;
+      row.title = `${rel}/ — ${open ? "collapse" : "expand"}`;
       row.setAttribute("aria-expanded", open ? "true" : "false");
       const act = () => { if (open) o.open.delete(rel); else o.open.add(rel); wantFocus = rel; redraw(); };
       row.onclick = act;
@@ -4729,7 +4729,7 @@ export function fxTreeOf(paths: string[]): TreeNode {
 type FxWriteKind = "New file" | "Rename" | "Move" | "Delete";
 // the write DIALOG speaks German, one language per surface (card 1685d265 in 3e6342e2); the kind
 // stays the internal word that picks the route
-const FX_WRITE_WORD: Record<FxWriteKind, string> = { "New file": "Neue Datei", Rename: "Umbenennen", Move: "Verschieben", Delete: "Löschen" };
+const FX_WRITE_WORD: Record<FxWriteKind, string> = { "New file": "New file", Rename: "Rename", Move: "Move", Delete: "Delete" };
 interface FxWriteReply { ran?: string; afterwards?: string; sessionActive?: boolean; error?: string }
 function fxMoveDrop(slot: number, tracked: string[], folder: string, e: DragEvent): FxPathDrop | null {
   if (!e.dataTransfer || e.dataTransfer.types.includes("Files")) return null;
@@ -4745,18 +4745,18 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
   const parent = path.slice(0, path.lastIndexOf("/") + 1);
   const body = el("div", "fxwritebody");
   if (sessionActive(slot)) body.appendChild(el("div", "ocwarn",
-    "Diese Session arbeitet gerade — " + (create
-      ? "sie kann denselben Pfad anlegen; eine bestehende Datei wird nicht überschrieben"
-      : remove ? "sie kann die Datei weiter lesen oder schreiben; Löschen hält die Session nicht an"
-      : "sie kann den alten Pfad weiter lesen oder schreiben; Importe und Verweise folgen nicht")));
+    "This session is working right now — " + (create
+      ? "it can create the same path; an existing file is not overwritten"
+      : remove ? "it can still read or write the file; deleting does not stop the session"
+      : "it can still read or write the old path; imports and references do not follow")));
   let input: HTMLInputElement | null = null;
   if (!remove) {
-    const label = el("label", "fxwritelabel", rename ? "Neuer Name" : "Pfad");
+    const label = el("label", "fxwritelabel", rename ? "New name" : "Path");
     input = el("input", "fxwriteinput") as HTMLInputElement;
     input.type = "text"; input.spellcheck = false; input.autocomplete = "off";
     input.dataset.ownEnter = "1";
     input.value = create ? to : rename ? path.slice(parent.length) : to || path;
-    input.title = rename ? "Neuer Dateiname im selben Ordner" : "Relativer Dateipfad in dieser Session";
+    input.title = rename ? "New file name in the same folder" : "File path relative to this session";
     label.appendChild(input); body.appendChild(label);
   }
   // a row's value is prose (Sans) unless it IS a command or a place (mono); a path or a command
@@ -4768,16 +4768,16 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
     return value;
   };
   const code = (text: string) => el("span", "fxcode", text);
-  const runs = row("Führt aus", true);
-  row("Wo", true).textContent = `${root} · Slot ${slot}`;
-  const afterwards = row("Danach");
-  row("Bleibt").textContent = create ? "Bestehende Dateien bleiben unverändert; kein git add und kein Commit."
-    : remove ? "Verweise bleiben unverändert; die Session läuft weiter; kein Commit."
-    : "Importe und Verweise bleiben am alten Pfad; die Session läuft weiter; kein Commit.";
-  const back = row("Rückweg");
-  if (create) back.textContent = "Die neue Datei löschen; ungetrackte Dateien blockieren das Land.";
+  const runs = row("Runs", true);
+  row("Where", true).textContent = `${root} · Slot ${slot}`;
+  const afterwards = row("Afterwards");
+  row("Stays").textContent = create ? "Existing files stay unchanged; no git add and no commit."
+    : remove ? "References stay unchanged; the session keeps running; no commit."
+    : "Imports and references stay at the old path; the session keeps running; no commit.";
+  const back = row("Undo");
+  if (create) back.textContent = "Delete the new file; untracked files block the land.";
   else back.append(code(remove ? "git restore --staged --worktree" : "git mv"),
-    remove ? " — eine vorgemerkte Löschung braucht einen Commit." : " zurück — eine vorgemerkte Umbenennung braucht einen Commit.");
+    remove ? " — a staged deletion needs a commit." : " back — a staged rename needs a commit.");
   const quote = (arg: string) => "'" + arg.replaceAll("'", "'\\''") + "'";
   let target = "";
   let valid = remove;
@@ -4790,9 +4790,9 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
     const args = create ? ["-C", root, "rev-parse", "--is-inside-work-tree"]
       : ["-C", root, "--literal-pathspecs", remove ? "rm" : "mv", "--", path, ...(!remove ? [target] : [])];
     runs.textContent = `git ${args.map(quote).join(" ")}`;
-    afterwards.replaceChildren(...(create ? ["leere Datei unter ", code(target || "…"), "; nicht in git aufgenommen"]
-      : remove ? [code(path), " aus dem Arbeitsbaum entfernt; Löschung in git vorgemerkt"]
-      : [code(path), " liegt danach unter ", code(target), "; Umbenennung in git vorgemerkt"]));
+    afterwards.replaceChildren(...(create ? ["empty file at ", code(target || "…"), "; not added to git"]
+      : remove ? [code(path), " removed from the working tree; deletion staged in git"]
+      : [code(path), " is afterwards at ", code(target), "; rename staged in git"]));
     input?.setAttribute("aria-invalid", String(!valid));
     const button = body.closest(".panel")?.querySelector<HTMLButtonElement>(".riskbtn.primary, .riskbtn.danger");
     if (button) button.disabled = !valid;
@@ -4801,7 +4801,7 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
   if (input) input.oninput = update;
   const answer = askRisk({ title: `${FX_WRITE_WORD[kind]}${create ? "" : ` — ${path}`}`, body: [body],
     panelClass: "riskpanel fxwritepanel",
-    buttons: [{ label: "Abbrechen", value: false },
+    buttons: [{ label: "Cancel", value: false },
       { label: FX_WRITE_WORD[kind], value: true, primary: !remove, danger: remove, disabled: !valid }] });
   const shield = (e: KeyboardEvent) => {
     e.stopPropagation();
@@ -4816,8 +4816,8 @@ async function fxWrite(slot: number, root: string, kind: FxWriteKind, path: stri
       { slot, path: create ? target : path, ...(!create && !remove ? { to: target } : {}) });
     const reply = await res.json().catch(() => null) as FxWriteReply | null;
     return res.ok && reply?.ran && reply.afterwards ? reply
-      : { error: reply?.error ?? `Der Server lehnt die Änderung ab (${res.status})` };
-  } catch { return { error: "Die Änderung ist nicht bestätigt — erst den Baum neu lesen, dann erneut versuchen" }; }
+      : { error: reply?.error ?? `The server rejects the change (${res.status})` };
+  } catch { return { error: "The change is not confirmed — re-read the tree first, then try again" }; }
 }
 export async function loadTree(slot: number, cwd: string): Promise<void> {
   const res = await api(`/api/tree?slot=${slot}`).catch(() => null);
@@ -4944,9 +4944,9 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   const actions = (rel: string) => fxActions(slot, rel, (menu) => {
     if (rel.endsWith("/") || !tree().files.includes(rel)) return;
     for (const [kind, title] of [
-      ["Rename", "Datei im selben Ordner umbenennen — erst nach Bestätigung"],
-      ["Move", "Datei an einen anderen relativen Pfad verschieben — erst nach Bestätigung"],
-      ["Delete", "Getrackte Datei mit git rm löschen — erst nach Bestätigung"],
+      ["Rename", "Rename the file in its folder — only after you confirm"],
+      ["Move", "Move the file to another relative path — only after you confirm"],
+      ["Delete", "Delete the tracked file with git rm — only after you confirm"],
     ] as const) {
       const b = el("button", "fxmenuitem", kind) as HTMLButtonElement;
       b.title = title; b.setAttribute("role", "menuitem");
@@ -4959,7 +4959,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   // once, and a file the agent had just written stayed missing until the CARD's ↻.
   const again = el("button", "fxreload") as HTMLButtonElement;
   again.appendChild(icon("reload"));
-  again.title = "Baum und Git-Zustand neu lesen — eine neue Datei erscheint erst danach";
+  again.title = "Re-read the tree and the git state — a new file only shows up after this";
   again.setAttribute("aria-label", again.title);
   shell.root.querySelector(".shellclose")?.before(again);
 
@@ -4991,21 +4991,21 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   const mode = el("div", "fxseg fxmode");
   mode.setAttribute("role", "group");
   const pathsB = el("button", "", "Paths") as HTMLButtonElement;
-  pathsB.title = "Dateinamen und Ordner im geladenen Baum durchsuchen";
+  pathsB.title = "Search file and folder names in the loaded tree";
   const contentsB = el("button", "", "Contents") as HTMLButtonElement;
-  contentsB.title = "Dateiinhalte in diesem Slot mit git grep durchsuchen — nur lesend";
+  contentsB.title = "Search file contents in this slot with git grep — read only";
   mode.append(pathsB, contentsB);
   const seg = el("div", "fxseg");
   seg.setAttribute("role", "group");
   const allB = el("button", "") as HTMLButtonElement;
-  allB.title = "Den ganzen Baum zeigen";
+  allB.title = "Show the whole tree";
   const chB = el("button", "") as HTMLButtonElement;
-  chB.title = "Nur zeigen, was git status als geändert oder neu nennt — als flache Pfadliste";
+  chB.title = "Show only what git status lists as changed or new — as a flat list of paths";
   allB.onclick = () => { fxChanged.set(cwd, false); repaint(); };
   chB.onclick = () => { fxChanged.set(cwd, true); repaint(); };
   seg.append(allB, chB);
   const untr = el("button", "fxtog", "Untracked") as HTMLButtonElement;
-  untr.title = "Ungetrackte Dateien zeigen, gedimmt mit „?“ — gitignorte nie";
+  untr.title = "Show untracked files, dimmed with “?” — never the gitignored ones";
   untr.onclick = () => { fxUntracked.set(cwd, !(fxUntracked.get(cwd) ?? true)); paintHead(); repaint(); };
   const setMode = (contents: boolean) => {
     fxContents.set(cwd, contents);
@@ -5018,7 +5018,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
   pathsB.onclick = () => setMode(false);
   contentsB.onclick = () => setMode(true);
   const newFile = el("button", "fxtog", "New file") as HTMLButtonElement;
-  newFile.title = "Eine leere Datei anlegen — Pfad und Folgen vor dem Schreiben bestätigen";
+  newFile.title = "Create an empty file — confirm the path and its effects before it is written";
   newFile.onclick = () => void write("New file");
   shell.tools.append(search, mode, seg, untr, newFile);
   const paintTools = () => {
@@ -5049,8 +5049,8 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     live.classList.toggle("on", on);
     live.textContent = on ? `Session ${slot} is working right now` : `Session ${slot} is idle`;
     live.title = on
-      ? "Die Session hat in den letzten Sekunden Ausgabe erzeugt — sie kann gerade Dateien in diesem Baum schreiben"
-      : "Die Session erzeugt gerade keine Ausgabe";
+      ? "The session produced output in the last few seconds — it may be writing files in this tree right now"
+      : "The session is not producing output right now";
     const at = fxTreeAt.get(cwd);
     age.textContent = at ? `tree read ${fmtSince(at)}` : "";
   };
@@ -5072,7 +5072,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     crumb.title = `${cwd}/${rel}`;
     const top = el("div", "fxftop");
     const mention = el("button", "fxmention", "Mention") as HTMLButtonElement;
-    mention.title = `Fügt ${rel} in den Entwurf von Slot ${slot} ein — schreibt keine Datei`;
+    mention.title = `Insert ${rel} into slot ${slot}'s draft — writes no file`;
     mention.onclick = () => mentionExplorerPath(slot, rel);
     top.append(crumb, mention, actions(rel));
     h.appendChild(top);
@@ -5083,7 +5083,7 @@ export function openExplorer(slot: number, cwd: string, startAt?: string, line?:
     if (facts) meta.appendChild(facts);
     if (xy && xy !== "??") {
       const b = el("button", "fxjump", "What changed") as HTMLButtonElement;
-      b.title = "Öffnet das Review-Fenster auf genau dieser Datei: was sich seit dem letzten Commit geändert hat (der Explorer schließt dabei)";
+      b.title = "Open the review window on exactly this file: what changed since the last commit (the explorer closes)";
       b.onclick = () => { shell.close(); void openReview(slot, "working", { k: "file", path: rel }); };
       meta.appendChild(b);
     }
@@ -5485,7 +5485,7 @@ mobileMore.onclick = () => {
   const open = !document.body.classList.contains("keyboard-options");
   document.body.classList.toggle("keyboard-options", open);
   mobileMore.setAttribute("aria-expanded", String(open));
-  mobileMore.title = open ? "Eingabeoptionen einklappen" : "Weitere Eingabeoptionen öffnen";
+  mobileMore.title = open ? "Collapse input options" : "Show more input options";
   // quer the tray row takes its height from the pane's 69 px, and no viewport event reports that
   if (LANDSCAPE_MQ.matches) requestAnimationFrame(() => { for (const p of panes) p.refit(); });
 };
@@ -5501,7 +5501,7 @@ mreadKeys.appendChild(icon("keys"));
 mreadKeys.onclick = () => {
   const on = document.body.classList.toggle("landkeys");
   mreadKeys.setAttribute("aria-pressed", String(on));
-  mreadKeys.title = on ? "Tastenreihe ausblenden" : "Tastenreihe einblenden";
+  mreadKeys.title = on ? "Hide key row" : "Show key row";
   requestAnimationFrame(() => { for (const p of panes) p.refit(); });
 };
 mreadWrite.appendChild(icon("pencil"));
@@ -5633,13 +5633,13 @@ export function nowSentence(s: SlotInfo | undefined): { text: string; owner: boo
   if (!s?.cwd) return null;
   if (s.rueckfrage) return { text: RUECKFRAGE_SATZ, owner: true };
   if (s.vertrauen) return { text: VERTRAUEN_SATZ, owner: true };
-  if (s.awaiting === "owner") return { text: "Wartet auf dich", owner: true };
-  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return { text: "Hängt — die Session antwortet nicht", owner: false };
-  if (s.awaiting === "main") return { text: "Wartet auf ihre MAIN", owner: false };
-  if (sessionActive(s.id)) return { text: "Arbeitet gerade", owner: false };
+  if (s.awaiting === "owner") return { text: "Waiting for you", owner: true };
+  if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane") return { text: "Stuck — the session does not answer", owner: false };
+  if (s.awaiting === "main") return { text: "Waiting for its MAIN", owner: false };
+  if (sessionActive(s.id)) return { text: "Working now", owner: false };
   const quiet = s.lastOutput > 0 ? Date.now() - s.lastOutput : 0;
-  if (quiet >= 60_000) return { text: `Still seit ${agoDe(quiet).replace(/^vor /, "")}`, owner: false };
-  return { text: "Still", owner: false };
+  if (quiet >= 60_000) return { text: `Idle, last output ${fmtSince(s.lastOutput)}`, owner: false };
+  return { text: "Idle", owner: false };
 }
 let islandKey = "";
 function renderIsland(): void {
@@ -5660,7 +5660,7 @@ function renderIsland(): void {
   const dot = () => { const d = el("span", `act ${state}`); d.title = state ? STATE_WORD[state] : ""; return d; };
   mSpur.replaceChildren(el("span", "mnm", name));
   mPill.replaceChildren(...(state ? [dot()] : []), mBand);
-  mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — Insel aufklappen`);
+  mPill.setAttribute("aria-label", `${name}${state ? ` · ${STATE_WORD[state]}` : ""} — open the island`);
   mTop.setAttribute("aria-label", `Session ${name}`);
   const line1 = el("span", "ml1");
   line1.append(...(state ? [dot()] : []), el("span", "mnm", name));
@@ -5669,7 +5669,7 @@ function renderIsland(): void {
   // conversation — and so does its word
   mView.hidden = !view;
   mView.replaceChildren(icon(chat ? "terminal" : "chat"));
-  const viewWord = chat ? "Terminal" : "Gespräch";
+  const viewWord = chat ? "Terminal" : "Chat";
   mView.setAttribute("aria-label", viewWord);
   mView.title = viewWord;
   mFind.hidden = !slot || !view;
@@ -5721,7 +5721,7 @@ mDirect.onclick = () => setDirect(!directOpen);
 // view while the popover is open (setOptsAnywhere): Apply lives in them.
 let directOpen = false;
 // the effort levels in words; a level this client does not know stands as the harness names it
-const EFFORT_WORD: Record<string, string> = { minimal: "minimal", low: "niedrig", medium: "mittel", high: "hoch", xhigh: "sehr hoch", max: "maximal" };
+const EFFORT_WORD: Record<string, string> = { minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "extra high", max: "max" };
 function setDirect(open: boolean): void {
   if (open === directOpen) return;
   directOpen = open;
@@ -5735,7 +5735,7 @@ function renderDirect(): void {
   const choices = optChoices();
   const parts: HTMLElement[] = [];
   for (const c of choices) {
-    const word = c.field === "model" ? "Modell" : "Effort";
+    const word = c.field === "model" ? "Model" : "Effort";
     parts.push(el("div", "mdsec", word));
     const segs = el("div", "mshsegs");
     segs.setAttribute("role", "group");
@@ -5760,17 +5760,17 @@ function renderDirect(): void {
   }
   const staged = choices.find((c) => c.staged && c.staged !== c.current);
   if (choices.length) {
-    const apply = el("button", "mdapply", "Übernehmen") as HTMLButtonElement;
+    const apply = el("button", "mdapply", "Apply") as HTMLButtonElement;
     apply.type = "button";
     apply.disabled = !staged;
-    apply.title = staged ? `${staged.field === "model" ? "Modell" : "Effort"} dieser Session umstellen — fragt wie der Schalter am Feld` : "Erst eine andere Wahl antippen";
+    apply.title = staged ? `Switch this session's ${staged.field === "model" ? "model" : "effort"} — asks the way the switch at the field does` : "Pick a different option first";
     apply.onclick = () => {
       if (!staged) return;
       applyOpt(staged.field); // first: the switch's popover it opens keeps the switches drawn
       setIsland(false);
     };
     parts.push(apply);
-  } else parts.push(el("div", "mdnone", "Diese Session lässt Modell und Effort hier nicht umstellen."));
+  } else parts.push(el("div", "mdnone", "Model and effort cannot be switched here for this session."));
   mDirPop.replaceChildren(...parts);
 }
 
@@ -6001,7 +6001,7 @@ mGrip.addEventListener("pointerdown", (e) => e.preventDefault());
 mGrip.onclick = () => {
   const on = document.body.classList.toggle("mkeys");
   mGrip.setAttribute("aria-expanded", String(on));
-  mGrip.title = on ? "Eigene Tasten einklappen" : "Eigene Tasten aufklappen — deine Befehls-Chips und ^C, esc, tab, Pfeile, Enter";
+  mGrip.title = on ? "Hide your keys" : "Show your keys — your command chips and ^C, esc, tab, arrows, enter";
 };
 // turning the phone (MOBILE_MQ holds, its arm changes) leaves no island and no sheet open behind
 // the reading mode — and upright, ⋯ is the sheet: the side's ⋯ options do not ride along
@@ -6087,14 +6087,14 @@ function sheetSessions(): ActiveSlot[] {
 }
 // the drawer's head row in words (#sidetools; HEAD_BTNS holds the same buttons as glyphs)
 const SHEET_TOOLS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
-  { id: "queuebtn", icon: "list", word: "Aufträge" },
-  { id: "attnbtn", icon: "megaphone", word: "Für dich" },
-  { id: "opsbtn", icon: "inbox", word: "Eingang" },
+  { id: "queuebtn", icon: "list", word: "Queue" },
+  { id: "attnbtn", icon: "megaphone", word: "Attention" },
+  { id: "opsbtn", icon: "inbox", word: "Inbox" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
-  { id: "auditbtn", icon: "shield", word: "Protokoll" },
-  { id: "konstbtn", icon: "tree", word: "Konstellation" },
-  { id: "devbtn", icon: "laptop", word: "Geräte" },
-  { id: "saverbtn", icon: "saver", word: "Datensparen" },
+  { id: "auditbtn", icon: "shield", word: "Audit" },
+  { id: "konstbtn", icon: "tree", word: "Constellation" },
+  { id: "devbtn", icon: "laptop", word: "Devices" },
+  { id: "saverbtn", icon: "saver", word: "Data saver" },
 ];
 function sessionsSheet(): HTMLElement[] {
   const refs = laneBandNames(stacksOf());
@@ -6103,12 +6103,12 @@ function sessionsSheet(): HTMLElement[] {
   const title = el("b", "", "Sessions");
   title.id = "msheettitle";
   // no waiting count: each row that waits says so itself, on the same sheet
-  head.append(title, el("span", "mshsub", `${rows.length} offen`));
+  head.append(title, el("span", "mshsub", `${rows.length} open`));
   // the head row's buttons in words, breaking into a second line on a narrow phone (never scrolling
   // a word off the edge); each one shows when its source shows
   const tray = el("div", "mshtray");
   tray.setAttribute("role", "group");
-  tray.setAttribute("aria-label", "Werkzeuge der Fleet");
+  tray.setAttribute("aria-label", "Fleet tools");
   for (const t of SHEET_TOOLS) {
     const src = $(t.id) as HTMLButtonElement;
     if (src.style.display === "none") continue;
@@ -6130,7 +6130,7 @@ function sessionsSheet(): HTMLElement[] {
     b.append(el("span", "mshw", instanceName ?? "Computer"));
     // the Umschalter rows ride in the same fold; the head says they are there, as the chip does
     if (switchLinks.length) b.append(el("span", "mshval", switchLinks.some((l) => l.kind === "live") ? "⇄ live"
-      : `⇄ ${switchLinks.length} ${switchLinks.length === 1 ? "Testinstanz" : "Testinstanzen"}`));
+      : `⇄ ${switchLinks.length} ${switchLinks.length === 1 ? "test instance" : "test instances"}`));
     b.append(icon("chevron"));
     b.title = instBtn.title;
     b.setAttribute("aria-expanded", String(sheetInst));
@@ -6156,7 +6156,7 @@ function sessionsSheet(): HTMLElement[] {
     r.dataset.slot = String(s.id);
     const nm = el("span", "mshnm");
     nm.appendChild(el("span", "mshname", laneLabel(s)));
-    if (s.awaiting === "owner") nm.appendChild(el("span", "mshwhy", "wartet auf dich"));
+    if (s.awaiting === "owner") nm.appendChild(el("span", "mshwhy", "waiting for you"));
     // what it gave itself at its start (SlotInfo.gaveItself): on the phone in words, there is no hover for the bar's +N
     if (s.gaveItself?.length) nm.appendChild(el("span", "mshwhy mshgave", `gave itself ${s.gaveItself.length} stone${s.gaveItself.length === 1 ? "" : "s"}`));
     // its edges (SlotInfo.kanten), in words like the line above
@@ -6170,10 +6170,10 @@ function sessionsSheet(): HTMLElement[] {
   }
   // a new session starts in the first free place — the same window „Neue Session“ an empty drawer row opens (src/k15-entwurf.ts)
   const free = fleet.find((s) => s.id <= 16 && !isActive(s));
-  const neu = sheetRow("mshrow mshnew", "plus", "Neue Session", () => { if (free) openK15Entwurf({ slot: free.id }); });
+  const neu = sheetRow("mshrow mshnew", "plus", "New session", () => { if (free) openK15Entwurf({ slot: free.id }); });
   neu.dataset.tool = "new";
   neu.disabled = !free;
-  neu.title = free ? `Eine Session in Slot ${free.id} gründen` : "Alle 16 Plätze sind belegt";
+  neu.title = free ? `Start a session in slot ${free.id}` : "All 16 slots are taken";
   list.appendChild(neu);
   return [head, tray, list];
 }
@@ -6191,27 +6191,27 @@ function toolsSheet(): HTMLElement[] {
   const body = el("div", "mshbody");
   const sec = (word: string) => body.appendChild(el("div", "mshsec", word));
   const corner = (sel: string) => pane?.root.querySelector<HTMLButtonElement>(`.panetools ${sel}`) ?? null;
-  sec("Diese Session");
-  body.appendChild(sheetRow("mshrow", "clock", "Wecker", () => $("autobtn").click()));
-  body.appendChild(sheetRow("mshrow", "history", "Frühere Nachrichten", () => $("histbtn").click()));
+  sec("This session");
+  body.appendChild(sheetRow("mshrow", "clock", "Schedule", () => $("autobtn").click()));
+  body.appendChild(sheetRow("mshrow", "history", "History", () => $("histbtn").click()));
   // Live is a touch affordance (index.html: #comptray > #live under any-pointer: coarse only)
-  if (getComputedStyle(live).display !== "none") body.appendChild(sheetRow("mshrow", "keys", "Direkt ins Terminal tippen", () => live.click(), liveOn ? "an" : "aus"));
+  if (getComputedStyle(live).display !== "none") body.appendChild(sheetRow("mshrow", "keys", "Type into the terminal", () => live.click(), liveOn ? "on" : "off"));
   const up = corner(".promptnav.up"), dn = corner(".promptnav.dn");
   if (pane?.isChat && up && dn) {
     const pair = el("div", "mshpair");
-    pair.append(sheetRow("mshrow", "up", "Vorige Nachricht", () => up.click()), sheetRow("mshrow", "down", "Nächste Nachricht", () => dn.click()));
+    pair.append(sheetRow("mshrow", "up", "Previous message", () => up.click()), sheetRow("mshrow", "down", "Next message", () => dn.click()));
     body.appendChild(pair);
   }
   const hover = corner(".panehover");
-  if (slot && hover) body.appendChild(sheetRow("mshrow", "search", "Verweise erklären", () => hover.click(), hover.getAttribute("aria-pressed") === "true" ? "an" : "aus"));
+  if (slot && hover) body.appendChild(sheetRow("mshrow", "search", "Explain references", () => hover.click(), hover.getAttribute("aria-pressed") === "true" ? "on" : "off"));
   const reload = corner(".panereload");
-  if (pane && !pane.isChat && reload && reload.style.display !== "none") body.appendChild(sheetRow("mshrow", "reload", "Neu verbinden", () => reload.click()));
+  if (pane && !pane.isChat && reload && reload.style.display !== "none") body.appendChild(sheetRow("mshrow", "reload", "Reconnect", () => reload.click()));
   // the harness's sendable commands (the composer's ⌘ switch) — today's ⋯ reached them too
   const cmds = compOpts.querySelector<HTMLButtonElement>(".optswrap.cmds .optsw");
-  if (cmds) body.appendChild(sheetRow("mshrow", "list", "Befehle", () => cmds.click()));
-  sec("Dieses Gerät");
-  body.appendChild(sheetRow("mshrow", "width", "Schrift und Spalte", () => openSettings(mPill, "schrift")));
-  const gear = sheetRow("mshrow", "gear", "Einstellungen", () => openSettings(mPill));
+  if (cmds) body.appendChild(sheetRow("mshrow", "list", "Commands", () => cmds.click()));
+  sec("This device");
+  body.appendChild(sheetRow("mshrow", "width", "Text size and column", () => openSettings(mPill, "schrift")));
+  const gear = sheetRow("mshrow", "gear", "Settings", () => openSettings(mPill));
   gear.dataset.tool = "settings";
   body.appendChild(gear);
   return [head, body];
@@ -6656,13 +6656,13 @@ function codexTurnOf(s: SlotInfo): SlotInfo["codexFirstTurn"] {
 }
 function codexTurnLine(s: SlotInfo): string {
   const hit = codexTurnOf(s);
-  if (!hit) return "Erster Modellturn unbekannt — kein passender strukturierter Turn-Beleg";
+  if (!hit) return "First model turn unknown — no matching structured turn record";
   const t = hit.turn;
-  const word = { running: "angenommen, läuft", succeeded: "erfolgreich", failed: "fehlgeschlagen", unknown: "Ergebnis unbekannt" }[t.state];
-  return `Erster Modellturn ${word}${t.error ? `: ${t.error.code ? t.error.code + " · " : ""}${t.error.message}` : ""}`
-    + (t.unknownReason ? `\nGrund: ${t.unknownReason}` : "")
-    + `\nQuelle: ${hit.source} · Ereignis ${new Date(t.completedAt ?? t.acceptedAt ?? hit.observedAt).toLocaleString()}`
-    + ` · beobachtet ${new Date(hit.observedAt).toLocaleString()}`;
+  const word = { running: "accepted, running", succeeded: "succeeded", failed: "failed", unknown: "result unknown" }[t.state];
+  return `First model turn ${word}${t.error ? `: ${t.error.code ? t.error.code + " · " : ""}${t.error.message}` : ""}`
+    + (t.unknownReason ? `\nReason: ${t.unknownReason}` : "")
+    + `\nSource: ${hit.source} · event ${new Date(t.completedAt ?? t.acceptedAt ?? hit.observedAt).toLocaleString()}`
+    + ` · observed ${new Date(hit.observedAt).toLocaleString()}`;
 }
 function outputState(s: SlotInfo, now: number, awake: boolean): OutputState {
   if (s.stalled || s.agent === "no-agent" || s.agent === "no-pane" || codexTurnOf(s)?.turn.state === "failed"
@@ -6689,9 +6689,9 @@ export function slotState(s: SlotInfo, now: number, awake: boolean): SlotState {
 // The shape is the reading; this is the same reading in words, for the tooltip and for anyone who
 // has to name the state out loud. Not decoration: a shape nobody can name is a shape nobody learns.
 export const STATE_WORD: Record<SlotState, string> = {
-  work: "arbeitet", rest: "ruht", sleep: "schläft — seit einer halben Stunde oder länger nichts",
-  bad: "kaputt — hängt, oder eine Pane ohne Agent dahinter",
-  wait: "wartet auf MAIN", "wait owner": "wartet auf dich" };
+  work: "working", rest: "resting", sleep: "asleep — nothing for half an hour or more",
+  bad: "broken — stuck, or a pane with no agent behind it",
+  wait: "waiting for MAIN", "wait owner": "waiting for you" };
 
 // "how long since this session last said anything", short enough for a 250px line. Takes the AGE,
 // not a timestamp: the caller has the server's clock and the client's is allowed to disagree with
@@ -6828,14 +6828,14 @@ function successionPastFor(s: ActiveSlot, session: number): SuccessionPast[] | "
     .catch(() => { successionPast.set(key, "failed"); renderSlots(); });
   return "pending";
 }
-const whenLong = (t: number | null): string => t === null ? "nicht aufgezeichnet" : new Date(t).toLocaleString();
+const whenLong = (t: number | null): string => t === null ? "not recorded" : new Date(t).toLocaleString();
 // a past cell's time: the clock alone when it is from today, the date alone otherwise — the full
 // stamp took the width the session's name needs
 const whenCell = (t: number): string => new Date(t).toDateString() === new Date().toDateString()
-  ? new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
-  : new Date(t).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+  ? new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+  : new Date(t).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
 const ctxLine = (c: { usedTokens: number; windowTokens: number; pct: number }): string =>
-  `${c.usedTokens.toLocaleString()} von ${c.windowTokens.toLocaleString()} Tokens (${c.pct} %)`;
+  `${c.usedTokens.toLocaleString()} of ${c.windowTokens.toLocaleString()} tokens (${c.pct}%)`;
 
 // open session `n` of slot `id` in the pane that shows it — or the running one when n is null
 function openBandSession(id: number, n: number | null) {
@@ -6871,13 +6871,13 @@ function bandify(row: HTMLElement, r1: HTMLElement, s: ActiveSlot, session: numb
     if (p?.startedAt) c.appendChild(el("span", "when", whenCell(p.startedAt)));
     if (p?.ctx) {
       const cx = el("span", "ctxfill", `${Math.round(p.ctx.pct)}%`);
-      cx.title = `Kontext beim Übergeben — ${ctxLine(p.ctx)}`;
+      cx.title = `Context at handover — ${ctxLine(p.ctx)}`;
       c.appendChild(cx);
     }
-    c.title = `Session ${num} von ${session}\nbegann ${whenLong(p?.startedAt ?? null)}\nübergab ${whenLong(p?.handedAt ?? null)}`
-      + (p?.report ? `\nÜbergabe-Report ${p.report}` : "")
-      + (past === "failed" ? "\ndie Linie konnte nicht gelesen werden" : past === "pending" ? "\nlädt…" : "")
-      + "\nKlick oder loslassen zeigt ihr Transkript — nur lesend";
+    c.title = `Session ${num} of ${session}\nstarted ${whenLong(p?.startedAt ?? null)}\nhanded over ${whenLong(p?.handedAt ?? null)}`
+      + (p?.report ? `\nHandover report ${p.report}` : "")
+      + (past === "failed" ? "\nthe line could not be read" : past === "pending" ? "\nloading…" : "")
+      + "\nClick or release shows its transcript — read only";
     track.appendChild(c);
   }
   r1.replaceWith(view);
@@ -7135,11 +7135,11 @@ export function stacksOf(): Stack[] {
 // owner typed, the role is what the server makes of it (server.ts#positionRole) — an "Orchestrator"
 // label on a bound Program-MAIN is a MAIN, and on a lane it is a lane.
 const ROLE_WORD: Record<NonNullable<SlotInfo["role"]> | "lane" | "generic", string> = {
-  "program-main": "Program-MAIN", orchestrator: "Orchestratorin", lane: "Lane", generic: "keine (Session)",
+  "program-main": "Program-MAIN", orchestrator: "Orchestrator", lane: "Lane", generic: "none (plain session)",
 };
 function roleLine(s: SlotInfo): string {
   const role = s.role ?? (s.worktree ? "lane" : "generic");
-  return `Label: ${s.label ? `„${s.label}“` : "— (Ordnername)"} · Rolle: ${ROLE_WORD[role]}`;
+  return `Label: ${s.label ? `“${s.label}”` : "— (folder name)"} · Role: ${ROLE_WORD[role]}`;
 }
 
 export function startRename(row: HTMLElement, s: SlotInfo) {
@@ -7464,8 +7464,8 @@ export type HeldDeliveries = { count: number; dueAt: number | null; paths: strin
 // the chat view's quiet line and the composer's terminal-view hint say the same thing. HH:MM on the
 // viewer's clock — dueAt is an instant, not a server-clock age.
 export const heldDeliveriesLine = (hd: HeldDeliveries): string =>
-  `${hd.count} Fleet-Zustellung${hd.count === 1 ? "" : "en"} gehalten ${hd.dueAt === null ? "bis zum nächsten Senden"
-    : `bis ${new Date(hd.dueAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`}`;
+  `${hd.count} Fleet deliver${hd.count === 1 ? "y" : "ies"} held ${hd.dueAt === null ? "until your next send"
+    : `until ${new Date(hd.dueAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`}`;
 export const parkedSendLine = (ps: { count: number; draftChars: number }): string =>
   `${ps.count} message${ps.count === 1 ? "" : "s"} wait${ps.count === 1 ? "s" : ""} for an empty input — `
   + `a draft of ${ps.draftChars} char${ps.draftChars === 1 ? "" : "s"} holds the composer; send or clear it`;
@@ -7566,7 +7566,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (s.worktree && s.git && (s.git.dirty > 0 || s.git.ahead > 0)) {
         const life = s.git.dirty > 0 ? "editing" : "ready";
         const d = el("span", `lc ${life}`);
-        d.title = `Lane: ${life === "editing" ? "in Arbeit — nicht committet" : "bereit — Commits warten aufs Landen"}`
+        d.title = `Lane: ${life === "editing" ? "editing — changes not committed" : "ready — commits waiting to land"}`
           + ` · ${s.git.dirty} uncommitted, ${s.git.ahead} to land`;
         r1.appendChild(d);
       }
@@ -7592,12 +7592,12 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       markItems.push({ el: mk, facts: markFacts(s, projectOf(s) ?? "", outputState(s, serverNow, visible || hidHot)) });
       // the permission question as a word beside the glyph, in the colour that means "waits for you"
       if (s.rueckfrage || s.vertrauen) {
-        const frage = el("span", "frage", "Frage");
+        const frage = el("span", "frage", "Asks");
         frage.title = s.rueckfrage ? `${RUECKFRAGE_SATZ}\n${s.rueckfrage}` : VERTRAUEN_SATZ;
         r1.appendChild(frage);
       }
       const live = el("span", `act ${state}`);
-      live.title = STATE_WORD[state] + (s.rueckfrage ? ` — Rechte-Frage: ${s.rueckfrage}` : "")
+      live.title = STATE_WORD[state] + (s.rueckfrage ? ` — permission question: ${s.rueckfrage}` : "")
         + (hidHot && !visible && serverNow - s.lastOutput >= RECENT_MS ? " — a folded lane is active" : "")
         + `\nlast output ${sinceShort(serverNow - s.lastOutput) === "now" ? "just now" : `${sinceShort(serverNow - s.lastOutput)} ago`} · ${new Date(s.lastOutput).toLocaleString()}`;
       if (s.codexRecovery) live.title += `\n${codexTurnLine(s)}`;
@@ -7605,8 +7605,8 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       row.appendChild(r1);
       const firstTurn = codexTurnOf(s);
       if (firstTurn && (firstTurn.turn.state === "failed" || firstTurn.turn.error)) {
-        const failure = el("div", "needline", `Erster Modellturn: Fehler beobachtet · ${firstTurn.turn.error?.code ?? "Fehler"}`
-          + (firstTurn.turn.unknownReason ? " · Ergebnis unbekannt" : "")
+        const failure = el("div", "needline", `First model turn: error seen · ${firstTurn.turn.error?.code ?? "error"}`
+          + (firstTurn.turn.unknownReason ? " · outcome unknown" : "")
           + ` · ${firstTurn.source} · ${new Date(firstTurn.turn.completedAt ?? firstTurn.turn.acceptedAt ?? firstTurn.observedAt).toLocaleString()}`);
         failure.title = codexTurnLine(s);
         row.appendChild(failure);
@@ -7640,11 +7640,11 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       if (roleConflict?.slots.includes(s.id)) {
         const others = roleConflict.slots.filter((id) => id !== s.id);
         const need = el("div", "needline",
-          `Adresse „orchestrator“ unauflösbar — auch Slot ${others.join(", ")} trägt ein Orchestrator-Label · klick zum Umbenennen`);
-        need.title = `Slots ${roleConflict.slots.join(", ")} tragen ein Orchestrator-Label. Die Rollenadresse „orchestrator“ `
-          + "löst nur bei genau einem Treffer auf — bis dahin erreicht keine Nachricht an die Orchestratorin ihr Ziel, "
-          + "und Fleet wählt keine Gewinnerin.\n" + roleLine(s)
-          + "\nklick: diesen Slot umbenennen — alle bis auf einen umbenennen löst die Adresse wieder auf";
+          `Address “orchestrator” does not resolve — slot${others.length === 1 ? "" : "s"} ${others.join(", ")} also ${others.length === 1 ? "has" : "have"} an orchestrator label · click to rename`);
+        need.title = `Slots ${roleConflict.slots.join(", ")} have an orchestrator label. The role address “orchestrator” `
+          + "resolves only when exactly one slot matches — until then no message to the orchestrator reaches its target, "
+          + "and Fleet picks no winner.\n" + roleLine(s)
+          + "\nclick: rename this slot — rename all but one and the address resolves again";
         need.onclick = (e) => { e.stopPropagation(); startRename(row, s); };
         row.appendChild(need);
       }
@@ -7658,24 +7658,24 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       const act = el("div", "slotact");
       if (autosList.some((a) => a.slot === s.id && a.enabled)) {
         const b = el("span", "autobadge", "⏱");
-        b.title = "Diese Session hat geplante Prompts — das Schedule-Fach unter dem Composer listet sie (intern: autos).";
+        b.title = "This session has scheduled prompts — the schedule tray under the composer lists them (internal: autos).";
         act.appendChild(b);
       }
       if (s.mergePending) {
         const rb = el("span", "revb", "⏸");
-        rb.title = "Konflikte, die der Agent aufgelöst hat, ohne dass jemand sie prüfte — Klick öffnet das Board zum Prüfen und Landen (intern: merge review).";
+        rb.title = "Conflicts the agent resolved that nobody has reviewed — click opens the board to review and land (internal: merge review).";
         rb.onclick = (e) => { e.stopPropagation(); showSlot(s.id, e.timeStamp); setBoard(true); };
         act.appendChild(rb);
       }
       if (s.share) {
         const n = s.share.comments;
         const ca = el("span", "cmtact" + (n > 0 ? " hot" : ""), n > 0 ? `💬${n}` : "💬");
-        ca.title = n > 0 ? `Gäste-Chat — ${n} Nachricht${n === 1 ? "" : "en"}` : "Gäste-Chat";
+        ca.title = n > 0 ? `Guest chat — ${n} message${n === 1 ? "" : "s"}` : "Guest chat";
         ca.onclick = (e) => { e.stopPropagation(); openShareDlg(s.id); };
         act.appendChild(ca);
       }
       const kill = el("span", "kill", "✕");
-      kill.title = "Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).";
+      kill.title = "Kill this session — what it is doing now is lost (internal: kill).";
       kill.onclick = (e) => { e.stopPropagation(); void killSlot(s); };
       act.appendChild(kill);
       // ⋯ — THE PHONE'S ONE DOOR to the row's actions (row 69bdf591). They used to be a strip of
@@ -7683,7 +7683,7 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
       // and a half sessions. CSS-hidden on the desktop, where the hover strip and the board carry them.
       const more = el("button", "rowmore") as HTMLButtonElement;
       more.appendChild(icon("dots"));
-      more.title = "Aktionen dieser Session — umbenennen, teilen, exportieren, beenden";
+      more.title = "Session actions — rename, share, export, kill";
       more.setAttribute("aria-haspopup", "menu");
       more.onclick = (e) => { e.stopPropagation(); toggleRowMenu(s); };
       act.appendChild(more);
@@ -7706,12 +7706,12 @@ function slotRow(s: ActiveSlot, stack: Stack | undefined, refs: ReadonlyMap<numb
 // only and says why — the server's own sentence from ?probe=1.
 type ExportPart = "user" | "assistant" | "tools" | "results" | "thinking" | "time";
 const EXPORT_PARTS: [ExportPart, string, string][] = [
-  ["user", "Your messages", "Was du geschrieben hast."],
-  ["assistant", "Assistant text", "Was die Session geantwortet hat."],
-  ["tools", "Tool calls", "Welche Werkzeuge die Session aufgerufen hat, mit ihren Argumenten (intern: tool_use)."],
-  ["results", "Tool results", "Was die Werkzeuge zurückgegeben haben (intern: tool_result)."],
-  ["thinking", "Reasoning", "Die Denk-Spuren der Session, wo das Protokoll sie enthält (intern: thinking)."],
-  ["time", "Timestamps", "Die Uhrzeit jeder Nachricht."],
+  ["user", "Your messages", "What you wrote."],
+  ["assistant", "Assistant text", "What the session replied."],
+  ["tools", "Tool calls", "The tools the session called, with their arguments (internal: tool_use)."],
+  ["results", "Tool results", "What the tools returned (internal: tool_result)."],
+  ["thinking", "Reasoning", "The session's reasoning traces, where the log has them (internal: thinking)."],
+  ["time", "Timestamps", "The time of each message."],
 ];
 export async function openExportDlg(slot: number, name: string) {
   let probe: { available?: boolean; why?: string | null } | null = null;
@@ -7741,10 +7741,10 @@ export async function openExportDlg(slot: number, name: string) {
   };
   const paint = () => {
     body.replaceChildren(seg("Content", [
-      ["conversation", "Conversation", "Das Gespräch aus dem Protokoll der Session — du wählst unten, was hinein soll.", !canConv],
-      ["screen", "Screen", "Der Bildschirm der Pane, wie er heute exportiert wird (intern: tmux scrollback)."],
+      ["conversation", "Conversation", "The conversation from the session's log — you pick below what goes in.", !canConv],
+      ["screen", "Screen", "The pane's screen, as it is exported today (internal: tmux scrollback)."],
     ], st.content, (v) => { st.content = v; }));
-    if (!canConv) body.appendChild(el("div", "hint", probe?.why ?? "Ob diese Session ein Gesprächsprotokoll hat, ließ sich nicht prüfen — exportierbar ist der Bildschirm."));
+    if (!canConv) body.appendChild(el("div", "hint", probe?.why ?? "Could not check whether this session has a conversation log — the screen can be exported."));
     if (st.content === "conversation") {
       const g = el("div", "expgroup");
       g.appendChild(el("div", "explabel", "Includes"));
@@ -7759,15 +7759,15 @@ export async function openExportDlg(slot: number, name: string) {
       g.appendChild(row);
       body.appendChild(g);
       body.appendChild(seg("Format", [
-        ["md", "Markdown", "Eine .md-Datei zum Weitergeben oder Weiterverarbeiten."],
-        ["html", "HTML", "Eine Seite zum Drucken oder als PDF sichern."],
-        ["jsonl", "JSONL", "Ein Eintrag je Zeile, maschinenlesbar, mit den Blocknamen des Protokolls."],
+        ["md", "Markdown", "An .md file to pass on or process further."],
+        ["html", "HTML", "A page to print or save as PDF."],
+        ["jsonl", "JSONL", "One entry per line, machine-readable, with the log's block names."],
       ], st.convFmt, (v) => { st.convFmt = v; }));
-      body.appendChild(el("div", "hint", "Zugangsschlüssel, die Adresse dieses Rechners und dein Home-Pfad werden im Export geschwärzt."));
+      body.appendChild(el("div", "hint", "Access keys, this machine's address and your home path are redacted in the export."));
     } else {
       body.appendChild(seg("Format", [
-        ["html", "HTML", "Eine Seite zum Drucken oder als PDF sichern."],
-        ["txt", "Text", "Der Bildschirminhalt als .txt-Datei."],
+        ["html", "HTML", "A page to print or save as PDF."],
+        ["txt", "Text", "The screen content as a .txt file."],
       ], st.screenFmt, (v) => { st.screenFmt = v; }));
     }
   };
@@ -7831,18 +7831,18 @@ function toggleRowMenu(s: ActiveSlot) {
     b.onclick = (e) => { e.stopPropagation(); closeRowMenu(); run(); };
     rowMenu.appendChild(b);
   };
-  item("Rename", "Diese Session umbenennen — der Name steht dann in der Leiste.", () => {
+  item("Rename", "Rename this session — the name then shows in the bar.", () => {
     const row = slotsEl.querySelector(`.slot[data-slot="${s.id}"]`);
     if (row instanceof HTMLElement) startRename(row, s);
   });
-  item(s.share ? "Shared — view only…" : "Share…", "Diese Session nur lesend teilen — ein Link mit Passwort.", () => openShareDlg(s.id));
-  item("Export…", "Die Session exportieren — Gespräch oder Bildschirm, du wählst Teile und Format.", () => { void openExportDlg(s.id, s.label ?? baseName(s.cwd)); });
+  item(s.share ? "Shared — view only…" : "Share…", "Share this session read-only — a link with a password.", () => openShareDlg(s.id));
+  item("Export…", "Export the session — conversation or screen; you pick the parts and the format.", () => { void openExportDlg(s.id, s.label ?? baseName(s.cwd)); });
   // save = quick-commit this lane's uncommitted work — lets a phone user save outside the
   // conversation (land/merge refuse a dirty tree; a kill would otherwise lose it)
-  if (s.worktree) item("Save", "Die offene Arbeit dieser Lane committen (intern: quick commit).", () => { void doCommit(s.id, "quick"); });
-  if (s.worktree && landsEnabled) item("Land", "Diese Lane in main einbauen.", () => { void doLand(s.id); });
-  if (s.worktree) item("Shelve", "Diese Lane beiseitelegen, mit Notiz.", () => { void doShelve(s.id); });
-  item("Kill session", "Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).", () => { void killSlot(s); }, true);
+  if (s.worktree) item("Save", "Commit this lane's open work (internal: quick commit).", () => { void doCommit(s.id, "quick"); });
+  if (s.worktree && landsEnabled) item("Land", "Land this lane on main.", () => { void doLand(s.id); });
+  if (s.worktree) item("Shelve", "Set this lane aside, with a note.", () => { void doShelve(s.id); });
+  item("Kill session", "Kill this session — what it is doing now is lost (internal: kill).", () => { void killSlot(s); }, true);
   rowMenuSlot = s.id;
   rowMenu.classList.add("open");
 }
@@ -9292,7 +9292,7 @@ function renderOutcomes() {
         "graduation-criteria §1 — consecutive Fleet-routed lands recorded after the F9 fix"
         + ` (counted from the row after the '${K1_ANCHOR_BRANCH}' land; an undo resets the streak).`
         + " Counting only — the graduation decision is the owner's, made by reading this number."));
-      kel.appendChild(chip(`davon ${k.noConfirmStep}/10 ohne Confirm-Schritt`, k.noConfirmStep >= 10 ? "ok" : "",
+      kel.appendChild(chip(`of which ${k.noConfirmStep}/10 with no confirm step`, k.noConfirmStep >= 10 ? "ok" : "",
         "of that streak, the lands whose row explicitly records confirmedByHuman:false — they needed"
         + " no second confirm click. This is NOT evidence of an unattended land: mergeJob has exactly"
         + " one caller (POST /api/slots/:id/merge), so an owner request started every land on this"
@@ -9898,7 +9898,7 @@ function renderAkteDetail(d: Dossier) {
     if (a.adjudication) {
       const by = a.adjudication.by;
       const ruled = el("div", "shrsub", `${typeof by !== "object" ? "owner ruled"
-        : "rule" in by ? `rule ${by.rule} carried` : `Orchestratorin (slot ${by.slot}) ruled`} "${a.adjudication.verdict}" `);
+        : "rule" in by ? `rule ${by.rule} carried` : `orchestrator (slot ${by.slot}) ruled`} "${a.adjudication.verdict}" `);
       ruled.append(el("span", "mono", fmtTs(a.adjudication.at)), a.adjudication.note ? ` — ${a.adjudication.note}` : "");
       host.appendChild(ruled);
     }
@@ -9923,13 +9923,13 @@ function renderAkteDetail(d: Dossier) {
 type ActLens = "lands" | "commits" | "audit" | "akte" | "timeline";
 let actLens: ActLens = "lands";
 const ACT_LENS: { k: ActLens; label: string; title: string }[] = [
-  { k: "timeline", label: "Zeitleiste", title: "alle Sessions auf einer Zeitachse, bis zum einzelnen Werkzeugaufruf —"
-    + " Reports, Rückfragen, Gründung, Commit, Land, Gate, Audit und Deploy daneben; Lücken bleiben Lücken" },
+  { k: "timeline", label: "Timeline", title: "every session on one time axis, down to the single tool call —"
+    + " reports, questions, founding, commit, land, gate, audit and deploy beside them; gaps stay gaps" },
   { k: "lands", label: "Lands", title: "the lane-outcome ledger — what Fleet landed, and what ③ review said" },
   { k: "commits", label: "Commits", title: "recent commits in a repo Fleet has open — including ones no ledger recorded" },
   { k: "audit", label: "Audit", title: "what Fleet did to each slot, and in which project — opened,"
     + " closed, shelved, self-healed, scheduled prompts fired" },
-  { k: "akte", label: "Akte", title: "one lane end to end — its order, its prompts and commits, the land"
+  { k: "akte", label: "Dossier", title: "one lane end to end — its order, its prompts and commits, the land"
     + " note that says why it was allowed to land, and what tier 2 measured afterwards" },
 ];
 
@@ -9961,8 +9961,8 @@ async function switchLens(k: ActLens) {
   shell.detail.replaceChildren();
   shell.setTitle(k === "lands" ? "Outcome feed — what landed, and what review said"
     : k === "commits" ? "Commits — what is actually in the repo"
-      : k === "akte" ? "Akte — one lane, end to end"
-        : k === "timeline" ? "Zeitleiste — alle Sessions, bis zum Werkzeugaufruf"
+      : k === "akte" ? "Dossier — one lane, end to end"
+        : k === "timeline" ? "Timeline — every session, down to the tool call"
           : "Audit trail — what Fleet did to each slot, and where");
   shell.setSubtitle("");
   if (k === "timeline") {
@@ -10161,24 +10161,24 @@ const tlMobile = (): boolean => matchMedia(TL_MOBILE_MQ).matches;
 // Fehler), and a verdict is said in German ("Gate grün", "Land gelandet") while the raw word stays
 // on the mark's data attribute for a check to read.
 const TL_KIND_LABEL: Record<TimelineKind, string> = {
-  "tool.call": "Aufruf", "tool.result": "Resultat", report: "Report", clarification: "Rückfrage", founding: "Gründung",
-  commit: "Commit", land: "Land", gate: "Gate", audit: "Audit", deploy: "Deploy", other: "Ereignis",
+  "tool.call": "Call", "tool.result": "Result", report: "Report", clarification: "Question", founding: "Founding",
+  commit: "Commit", land: "Land", gate: "Gate", audit: "Audit", deploy: "Deploy", other: "Event",
 };
 const TL_GLYPH: Record<TimelineKind, string> = {
   "tool.call": "●", "tool.result": "○", report: "▣", clarification: "?", founding: "◆",
   commit: "⌑", land: "▲", gate: "▮", audit: "☑", deploy: "⇧", other: "·",
 };
-const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "Fehler", pending: "wartet", late: "spät", unknown: "unbekannt" };
-const TL_SOURCE_STATE: Record<TimelineSession["state"], string> = { read: "gelesen", pending: "wartet", rejected: "abgewiesen", unsupported: "nicht unterstützt", unmeasured: "ungemessen" };
+const TL_STATUS_WORD: Record<TimelineEvent["status"], string> = { ok: "ok", error: "error", pending: "waiting", late: "late", unknown: "unknown" };
+const TL_SOURCE_STATE: Record<TimelineSession["state"], string> = { read: "read", pending: "waiting", rejected: "rejected", unsupported: "unsupported", unmeasured: "not measured" };
 const TL_VERDICT_WORD: Record<string, string> = {
-  green: "grün", red: "rot", landed: "gelandet", failed: "fehlgeschlagen", unknown: "unbekannt", complete: "fertig",
-  handoff: "Übergabe", "needs-main": "braucht MAIN", rejected: "abgelehnt", accepted: "angenommen", resolved: "aufgelöst",
+  green: "green", red: "red", landed: "landed", failed: "failed", unknown: "unknown", complete: "complete",
+  handoff: "handover", "needs-main": "needs MAIN", rejected: "rejected", accepted: "accepted", resolved: "resolved",
 };
 const tlVerdict = (v: string | null): string => (v ? TL_VERDICT_WORD[v] ?? v : "");
 const tlN = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 const tlCallWords = (c: TimelineSession["counts"]): string =>
-  `${tlN(c.calls, "Aufruf", "Aufrufe")}${c.errors ? ` · ${c.errors} Fehler` : ""}${c.pending ? ` · ${tlN(c.pending, "wartet", "warten")}` : ""}`;
-const tlIntern = (m: TimelineModel): string => `intern: clockUncertainty: ${m.clock.uncertainty}`;
+  `${tlN(c.calls, "call", "calls")}${c.errors ? ` · ${tlN(c.errors, "error", "errors")}` : ""}${c.pending ? ` · ${c.pending} waiting` : ""}`;
+const tlIntern = (m: TimelineModel): string => `internal: clockUncertainty: ${m.clock.uncertainty}`;
 // the row packing measures the canvas, so a resize is a repaint
 window.addEventListener("resize", () => { if (ocShell && actLens === "timeline") renderActivity(); });
 function resetTimeline() {
@@ -10296,16 +10296,16 @@ function renderTimeline() {
   // --- tools: breadcrumb (also the way back), zoom and pan, harness filter
   const tools = el("div", "tltools");
   const crumbs = el("nav", "tlcrumbs");
-  crumbs.setAttribute("aria-label", "Zoomstufe");
+  crumbs.setAttribute("aria-label", "Zoom level");
   const crumb = (label: string, zoom: TlZoom, on: () => void) => {
     const b = el("button", "shrbtn tlcrumb", label) as HTMLButtonElement;
     b.dataset.zoom = zoom;
     if (tlZoom === zoom) b.setAttribute("aria-current", "step");
-    b.title = tlZoom === zoom ? `${label} — diese Zoomstufe` : `zurück auf ${label}`;
+    b.title = tlZoom === zoom ? `${label} — this zoom level` : `back to ${label}`;
     b.onclick = on;
     return b;
   };
-  crumbs.appendChild(crumb("Überblick", "overview", () => tlSetZoom("overview", null, null)));
+  crumbs.appendChild(crumb("Overview", "overview", () => tlSetZoom("overview", null, null)));
   const scoped = tlSessionOf(tlScope);
   if (tlZoom !== "overview" && scoped) {
     crumbs.appendChild(el("span", "tlsep", "›"));
@@ -10314,7 +10314,7 @@ function renderTimeline() {
   const callEv = tlEventOf(tlCall);
   if (tlZoom === "call" && callEv) {
     crumbs.appendChild(el("span", "tlsep", "›"));
-    crumbs.appendChild(crumb(`Aufruf ${callEv.sub || callEv.label}`, "call", () => undefined));
+    crumbs.appendChild(crumb(`Call ${callEv.sub || callEv.label}`, "call", () => undefined));
   }
   const top = el("div", "tltop");
   top.appendChild(crumbs);
@@ -10329,9 +10329,9 @@ function renderTimeline() {
   if (m && m.state === "read" && !listMode) {
     const into = fold ? el("div", "tlfold") : tools;
     if (fold) {
-      const more = el("button", "shrbtn tlmorebtn", tlMore ? "Weniger" : "Mehr") as HTMLButtonElement;
+      const more = el("button", "shrbtn tlmorebtn", tlMore ? "Less" : "More") as HTMLButtonElement;
       more.type = "button";
-      more.title = tlMore ? "Zeitachse und Harness-Wahl einklappen" : "Zeitachse und Harness-Wahl";
+      more.title = tlMore ? "Hide the time axis and harness picker" : "Show the time axis and harness picker";
       more.setAttribute("aria-expanded", String(tlMore));
       more.onclick = () => { tlMore = !tlMore; renderActivity(); };
       top.appendChild(more);
@@ -10344,18 +10344,18 @@ function renderTimeline() {
     };
     const axisNow = tlAxis(tlScopedEvents());
     const span = axisNow.to - axisNow.from, mid = axisNow.from + span / 2;
-    zb("−", "Zeitachse weiter fassen", () => { tlView = { from: mid - span, to: mid + span }; renderActivity(); });
-    zb("+", "Zeitachse enger fassen", () => { tlView = { from: mid - span / 4, to: mid + span / 4 }; renderActivity(); });
-    zb("◀", "früher", () => { tlView = { from: axisNow.from - span / 4, to: axisNow.to - span / 4 }; renderActivity(); });
-    zb("▶", "später", () => { tlView = { from: axisNow.from + span / 4, to: axisNow.to + span / 4 }; renderActivity(); });
-    if (tlView) zb("Alles", "Zeitachse auf die Daten dieser Zoomstufe", () => { tlView = null; renderActivity(); });
+    zb("−", "Zoom out on the time axis", () => { tlView = { from: mid - span, to: mid + span }; renderActivity(); });
+    zb("+", "Zoom in on the time axis", () => { tlView = { from: mid - span / 4, to: mid + span / 4 }; renderActivity(); });
+    zb("◀", "Earlier", () => { tlView = { from: axisNow.from - span / 4, to: axisNow.to - span / 4 }; renderActivity(); });
+    zb("▶", "Later", () => { tlView = { from: axisNow.from + span / 4, to: axisNow.to + span / 4 }; renderActivity(); });
+    if (tlView) zb("Fit", "Fit the time axis to the data at this zoom level", () => { tlView = null; renderActivity(); });
     into.appendChild(zoom);
     const harnesses = [...new Set(m.sessions.map((s) => s.harness))].sort();
     if (tlZoom === "overview" && harnesses.length > 1) {
       const sel = el("select", "") as HTMLSelectElement;
-      sel.title = "nur Sessions dieses Harness";
+      sel.title = "Only sessions of this harness";
       for (const h of ["all", ...harnesses]) {
-        const o = el("option", "", h === "all" ? "alle Harnesses" : h) as HTMLOptionElement;
+        const o = el("option", "", h === "all" ? "all harnesses" : h) as HTMLOptionElement;
         o.value = h; sel.appendChild(o);
       }
       sel.value = tlHarness;
@@ -10383,56 +10383,56 @@ function renderTimeline() {
       // clocks) is said once in the banner and in the gaps inspector, never per row
       main.appendChild(el("div", "shrsub", `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}${s.project ? ` · ${baseName(s.project)}` : ""}${s.state !== "read" ? ` · ${TL_SOURCE_STATE[s.state]}` : ""}`));
       const c = el("div", "tlcount");
-      c.appendChild(el("span", "", tlN(s.counts.calls, "Aufruf", "Aufrufe")));
-      if (s.counts.errors) c.appendChild(el("span", "err", `${s.counts.errors} Fehler`));
-      if (s.counts.pending) c.appendChild(el("span", "", tlN(s.counts.pending, "wartet", "warten")));
-      if (s.counts.ledger) c.appendChild(el("span", "", tlN(s.counts.ledger, "Ereignis", "Ereignisse")));
-      if (s.gaps.length) c.appendChild(el("span", "unk", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}`));
+      c.appendChild(el("span", "", tlN(s.counts.calls, "call", "calls")));
+      if (s.counts.errors) c.appendChild(el("span", "err", tlN(s.counts.errors, "error", "errors")));
+      if (s.counts.pending) c.appendChild(el("span", "", `${s.counts.pending} waiting`));
+      if (s.counts.ledger) c.appendChild(el("span", "", tlN(s.counts.ledger, "event", "events")));
+      if (s.gaps.length) c.appendChild(el("span", "unk", tlN(s.gaps.length, "gap", "gaps")));
       main.appendChild(c);
       r.appendChild(main);
-      r.title = `Session ${s.label} vergrößern`;
+      r.title = `Zoom into session ${s.label}`;
       const act = () => tlZoomSession(s);
       r.onclick = act;
       shell.list.appendChild(r);
       if (s.key === tlScope) { r.classList.add("sel"); selIdx = shRows.length; }
       shRows.push({ el: r, open: act });
     }
-  } else shell.list.appendChild(tlBusy ? actLoading("histnone", "Sessions werden geladen …")
-    : el("div", "histnone", m?.state === "unavailable" ? "keine Quelle" : "keine Session im Fenster"));
+  } else shell.list.appendChild(tlBusy ? actLoading("histnone", "Loading sessions …")
+    : el("div", "histnone", m?.state === "unavailable" ? "no source" : "no session in the window"));
   shell.setRows(shRows);
   if (selIdx >= 0) shell.select(selIdx, false, false);
   shell.setSubtitle(m ? m.state === "read"
-    ? `${tlN(m.sessions.length, "Session", "Sessions")} · ${tlN(m.events.filter((e) => e.kind === "tool.call").length, "Aufruf", "Aufrufe")} · ${tlN(m.events.filter((e) => e.family === "ledger").length, "Ereignis", "Ereignisse")} · ${tlN(m.gaps.length, "Lücke", "Lücken")}`
-    : m.state === "empty" ? "keine Ereignisse im Fenster" : "Quelle antwortet nicht" : "");
+    ? `${tlN(m.sessions.length, "Session", "Sessions")} · ${tlN(m.events.filter((e) => e.kind === "tool.call").length, "call", "calls")} · ${tlN(m.events.filter((e) => e.family === "ledger").length, "event", "events")} · ${tlN(m.gaps.length, "gap", "gaps")}`
+    : m.state === "empty" ? "no events in the window" : "source not answering" : "");
 
   // --- the canvas, inside one pane of its own: the shell's detail keeps its display rules (hidden on
   // a phone until pushed), the pane does the column layout and anchors the inspector
   shell.detail.replaceChildren();
   const pane = el("div", "tlpane");
   shell.detail.appendChild(pane);
-  if (!m) { pane.appendChild(tlBusy ? actLoading("tlstate", "Zeitleiste wird geladen …") : el("div", "tlstate", "noch nichts geladen")); shell.foot.textContent = ""; return; }
+  if (!m) { pane.appendChild(tlBusy ? actLoading("tlstate", "Loading timeline …") : el("div", "tlstate", "nothing loaded yet")); shell.foot.textContent = ""; return; }
   if (m.state === "unavailable") {
     const box = el("div", "tlstate");
     box.dataset.state = "unavailable";
     // one sentence, the route named once (UI-MAIN review point 7); the second sentence is the
     // principle the review kept: the lens shows nothing and claims nothing until the route answers
-    box.appendChild(el("b", "", "Die Zeitleiste hat noch keine Quelle:"));
+    box.appendChild(el("b", "", "The timeline has no source yet:"));
     box.appendChild(document.createTextNode(" "));
     box.appendChild(el("code", "", `GET ${m.route}`));
-    box.appendChild(document.createTextNode(` ${m.reason ?? "antwortet nicht"}.`));
-    box.appendChild(document.createTextNode(" Bis dahin zeigt sie nichts und behauptet nichts."));
+    box.appendChild(document.createTextNode(` ${m.reason ?? "not answering"}.`));
+    box.appendChild(document.createTextNode(" Until then it shows nothing and claims nothing."));
     pane.appendChild(box);
     shell.foot.textContent = tlIntern(m);
     return;
   }
   // the unknown is said ONCE, here, in words; the foot carries the raw key as an internal value
   const note = el("div", "tlnote");
-  note.appendChild(el("b", "", "Uhrunsicherheit: unbekannt."));
-  note.appendChild(document.createTextNode(` ${m.clock.note} · Dauer: keine Laufzeit belegt, nur Abstände der Aufzeichnungen.`
-    + `${m.ledgerUnassigned ? ` · ${tlN(m.ledgerUnassigned, "Ereignis", "Ereignisse")} ohne Session.` : ""}`));
+  note.appendChild(el("b", "", "Clock uncertainty: unknown."));
+  note.appendChild(document.createTextNode(` ${m.clock.note} · Duration: no run time on record, only the intervals between records.`
+    + `${m.ledgerUnassigned ? ` · ${tlN(m.ledgerUnassigned, "event", "events")} without a session.` : ""}`));
   pane.appendChild(note);
   if (m.state === "empty") {
-    pane.appendChild(el("div", "tlstate", `Keine Ereignisse zwischen ${tlIso(m.window.from)} und ${tlIso(m.window.to)}. Was die Quellen vor dem Fenster halten, ist hier ungemessen, nicht leer.`));
+    pane.appendChild(el("div", "tlstate", `No events between ${tlIso(m.window.from)} and ${tlIso(m.window.to)}. What the sources hold from before the window is not measured here, not empty.`));
     shell.foot.textContent = tlIntern(m);
     return;
   }
@@ -10443,7 +10443,7 @@ function renderTimeline() {
   const canvas = el("div", "tlcanvas");
   canvas.tabIndex = 0;
   canvas.dataset.zoom = tlZoom;
-  canvas.setAttribute("aria-label", "Gemeinsame Zeitachse");
+  canvas.setAttribute("aria-label", "Shared time axis");
   // ← → walk the marks of one track in time order; Enter/Space on a mark is the button's own
   canvas.onkeydown = (ev) => {
     if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
@@ -10459,7 +10459,7 @@ function renderTimeline() {
   const plotPx = Math.max(120, shell.detail.clientWidth - 28 - railPx - padPx * 2);
   if (!listMode) {
     const axisRow = el("div", "tlaxis");
-    axisRow.appendChild(el("span", "", "Zeit laut Quelle"));
+    axisRow.appendChild(el("span", "", "Time per source"));
     const plotAxis = el("div", "tlaxisplot");
     for (const t of tlTicks(axis, Math.max(2, Math.floor(plotPx / (mobile ? 76 : 92))))) {
       const tick = el("time", "tltick", tlFmtClock(t.at, t.step));
@@ -10476,7 +10476,7 @@ function renderTimeline() {
   // THE LEGEND (UI-MAIN review 2026-10-07): every glyph on the canvas has its word here, once, at the
   // axis head — and again on each mark's title, so hover, hold and a screen reader all get the word
   const legend = el("div", "tllegend");
-  legend.setAttribute("aria-label", "Legende");
+  legend.setAttribute("aria-label", "Legend");
   const legendKinds = [...new Set(events.map((e) => e.kind))].sort((a, b) => TL_KIND_LABEL[a].localeCompare(TL_KIND_LABEL[b]));
   for (const k of legendKinds) {
     const item = el("span", "tllegit");
@@ -10485,14 +10485,14 @@ function renderTimeline() {
     item.appendChild(document.createTextNode(TL_KIND_LABEL[k]));
     legend.appendChild(item);
   }
-  if (events.some((e) => e.status === "pending")) legend.appendChild(el("span", "tllegit", "┄ wartet auf Resultat"));
-  if (events.some((e) => !e.atKnown)) legend.appendChild(el("span", "tllegit", "⋯ ohne Zeitstempel"));
+  if (events.some((e) => e.status === "pending")) legend.appendChild(el("span", "tllegit", "┄ waiting for result"));
+  if (events.some((e) => !e.atKnown)) legend.appendChild(el("span", "tllegit", "⋯ no timestamp"));
   // ONE colour, one meaning (UI-MAIN review point 6): amber is "nicht beobachtet" — the hatch, a
   // gap, an unknown field — and nothing else; a mark's state is a word, an error the one red
   const unmeasured = el("span", "tllegit tlunk");
   unmeasured.dataset.meaning = "unmeasured";
   unmeasured.appendChild(el("span", "tlswatch", ""));
-  unmeasured.appendChild(document.createTextNode("ungemessen · Lücke · unbekannt"));
+  unmeasured.appendChild(document.createTextNode("not measured · gap · unknown"));
   legend.appendChild(unmeasured);
   canvas.appendChild(legend);
   // one mark, the same button on the axis and in a phone list
@@ -10503,7 +10503,7 @@ function renderTimeline() {
     b.dataset.at = String(e.at);
     if (e.verdict) b.dataset.verdict = e.verdict;
     const verdict = tlVerdict(e.verdict);
-    b.title = `${TL_KIND_LABEL[e.kind]} ${e.label}${e.sub ? ` ${e.sub}` : ""} · ${TL_STATUS_WORD[e.status]}${verdict ? ` · ${verdict}` : ""} · ${tlIso(e.at)}${e.atKnown ? "" : " (Beobachtung, Aufzeichnung ohne Zeit)"} — öffnen`;
+    b.title = `${TL_KIND_LABEL[e.kind]} ${e.label}${e.sub ? ` ${e.sub}` : ""} · ${TL_STATUS_WORD[e.status]}${verdict ? ` · ${verdict}` : ""} · ${tlIso(e.at)}${e.atKnown ? "" : " (observed, record has no time)"} — open`;
     b.setAttribute("aria-label", b.title);
     b.appendChild(el("span", "tlglyph", TL_GLYPH[e.kind]));
     b.appendChild(el("span", "tlname", e.family === "tool" ? e.label : `${e.label}${verdict ? ` ${verdict}` : ""}`));
@@ -10530,7 +10530,7 @@ function renderTimeline() {
   const visibleSessions = m.sessions.filter((s) => tlZoom === "overview" ? tlHarness === "all" || s.harness === tlHarness : s.key === tlScope);
   for (const s of visibleSessions) tracks.push({ key: s.key, title: s.label, sub: `${s.harness}${s.slot !== null ? ` · Slot ${s.slot}` : ""}`, session: s });
   const fleetEvents = events.filter((e) => e.session === null);
-  if (tlZoom === "overview" && fleetEvents.length) tracks.push({ key: null, title: "Fleet", sub: "Ereignisse ohne Session", session: null });
+  if (tlZoom === "overview" && fleetEvents.length) tracks.push({ key: null, title: "Fleet", sub: "Events without a session", session: null });
   for (const t of tracks) {
     const lane = events.filter((e) => e.session === t.key);
     const shown = lane.filter(inside);
@@ -10544,7 +10544,7 @@ function renderTimeline() {
       const s = t.session;
       const headBtn = el("button", "tlheadbtn") as HTMLButtonElement;
       headBtn.type = "button";
-      headBtn.title = `Session ${s.label} vergrößern`;
+      headBtn.title = `Zoom into session ${s.label}`;
       headBtn.appendChild(el("strong", "", t.title));
       headBtn.appendChild(el("span", "tlchev", "›"));
       headBtn.appendChild(el("span", "tlheadsub", t.sub));
@@ -10559,9 +10559,9 @@ function renderTimeline() {
       head.appendChild(el("span", "tlcounts", tlCallWords(s.counts)));
       if (s.gaps.length || s.horizon.state === "unmeasured") {
         const gaps = el("div", "tlgaps");
-        const g = el("button", "tlgap", `${s.gaps.length} ${s.gaps.length === 1 ? "Lücke" : "Lücken"}${s.horizon.state === "unmeasured" ? " · Horizont ungemessen" : ""}`) as HTMLButtonElement;
+        const g = el("button", "tlgap", `${tlN(s.gaps.length, "gap", "gaps")}${s.horizon.state === "unmeasured" ? " · horizon not measured" : ""}`) as HTMLButtonElement;
         g.type = "button";
-        g.title = "was in dieser Session nicht beobachtet wurde";
+        g.title = "What was not observed in this session";
         g.onclick = () => tlOpenPick(`gaps:${s.key}`);
         gaps.appendChild(g);
         head.appendChild(gaps);
@@ -10573,7 +10573,7 @@ function renderTimeline() {
     // one word that wraps and never cuts; the reason stands in the gaps inspector.
     const h = t.session?.horizon ?? null;
     const later = !!h && h.oldestAt !== null && m.span.from !== null && h.oldestAt > m.span.from && (listMode || h.oldestAt > axis.from);
-    const horizonWord = h && (h.state === "unmeasured" || later) ? (h.state === "unmeasured" ? "ungemessen" : "davor ungemessen") : null;
+    const horizonWord = h && (h.state === "unmeasured" || later) ? (h.state === "unmeasured" ? "not measured" : "not measured earlier") : null;
     if (listMode) {
       const list = el("ol", "tllist");
       if (h && horizonWord) {
@@ -10627,7 +10627,7 @@ function renderTimeline() {
       bar.style.left = `${p.x}%`;
       bar.style.top = `${p.row * stepPx + 4}px`;
       bar.style.width = `${Math.max(0, (pair ? Math.min(100, x(pair.at)) : 100) - p.x)}%`;
-      bar.title = pair ? `Abstand der Aufzeichnungen ${e.separationMs ?? "?"} ms — keine Laufzeit` : "Resultat nicht im Snapshot — wartet";
+      bar.title = pair ? `Interval between records ${e.separationMs ?? "?"} ms — not a run time` : "Result not in the snapshot — waiting";
       plot.appendChild(bar);
     }
     for (const e of shown) {
@@ -10639,34 +10639,34 @@ function renderTimeline() {
       plot.appendChild(b);
     }
     body.appendChild(plot);
-    if (shown.length < lane.length) body.appendChild(el("div", "tloutside", `${lane.length - shown.length} außerhalb der Zeitachse`));
+    if (shown.length < lane.length) body.appendChild(el("div", "tloutside", `${lane.length - shown.length} outside the time axis`));
     track.appendChild(body);
     canvas.appendChild(track);
   }
-  if (!tracks.length) canvas.appendChild(el("div", "tlstate", "keine Session für diesen Filter"));
+  if (!tracks.length) canvas.appendChild(el("div", "tlstate", "no session for this filter"));
   pane.appendChild(canvas);
   if (m.next) {
-    const more = el("button", "shrbtn", tlBusy ? "lädt …" : "weitere Seite laden") as HTMLButtonElement;
+    const more = el("button", "shrbtn", tlBusy ? "Loading …" : "Load next page") as HTMLButtonElement;
     more.disabled = tlBusy; more.style.margin = "0 14px 12px";
     more.onclick = () => void tlLoadMore();
     pane.appendChild(more);
   }
   pane.appendChild(tlInspector());
   shell.foot.textContent = mobile ? tlIntern(m)
-    : `Esc schließt den Inspektor, dann eine Zoomstufe, dann das Fenster · ← → gehen die Marken entlang · ${tlIntern(m)}`;
+    : `Esc closes the inspector, then one zoom level, then the window · ← → walk along the marks · ${tlIntern(m)}`;
 }
 
 // the picked event in full, or a session's gaps; a card under the canvas, the whole screen on a phone
 function tlInspector(): HTMLElement {
   const box = el("aside", "tlinspect");
-  box.setAttribute("aria-label", "Inspektor");
+  box.setAttribute("aria-label", "Inspector");
   if (!tlPick) { box.hidden = true; return box; }
   const head = el("div", "tlihead");
-  const close = el("button", "shrbtn tliclose", "Schließen") as HTMLButtonElement;
-  close.title = "Inspektor schließen (Esc)";
+  const close = el("button", "shrbtn tliclose", "Close") as HTMLButtonElement;
+  close.title = "Close inspector (Esc)";
   close.onclick = tlClosePick;
   const dl = el("dl", "tlidl");
-  const field = (name: string, value: string | HTMLElement | null, unknownText = "unbekannt"): void => {
+  const field = (name: string, value: string | HTMLElement | null, unknownText = "unknown"): void => {
     dl.appendChild(el("dt", "", name));
     const dd = el("dd", value === null ? "unk" : "");
     dd.dataset.field = name;
@@ -10677,15 +10677,15 @@ function tlInspector(): HTMLElement {
   const pre = (s: string): HTMLElement => el("pre", "", s);
   if (tlPick.startsWith("gaps:")) {
     const s = tlSessionOf(tlPick.slice(5));
-    head.appendChild(el("h3", "", `Lücken · ${s?.label ?? "?"}`));
+    head.appendChild(el("h3", "", `Gaps · ${s?.label ?? "?"}`));
     head.appendChild(close);
     box.appendChild(head);
     if (s) {
-      field("Horizont", s.horizon.state === "read" ? `ab ${tlIso(s.horizon.oldestAt ?? 0)} gelesen${s.horizon.newestAt ? ` bis ${tlIso(s.horizon.newestAt)}` : ""}` : null, `ungemessen · ${s.horizon.reason ?? ""}`);
-      field("Quellstand", `${TL_SOURCE_STATE[s.state]} · Generation ${s.version}`);
-      field("Belegung", s.occupation === "unknown" ? null : `Slot ${s.occupation.slot} seit ${tlIso(s.occupation.openedAt)}`, "unbekannt · die Quelle nennt keine Belegung");
+      field("Horizon", s.horizon.state === "read" ? `read from ${tlIso(s.horizon.oldestAt ?? 0)}${s.horizon.newestAt ? ` to ${tlIso(s.horizon.newestAt)}` : ""}` : null, `not measured · ${s.horizon.reason ?? ""}`);
+      field("Source state", `${TL_SOURCE_STATE[s.state]} · generation ${s.version}`);
+      field("Occupation", s.occupation === "unknown" ? null : `Slot ${s.occupation.slot} since ${tlIso(s.occupation.openedAt)}`, "unknown · the source names no occupation");
       for (const g of s.gaps) field(g.code, `${g.text}${g.offset !== null ? ` · Bytes ${g.offset}${g.bytes !== null ? ` + ${g.bytes}` : ""}` : ""}`);
-      if (!s.gaps.length) field("Lücken", "keine in diesem Snapshot; frühere Vollständigkeit unbekannt");
+      if (!s.gaps.length) field("Gaps", "none in this snapshot; earlier completeness unknown");
     }
     box.appendChild(dl);
     return box;
@@ -10701,56 +10701,56 @@ function tlInspector(): HTMLElement {
   head.appendChild(close);
   box.appendChild(head);
   if (e.family === "tool") {
-    field("Argumente", e.args !== null ? pre(e.args) : null, "nicht geliefert · die Quelle hält sie unter dem Locator");
-    field("Resultat", e.result !== null ? pre(e.result) : null, e.status === "pending" ? "wartet · kein Resultat im Snapshot" : "nicht geliefert");
-    field("Fehler", e.error !== null ? pre(e.error) : e.status === "unknown" ? null : "keiner laut Quelle", "unbekannt · Quelle sagt nichts");
+    field("Arguments", e.args !== null ? pre(e.args) : null, "not delivered · the source keeps them under the locator");
+    field("Result", e.result !== null ? pre(e.result) : null, e.status === "pending" ? "waiting · no result in the snapshot" : "not delivered");
+    field("Error", e.error !== null ? pre(e.error) : e.status === "unknown" ? null : "none, per the source", "unknown · the source says nothing");
   } else {
-    field("Urteil", e.verdict ? `${verdict}${verdict !== e.verdict ? ` (${e.verdict})` : ""}` : null, "ohne Urteil");
-    field("Bezüge", Object.keys(e.source.refs).length ? code(Object.entries(e.source.refs).map(([k, v]) => `${k}=${v}`).join(" · ")) : null, "keine");
+    field("Verdict", e.verdict ? `${verdict}${verdict !== e.verdict ? ` (${e.verdict})` : ""}` : null, "no verdict");
+    field("References", Object.keys(e.source.refs).length ? code(Object.entries(e.source.refs).map(([k, v]) => `${k}=${v}`).join(" · ")) : null, "none");
   }
   const times = el("div", "");
-  times.appendChild(el("div", "", `${e.atKnown ? "Aufzeichnung" : "Beobachtung (Aufzeichnung ohne Zeitstempel)"}: ${tlIso(e.at)} · ${e.clock}`));
-  if (e.observedAt !== null) times.appendChild(el("div", "", `beobachtet: ${tlIso(e.observedAt)}`));
+  times.appendChild(el("div", "", `${e.atKnown ? "Record" : "Observed (record has no timestamp)"}: ${tlIso(e.at)} · ${e.clock}`));
+  if (e.observedAt !== null) times.appendChild(el("div", "", `observed: ${tlIso(e.observedAt)}`));
   if (pair) times.appendChild(el("div", "", `${TL_KIND_LABEL[pair.kind]}: ${tlIso(pair.at)}`));
-  field("Zeitpunkte", times);
-  field("Dauer", e.separationMs !== null ? `keine Laufzeit belegt · Abstand der Aufzeichnungen Aufruf→Resultat ${e.separationMs} ms` : null, "keine Laufzeit belegt");
+  field("Times", times);
+  field("Duration", e.separationMs !== null ? `no run time on record · interval between records call→result ${e.separationMs} ms` : null, "no run time on record");
   const src = el("div", "");
-  src.appendChild(el("div", "", `${e.source.name}${e.source.sidechain ? " · Sidechain derselben Session" : ""}`));
-  if (e.source.edge) src.appendChild(el("div", "", `Kante: ${e.source.edge}`));
+  src.appendChild(el("div", "", `${e.source.name}${e.source.sidechain ? " · sidechain of the same session" : ""}`));
+  if (e.source.edge) src.appendChild(el("div", "", `Edge: ${e.source.edge}`));
   // THE RAW VALUE (UI-MAIN review point 8): locator, fingerprint and record bytes are a machine
   // address, not prose — folded behind a summary, with one button that copies them as one line
   const rawLines = [
     e.source.locator ? `${e.source.locator}${e.source.fp ? ` fp ${e.source.fp}` : ""}` : null,
-    e.source.record ? `Aufzeichnung ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}` : null,
+    e.source.record ? `Record ${e.source.record.id ?? "?"}${e.source.record.parent ? ` ← ${e.source.record.parent}` : ""} · Bytes ${e.source.record.offset} + ${e.source.record.bytes} #${e.source.record.block}` : null,
   ].filter((l): l is string => l !== null);
   if (rawLines.length) {
     const raw = el("details", "tlraw");
-    raw.appendChild(el("summary", "", `Rohwert · ${e.source.locator ? "Lokator" : "Aufzeichnung"}`));
+    raw.appendChild(el("summary", "", `Raw value · ${e.source.locator ? "locator" : "record"}`));
     for (const line of rawLines) raw.appendChild(code(line));
-    const copy = el("button", "shrbtn tlcopy", "Kopieren") as HTMLButtonElement;
+    const copy = el("button", "shrbtn tlcopy", "Copy") as HTMLButtonElement;
     copy.type = "button";
-    copy.title = "Rohwert in die Zwischenablage";
-    copy.onclick = () => { copyText(rawLines.join("\n")); copy.textContent = "Kopiert"; setTimeout(() => { copy.textContent = "Kopieren"; }, 1200); };
+    copy.title = "Copy the raw value to the clipboard";
+    copy.onclick = () => { copyText(rawLines.join("\n")); copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1200); };
     raw.appendChild(copy);
     src.appendChild(raw);
   }
-  field("Quelle", src);
-  if (e.files.length) field("Dateien", e.files.join(", "));
+  field("Source", src);
+  if (e.files.length) field("Files", e.files.join(", "));
   box.appendChild(dl);
   const acts = el("div", "tliacts");
   if (e.family === "tool" && tlZoom !== "call") {
-    const z = el("button", "shrbtn", "Zoom Aufruf") as HTMLButtonElement;
+    const z = el("button", "shrbtn", "Zoom call") as HTMLButtonElement;
     z.onclick = () => tlSetZoom("call", e.session, e.kind === "tool.call" ? e.id : e.pair ?? e.id);
     acts.appendChild(z);
   }
   if (pair) {
-    const p = el("button", "shrbtn", `${TL_KIND_LABEL[pair.kind]} öffnen`) as HTMLButtonElement;
+    const p = el("button", "shrbtn", `Open ${TL_KIND_LABEL[pair.kind].toLowerCase()}`) as HTMLButtonElement;
     p.onclick = () => tlOpenPick(pair.id);
     acts.appendChild(p);
   }
   if (e.session && tlZoom === "overview") {
     const s = tlSessionOf(e.session);
-    if (s) { const z = el("button", "shrbtn", "Zoom Session") as HTMLButtonElement; z.onclick = () => tlZoomSession(s); acts.appendChild(z); }
+    if (s) { const z = el("button", "shrbtn", "Zoom session") as HTMLButtonElement; z.onclick = () => tlZoomSession(s); acts.appendChild(z); }
   }
   if (acts.childElementCount) box.appendChild(acts);
   return box;
@@ -10765,8 +10765,8 @@ const morePanel = el("div", "");
 morePanel.id = "morepanel";
 function applyMore() {
   moreBtn.classList.toggle("active", moreOpen);
-  moreBtn.title = moreOpen ? "mehr — close the panel of further board actions"
-    : "mehr — open the panel of further board actions";
+  moreBtn.title = moreOpen ? "more — close the panel of further board actions"
+    : "more — open the panel of further board actions";
   moreBtn.setAttribute("aria-expanded", moreOpen ? "true" : "false");
   morePanel.hidden = !moreOpen;
 }
@@ -10776,15 +10776,15 @@ function moreAction(label: string, title: string, run: () => void): HTMLButtonEl
   b.onclick = run;
   return b;
 }
-const tlMoreBtn = moreAction("⏱ Zeitleiste", ACT_LENS.find((l) => l.k === "timeline")?.title ?? "",
+const tlMoreBtn = moreAction("⏱ Timeline", ACT_LENS.find((l) => l.k === "timeline")?.title ?? "",
   () => void openActivity("timeline"));
 tlMoreBtn.dataset.lens = "timeline";
 morePanel.append(
-  el("div", "morehead", "⋯ mehr"),
+  el("div", "morehead", "⋯ more"),
   tlMoreBtn,
   moreAction("⎇ Commits", ACT_LENS.find((l) => l.k === "commits")?.title ?? "",
     () => void openActivity("commits")),
-  moreAction("📂 Akte", ACT_LENS.find((l) => l.k === "akte")?.title ?? "",
+  moreAction("📂 Dossier", ACT_LENS.find((l) => l.k === "akte")?.title ?? "",
     () => void openActivity("akte")),
 );
 moreBtn.onclick = () => {
@@ -10806,7 +10806,7 @@ applyMore();
 // --- IDEE VOM +-KNOPF ---
 const plusBtn = el("button", "", "+") as HTMLButtonElement;
 plusBtn.id = "headplus";
-plusBtn.title = "Eigene Idee — als Aufgabe filen";
+plusBtn.title = "Your own idea — file it as a task";
 $("toolrow2").appendChild(plusBtn);
 const IDEE_MIN_CHARS = 20; // after trim — the form asks for a direction, not a brief
 const ideeDate = () => {
@@ -10888,11 +10888,11 @@ const HEAD_BTNS: ReadonlyArray<{ id: string; icon: IconName; word: string }> = [
   { id: "queuebtn", icon: "list", word: "Queue" },
   { id: "auditbtn", icon: "shield", word: "Audit" },
   { id: "outcomebtn", icon: "receipt", word: "Lands" },
-  { id: "konstbtn", icon: "tree", word: "Konstellation" },
+  { id: "konstbtn", icon: "tree", word: "Constellation" },
   { id: "devbtn", icon: "laptop", word: "Devices" },
   { id: "saverbtn", icon: "saver", word: "Saver" },
-  { id: "morebtn", icon: "dots", word: "Mehr" },
-  { id: "headplus", icon: "plus", word: "Eigener Knopf" },
+  { id: "morebtn", icon: "dots", word: "More" },
+  { id: "headplus", icon: "plus", word: "New idea" },
 ];
 // What a writer added to the glyph: "📣3" -> "3", "💻2 ⚠1" -> "2 ⚠1", "🗒" -> "".
 // TWO RULES, both paid for by a measurement:
@@ -11135,10 +11135,10 @@ function renderAutoStatus() {
   const stopped = autosOnSrv === false;
   const button = $("autobtn");
   button.classList.toggle("autos-stopped", stopped);
-  button.title = stopped ? "Geplante Prompts für diese Session — automatische Prompts sind aus"
-    : "Geplante Prompts für diese Session";
+  button.title = stopped ? "Scheduled prompts for this session — automatic prompts are off"
+    : "Scheduled prompts for this session";
   const label = button.querySelector(".trlabel");
-  if (label) label.textContent = stopped ? "Schedule · aus" : "Schedule";
+  if (label) label.textContent = stopped ? "Schedule · off" : "Schedule";
   const status = document.getElementById("auto-status");
   if (!status) return;
   const state = `${autosOnSrv}:${quietHoursSrv?.start ?? ""}:${quietHoursSrv?.end ?? ""}`;
@@ -11147,15 +11147,15 @@ function renderAutoStatus() {
   status.replaceChildren();
   if (stopped) {
     const warning = el("div", "autostatusline");
-    warning.appendChild(el("div", "", "Automatische Prompts sind aus — geplante Prompts werden nicht gesendet"));
-    const settings = el("button", "shrbtn", "Fleet-Einstellungen") as HTMLButtonElement;
+    warning.appendChild(el("div", "", "Automatic prompts are off — scheduled prompts are not sent"));
+    const settings = el("button", "shrbtn", "Fleet settings") as HTMLButtonElement;
     settings.onclick = () => { closeAutoDlg(); openSettings(button, "fleet"); };
     warning.appendChild(settings);
     status.appendChild(warning);
   }
   if (quietHoursSrv) {
     const hh = (h: number) => String(h).padStart(2, "0");
-    status.appendChild(el("div", "autostatusline", `Ruhezeit ${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}: wiederkehrende Prompts pausieren`));
+    status.appendChild(el("div", "autostatusline", `Quiet hours ${hh(quietHoursSrv.start)}–${hh(quietHoursSrv.end)}: recurring prompts pause`));
   }
 }
 
@@ -11291,9 +11291,9 @@ function histRow(text: string, meta: string, source: string | undefined): HTMLEl
     setTimeout(() => { copy.textContent = "⧉"; }, 800);
   };
   row.appendChild(copy);
-  row.title = origin === "owner" ? "Eigene Nachricht zum Bearbeiten laden"
-    : origin === "fleet" ? "Fleet-Zustellung; nur Kopieren, nicht ins Eingabefeld laden"
-    : "Herkunft unbekannt; nur Kopieren, nicht ins Eingabefeld laden";
+  row.title = origin === "owner" ? "Load your message to edit it"
+    : origin === "fleet" ? "Delivered by Fleet: copy only, not loaded into the box"
+    : "Source unknown: copy only, not loaded into the box";
   row.onclick = () => {
     if (origin !== "owner") return;
     cyc = null;
@@ -11452,7 +11452,7 @@ async function doSend(at = perfSendClickAt ?? performance.now()) {
   // …and to the session that was running there: after a recycle it waits for "übernehmen" or an empty box
   if (syncBox()) {
     renderTarget();
-    toast("Nicht gesendet — der Entwurf war für die beendete Session. Übernehmen oder leeren.");
+    toast("Not sent — the draft was written for the session that ended. Adopt it or empty the box.");
     flashSendError();
     return;
   }
@@ -11471,7 +11471,7 @@ async function doSend(at = perfSendClickAt ?? performance.now()) {
     measuredResponse = perfDeliveries.get(delivery)?.response;
     span.attrs.responseMs = Math.max(0, performance.now() - span.start);
     if (!sendOk) { if (pending) pane.dropPending(pending); return; }
-    pending?.querySelector(".mwho")?.replaceChildren("you · gesendet");
+    pending?.querySelector(".mwho")?.replaceChildren("you · sent");
     pending?.querySelector(".msend")?.replaceWith(sendState("wait"));
     // the send IS the next turn: the counter restarts now, not one transcript poll later
     pane.lastTurnAt = Math.max(pane.lastTurnAt, serverClock());

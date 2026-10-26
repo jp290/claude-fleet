@@ -3,9 +3,8 @@
 // that says whether it starts as „[Zitat entfernt]“, and on the right the start brief: „[Zitat entfernt]“
 // , file by file with − and + lines against `claude` by hand. Since the Soll (25.10., owner's yes 26.10.) every
 // place answers one question: no banner while a start is as usual, Connectors a choice of the MCP servers, Plan first a choice of its own,
-// Fleet's stones tiles with a sentence and a switch, the start brief in four moments. The build of the old window leaves before the
-// release (owner 26.10.): its button „[Zitat entfernt]“ went, and with it the claims that reached the build from a free
-// place; ⎇+ and a repo's + still open it until Slot 2 takes it out.
+// Fleet's stones tiles with a sentence and a switch, the start brief in four moments. The old build window is gone (owner 26.10.):
+// every entry opens the start window.
 // The real client bundle (src/client.ts) and the window's own bundle (src/k15-entwurf.ts → /k15.js, with public/k15.css and
 // public/sitzung.css) behind a fixture origin answered over CDP Fetch (as e2e/konstellation.ts): /api/sessions names one running session in
 // slot 1 (an Orchestratorin in slot 2 where a case asks), /api/founding-plan answers per role with a hash that moves with the query and
@@ -15,7 +14,7 @@
 // /api/programs, /api/branches, /api/dirinfo, /api/dirs, /api/machine-settings, /api/worktrees and the window's store
 // (src/k15-speicher.ts#SPEICHER_ROUTE) answer as the server writes them; every POST and PUT is recorded with its body. Every case loads
 // the page fresh, so no case reads what another left behind; clicks and taps are real input over CDP. The claims are read at 1200 × 900
-// (an iPad's width: the start brief opens over the session, K15's build shows one column at a time), openPhone at 390 × 844. Every
+// (an iPad's width: the start brief opens over the session), openPhone at 390 × 844. Every
 // claim has a MUTANT in K15_START_MUTANTS that swaps one needle in a source file and must turn that claim red; a needle that left the
 // source throws, so a mutant that could not apply fails as itself.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -53,8 +52,8 @@ export const K15_START_CLAIM = {
   ohneGit: "in a folder without git, and in a repo the branch doors don't take (dirinfo branches:false, no session works there yet), neither Branch & land nor Own notebook stands under Fleet on top, nor is a branch offered in the Workplace block, while the other stones are",
   connectors: "Connectors shows the MCP servers Fleet measured at a session's start as a choice, each ticked with where it comes from (Gmail · claude.ai, playwright · plugin), and its block says that /mcp turns a server on or off later in the session; unticking Gmail reads the preview with weglassen { mcp: [\"claude_ai_Gmail\"] }, the tile says „1 of 2 servers“, the banner names „− Connectors: 1 left out“, and Start sends weglassen { mcp: [\"claude_ai_Gmail\"] }",
   plan: "Plan first is a choice of its own beside Asks you (owner 25.10. 19:50): On reads the preview and starts with permissionMode \"plan\", the banner names „+ Plan first“, and Asks you offers four choices without „Only plans“",
-  quick: "⎇+ under a session opens the start window, not the build (orchestrator 26.10.: a session on a branch of its own, no lane): on the repo's agent Branch & land is on and blocks Start until it has a name; named, the sentence under Start says it starts from that session's branch, and Start sends POST /api/branches { repo, name, points: [], base: <that branch> }, then POST /api/branches/open, and never /api/lanes",
-  plus: "the + of a repo opens the start window, not the build, with that repo chosen; its own agent unchanged starts in the checkout with exactly { cwd, fassung } at /api/slots/<first free>/open, and never /api/lanes",
+  quick: "⎇+ under a session opens the start window (orchestrator 26.10.: a session on a branch of its own, no lane): on the repo's agent Branch & land is on and blocks Start until it has a name; named, the sentence under Start says it starts from that session's branch, and Start sends POST /api/branches { repo, name, points: [], base: <that branch> }, then POST /api/branches/open, and never /api/lanes",
+  plus: "the + of a repo opens the start window with that repo chosen; its own agent unchanged starts in the checkout with exactly { cwd, fassung } at /api/slots/<first free>/open, and never /api/lanes",
   unreadable: "a plan that cannot be read (500, network, malformed) blocks the start in the start window with a sentence that says so („The preview is not readable: …“), and nothing is sent",
   zu: "after a successful start from the start window the window closes and the started slot is the one shown",
 } as const;
@@ -65,8 +64,6 @@ const C = K15_START_CLAIM;
 export const K15_START_MUTANTS: readonly K15StartMutant[] = [
   { name: "a free place opens nothing", claim: C.open, file: "src/client.ts",
     needle: "row.onclick = () => openK15Entwurf({ slot: s.id });", with: "row.onclick = () => undefined;" },
-  { name: "a free place opens the build instead of the start window", claim: C.open, file: "src/k15-entwurf.ts",
-    needle: `ansicht: eingang || h?.[1] === "sitzung" ? "sitzung" : "aufbau"`, with: `ansicht: "aufbau"` },
   { name: "the repo's own agent is not listed", claim: C.open, file: "src/start-fenster.ts",
     needle: "if (repoAg) liste.append(karteVon(repoAg));", with: "" },
   { name: "„Neue Session“ in the Sessions sheet opens nothing", claim: C.openPhone, file: "src/client.ts", width: 390,
@@ -159,8 +156,6 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     needle: "const sv = server(z.letzte?.n ?? z.letzte?.a), weg =", with: "const sv = [] as Server[], weg =" },
   { name: "Plan first never reaches the door", claim: C.plan, file: "src/start-wahl.ts",
     needle: "const modus = w.planFirst ? \"plan\" : w.permissionMode;", with: "const modus = w.permissionMode;" },
-  { name: "⎇+ opens the build again", claim: C.quick, file: "src/k15-entwurf.ts",
-    needle: `ansicht: eingang || h?.[1] === "sitzung" ? "sitzung" : "aufbau"`, with: `ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau"` },
   { name: "⎇+ starts in the checkout instead of on a branch of its own", claim: C.quick, file: "src/start-fenster.ts",
     needle: "if (abzweig(s) && !fremd.length && wahl.branch === null) wahl.branch = \"\";", with: "" },
   { name: "⎇+ branches from the repo's main instead of the session's branch", claim: C.quick, file: "src/start-fenster.ts",
@@ -228,7 +223,7 @@ const canon = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => x &&
 // THE START WINDOW'S FIXTURE (src/start-fenster.ts). The agents GET /api/agenten?cwd= lists (server/agenten.ts#AgentAnsicht): the repo's
 // own, the Orchestratorin as a role of Fleet's, and one saved agent of the owner's
 const AGENTEN = [
-  { id: "repo", name: "Agent des Repos", wahlen: {}, agentMd: null, art: "eingebaut", aenderbar: false, quelle: "Fleet", hash: hash("repo") },
+  { id: "repo", name: "Repo agent", wahlen: {}, agentMd: null, art: "eingebaut", aenderbar: false, quelle: "Fleet", hash: hash("repo") },
   { id: "orchestratorin", name: "Orchestratorin", wahlen: { rolle: "orchestratorin" }, agentMd: null, art: "eingebaut", aenderbar: false, quelle: "Fleet", hash: hash("orchestratorin") },
   { id: "pruefer", name: "Prüfer", wahlen: { model: "claude-sonnet-5-5", permissionMode: "plan" }, agentMd: null, art: "eigen", aenderbar: true,
     quelle: "~/.fleet/agenten/pruefer.json", hash: hash("pruefer") },
@@ -652,9 +647,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
         if (phone) await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
         await navigate("http://fleet.fixture/blank");
-        // the K15 tour has been seen (it opens once by itself and would stand over the foot); the board shows slot 1
+        // the board shows slot 1
         await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }));
-          localStorage.setItem('fleet.board', ${JSON.stringify(fx.board ? "1" : "0")}); localStorage.setItem('fleet.k15.rundgang', '1'); })()`);
+          localStorage.setItem('fleet.board', ${JSON.stringify(fx.board ? "1" : "0")}); })()`);
         await navigate("http://fleet.fixture/");
         if (!await wait(`document.querySelector('#comptarget')?.dataset.slot === '1' && !!document.querySelector('#slots .slot[data-slot="${FREE}"]')`, 15000))
           throw new Error(`the board never showed slot 1 and free slot ${FREE}: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
@@ -726,7 +721,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
             return { go: sieht(go) && !!r && r.left >= 0 && r.right <= innerWidth, zonen: sieht(${WIN}?.querySelector('.sfzone.cc')) && sieht(${WIN}?.querySelector('.sfzone.fl')),
               brief: sieht(hood) && !!hood.querySelector('.sfbk'), unter: !!sheet && !!hood && hood.getBoundingClientRect().top >= sheet.getBoundingClientRect().bottom - 1,
               repos: sieht(${WIN}?.querySelector('.sfrepos')), breit: Math.max(sf?.scrollWidth ?? 0, document.documentElement.scrollWidth), schirm: innerWidth,
-              old: document.querySelectorAll('.fdgo, .fdkind, .k15go').length }; })()`);
+              old: document.querySelectorAll('.fdgo, .fdkind').length }; })()`);
           await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
           await tap(SFGO);
           await wait(`!${WIN}`, 6000); await idle();
@@ -751,14 +746,13 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
         const ok = await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
         await idle();
-        const seen = await evaluate<{ sitz: boolean; titel: string | null; repo: string | null; agenten: string[]; old: number; aufbau: number; knopf: number }>(`({
+        const seen = await evaluate<{ sitz: boolean; titel: string | null; repo: string | null; agenten: string[]; old: number }>(`({
           sitz: !!document.querySelector('#shell-found.k15sitz .sf.s1'), titel: ${WIN}?.querySelector('.shellhead h2')?.textContent ?? null,
           repo: ${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo ?? null, agenten: [...(${WIN}?.querySelectorAll('.sfag') ?? [])].map((b) => b.dataset.agent),
-          old: document.querySelectorAll('.fdgo, .fdkind').length, aufbau: document.querySelectorAll('.k15go').length,
-          knopf: document.querySelectorAll('.sfaufbau').length + [...document.querySelectorAll('#shell-found button')].filter((b) => b.textContent.includes('Lanes, MAIN')).length })`);
+          old: document.querySelectorAll('.fdgo, .fdkind').length })`);
         facts.open = { ok, ...seen };
         verdicts[C.open] = ok && seen.sitz && seen.titel === "New session" && seen.repo === REPO && seen.agenten[0] === "repo"
-          && seen.agenten.includes("pruefer") && seen.old === 0 && seen.aufbau === 0 && seen.knopf === 0;
+          && seen.agenten.includes("pruefer") && seen.old === 0;
         await mitAgent("repo");
         const normal = await banner();
         // Succession where the place already hands over at its mark: on, the mark its choice, nothing to switch
@@ -1215,10 +1209,8 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       await caseOf("quick", async () => {
         await fresh({ zweig: "bau/uhr-alt" });
         await click(`document.querySelector('#slots .slot[data-slot="1"] .quicklane')`);
-        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag') || !!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("⎇+ opened no window");
+        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000)) throw new Error("⎇+ opened no window");
         await idle();
-        const aufbau = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15go')`);
-        if (aufbau) { facts.quick = { aufbau }; verdicts[C.quick] = false; return; }
         await mitAgent("repo");
         const ohne = await sfKopf();
         await click(SFGO);
@@ -1229,7 +1221,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
         const mit = await sfKopf();
         const s = await sfStart();
-        facts.quick = { aufbau, ohne, sentOhne, mit, posts: s };
+        facts.quick = { ohne, sentOhne, mit, posts: s };
         verdicts[C.quick] = ohne.disabled === true && ohne.hint === "Give its branch a name for the board." && sentOhne === 0
           && mit.hint === "On its own branch from bau/uhr-alt; Fleet opens it in a free slot." && canon(s) === canon([
             { url: "/api/branches", body: { repo: REPO, name: "Uhr in der Statuszeile", points: [], base: "bau/uhr-alt" } },
@@ -1242,17 +1234,15 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const add = `document.querySelector('#boardbody .gs[data-repo="${REPO}"] .gsh .gsadd')`;
         if (!await wait(`!!${add}`, 10000)) throw new Error("the board never showed the repo's +: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no board'"));
         await click(add);
-        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag') || !!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("the repo's + opened no window");
+        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000)) throw new Error("the repo's + opened no window");
         await idle();
-        const aufbau = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15go')`);
-        if (aufbau) { facts.plus = { aufbau }; verdicts[C.plus] = false; return; }
         const repo = await evaluate<string | null>(`${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo ?? null`);
         await mitAgent("repo");
         await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
         const h = fassungDerVorschau((q) => Object.keys(q).length === 0);
         const s = await sfStart();
         // the first place without a session: slot 1 works, and the fixture's others are free
-        facts.plus = { aufbau, repo, expect: h, posts: s };
+        facts.plus = { repo, expect: h, posts: s };
         verdicts[C.plus] = repo === REPO && h !== null && s.length === 1 && s[0]!.url === "/api/slots/2/open" && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h });
       });
 

@@ -144,7 +144,7 @@ export async function run(): Promise<void> {
       { settings?: { name: string; value: unknown; default: unknown; how: unknown }[] };
     const maxRow = machine.settings?.find((r) => r.name === "FLEET_MAX_SESSIONS");
     check("GET /api/machine-settings carries FLEET_MAX_SESSIONS with the running server's value",
-      maxRow?.value === 25 && maxRow.default === 16 && maxRow.how === ".env + Neustart",
+      maxRow?.value === 25 && maxRow.default === 16 && maxRow.how === ".env + restart",
       JSON.stringify(maxRow ?? null));
   } finally {
     for (const lane of separateLanes) {
@@ -1780,8 +1780,8 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     check("chat haftet (A): at the end the view follows new messages with a glide, the end button pressed",
       !liftError && pressedAtOpen === "true" && followed,
       `${errs.filter(Boolean).join("; ") || "ran"} · pressed at open ${pressedAtOpen} · followed ${followed}`);
-    check("chat haftet (A): a scroll up lets go — new messages are counted on the end button (\"6 neu\") and the read message stays put",
-      !liftError && released && counted === "6 neu" && news && same(heldTop, heldAfter),
+    check("chat haftet (A): a scroll up lets go — new messages are counted on the end button (\"6 new\") and the read message stays put",
+      !liftError && released && counted === "6 new" && news && same(heldTop, heldAfter),
       `released ${released} · count "${counted}" · news ${news} · top ${heldTop?.kid.text}@${heldTop?.off} -> ${heldAfter?.kid.text}@${heldAfter?.off}`);
     check("chat haftet (A): scrolling down to the end, or the end button (a glide), sets it again and clears the count",
       !liftError && reStuck && onclick && buttonEnd,
@@ -1823,15 +1823,15 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         && same(gTop, gAfter) && gTop?.kid === gAfter?.kid,
       `${errs.filter(Boolean).join("; ") || "ran"} · first fill fresh ${firstFresh} · delta ${freshDelta}/${deltaKids} fresh · pollChat delta path ${realDelta} · ${ms} ms · reduced-motion ${still} · top ${gTop?.kid.text}@${gTop?.off} -> ${gAfter?.kid.text}@${gAfter?.off}`);
   }
-  // (C) a send shows whether it still waits or is through: the pending bubble carries "wartet" once
-  // the board delivered it, the transcript entry that retires it carries "durch"
-  check("chat senden (C): a sent message shows \"wartet\" until the transcript has it, then \"durch\"",
+  // (C) a send shows whether it still waits or is through: the pending bubble carries "waiting" once
+  // the board delivered it, the transcript entry that retires it carries "arrived"
+  check("chat senden (C): a sent message shows \"waiting\" until the transcript has it, then \"arrived\"",
     /msg\.append\(body, sendState\("sending"\), meta\)/.test(cliSrc)
       && /pending\?\.querySelector\("\.msend"\)\?\.replaceWith\(sendState\("wait"\)\)/.test(cliSrc)
       && /this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\)/.test(cliSrc)
       && /this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\)/.test(cliSrc)
       && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
-      && /wait: "wartet", done: "durch"/.test(cliSrc),
+      && /wait: "waiting", done: "arrived"/.test(cliSrc),
     "addPending / doSend / appendEntry / sendState in src/client.ts");
   // (D) the click into the composer: the free space under the last message and the lower half,
   // never a selection, a double click or something with its own click
@@ -2076,7 +2076,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     // (the Esc marker joined the import, card "wartet in der Chat-Ansicht"; the chat's recall joined it
     // with unwrapPasted, K10 S3 — so the import names pendingSettledBy among whatever else it takes)
     /import \{[^}]*\bpendingSettledBy\b[^}]*\} from "\.\/pendingsend"/.test(cliSrc)
-    // (Tranche 2: the retirement also says whether the entry is the same send — "durch"; a bundle
+    // (Tranche 2: the retirement also says whether the entry is the same send — "arrived"; a bundle
     // retires one bubble per owner part, 2026-10-03)
     // (Mangel 78: one delivery is a bubble only for the owner's own words, src/pendingsend.ts#otherSender)
     && /else this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\);/.test(cliSrc)
@@ -2147,18 +2147,18 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
     && cliSrc.includes("run `bun run build` in the terminal") && !cliSrc.includes("client bundle")
     && !cliSrc.includes("export function deploySection("),
     "the Live row in src/board.ts#arbeitsorteSection");
-  check("G0.5 slotact strip: the hover actions explain in German, not in internal verbs",
-    cliSrc.includes("Diese Session beenden — was sie gerade tut, geht verloren (intern: kill).")
+  check("G0.5 slotact strip: the hover actions explain in plain English, not in internal verbs",
+    cliSrc.includes("Kill this session — what it is doing now is lost (internal: kill).")
     && !cliSrc.includes('title = "kill session"')
-    && cliSrc.includes("Konflikte, die der Agent aufgelöst hat")
+    && cliSrc.includes("Conflicts the agent resolved that nobody has reviewed")
     && !cliSrc.includes('rb.title = "agent conflict resolutions')
-    && cliSrc.includes("Diese Session hat geplante Prompts")
-    && cliSrc.includes("Gäste-Chat — "),
+    && cliSrc.includes("This session has scheduled prompts")
+    && cliSrc.includes("Guest chat — "),
     "slotact titles in src/client.ts");
-  check("G0.5 tray and founding window: German tooltips, Fleet-English labels untouched",
-    cliSrc.includes("Dateien an diese Session anhängen.") && !cliSrc.includes("attach files to this session")
-    && indexSrc.includes("Live-Mitschreiben") && indexSrc.includes("Prompt-Verlauf")
-    && indexSrc.includes("Geplante Prompts für diese Session"),
+  check("G0.5 tray and founding window: English tooltips, Fleet-English labels untouched",
+    cliSrc.includes("Attach files to this session.") && !cliSrc.includes("attach files to this session")
+    && indexSrc.includes("Live typing") && indexSrc.includes("Prompt history")
+    && indexSrc.includes("Scheduled prompts for this session"),
     "tray titles in client.ts + public/index.html");
   // --- THE START WINDOW left with K15 Runde 5 (17.10.): its source pins went with src/founding.ts's window; what a start sends per
   // role is now behaviour, measured in a browser on the window „Neue Session“ (e2e/k15-start-dom.ts against a fixture origin,
@@ -2310,7 +2310,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // runs are not read here instead of letting a quiet row read as a quiet fleet
   check("client: Devices names what it CANNOT see — a linked fleet's repos and runs are not read here",
     cliSrc.includes('if (st.basis === "link-only") return "This server does not read its repos.";')
-    && cliSrc.includes('{ tone: "link", word: "verlinkt", title: "A link to this Fleet — this server does not measure it" }')
+    && cliSrc.includes('{ tone: "link", word: "linked", title: "A link to this Fleet — this server does not measure it" }')
     && cliSrc.includes("This server does not measure it;"),
     "standSay + machineState + MACHINE_LEGEND in src/board.ts");
   // …and the place is the part a run line may NEVER lose. Since 2026-10-08 a run is one sentence and
@@ -3351,13 +3351,13 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // PREFS table (not hand-wired), the size panel is the "Schrift" section's one home,
       // "Fleet" holds its server rows (pinned route by route in e2e/tasks.ts), and the focus returns to the
       // trigger (G4). Mutation probe: wiring a row by hand instead of over PREFS turns this red.
-      check("client: the settings window renders the registry — device rows from PREFS, Schrift as the panel's home, Fleet over its server rows",
-        /id: "settings", title: "Einstellungen"/.test(cliSrc)
+      check("client: the settings window renders the registry — device rows from PREFS, Font as the panel's home, Fleet over its server rows",
+        /id: "settings", title: "Settings"/.test(cliSrc)
         && /for \(const d of PREFS\)/.test(cliSrc)
         && /appendChild\(sizePanel\(\)\)/.test(cliSrc)
         && /fleetSection\(fleetsec\);/.test(cliSrc)
         && /trigger\?\.focus\(\)/.test(cliSrc),
-        JSON.stringify({ title: /title: "Einstellungen"/.test(cliSrc), prefsRows: /for \(const d of PREFS\)/.test(cliSrc),
+        JSON.stringify({ title: /title: "Settings"/.test(cliSrc), prefsRows: /for \(const d of PREFS\)/.test(cliSrc),
           schrift: /appendChild\(sizePanel\(\)\)/.test(cliSrc), fleetRows: /fleetSection\(fleetsec\);/.test(cliSrc),
           focusReturn: /trigger\?\.focus\(\)/.test(cliSrc) }));
       // ECKKNOPFE RUNDE 2 (owner 2026-09-22): the open column's close box sits EXACTLY where the
@@ -3460,7 +3460,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
           && /justify-content: flex-end/.test(cssBody(".toolrow")) && /margin-left: auto/.test(cssBody("#toolrows"))
           && cliSrc.indexOf('$("toolrow2").appendChild(moreBtn)') >= 0
           && cliSrc.indexOf('$("toolrow2").appendChild(moreBtn)') < cliSrc.indexOf('$("toolrow2").appendChild(plusBtn)')
-          && cliSrc.includes('{ id: "headplus", icon: "plus", word: "Eigener Knopf" }'),
+          && cliSrc.includes('{ id: "headplus", icon: "plus", word: "New idea" }'),
         JSON.stringify({ rows, toolrow: cssBody(".toolrow") }));
       check("client: the task queue is sized by ONE constant (1.48 = 34px), same line weight, the views square stays 23px",
         /--queue-scale: 1\.48;/.test(cssBody("#sidetools"))
@@ -5032,7 +5032,7 @@ async function runThresholdAct(): Promise<void> {
     return "";
   };
 
-  const HINT = "[fleet] Dein Kontext ist bei ";
+  const HINT = "[fleet] Your context is at ";
   const typed = async (x: typeof P): Promise<PromptLogEntry[]> =>
     (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt);
   const openedAtOf = async (x: typeof P): Promise<number | undefined> => (await sessions()).slots.find((y) => y.id === x.slot)?.openedAt;
@@ -5046,7 +5046,7 @@ async function runThresholdAct(): Promise<void> {
   //  — and the act hands over the standing handover where one stands
   check("new session at the threshold, chosen: P with its own choice „succeed“ gets the hint naming the act, then — resting — a new occupant on the same slot whose brief hands over P's standing handover; the old pane got nothing but that one hint",
     !!pNew && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
-      && pTyped[0]!.text.includes("Gib selbst weiter") && pTyped[0]!.text.includes("selbst eine neue Session, sobald du ruhst")
+      && pTyped[0]!.text.includes("Hand over yourself") && pTyped[0]!.text.includes("Fleet opens a new session itself")
       && pRecorded.includes("POST /api/self/succeed") && !pRecorded.includes("/compact")
       && pRecorded.split(HINT).length === 2
       && pBrief.includes("Stehende Übergabe: `intent` im Linien-Record") && !pBrief.includes("Keine stehende Übergabe")
@@ -5062,7 +5062,7 @@ async function runThresholdAct(): Promise<void> {
   const qFacts = await facts(Q.slot);
   check("Compact at the threshold: Q gets the hint, then `/compact` once, typed bare, and stays the same occupant",
     qTyped.map((e) => (e.text.startsWith(HINT) ? "hint" : e.text)).join(",") === "hint,/compact"
-      && qTyped[0]!.text.includes("tippt Fleet `/compact`, sobald du ruhst")
+      && qTyped[0]!.text.includes("Fleet types `/compact` as soon as you are idle")
       && (await openedAtOf(Q)) === Q.openedAt && qFacts?.act?.act === "compact" && qFacts.act.outcome.startsWith("getippt")
       && (existsSync(rec(Q)) ? readFileSync(rec(Q), "utf8") : "").includes("/compact"),
     JSON.stringify({ typed: qTyped.map((e) => e.text.slice(0, 60)), act: qFacts?.act }));
@@ -5766,7 +5766,7 @@ async function runKeepCache(): Promise<void> {
   // that paste is awaited first, or it could land in the shell line that starts C's recorder
   let cNudged = false;
   for (let i = 0; i < 50 && !cNudged; i++) {
-    cNudged = (await plogRead()).some((e) => e.slot === C.slot && e.openedAt === C.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+    cNudged = (await plogRead()).some((e) => e.slot === C.slot && e.openedAt === C.openedAt && e.text.startsWith("[fleet] Your context is at "));
     if (!cNudged) await Bun.sleep(100);
   }
   // byte recorders take the panes' stdin (the owner door's no-turn proof), then they rest
@@ -5818,11 +5818,11 @@ async function runKeepCache(): Promise<void> {
   // ): no switch of its own, its last call 51 min old on a 1 h cache. The tick types the
   // short text once, and the hour cap (1 in this run, FLEET_KEEP_WARM_PER_HOUR) holds the next; C, bound
   // to nothing, gets none.
-  const WARM = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const WARM = "[fleet] Keep the cache warm. Answer with ok only — start nothing, call no tool.";
   // W's own warm text (S2b): plain text, set with the duration below
   const OWN = "KEEP-OWN-TEXT: read the handover and answer in one sentence what comes next.";
   const warmRows = async (x: typeof W): Promise<PromptLogEntry[]> =>
-    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && (e.text.startsWith("[fleet] Cache warmhalten") || e.text === OWN));
+    (await plogRead()).filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && (e.text.startsWith("[fleet] Keep the cache warm") || e.text === OWN));
   let gWarm: PromptLogEntry[] = [];
   for (let i = 0; i < 100 && !gWarm.length; i++) {
     gWarm = await warmRows(G);
@@ -5869,7 +5869,7 @@ async function runKeepCache(): Promise<void> {
   check("keepCache W: at 50 min with its own text the decision is warm, ONE turn types THAT text (stored trimmed) and not the fleet's, and the occupant stays",
     w50.status === 200 && w50.body.succession?.keepCache?.act === "warm" && w50.body.succession.keepCache.reason === "due"
       && w50.body.setting?.keepCacheText === OWN && w50.body.succession.keepCache.text === OWN
-      && wRows.length === 1 && wRows[0]!.text === OWN && wRec.includes(OWN) && !wRec.includes("Cache warmhalten")
+      && wRows.length === 1 && wRows[0]!.text === OWN && wRec.includes(OWN) && !wRec.includes("Keep the cache warm")
       && wView.openedAt === W.openedAt && wView.succession?.keepCache?.warmTurns === 1
       && wView.succession.keepCache.last?.act === "warm" && wView.succession.keepCache.last.outcome.startsWith("sent"),
     JSON.stringify({ decision: w50.body.succession?.keepCache, rows: warmed.length, recorder: wRec.slice(0, 200), after: wView.succession?.keepCache }));
@@ -5906,7 +5906,7 @@ async function runKeepCache(): Promise<void> {
 
   // X, SWITCHED OFF IN FLIGHT: its warm turn is parked before the paste, the owner switches it off,
   // the latch opens — nothing is typed
-  writeFileSync(latch, "Cache warmhalten");
+  writeFileSync(latch, "Keep the cache warm");
   const xOn = await hp(X.slot, { expectedOpenedAt: X.openedAt, keepCache: true, keepCacheIdleMin: 50 });
   let parked = false;
   for (let i = 0; i < 100 && !parked; i++) {
@@ -5974,12 +5974,12 @@ async function runKeepCache(): Promise<void> {
   const p1 = await preview();
   check("keepCache S: the preview names the source — the raw transcript without a handover, the Fleet handover after the session wrote one",
     p0.ready === true && p0.source === "transcript" && wrote.ok && p1.ready === true && p1.source === "handover"
-      && /stehende Übergabe/.test(p1.says ?? ""),
+      && /standing handover/.test(p1.says ?? ""),
     JSON.stringify({ p0, wrote: wrote.status, p1 }));
   // K16 Runde C (owner 16.10. 21:1x: „[Zitat entfernt]“): cold and without a handover the
   // successor also gets the summary worker's reading, and the button's sentence says so; with a handover it does not
   check("keepCache S: cold without a handover the preview promises a summary, and its sentence names it; once the handover stands, none",
-    p0.summary === true && /Zusammenfassung des Gesprächs/.test(p0.says ?? "") && p1.summary === false && !/Zusammenfassung/.test(p1.says ?? ""),
+    p0.summary === true && /summary of the conversation/.test(p0.says ?? "") && p1.summary === false && !/summary/.test(p1.says ?? ""),
     JSON.stringify({ p0, p1 }));
   // …and the agent the owner picks is judged before anything ends: an unknown agent and a model that is no text are
   // refused by name, the session stands
@@ -6210,7 +6210,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     meterLane: false,
     // the protocol of the run: every native input sent and every /api request the page made
     inputs: [] as string[], requests: [] as string[],
-    // the "Verbrauch" section (card 038d2694): what GET /api/subscription-usage and the refresh
+    // the "Usage" section (card 038d2694): what GET /api/subscription-usage and the refresh
     // answer, how late, and a raw body that is not the wire's shape
     usageKind: "measured" as UsageKind, usageStatus: 200, usageDelay: 0, usageRaw: null as string | null,
     refreshKind: "measured" as UsageKind, refreshStatus: 200, refreshDelay: 0,
@@ -6263,8 +6263,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
     ],
     waits: [
       { repo: REPO_A, id: "a1a1a1a1", grund: "Repo-Deckel voll: 2/2 Lanes in claude-fleet", adressat: "owner", kette: [], wurzel: "Repo-Deckel voll", seit: null, freigegeben: true },
-      { repo: REPO_A, id: "b2b2b2b2", grund: "wartet auf c3c3c3c3 (nach)", adressat: "main:fixture", kette: ["row c3c3c3c3"], wurzel: "c3c3c3c3 nicht gelandet", seit: null, freigegeben: true },
-      { repo: REPO_A, id: "d4d4d4d4", grund: "nicht freigegeben", adressat: "owner", kette: [], wurzel: "Freigabe fehlt", seit: null, freigegeben: false },
+      { repo: REPO_A, id: "b2b2b2b2", grund: "waiting on c3c3c3c3 (after)", adressat: "main:fixture", kette: ["row c3c3c3c3"], wurzel: "c3c3c3c3 not landed", seit: null, freigegeben: true },
+      { repo: REPO_A, id: "d4d4d4d4", grund: "not released", adressat: "owner", kette: [], wurzel: "release missing", seit: null, freigegeben: false },
     ],
     stau: null, buendel: { pairs: [] },
   });
@@ -6295,8 +6295,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
   const brief = { branch: "overhaul", head: "fixture", worktree: null, sessionStart: null, uncommitted: 0, uncommittedFiles: [],
     files: [], filesTotal: 0, shortstat: "", commits: [], repoCommits: [], laneScoped: false, laneBase: null, commitsCap: 20, ahead: 0, behind: 0 };
   const machine = { settings: [
-    { name: "FLEET_DISPATCH_MAX_LANES", value: 1, default: 1, how: ".env + Neustart" },
-    { name: "FLEET_MODEL", value: "claude-opus-5-5", default: "claude-opus-5-5", how: ".env + Neustart" },
+    { name: "FLEET_DISPATCH_MAX_LANES", value: 1, default: 1, how: ".env + restart" },
+    { name: "FLEET_MODEL", value: "claude-opus-5-5", default: "claude-opus-5-5", how: ".env + restart" },
   ] };
   const executable = process.env.FLEET_E2E_BROWSER ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!Bun.file(executable).size) { rmSync(scratch, { recursive: true, force: true }); throw new Error("settings DOM probe needs Chromium (FLEET_E2E_BROWSER): " + executable); }
@@ -6516,7 +6516,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       return { W, shown, focusables, desc, inside, row, section };
     })()`;
     const deskGear = `[...document.querySelectorAll('#mset, .panegear')].find((e) => window.__fx.shown(e))`;
-    // the phone upright keeps the gear as the row "Einstellungen" of the tools sheet behind the top
+    // the phone upright keeps the gear as the row "Settings" of the tools sheet behind the top
     // island's ⋯ (src/client.ts#renderSheet): the client is ready when the gear or the pill is drawn,
     // the gear is reached through pill → ⋯ → the row, and the focus goes back to the pill
     const gear = `((${deskGear}) ?? document.querySelector('#msheet [data-tool="settings"]'))`;
@@ -6674,14 +6674,14 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const parA = await par();
       facts.parA = parA; facts.fleetTextA = await fleetText();
       await shot(width, "fleet-override");
-      claims["master reads on, and its scope says it starts nothing by itself"] = /\ban\b/.test(parA.master ?? "") && /alle Repos/.test(parA.master ?? "") && /nichts sofort/.test(parA.master ?? "");
+      claims["master reads on, and its scope says it starts nothing by itself"] = /\bon\b/.test(parA.master ?? "") && /all repos/.test(parA.master ?? "") && /Nothing starts at once/.test(parA.master ?? "");
       claims["repo override 2 at machine default 1: effective 2, source repo override, machine 1 shown apart"] =
-        /wirksam 2/.test(parA.cap ?? "") && /Repo-Override/.test(parA.cap ?? "") && /Maschinen-Standard 1/.test(parA.cap ?? "");
-      claims["occupancy at the cap reads 2 of 2 with the plan's read time"] = /2 von 2/.test(parA.load ?? "") && /gelesen/.test(parA.load ?? "");
-      claims["master on with every row waiting: 0 startable, three named wait reasons"] = /^Startbar jetzt 0\b/.test(parA.start ?? "")
-        && /^Wartet 3\b/.test(parA.wait ?? "") && /Deckel voll/.test(parA.wait ?? "")
-        && /Reihenfolge/.test(parA.wait ?? "") && /nicht freigegeben/.test(parA.wait ?? "");
-      // (3) "Wartet" names each row by its Kurztitel — the lane names' own derivation — and keeps
+        /effective 2/.test(parA.cap ?? "") && /repo override/.test(parA.cap ?? "") && /Machine default 1/.test(parA.cap ?? "");
+      claims["occupancy at the cap reads 2 of 2 with the plan's read time"] = /2 of 2/.test(parA.load ?? "") && /Start plan read/.test(parA.load ?? "");
+      claims["master on with every row waiting: 0 startable, three named wait reasons"] = /^Startable now 0\b/.test(parA.start ?? "")
+        && /^Waiting 3\b/.test(parA.wait ?? "") && /cap full/.test(parA.wait ?? "")
+        && /Order/.test(parA.wait ?? "") && /not released/.test(parA.wait ?? "");
+      // (3) "Waiting" names each row by its Kurztitel — the lane names' own derivation — and keeps
       // the id for the tooltip; a row nothing can be derived from keeps its id
       const named = (id: string): string => { const t = TASKS.find((x) => x.id === id)!; return shortTitle(laneTitleOf(t.card?.ziel, t.text)!); };
       const waitRows = await evaluate<{ lines: string[]; names: [string, string][]; idsShown: string[] }>(`(() => {
@@ -6690,13 +6690,13 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         return { lines: own.map((l) => l.innerText), names: own.flatMap((l) => [...l.querySelectorAll('.setname')].map((e) => [e.textContent, e.title])),
           idsShown: own.flatMap((l) => [...l.querySelectorAll('.setids')].map((e) => e.textContent)) }; })()`);
       facts.waitRows = waitRows;
-      claims["Wartet names each row by its Kurztitel ('Oberflaeche · I1 …'), the order target too, and the id only in the tooltip"] =
-        waitRows.lines.includes(`Repo-Deckel voll: ${named("a1a1a1a1")}`) && named("a1a1a1a1").startsWith("Oberflaeche · I1 ")
-        && waitRows.lines.includes(`Reihenfolge: ${named("b2b2b2b2")} nach ${named("c3c3c3c3")}`)
+      claims["Waiting names each row by its Kurztitel ('Oberflaeche · I1 …'), the order target too, and the id only in the tooltip"] =
+        waitRows.lines.includes(`Repo cap full: ${named("a1a1a1a1")}`) && named("a1a1a1a1").startsWith("Oberflaeche · I1 ")
+        && waitRows.lines.includes(`Order: ${named("b2b2b2b2")} after ${named("c3c3c3c3")}`)
         && ["a1a1a1a1", "b2b2b2b2", "c3c3c3c3"].every((id) => waitRows.names.some(([text, tip]) => text === named(id) && tip.startsWith(`${id} — `))
           && !waitRows.lines.some((l) => l.includes(id)));
       claims["should-reject: a row with nothing to derive a title from keeps its id — never an empty name"] =
-        waitRows.lines.includes("nicht freigegeben: d4d4d4d4") && JSON.stringify(waitRows.idsShown) === JSON.stringify(["d4d4d4d4"]);
+        waitRows.lines.includes("not released: d4d4d4d4") && JSON.stringify(waitRows.idsShown) === JSON.stringify(["d4d4d4d4"]);
       // (4) one word per section head: the pressed target names the Fleet section, no head repeats it
       const heads = await evaluate<{ fleetH3: string[]; firstSub: string | null; fleetWords: number; deviceH3: string | null }>(`(() => {
         const sec = window.__fx.section(${JSON.stringify(fleetWord)});
@@ -6705,21 +6705,21 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
           deviceH3: window.__fx.section(${JSON.stringify(nav[0]?.word ?? "")})?.querySelector('h3')?.textContent ?? null }; })()`);
       const fleetSecAx = await ax(`window.__fx.section(${JSON.stringify(fleetWord)})`);
       facts.heads = { ...heads, ax: fleetSecAx };
-      claims["the Fleet section says 'Fleet' once — the target names it, its first head is Parallelität; Dieses Gerät keeps its head"] =
-        heads.fleetH3.length === 0 && heads.firstSub === "Parallelität" && heads.fleetWords === 1 && fleetSecAx?.name === fleetWord
+      claims["the Fleet section says 'Fleet' once — the target names it, its first head is Parallelism; This device keeps its head"] =
+        heads.fleetH3.length === 0 && heads.firstSub === "Parallelism" && heads.fleetWords === 1 && fleetSecAx?.name === fleetWord
         && heads.deviceH3 === nav[0]?.word;
       const doubled = await evaluate<{ master: string; cap: string; std: number }>(`({
         master: window.__fx.W().querySelector('[data-par="master"] .setval')?.textContent ?? 'missing',
         cap: window.__fx.W().querySelector('[data-par="cap"] .setval')?.textContent ?? 'missing',
-        std: [...window.__fx.W().querySelectorAll('.setnote')].filter((n) => /Standard: (an|aus|on|off)\b/.test(n.textContent)).length })`);
+        std: [...window.__fx.W().querySelectorAll('.setnote')].filter((n) => /[Dd]efault: (on|off)\b/.test(n.textContent)).length })`);
       facts.doubled = doubled;
-      claims["no row says its value twice: no server copy beside an unstaged control, no 'Standard: aus' beside a state"] =
+      claims["no row says its value twice: no server copy beside an unstaged control, no 'default: off' beside a state"] =
         doubled?.master === "" && doubled?.cap === "" && doubled?.std === 0;
       const pickAx = await ax(`window.__fx.W().querySelector('[data-par="repo"] select')`);
       const capAx = await ax(`window.__fx.W().querySelector('[data-par="cap"] input')`);
       const masterAx = await ax(`window.__fx.W().querySelector('[data-par="master"] .settoggle')`);
       facts.parAx = { pickAx, capAx, masterAx };
-      claims["repo picker, cap field and master switch are named, the switch reads its state"] = pickAx?.name === "Repo" && capAx?.name === "Lane-Deckel"
+      claims["repo picker, cap field and master switch are named, the switch reads its state"] = pickAx?.name === "Repo" && capAx?.name === "Lane cap"
         && masterAx?.name === "Master" && masterAx?.pressed === "true";
       // the side repo: machine default 1, no override, one row startable
       await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.focus(); })()`);
@@ -6728,39 +6728,39 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       facts.parB = parB;
       await shot(width, "fleet-machine-default");
       claims["machine default 1 without override: effective 1, source machine default, one row startable"] =
-        /wirksam 1/.test(parB.cap ?? "") && /Maschinen-Standard/.test(parB.cap ?? "") && !/Repo-Override 2/.test(parB.cap ?? "")
-        && /^Startbar jetzt 1\b/.test(parB.start ?? "") && (parB.start ?? "").includes("e5e5e5e5");
+        /effective 1/.test(parB.cap ?? "") && /machine default/.test(parB.cap ?? "") && !/repo override 2/.test(parB.cap ?? "")
+        && /^Startable now 1\b/.test(parB.start ?? "") && (parB.start ?? "").includes("e5e5e5e5");
       await evaluate(`(() => { const s = window.__fx.W().querySelector('[data-par="repo"] select'); s.value = ${JSON.stringify(REPO_A)}; s.dispatchEvent(new Event('change')); })()`);
 
-      // --- 5. staged vs readback, Cancel is a null write, Weiter bearbeiten returns to the control
+      // --- 5. staged vs readback, Cancel is a null write, Keep editing returns to the control
       const capInput = `window.__fx.W().querySelector('[data-par="cap"] input')`;
       await evaluate(`${capInput}.focus(); ${capInput}.select()`);
       await typeText("3");
       const staged = await par();
       facts.staged = staged;
-      claims["a staged 3 is shown apart from the server's effective 2"] = /wirksam 2/.test(staged.cap ?? "") && /vorgemerkt 3/.test(staged.cap ?? "");
+      claims["a staged 3 is shown apart from the server's effective 2"] = /effective 2/.test(staged.cap ?? "") && /staged 3/.test(staged.cap ?? "");
       await shot(width, "staged");
       await key("Escape");
       const discard = { open: await evaluate<boolean>(`!!window.__fx.W().querySelector('.setdiscard')`), focus: await evaluate<string>("window.__fx.desc(document.activeElement)") };
       await shot(width, "discard-question");
-      await key("Enter"); // Weiter bearbeiten
+      await key("Enter"); // Keep editing
       const kept = { gone: await evaluate<boolean>(`!window.__fx.W().querySelector('.setdiscard')`), onCap: await evaluate<boolean>(`document.activeElement === ${capInput}`),
         value: await evaluate<string>(`${capInput}.value`) };
       facts.discard = { discard, kept };
-      claims["Escape with a staged value asks first and focuses Weiter bearbeiten"] = discard.open && /Weiter bearbeiten/.test(discard.focus);
-      claims["Weiter bearbeiten returns the focus to the staged control with its value"] = kept.gone && kept.onCap && kept.value === "3";
+      claims["Escape with a staged value asks first and focuses Keep editing"] = discard.open && /Keep editing/.test(discard.focus);
+      claims["Keep editing returns the focus to the staged control with its value"] = kept.gone && kept.onCap && kept.value === "3";
       await click(`window.__fx.W().querySelector('.shellclose')`);
-      await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Verwerfen/.test(b.textContent)).focus()`);
+      await evaluate(`[...window.__fx.W().querySelectorAll('.setdiscard button')].find((b) => /Discard/.test(b.textContent)).focus()`);
       await key("Enter");
       const dropped = { closed: await evaluate<boolean>("!window.__fx.W()"), onGear: await evaluate<boolean>(`document.activeElement === ${opener}`),
         writes: settingsWrites(sinceOpen).length };
       facts.dropped = dropped;
-      claims["Verwerfen closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
+      claims["Discard closes with zero writes and returns the focus to the opener"] = dropped.closed && dropped.onGear && dropped.writes === 0;
 
       // --- 6. Apply: refused first (row keeps the staged value, server value unchanged), then written once
       await toGear(); await click(gear); await wait("window.__fx.W()");
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
-      await wait(`window.__fx.W().querySelector('[data-par="cap"]')?.innerText.includes('wirksam')`, 4000);
+      await wait(`window.__fx.W().querySelector('[data-par="cap"]')?.innerText.includes('effective')`, 4000);
       await evaluate(`${capInput}.focus(); ${capInput}.select()`);
       await typeText("9");
       fx.refuseCap = true;
@@ -6775,19 +6775,19 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       claims["Apply sends exactly the staged cap once; a refusal stays at its row and the effective value stays 2"] =
         refused.posts.length === 1 && refused.posts[0].url === "/api/repo-lane-cap"
         && JSON.stringify(refused.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 9 })
-        && /Server lehnt ab/.test(refused.err) && /wirksam 2/.test(refused.par.cap ?? "") && /vorgemerkt 9/.test(refused.par.cap ?? "");
+        && /Server refuses/.test(refused.err) && /effective 2/.test(refused.par.cap ?? "") && /staged 9/.test(refused.par.cap ?? "");
       fx.refuseCap = false;
       await evaluate(`${capInput}.focus(); ${capInput}.select()`);
       await typeText("3");
       const beforeOk = fx.posts.length;
       await click(applyBtn);
-      await wait(`/wirksam 3/.test(window.__fx.W().querySelector('[data-par="cap"]')?.innerText ?? '')`, 4000);
+      await wait(`/effective 3/.test(window.__fx.W().querySelector('[data-par="cap"]')?.innerText ?? '')`, 4000);
       const applied = { posts: settingsWrites(beforeOk), par: await par() };
       facts.applied = applied;
       await shot(width, "applied");
       claims["after Apply the row shows the server's readback, nothing staged remains"] = applied.posts.length === 1
         && JSON.stringify(applied.posts[0].body) === JSON.stringify({ repo: REPO_A, maxLanes: 3 })
-        && /wirksam 3/.test(applied.par.cap ?? "") && !/vorgemerkt/.test(applied.par.cap ?? "");
+        && /effective 3/.test(applied.par.cap ?? "") && !/staged/.test(applied.par.cap ?? "");
 
       // --- 7. background repaint and repeated opening do not steal the focus
       await evaluate(`${capInput}.focus()`);
@@ -6815,11 +6815,11 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await click(`window.__fx.W().querySelectorAll('[data-settings-tab]')[2]`);
       await evaluate("new Promise(r => setTimeout(r, 400))");
       const parU = await par();
-      const autosRow = await evaluate<string>(`[...window.__fx.W().querySelectorAll('.fleetrow')].find((r) => /Automatik/.test(r.innerText))?.innerText ?? ''`);
+      const autosRow = await evaluate<string>(`[...window.__fx.W().querySelectorAll('.fleetrow')].find((r) => /Automation/.test(r.innerText))?.innerText ?? ''`);
       facts.unknown = { parU, autosRow };
       await shot(width, "unknown");
-      claims["an unreadable plan reads unbekannt for occupancy, startable and waits"] = /unbekannt/.test(parU.load ?? "") && /unbekannt/.test(parU.start ?? "") && /unbekannt/.test(parU.wait ?? "");
-      claims["an unknown autos state reads unbekannt, never as the chosen 'an'"] = /unbekannt/.test(autosRow) && !/\ban\b\s*$/.test(autosRow.trim());
+      claims["an unreadable plan reads unknown for occupancy, startable and waits"] = /unknown/.test(parU.load ?? "") && /unknown/.test(parU.start ?? "") && /unknown/.test(parU.wait ?? "");
+      claims["an unknown autos state reads unknown, never as the chosen 'on'"] = /unknown/.test(autosRow) && !/\bon\b\s*$/.test(autosRow.trim());
       await key("Escape");
       facts.posts = fx.posts.slice(sinceOpen);
       claims["the whole run wrote only the two Apply requests"] = settingsWrites(sinceOpen).length === 2;
@@ -6845,8 +6845,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         steps.explorer = await click(openExplorerBtn);
         steps.listing = await wait(`document.querySelector('#shell-files .fxmore')`);
         steps.more = await click(`[...document.querySelectorAll('#shell-files .fxline')].find((l) => l.textContent.includes('README'))?.querySelector('.fxmore')`);
-        steps.menu = await wait(`[...document.querySelectorAll('.fxmenuitem')].some((b) => /Rename|Umbenennen/.test(b.textContent))`, 4000);
-        steps.item = await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename|Umbenennen/.test(b.textContent))`);
+        steps.menu = await wait(`[...document.querySelectorAll('.fxmenuitem')].some((b) => /Rename/.test(b.textContent))`, 4000);
+        steps.item = await click(`[...document.querySelectorAll('.fxmenuitem')].find((b) => /Rename/.test(b.textContent))`);
         steps.panel = await wait(`document.querySelector('.fxwritepanel')`);
         if (!steps.panel) steps.seen = await evaluate<string>(`(() => { const f = document.querySelector('#shell-files'); return (f ? 'files: ' + f.innerText : 'no #shell-files; active: ' + window.__fx.desc(document.activeElement)).replace(/\\s+/g, ' ').slice(0, 300); })()`);
         facts.explorerSteps = steps;
@@ -6866,9 +6866,9 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         dlg.cancelled = await evaluate<boolean>("!document.querySelector('.fxwritepanel')");
         dlg.writes = fx.posts.filter((x) => x.url.startsWith("/api/file/")).length;
         facts.explorer = dlg;
-        claims["the explorer rename dialog speaks German: title, rows, buttons"] = /^Umbenennen — /.test(String(dlg.title))
-          && JSON.stringify(dlg.keys) === JSON.stringify(["Führt aus", "Wo", "Danach", "Bleibt", "Rückweg"])
-          && JSON.stringify(dlg.buttons) === JSON.stringify(["Abbrechen", "Umbenennen"]);
+        claims["the explorer rename dialog speaks English: title, rows, buttons"] = /^Rename — /.test(String(dlg.title))
+          && JSON.stringify(dlg.keys) === JSON.stringify(["Runs", "Where", "Afterwards", "Stays", "Undo"])
+          && JSON.stringify(dlg.buttons) === JSON.stringify(["Cancel", "Rename"]);
         claims["prose rows read in the sans face, the command and the paths inside prose in mono"] = !/mono|Menlo/i.test(String(dlg.prose))
           && /mono|Menlo/i.test(String(dlg.command)) && /mono|Menlo/i.test(String(dlg.pathInProse));
         claims["the dialog's keyboard focus ring is the neutral 1px --chat-mute"] = String(dlg.ring).startsWith("solid") && String(dlg.ring).includes(String(dlg.ringToken)) && String(dlg.ring).endsWith("1px");
@@ -6913,7 +6913,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
         fx.meterLane = false;
       }
 
-      // --- 11. "Verbrauch" (card 038d2694): windows, source and the three times apart, the explicit
+      // --- 11. "Usage" (card 038d2694): windows, source and the three times apart, the explicit
       // refresh with its loading/error/retry, every answer bound to the request that asked it, unknown
       // never 0, the model facts apart — and no GET or render that refreshes or starts anything. A
       // fresh page first: nothing measured has been seen yet.
@@ -6924,14 +6924,14 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await wait(ready, 12000);
       const usePosts = fx.posts.length, useReqs = fx.requests.length;
       let useOpens = 0;
-      const useSec = `window.__fx.section('Verbrauch')`;
+      const useSec = `window.__fx.section('Usage')`;
       const openUsage = async () => {
         if (await evaluate<boolean>("!!window.__fx.W()")) await key("Escape");
         await toGear(); await click(gear); await wait("window.__fx.W()");
         useOpens++;
-        await click(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].find((b) => b.textContent === 'Verbrauch')`);
+        await click(`[...window.__fx.W().querySelectorAll('[data-settings-tab]')].find((b) => b.textContent === 'Usage')`);
       };
-      const settled = `!/wird gelesen/.test(${useSec}?.querySelector('[data-use="state"]')?.innerText ?? 'wird gelesen')`;
+      const settled = `!/Reading …/.test(${useSec}?.querySelector('[data-use="state"]')?.innerText ?? 'Reading …')`;
       const use = async () => (await evaluate<Record<string, string> | null>(`Object.fromEntries([...(${useSec}?.querySelectorAll('[data-use]') ?? [])]
         .map((e) => [e.dataset.use, e.innerText.replace(/\\s+/g, ' ').trim()]))`)) ?? {};
       const useBtn = `${useSec}.querySelector('.usebtn')`;
@@ -6940,7 +6940,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const bars = async () => evaluate<number>(`${useSec}?.querySelectorAll('.usebar').length ?? -1`);
       // THE OWNER'S WORDS (card e433), read in every data state below: the section's whole text — closed
       // details and tooltips included — carries no event checksum and none of the reader's vocabulary,
-      // and every value that reads "unbekannt" says in one short sentence what is missing (a checksum is
+      // and every value that reads "unknown" says in one short sentence what is missing (a checksum is
       // hex with letters AND digits — a model id's date, 20251001, is not one)
       const plainStates: Record<string, { jargon: string[]; unknownWithout: string[] }> = {};
       const plain = async (label: string) => {
@@ -6949,8 +6949,8 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
             more: (r.querySelector('.setstatl')?.textContent ?? '').replace(/\\s+/g, ' ').trim() }));
           return { text: [s.textContent, ...[...s.querySelectorAll('[title]')].map((e) => e.title)].join(' ').replace(/\\s+/g, ' '), rows }; })()`);
         if (!p) { plainStates[label] = { jargon: ["section missing"], unknownWithout: [] }; return; }
-        const jargon = p.text.match(/Sensor|Wire|Provenan\w*|kontogebunden|Ereignis\w*|Messereignis|Server-Uhr|Owner|Register|Harness|\bTurn\b|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b|ab12cd34|5ta1e000|ffffffff/gi) ?? [];
-        const unknownWithout = p.rows.filter((r) => /^unbekannt/.test(r.v) && !/^[A-ZÄÖÜ][^.]{8,88}\.$/.test(r.more)).map((r) => `${r.key}: ${r.more || "(leer)"}`);
+        const jargon = p.text.match(/Sensor|Wire|Provenan\w*|account-bound|\bevents?\b|server clock|Owner|Register|Harness|\bTurn\b|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b|ab12cd34|5ta1e000|ffffffff/gi) ?? [];
+        const unknownWithout = p.rows.filter((r) => /^unknown/.test(r.v) && !/^[A-ZÄÖÜ][^.]{8,88}\.$/.test(r.more)).map((r) => `${r.key}: ${r.more || "(leer)"}`);
         plainStates[label] = { jargon: [...new Set(jargon)], unknownWithout };
       };
 
@@ -6962,18 +6962,18 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("missing");
       await shot(width, "usage-missing");
       facts.usageMissing = { u: uMissing, bars: missingBars };
-      claims["usage, missing source: Zustand unbekannt with its reason, both windows unbekannt, no percent and no bar"] =
-        /^Zustand unbekannt/.test(uMissing.state ?? "") && /Auf dieser Maschine liegt kein Codex-Sitzungsordner\./.test(uMissing.state ?? "")
-        && /^Erstes Fenster unbekannt/.test(uMissing.primary ?? "") && /^Zweites Fenster unbekannt/.test(uMissing.secondary ?? "")
+      claims["usage, missing source: State unknown with its reason, both windows unknown, no percent and no bar"] =
+        /^State unknown/.test(uMissing.state ?? "") && /This machine has no Codex session folder\./.test(uMissing.state ?? "")
+        && /^First window unknown/.test(uMissing.primary ?? "") && /^Second window unknown/.test(uMissing.secondary ?? "")
         && !/%/.test(`${uMissing.primary}${uMissing.secondary}`) && missingBars === 0;
       // (b) the refresh controls by name and state: a named radio group, local checked, the button named
       const useGroupAx = await ax(`${useSec}.querySelector('fieldset')`);
       const localAx = await ax(useRadio("local")), providerAx = await ax(useRadio("provider"));
       const btnAx = await ax(useBtn);
       facts.usageAx = { groupAx: useGroupAx, localAx, providerAx, btnAx };
-      claims["usage refresh: one group named 'Neu lesen aus', 'Gespeicherter Stand' checked, 'Konto beim Anbieter' not, the button named 'Neu lesen'"] =
-        useGroupAx?.name === "Neu lesen aus" && localAx?.role === "radio" && localAx?.name === "Gespeicherter Stand" && localAx?.checked === "true"
-        && providerAx?.name === "Konto beim Anbieter" && providerAx?.checked === "false" && btnAx?.name === "Neu lesen" && !btnAx?.disabled;
+      claims["usage refresh: one group named 'Read again from', 'Stored data' checked, 'Account at the provider' not, the button named 'Read again'"] =
+        useGroupAx?.name === "Read again from" && localAx?.role === "radio" && localAx?.name === "Stored data" && localAx?.checked === "true"
+        && providerAx?.name === "Account at the provider" && providerAx?.checked === "false" && btnAx?.name === "Read again" && !btnAx?.disabled;
       // (c) the keyboard picks the active target: unsupported, its reason in words, the button disabled — and Enter sends nothing
       await evaluate(`${useRadio("local")}.focus()`);
       await key("ArrowDown");
@@ -6989,7 +6989,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       const backLocal = await ax(useRadio("local"));
       facts.usageProvider = { provAx, provBtn, provHint, provPosts, backLocal };
       claims["usage, active target by keyboard: checked, the button disabled with the unsupported reason, Enter/Space send no request"] =
-        provAx?.checked === "true" && provBtn?.disabled === true && /^Noch nicht möglich\. Die Fleet hat keinen Zugang, um das Konto beim Anbieter abzufragen\.$/.test(provHint) && provPosts === 0
+        provAx?.checked === "true" && provBtn?.disabled === true && /^Not possible yet\. Fleet has no access to query the account at the provider\.$/.test(provHint) && provPosts === 0
         && backLocal?.checked === "true";
 
       // (d) a corrupt source the server reports, then an answer that is not the wire's shape
@@ -7004,9 +7004,9 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       fx.usageRaw = null;
       await shot(width, "usage-unreadable");
       facts.usageCorrupt = { uCorrupt, uShape };
-      claims["usage, corrupt source: Fehler with its reason, windows unbekannt; an answer of another shape reads 'nicht lesbar' and says what is missing, never 0"] =
-        /^Zustand Fehler/.test(uCorrupt.state ?? "") && /Eine Zeile in den Sitzungsdateien ist beschädigt\./.test(uCorrupt.state ?? "") && /^Erstes Fenster unbekannt/.test(uCorrupt.primary ?? "")
-        && /Die Antwort des Servers ist nicht lesbar\./.test(uShape.state ?? "") && /^Erstes Fenster unbekannt Es fehlt eine lesbare Antwort des Servers\.$/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
+      claims["usage, corrupt source: Error with its reason, windows unknown; an answer of another shape reads 'not readable' and says what is missing, never 0"] =
+        /^State Error/.test(uCorrupt.state ?? "") && /A line in the session files is corrupt\./.test(uCorrupt.state ?? "") && /^First window unknown/.test(uCorrupt.primary ?? "")
+        && /The server's answer is not readable\./.test(uShape.state ?? "") && /^First window unknown No readable answer from the server\.$/.test(uShape.primary ?? "") && !/\b0 %/.test(Object.values(uShape).join(" "));
 
       // (e) measured: two windows with their own length and reset, source and the three times apart, the model facts apart
       fx.usageKind = "measured";
@@ -7016,20 +7016,20 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("measured");
       await shot(width, "usage-measured");
       facts.usageMeasured = uM;
-      claims["usage, measured: primary 42 % over 5 h and secondary 12,5 % over 7 Tage, each with its own reset"] =
-        /42 % verbraucht/.test(uM.primary ?? "") && /Fenster 5 h · beginnt neu um .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
-        && /12,5 % verbraucht/.test(uM.secondary ?? "") && /Fenster 7 Tage · beginnt neu um .+\(in 3 Tage( 1 h)?\)/.test(uM.secondary ?? "");
+      claims["usage, measured: primary 42 % over 5 h and secondary 12.5 % over 7 days, each with its own reset"] =
+        /42 % used/.test(uM.primary ?? "") && /Window 5 h · resets at .+\(in 2 h (9|10) min\)/.test(uM.primary ?? "")
+        && /12.5 % used/.test(uM.secondary ?? "") && /Window 7 days · resets at .+\(in 3 days( 1 h)?\)/.test(uM.secondary ?? "");
       claims["usage, measured: source local and not the account itself, measured time, age and read time stand apart"] =
-        /^Quelle Codex-Sitzungsdateien dieser Maschine/.test(uM.source ?? "") && /Nicht direkt vom Konto/.test(uM.source ?? "")
-        && /16 neuesten Dateien, jeweils die letzten 256 KiB\. Ältere Einträge bleiben ungelesen\./.test(uM.source ?? "") && !/ab12cd34/.test(uM.source ?? "")
-        && /^Gemessen \d\d:\d\d:\d\d Wann Codex diesen Stand gemeldet hat\.$/.test(uM.measured ?? "") && /^Alter 3 min Gilt nach 15 min als veraltet\.$/.test(uM.age ?? "")
-        && /^Gelesen \d\d:\d\d:\d\d Wann die Fleet die Dateien gelesen hat\.$/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(8, 16);
-      claims["usage, model: the owner's preference unbekannt, the default, the sessions' selection and the model really used apart; no quota switch"] =
-        /^Deine Vorgabe unbekannt Von dir ist keine Modell-Vorgabe hinterlegt\.$/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
-        && new RegExp(`^Standard Worker .*${MODEL_DEFAULTS.worker.harness === "codex" ? "Sol" : "Opus"}.* · MAIN .*Opus`).test(uM.defaults ?? "") && /^An Sessions gewählt 2 Sessions/.test(uM.selected ?? "")
-        && /Ob du diese Modelle bewusst gewählt hast, ist nicht erfasst\./.test(uM.selected ?? "")
-        && /^Wirklich benutzt unbekannt Welches Modell wirklich geantwortet hat, ist nicht erfasst\.$/.test(uM.turn ?? "")
-        && /^Zustand unbekannt Für andere Abos erfasst die Fleet noch keinen Verbrauch\.$/.test(uM.others ?? "") && /Freies Kontingent wählt kein Modell/.test(secText);
+        /^Source Codex session files on this machine/.test(uM.source ?? "") && /Not read from the account directly/.test(uM.source ?? "")
+        && /the 16 newest files, the last 256 KiB of each\. Older entries stay unread\./.test(uM.source ?? "") && !/ab12cd34/.test(uM.source ?? "")
+        && /^Measured \d\d:\d\d:\d\d When Codex reported this reading\.$/.test(uM.measured ?? "") && /^Age 3 min Counts as stale after 15 min\.$/.test(uM.age ?? "")
+        && /^Read \d\d:\d\d:\d\d When Fleet read the files\.$/.test(uM.fetched ?? "") && uM.measured?.slice(9, 17) !== uM.fetched?.slice(5, 13);
+      claims["usage, model: the owner's preference unknown, the default, the sessions' selection and the model really used apart; no quota switch"] =
+        /^Your preference unknown You have not set a model preference\.$/.test(uM.preference ?? "") && !/Opus|Sol/.test(uM.preference ?? "")
+        && new RegExp(`^Default Worker .*${MODEL_DEFAULTS.worker.harness === "codex" ? "Sol" : "Opus"}.* · MAIN .*Opus`).test(uM.defaults ?? "") && /^Set on sessions 2 Sessions/.test(uM.selected ?? "")
+        && /Whether you chose these models on purpose is not recorded\./.test(uM.selected ?? "")
+        && /^Actually used unknown Which model actually answered is not recorded\.$/.test(uM.turn ?? "")
+        && /^State unknown Fleet does not record usage for other plans yet\.$/.test(uM.others ?? "") && /Free quota does not pick a model/.test(secText);
       claims["usage: no path, account, credential or full event checksum in the section"] =
         !/\/Users\/|\/fixture\/|@|token|ab12cd34ab12cd34/i.test(secText);
 
@@ -7043,23 +7043,23 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("loading");
       await shot(width, "usage-loading");
       await key("Enter"); // pressed again while it reads: nothing more is sent
-      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Read again/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const readDone = { status: await useStatus(), posts: usageRefreshes(beforeLocal), u: await use(), ax: await ax(useBtn) };
       await plain("local-read");
       await shot(width, "usage-local-read");
       facts.usageLocal = { loading, readDone };
-      claims["usage refresh by keyboard: the focused button reads 'Liest …', busy and disabled, the status says it reads the local stored state"] =
-        loadAx?.name === "Liest …" && !!loadAx?.busy && loadAx?.disabled === true && loading.focus
-        && /Liest den gespeicherten Stand/.test(loading.status);
+      claims["usage refresh by keyboard: the focused button reads 'Reading …', busy and disabled, the status says it reads the local stored state"] =
+        loadAx?.name === "Reading …" && !!loadAx?.busy && loadAx?.disabled === true && loading.focus
+        && /Reading the stored data/.test(loading.status);
       claims["usage refresh: exactly one POST {target:local}, and its answer says no new measurement event"] =
         readDone.posts.length === 1 && JSON.stringify(readDone.posts[0].body) === JSON.stringify({ target: "local" })
-        && /nichts Neues, der Stand von \d\d:\d\d:\d\d gilt weiter\./.test(readDone.status)
-        && /42 % verbraucht/.test(readDone.u.primary ?? "") && readDone.ax?.name === "Neu lesen" && !readDone.ax?.disabled;
+        && /nothing new, the reading from \d\d:\d\d:\d\d still holds\./.test(readDone.status)
+        && /42 % used/.test(readDone.u.primary ?? "") && readDone.ax?.name === "Read again" && !readDone.ax?.disabled;
 
       // (g) failure: the server's timeout, then a 500 and a 409 — the last measured windows stay, stale and dated, never 0; retry offered
       fx.refreshDelay = 0; fx.refreshKind = "timeout";
       await click(useBtn);
-      await wait(`/Neu lesen um .+ fehlgeschlagen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Reading again at .+ failed/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const uT = await use();
       const tAx = await ax(useBtn);
       const staleRow = await evaluate<boolean>(`${useSec}.querySelector('[data-use="primary"]').classList.contains('stale')`);
@@ -7067,35 +7067,35 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await shot(width, "usage-failed-stale");
       fx.refreshStatus = 500;
       await click(useBtn);
-      await wait(`/antwortet mit Fehler 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/answers with error 500/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const after500 = { status: await useStatus(), u: await use() };
       await plain("failed-500");
       fx.refreshStatus = 409;
       await click(useBtn);
-      await wait(`/liest gerade schon/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/already reading/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       const after409 = { status: await useStatus(), ax: await ax(useBtn) };
       await plain("failed-409");
       fx.refreshStatus = 200;
       facts.usageFailure = { uT, tAx, staleRow, after500, after409 };
-      claims["usage failure: Fehler with its reason, the last measured 42 % stays as 'Stand von … veraltet', never 0 or blank"] =
-        /^Zustand Fehler Das Lesen hat länger als 5 s gedauert und wurde abgebrochen\./.test(uT.state ?? "") && /42 % verbraucht/.test(uT.primary ?? "")
-        && /Stand von \d\d:\d\d:\d\d, veraltet/.test(uT.primary ?? "") && /12,5 % verbraucht/.test(uT.secondary ?? "") && staleRow
+      claims["usage failure: Error with its reason, the last measured 42 % stays as 'Reading from … stale', never 0 or blank"] =
+        /^State Error Reading took longer than 5 s and was cancelled\./.test(uT.state ?? "") && /42 % used/.test(uT.primary ?? "")
+        && /Reading from \d\d:\d\d:\d\d, stale/.test(uT.primary ?? "") && /12.5 % used/.test(uT.secondary ?? "") && staleRow
         && !/\b0 %/.test(`${uT.primary}${uT.secondary}`);
-      claims["usage failure offers the retry gesture: 'Erneut lesen' enabled after a timeout, a 500 and a 409, the windows kept"] =
-        tAx?.name === "Erneut lesen" && !tAx?.disabled && /Neu lesen fehlgeschlagen\. Der Server antwortet mit Fehler 500\./.test(after500.status)
-        && /42 % verbraucht/.test(after500.u.primary ?? "") && /liest gerade schon/.test(after409.status) && after409.ax?.name === "Erneut lesen";
+      claims["usage failure offers the retry gesture: 'Try again' enabled after a timeout, a 500 and a 409, the windows kept"] =
+        tAx?.name === "Try again" && !tAx?.disabled && /Reading again failed\. The server answers with error 500\./.test(after500.status)
+        && /42 % used/.test(after500.u.primary ?? "") && /already reading/.test(after409.status) && after409.ax?.name === "Try again";
 
       // (h) a late GET answer after a newer refresh answer: the newer one stays
       fx.usageKind = "stale"; fx.usageDelay = 1200; fx.refreshKind = "measured";
       await openUsage();
       await click(useBtn);
-      await wait(`/Neu gelesen/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
+      await wait(`/Read again/.test(${useSec}.querySelector('.usestatus').textContent)`, 4000);
       await evaluate("new Promise(r => setTimeout(r, 1500))");
       const uLateGet = await use();
       await plain("late-get");
       facts.usageLateGet = uLateGet;
       claims["usage: an older GET answering after the refresh's answer does not overwrite it (42 % measured stays, not 30 % stale)"] =
-        /^Zustand aktuell/.test(uLateGet.state ?? "") && /42 % verbraucht/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
+        /^State current/.test(uLateGet.state ?? "") && /42 % used/.test(uLateGet.primary ?? "") && !/30 %/.test(uLateGet.primary ?? "");
 
       // (i) the window closed while a refresh read: its late answer paints nothing into the next window
       fx.usageKind = "measured"; fx.usageDelay = 0; fx.refreshKind = "late"; fx.refreshDelay = 1200;
@@ -7108,7 +7108,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("after-close");
       facts.usageAfterClose = { closedOnCancel, ...uAfterClose };
       claims["usage: Escape closes while it reads, and that late answer (99 %) never reaches the reopened window"] =
-        closedOnCancel && /42 % verbraucht/.test(uAfterClose.u.primary ?? "") && !/99 %/.test(uAfterClose.u.primary ?? "") && uAfterClose.status === "";
+        closedOnCancel && /42 % used/.test(uAfterClose.u.primary ?? "") && !/99 %/.test(uAfterClose.u.primary ?? "") && uAfterClose.status === "";
 
       // (j) the target switched while a local read was pending: its answer is dropped, the active target stays chosen
       await click(useBtn);
@@ -7121,7 +7121,7 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await click(useRadio("local"));
       facts.usageSwitch = { dropped: useDropped, ...uSwitch };
       claims["usage: switching the target while a local read is pending drops its answer; the active target stays checked and disabled"] =
-        /Antwort verworfen, weil du die Quelle gewechselt hast\./.test(useDropped) && /42 % verbraucht/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
+        /Answer discarded because you switched the source\./.test(useDropped) && /42 % used/.test(uSwitch.u.primary ?? "") && !/99 %/.test(uSwitch.u.primary ?? "")
         && uSwitch.provider?.checked === "true" && uSwitch.btn?.disabled === true;
 
       // (k) a missing secondary window and a stale event on open
@@ -7137,14 +7137,14 @@ export async function runSettingsDom(sourceRoot: string, artifacts?: string): Pr
       await plain("stale");
       await shot(width, "usage-stale");
       facts.usageNullStale = { uNull, uStale, staleClass, staleServed };
-      claims["usage, null secondary: the primary measured, the secondary 'unbekannt' with the sentence that it was not sent, no 0"] =
-        /42 % verbraucht/.test(uNull.primary ?? "") && /^Zweites Fenster unbekannt Codex hat für dieses Fenster nichts mitgeschickt\.$/.test(uNull.secondary ?? "");
-      claims["usage, stale event: veraltet with its reason and age, the measured 30 % kept and marked"] =
-        /^Zustand veraltet Der letzte Stand ist älter als 15 Minuten\./.test(uStale.state ?? "") && /30 % verbraucht/.test(uStale.primary ?? "") && /veraltet/.test(uStale.primary ?? "")
-        && staleServed !== null && staleServed >= 40 * 60_000 && (uStale.age ?? "").startsWith(`Alter ${Math.floor(staleServed / 60_000)} min`) && staleClass;
+      claims["usage, null secondary: the primary measured, the secondary 'unknown' with the sentence that it was not sent, no 0"] =
+        /42 % used/.test(uNull.primary ?? "") && /^Second window unknown Codex sent nothing for this window\.$/.test(uNull.secondary ?? "");
+      claims["usage, stale event: stale with its reason and age, the measured 30 % kept and marked"] =
+        /^State stale The latest reading is older than 15 minutes\./.test(uStale.state ?? "") && /30 % used/.test(uStale.primary ?? "") && /stale/.test(uStale.primary ?? "")
+        && staleServed !== null && staleServed >= 40 * 60_000 && (uStale.age ?? "").startsWith(`Age ${Math.floor(staleServed / 60_000)} min`) && staleClass;
       await key("Escape");
       facts.usagePlain = plainStates;
-      claims["usage in the owner's words, in all 15 data states: no event checksum, no reader vocabulary, every 'unbekannt' says in one short sentence what is missing"] =
+      claims["usage in the owner's words, in all 15 data states: no event checksum, no reader vocabulary, every 'unknown' says in one short sentence what is missing"] =
         Object.keys(plainStates).length === 15 && Object.values(plainStates).every((x) => x.jargon.length === 0 && x.unknownWithout.length === 0);
 
       // the whole step: each open read once, every POST was an explicit local refresh — nothing else written or
@@ -7339,7 +7339,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
     type Target = { shown: boolean; slot: string | null; openedAt: string | null; text: string; title: string; foot: string | null } | null;
     const tgt = () => evaluate<Target>("window.__fx.target()");
     // named = bound to the slot and openedAt, the name drawn ONCE (the foot line), the chip itself empty,
-    // and the address still in the chip's title ("Senden geht an Slot 1 · Alpha")
+    // and the address still in the chip's title ("Sends to Slot 1 · Alpha")
     const names = (t: Target, slot: number, openedAt: number, name: string) =>
       !!t && t.slot === String(slot) && t.openedAt === String(openedAt) && t.foot === name && t.text === ""
       && t.title.includes(`Slot ${slot}`) && t.title.includes(name);
@@ -7489,8 +7489,8 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         await click("window.__fx.pane(1).querySelector('.xterm-screen')", 0.5, 0.8);
         facts.ended = { draft: await evaluate<string>("document.querySelector('#input').value"), target: await tgt() };
         const ended = facts.ended as { draft: string; target: Target };
-        claims["an ended session: the target says leer and no draft carries over"] = ended.draft === ""
-          && !!ended.target && ended.target.shown && ended.target.slot === "2" && /leer/.test(ended.target.text);
+        claims["an ended session: the target says empty and no draft carries over"] = ended.draft === ""
+          && !!ended.target && ended.target.shown && ended.target.slot === "2" && /empty/.test(ended.target.text);
         await shot(width, "ended");
 
         // --- 7. the conversation view: the switch keeps its own focus (a switch takes the keys into
@@ -7541,7 +7541,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
       // --- 8. THE FOCUSED slot is recycled while the box holds a draft (card "Ein Entwurf geht nie
       // still an eine Session, fuer die er nicht geschrieben wurde", src/drafts.ts#BoxDraft): the draft
       // stays, the target marks it as the ended session's, Enter (➤ on the phone) sends nothing, and
-      // only an emptied box or "übernehmen" frees it. The new session arrives on the poll alone.
+      // only an emptied box or "Adopt" frees it. The new session arrives on the poll alone.
       {
         const fs = phone ? 2 : 1;
         const field = () => evaluate<string>("document.querySelector('#input').value");
@@ -7550,7 +7550,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
           const ok = await polls(1); await settle(100); return ok;
         };
         const orphanShown = (t: Target, openedAt: number) => !!t && t.shown && t.slot === String(fs) && t.openedAt === String(openedAt)
-          && t.text.includes("Entwurf für beendete Session");
+          && t.text.includes("Draft for ended session");
         const adoptBtn = () => evaluate<{ shown: boolean; text: string; title: string; h: number } | null>(`(() => { const b = document.querySelector('#comptarget .ctadopt');
           return b ? { shown: window.__fx.shown(b), text: b.textContent.trim(), title: b.title, h: Math.round(b.getBoundingClientRect().height) } : null; })()`);
         const pressSend = async () => { if (phone) await click("document.querySelector('#send')"); else await key("Enter"); await settle(250); };
@@ -7561,9 +7561,9 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         const polled = await recycle(5000, "Nachfolger");
         facts.orphan = { before, polled, draft: await field(), target: await tgt(), adopt: await adoptBtn() };
         const o = facts.orphan as { draft: string; target: Target; adopt: { shown: boolean; text: string; h: number } | null };
-        claims["a new session in the FOCUSED slot (openedAt 5000) keeps the draft on screen, marked as the ended session's, with übernehmen beside it"] =
+        claims["a new session in the FOCUSED slot (openedAt 5000) keeps the draft on screen, marked as the ended session's, with Adopt beside it"] =
           !!before && before.openedAt !== "5000" && polled && o.draft === "für die alte Session" && orphanShown(o.target, 5000)
-          && !!o.adopt?.shown && o.adopt.text === "übernehmen" && (!phone || o.adopt.h >= 40);
+          && !!o.adopt?.shown && o.adopt.text === "Adopt" && (!phone || o.adopt.h >= 40);
         await shot(width, "orphan-draft");
         const s0 = sendsAt();
         await pressSend();
@@ -7578,21 +7578,21 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         facts.orphanCleared = { draft: await field(), target: await tgt(), adopt: await adoptBtn() };
         const c = facts.orphanCleared as { draft: string; target: Target; adopt: unknown };
         claims["an emptied field is free again: no mark, the target names the new session (openedAt 5000)"] = c.draft === "" && c.adopt === null
-          && names(c.target, fs, 5000, "Nachfolger") && !c.target?.text.includes("Entwurf");
-        // a second draft, a second recycle — "übernehmen" addresses it to the new session, and only then Enter sends
+          && names(c.target, fs, 5000, "Nachfolger") && !c.target?.text.includes("Draft");
+        // a second draft, a second recycle — "Adopt" addresses it to the new session, and only then Enter sends
         await typeText("jetzt für die neue");
         await recycle(6000, "Dritte");
         const marked = orphanShown(await tgt(), 6000);
         await click("document.querySelector('#comptarget .ctadopt')");
         facts.adopted = { marked, draft: await field(), target: await tgt(), adopt: await adoptBtn(), where: await evaluate<string>("window.__fx.where()") };
         const a = facts.adopted as { draft: string; target: Target; adopt: unknown; where: string };
-        claims["übernehmen keeps the text, drops the mark and puts the keys back in the field"] = marked && a.draft === "jetzt für die neue"
-          && a.adopt === null && names(a.target, fs, 6000, "Dritte") && !a.target?.text.includes("Entwurf") && a.where === "composer";
+        claims["Adopt keeps the text, drops the mark and puts the keys back in the field"] = marked && a.draft === "jetzt für die neue"
+          && a.adopt === null && names(a.target, fs, 6000, "Dritte") && !a.target?.text.includes("Draft") && a.where === "composer";
         await shot(width, "orphan-adopted");
         const s1 = sendsAt();
         await pressSend();
         await wait("document.querySelector('#input').value === ''", 3000);
-        claims["after übernehmen the send goes to the new session's slot, exactly once"] = fx.sends.length === s1 + 1
+        claims["after Adopt the send goes to the new session's slot, exactly once"] = fx.sends.length === s1 + 1
           && fx.sends[s1]?.slot === fs && fx.sends[s1]?.text === "jetzt für die neue";
         // an attachment alone is a draft too: held through a recycle, sent nowhere, freed by its ✕
         const file = resolve(scratch, "orphan.txt");
@@ -7614,7 +7614,7 @@ export async function runComposerTargetDom(sourceRoot: string, artifacts?: strin
         facts.orphanUnattached = { files: await evaluate<number>("document.querySelectorAll('#compfiles .att').length"), target: await tgt() };
         const u = facts.orphanUnattached as { files: number; target: Target };
         claims["its ✕ empties the box and frees it: the target names the new session again"] = u.files === 0
-          && names(u.target, fs, 7000, "Vierte") && !u.target?.text.includes("Entwurf");
+          && names(u.target, fs, 7000, "Vierte") && !u.target?.text.includes("Draft");
         await evaluate("document.activeElement?.blur()");
       }
 
@@ -7838,7 +7838,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
       }
 
       if (runs("orphan")) {
-        // --- 2. a new session in the focused slot while the box holds a draft: ➤ is locked, übernehmen frees it
+        // --- 2. a new session in the focused slot while the box holds a draft: ➤ is locked, Adopt frees it
         const opened = fx.slots[0]!.openedAt ?? 1000;
         await click("document.querySelector('#input')");
         await typeText("für die alte Session");
@@ -7856,7 +7856,7 @@ export async function runComposerKeepDom(sourceRoot: string, only: { mutate?: Ke
         facts.orphan = { empty, live, locked, adopted, sends: fx.sends.slice(s0) };
         claims["➤ reads locked for an ended session's draft: aria-disabled and the empty field's quiet surface, and it sends nothing"] =
           locked.aria === "true" && locked.bg === empty.bg && locked.color === empty.color && locked.bg !== live.bg && fx.sends.length === s0;
-        claims["übernehmen unlocks ➤: aria-disabled false and the live surface again"] = adopted.aria === "false" && adopted.bg === live.bg;
+        claims["Adopt unlocks ➤: aria-disabled false and the live surface again"] = adopted.aria === "false" && adopted.bg === live.bg;
         await evaluate("(() => { const t = document.querySelector('#input'); t.value = ''; t.dispatchEvent(new Event('input')); })()");
       }
 
@@ -8095,8 +8095,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       facts.placeholder = await evaluate<string>("document.querySelector('#input').placeholder");
       facts.sheet = await shown("#msheetwrap");
       // the field says what it is for, never whose it is: the name stands once, in the foot line (owner 2026-10-07)
-      claims[`no sheet is drawn here, and the field reads "Nachricht${width === 1200 ? " — Enter sendet" : ""}" — no name in it`] = !facts.sheet
-        && facts.placeholder === (width === 1200 ? "Nachricht — Enter sendet" : "Nachricht");
+      claims[`no sheet is drawn here, and the field reads "Message${width === 1200 ? " — Enter sends" : ""}" — no name in it`] = !facts.sheet
+        && facts.placeholder === (width === 1200 ? "Message — Enter sends" : "Message");
       if (width === 1200) claims["the desktop keeps its sidebar and no phone head"] = seen.side && !seen.mhead && !seen.mread;
       else claims["the phone on its side keeps the reading mode (#mread) and no phone head"] = facts.coarse === true && seen.mread && !seen.mhead;
       await shot(`${width}-start`);
@@ -8155,7 +8155,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     const fitClaims = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, sheet: string, fit: FitRead, rows: string[]) => {
       for (const name of rows) {
         const row = fit.rows.find((r) => r.row === name);
-        const what = name === "tray" ? "the tools" : `the ${name === "model" ? "Modell" : "Effort"} segments`;
+        const what = name === "tray" ? "the tools" : `the ${name === "model" ? "Model" : "Effort"} segments`;
         const rowClaim = `${tag}${sheet} · ${what} break into lines, nothing scrolls sideways`;
         claims[rowClaim] = !!row && row.items.length > 0 && row.sw <= row.cw;
         detail[rowClaim] = row ?? fit;
@@ -8198,7 +8198,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
           items: [...row.children].filter(f.shown).map((b) => { const r = b.getBoundingClientRect();
             return { word: b.textContent.trim(), sw: b.scrollWidth, cw: b.clientWidth, l: Math.round(r.left), r: Math.round(r.right), top: Math.round(r.top) }; }) })) }; })()`;
     const directApplyClaim = (claims: Record<string, boolean>, detail: Record<string, unknown>, tag: string, d: DirectRead) => {
-      const c = `${tag}Modell und Effort · its one Übernehmen is at least 44 px high, inside the popover, met by a finger at its centre`;
+      const c = `${tag}Model and effort · its one Apply is at least 44 px high, inside the popover, met by a finger at its centre`;
       claims[c] = d.applies === 1 && !!d.apply && d.apply.h >= 44 && d.apply.l >= 0 && d.apply.r >= 0 && d.apply.hit;
       detail[c] = d.apply;
     };
@@ -8302,7 +8302,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         opened && ids.every((id) => !!b(id)) && b("#mname")!.r <= b("#mview")!.x
         && SYMBOLS.every((id, i) => Math.abs(midY(b(id)) - midY(b("#mname"))) <= 1 && (i === 0 || b(SYMBOLS[i - 1])!.r <= b(id)!.x))
         && b("#mslot")!.y >= b("#mname")!.b && b("#minfo")!.y === b("#mslot")!.y && b("#mslot")!.r < b("#minfo")!.x
-        && op.name === "Alpha" && op.view === "Gespräch";
+        && op.name === "Alpha" && op.view === "Chat";
       // …and a finger at each centre meets that button, at the default text size and at the largest
       // Aa (24 px, src/chatsize.ts) — the glyphs do not grow, the name's type stops at 15 px
       const hittable = () => evaluate<string[]>(`${JSON.stringify(ids)}.filter((id) => { const e = document.querySelector(id), r = e.getBoundingClientRect();
@@ -8356,12 +8356,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       actions.find = await act("#mfind", "!!document.querySelector('.pane .termfind.open') && document.activeElement === document.querySelector('.pane .termfindin')", escape);
       actions.more = await act("#mmore", sheetIs("tools"), sheetGone);
       facts.actions = actions;
-      const actionsClaim = `${tag}every action but Modell und Effort closes the island and does what it names (Sessions, view, Info, Suchen, Mehr)`;
+      const actionsClaim = `${tag}every action but Model and effort closes the island and does what it names (Sessions, view, Info, Search, More)`;
       claims[actionsClaim] = Object.values(actions).every((a) => a.was && a.done && a.closed) && (facts.chatView as { view: string }).view === "Terminal";
       detail[actionsClaim] = { actions, chatView: facts.chatView, missing: [...missing] };
       facts.placeholder = { term: await evaluate<string>("document.querySelector('#input').placeholder"), chat: (facts.chatView as { placeholder: string }).placeholder };
-      claims[`${tag}the field reads "Nachricht" in the terminal and in the conversation — no name in it`] =
-        (facts.placeholder as { term: string; chat: string }).term === "Nachricht" && (facts.placeholder as { term: string; chat: string }).chat === "Nachricht";
+      claims[`${tag}the field reads "Message" in the terminal and in the conversation — no name in it`] =
+        (facts.placeholder as { term: string; chat: string }).term === "Message" && (facts.placeholder as { term: string; chat: string }).chat === "Message";
 
       // THE TWO SHEETS (card "Auf dem Telefon öffnen Sessions und Werkzeuge als eigene Blätter",
       // docs/design/mobil-insel-notiz.md §1 and §3). With the keyboard up, the field holds it until a
@@ -8417,14 +8417,14 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       detail[sessPlaced] = { sheet: sess.sheet, shade: sess.shade, bottom, islandOpen: sess.islandOpen };
       claims[`${tag}the sheet takes the focus — a keyboard goes with it`] = sess.where === "#msheet" && !sess.keyboardOpen;
       const drawerHidden = await evaluate<boolean>("['attnbtn', 'opsbtn', 'devbtn'].every((id) => document.getElementById(id).style.display === 'none')");
-      const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Für dich, Eingang, Geräte hidden here), Datensparen off`;
-      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Aufträge", "Lands", "Protokoll", "Konstellation", "Datensparen"]);
+      const trayClaim = `${tag}its tools stand in words in the drawer's order, only those the drawer shows (Attention, Inbox, Devices hidden here), Data saver off`;
+      claims[trayClaim] = drawerHidden && JSON.stringify(sess.tray) === JSON.stringify(["Queue", "Lands", "Audit", "Constellation", "Data saver"]);
       detail[trayClaim] = { tray: sess.tray, drawerHidden };
-      const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "Neue Session" last`;
+      const rowsClaim = `${tag}one row per session — address, name, state shape — the current one marked, and "New session" last`;
       const sr = sess.rows;
       claims[rowsClaim] = sr.length === 3 && sr[0].addr === "1" && sr[0].name === "Alpha" && sr[0].current === true && /\bact (work|rest|sleep|bad)\b/.test(sr[0].shape ?? "")
         && sr[1].addr === "2" && sr[1].name === "Beta" && sr[1].current === false && /\bact (work|rest|sleep|bad)\b/.test(sr[1].shape ?? "")
-        && sr[2].word === "Neue Session" && sr[2].disabled === false && sess.head[0] === "Sessions" && sess.head[1] === "2 offen";
+        && sr[2].word === "New session" && sr[2].disabled === false && sess.head[0] === "Sessions" && sess.head[1] === "2 open";
       detail[rowsClaim] = { rows: sr, head: sess.head };
       const sessTargets = `${tag}every target in the Sessions sheet is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[sessTargets] = sess.small.length === 0 && sess.missed.length === 0 && !sess.sideways;
@@ -8449,27 +8449,27 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const toAlpha = await wait("document.querySelector('#comptarget')?.dataset.slot === '1' && document.querySelector('#mtitle').textContent === 'Alpha'", 3000);
       await settle(300);
       const tb = facts.toBeta as { toBeta: boolean; sheet: boolean; placeholder: string; foot: string };
-      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the foot line names Beta — the field still reads "Nachricht"`] =
-        tb.toBeta && !tb.sheet && tb.foot === "Beta" && tb.placeholder === "Nachricht" && toAlpha;
+      claims[`${tag}a session row switches the pane (showSlot), closes the sheet, and the foot line names Beta — the field still reads "Message"`] =
+        tb.toBeta && !tb.sheet && tb.foot === "Beta" && tb.placeholder === "Message" && toAlpha;
       // … Datensparen is the drawer's own switch …
       await openVia("#mslot", "sessions");
-      await tapRow("Datensparen");
+      await tapRow("Data saver");
       const saverOn = await evaluate<boolean>("document.querySelector('#saverbtn').classList.contains('active') && localStorage.getItem('fleet.datasaver') === '1' && !document.body.classList.contains('msheet')");
       await openVia("#mslot", "sessions");
       const pressed = (await readSheet()).tray;
-      await tapRow("Datensparen");
+      await tapRow("Data saver");
       const saverOff = await evaluate<boolean>("!document.querySelector('#saverbtn').classList.contains('active')");
       facts.saver = { saverOn, pressed, saverOff };
-      claims[`${tag}Datensparen switches the drawer's data saver and reads its state`] = saverOn && pressed.includes("Datensparen*") && saverOff;
+      claims[`${tag}Data saver switches the drawer's data saver and reads its state`] = saverOn && pressed.includes("Data saver*") && saverOff;
       // … and "Neue Session" opens the window „Neue Session“ (K15) on the first free place — the old start window no longer exists
       await openVia("#mslot", "sessions");
-      await tap(rowSel("Neue Session"));
+      await tap(rowSel("New session"));
       const founding = await wait("window.__fx.shown(document.querySelector('#shell-found.k15')) && !document.querySelector('.fdgo, .fdkind')", 5000);
       await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-neu`);
       await escape();
       await wait("!document.querySelector('#shell-found') || !window.__fx.shown(document.querySelector('#shell-found'))", 3000);
       facts.founding = founding;
-      claims[`${tag}"Neue Session" opens the window „Neue Session“, and nothing of the old start window`] = founding;
+      claims[`${tag}"New session" opens the window „New session“, and nothing of the old start window`] = founding;
 
       // --- Mehr (Konzept 2 §3, the sheet behind the strip's last symbol), in the terminal
       await kbUp();
@@ -8480,36 +8480,36 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       facts.toolsTerm = tt;
       const anyCoarse = await evaluate<boolean>("matchMedia('(any-pointer: coarse)').matches");
       // the Wecker lives here, not on the strip (owner 2026-10-07: „[Zitat entfernt]“)
-      const termWords = ["Wecker", "Frühere Nachrichten", ...(anyCoarse ? ["Direkt ins Terminal tippen"] : []), "Verweise erklären", "Neu verbinden", "Schrift und Spalte", "Einstellungen"];
-      const toolsPlaced = `${tag}Mehr opens its sheet: full width, at the foot of the visible screen, over a shade; its head the session's name, once`;
+      const termWords = ["Schedule", "History", ...(anyCoarse ? ["Type into the terminal"] : []), "Explain references", "Reconnect", "Text size and column", "Settings"];
+      const toolsPlaced = `${tag}More opens its sheet: full width, at the foot of the visible screen, over a shade; its head the session's name, once`;
       claims[toolsPlaced] = toolsOpened && placed(tt) && tt.where === "#msheet" && JSON.stringify(tt.head) === JSON.stringify(["Alpha"]);
       detail[toolsPlaced] = { sheet: tt.sheet, shade: tt.shade, bottom, head: tt.head, where: tt.where };
-      const termClaim = `${tag}in the terminal: Diese Session (Wecker, Frühere Nachrichten, Direkt ins Terminal tippen, Verweise erklären, Neu verbinden) and Dieses Gerät (Schrift und Spalte, Einstellungen) — no model, no effort, no message jumps`;
-      claims[termClaim] = tt.segs.length === 0 && JSON.stringify(tt.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
+      const termClaim = `${tag}in the terminal: This session (Schedule, History, Type into the terminal, Explain references, Reconnect) and This device (Text size and column, Settings) — no model, no effort, no message jumps`;
+      claims[termClaim] = tt.segs.length === 0 && JSON.stringify(tt.secs) === JSON.stringify(["This session", "This device"])
         && JSON.stringify(tt.rows.map((r) => r.word)) === JSON.stringify(termWords);
       detail[termClaim] = { rows: tt.rows, secs: tt.secs, segs: tt.segs, anyCoarse };
-      const termTargets = `${tag}every target in Mehr is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      const termTargets = `${tag}every target in More is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[termTargets] = tt.small.length === 0 && tt.missed.length === 0 && !tt.sideways;
       detail[termTargets] = { small: tt.small, missed: tt.missed, sideways: tt.sideways };
       // Neu verbinden is the pane's ↻ (a fresh socket for slot 1)
-      await tap(rowSel("Neu verbinden"));
+      await tap(rowSel("Reconnect"));
       const reconnected = await wait(`window.__ws.filter((w) => w.url.includes('/ws/1?')).length > ${ws0}`, 3000);
       // Verweise erklären is the pane's loupe; the sheet reads its state
       await openVia("#mmore", "tools");
-      await tap(rowSel("Verweise erklären"));
+      await tap(rowSel("Explain references"));
       const hoverOn = await evaluate<boolean>("window.__fx.pane().querySelector('.panehover').getAttribute('aria-pressed') === 'true'");
       await openVia("#mmore", "tools");
-      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Verweise erklären")?.value ?? null;
-      await tap(rowSel("Verweise erklären"));
+      const hoverRead = (await readSheet()).rows.find((r) => r.word === "Explain references")?.value ?? null;
+      await tap(rowSel("Explain references"));
       // Einstellungen opens the settings window; Escape gives the focus back to the pill
       await openVia("#mmore", "tools");
-      await tap(rowSel("Einstellungen"));
+      await tap(rowSel("Settings"));
       const settingsOpen = await wait("window.__fx.shown(document.querySelector('#shell-settings'))", 3000);
       await escape();
       const settingsBack = await evaluate<string>("window.__fx.where()");
       facts.termActs = { reconnected, hoverOn, hoverRead, settingsOpen, settingsBack, sheetAfter: await shown("#msheetwrap") };
-      const termActs = `${tag}its rows do what the board's own controls do: Neu verbinden reconnects, Verweise erklären switches the loupe (and reads "an"), Einstellungen opens the settings`;
-      claims[termActs] = reconnected && hoverOn && hoverRead === "an" && settingsOpen && settingsBack === "#mpill" && !(facts.termActs as { sheetAfter: boolean }).sheetAfter;
+      const termActs = `${tag}its rows do what the board's own controls do: Reconnect reconnects, Explain references switches the loupe (and reads "on"), Settings opens the settings`;
+      claims[termActs] = reconnected && hoverOn && hoverRead === "on" && settingsOpen && settingsBack === "#mpill" && !(facts.termActs as { sheetAfter: boolean }).sheetAfter;
       detail[termActs] = facts.termActs;
 
       // --- Mehr in the conversation: the message jumps join, Neu verbinden leaves — and neither Modell
@@ -8521,12 +8521,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const tc = await readSheet();
       await shot(`${W}${keyboard ? "-tastatur" : ""}-blatt-mehr-gespraech`);
       facts.toolsChat = tc;
-      const chatWords = ["Wecker", "Frühere Nachrichten", ...(anyCoarse ? ["Direkt ins Terminal tippen"] : []), "Vorige Nachricht", "Nächste Nachricht", "Verweise erklären", "Schrift und Spalte", "Einstellungen"];
-      const chatClaim = `${tag}Mehr in the conversation: the message jumps, no Neu verbinden — and neither Modell nor Effort, which are the strip's`;
-      claims[chatClaim] = tc.segs.length === 0 && JSON.stringify(tc.secs) === JSON.stringify(["Diese Session", "Dieses Gerät"])
+      const chatWords = ["Schedule", "History", ...(anyCoarse ? ["Type into the terminal"] : []), "Previous message", "Next message", "Explain references", "Text size and column", "Settings"];
+      const chatClaim = `${tag}More in the conversation: the message jumps, no Reconnect — and neither Model nor Effort, which are the strip's`;
+      claims[chatClaim] = tc.segs.length === 0 && JSON.stringify(tc.secs) === JSON.stringify(["This session", "This device"])
         && JSON.stringify(tc.rows.map((r) => r.word)) === JSON.stringify(chatWords);
       detail[chatClaim] = { secs: tc.secs, segs: tc.segs, rows: tc.rows, anyCoarse };
-      const chatTargets = `${tag}every target in Mehr in the conversation is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
+      const chatTargets = `${tag}every target in More in the conversation is at least 40 px high and met by a finger at its centre, nothing runs off sideways`;
       claims[chatTargets] = tc.small.length === 0 && tc.missed.length === 0 && !tc.sideways;
       detail[chatTargets] = { small: tc.small, missed: tc.missed, sideways: tc.sideways };
       await sheetGone();
@@ -8539,16 +8539,16 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await shot(`${W}${keyboard ? "-tastatur" : ""}-modell-effort`);
       facts.direct = dp;
       const segNames = (dp.segs[0]?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
-      const dirClaim = `${tag}Modell und Effort opens its popover at the button and the strip stays open: Modell and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), the effort in words, ONE Übernehmen, not ready yet`;
-      claims[dirClaim] = dirOpened && dp.shown && dp.islandOpen && dp.expanded === "true" && JSON.stringify(dp.secs) === JSON.stringify(["Modell", "Effort"])
+      const dirClaim = `${tag}Model and effort opens its popover at the button and the strip stays open: Model and Effort as segments (one per name of today's models — neither Opus 5 nor Sonnet 5 —, the running one pressed), the effort in words, ONE Apply, not ready yet`;
+      claims[dirClaim] = dirOpened && dp.shown && dp.islandOpen && dp.expanded === "true" && JSON.stringify(dp.secs) === JSON.stringify(["Model", "Effort"])
         && dp.segs[0]?.field === "model" && JSON.stringify(segNames) === JSON.stringify(todayNames.map((n) => n === "Opus 5.5" ? "Opus 5.5*" : n))
-        && JSON.stringify(dp.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig", "mittel", "hoch*", "sehr hoch"] })
+        && JSON.stringify(dp.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "extra high"] })
         && dp.applies === 1 && !dp.ready;
       detail[dirClaim] = { ...dp, todayNames };
-      const dirTargets = `${tag}Modell und Effort · every target is at least 40 px high and met by a finger at its centre, the popover inside the screen${keyboard ? " above the keyboard" : ""}`;
+      const dirTargets = `${tag}Model and effort · every target is at least 40 px high and met by a finger at its centre, the popover inside the screen${keyboard ? " above the keyboard" : ""}`;
       claims[dirTargets] = dp.small.length === 0 && dp.missed.length === 0 && !!dp.box && dp.box.x >= 0 && dp.box.r <= W && dp.box.b <= bottom;
       detail[dirTargets] = { small: dp.small, missed: dp.missed, box: dp.box, bottom };
-      fitClaims(claims, detail, tag, "Modell und Effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
+      fitClaims(claims, detail, tag, "Model and effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
       directApplyClaim(claims, detail, tag, dp);
       const posts0 = fx.posts.length;
       await tap(`document.querySelector('#mdirpop .mshsegs[data-field="effort"] button[data-v="low"]')`);
@@ -8565,8 +8565,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await tapAt({ x: W / 2, y: Math.round(bottom * 0.4) }, "outside the effort popover"); // the verdict repaint took its focus
       facts.effort = { staged: staged.segs, ready: staged.ready, postsAfterPress, closedByApply, effortPosts, effortPop,
         popGone: await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')") };
-      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Übernehmen ready, nothing sent); Übernehmen closes the island and the switch's own Apply writes it`;
-      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig+", "mittel", "hoch*", "sehr hoch"] }) && staged.ready
+      const effortClaim = `${tag}a press on an effort only marks it (ink edge, Apply ready, nothing sent); Apply closes the island and the switch's own Apply writes it`;
+      claims[effortClaim] = JSON.stringify(staged.segs[1]) === JSON.stringify({ field: "effort", values: ["low+", "medium", "high*", "extra high"] }) && staged.ready
         && postsAfterPress === 0 && closedByApply && JSON.stringify(effortPosts) === JSON.stringify([JSON.stringify({ effort: "low", push: true })]) && !!effortPop && effortPop.y >= 0 && effortPop.b <= bottom
         && (facts.effort as { popGone: boolean }).popGone;
       detail[effortClaim] = facts.effort;
@@ -8577,9 +8577,9 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sonnet = `[...document.querySelectorAll('#mdirpop .mshsegs[data-field="model"] button')].find((b) => b.textContent.startsWith('Sonnet 5.5'))`;
       await tap(sonnet);
       const stagedModel = await readDirect();
-      const onePick = `${tag}one pick at a time: marking a model takes a marked effort back, so the one Übernehmen makes exactly one change`;
+      const onePick = `${tag}one pick at a time: marking a model takes a marked effort back, so the one Apply makes exactly one change`;
       claims[onePick] = stagedModel.ready && stagedModel.segs[0]?.values.some((v) => v.startsWith("Sonnet 5.5") && v.endsWith("+"))
-        && JSON.stringify(stagedModel.segs[1]) === JSON.stringify({ field: "effort", values: ["niedrig", "mittel", "hoch*", "sehr hoch"] });
+        && JSON.stringify(stagedModel.segs[1]) === JSON.stringify({ field: "effort", values: ["low", "medium", "high*", "extra high"] });
       detail[onePick] = stagedModel.segs;
       await tap("document.querySelector('#mdirpop .mdapply')");
       const asks = await wait("window.__fx.shown(document.querySelector('#compopts .optpop.model.open .optconfirm'))", 3000);
@@ -8590,7 +8590,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       await escape();
       const popGone = await evaluate<boolean>("!document.querySelector('#compopts .optpop.open')");
       facts.model = { staged: stagedModel.segs, asks, askBox, modelPosts, popGone, missing: [...missing] };
-      const modelClaim = `${tag}Übernehmen on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
+      const modelClaim = `${tag}Apply on a model asks first in the switch's own popover, on screen, and sends nothing before the answer`;
       claims[modelClaim] = asks && modelPosts === 0 && !!askBox && askBox.y >= 0 && askBox.b <= bottom && popGone;
       detail[modelClaim] = facts.model;
       if (!keyboard) {
@@ -8604,7 +8604,7 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
         await moveAlpha("claude-opus-5-5");
         await settle(400);
         const oldNames = (oldSegs?.values ?? []).map((v) => v.replace(/ · [^*+]*/, ""));
-        const oldClaim = `Modell und Effort · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
+        const oldClaim = `Model and effort · a session running on ${OLD_MODEL} sees Opus 5 as the pressed segment with its notice (${OLD_NOTICE}), and no other superseded model`;
         claims[oldClaim] = oldSegs?.field === "model" && (oldSegs.values ?? []).includes(`Opus 5 · ${OLD_NOTICE}*`)
           && JSON.stringify(oldNames) === JSON.stringify(oldOffer.map((n) => n === "Opus 5" ? "Opus 5*" : n));
         detail[oldClaim] = { oldSegs, oldOffer };
@@ -8658,13 +8658,13 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const sessOpened = await openVia("#mslot", "sessions");
       fitClaims(claims, detail, "", "Sessions", await evaluate<FitRead>(FIT), ["tray"]);
       await shot(`${NW}-blatt-sessions`);
-      // the row's state shape names itself in German (src/client.ts#STATE_WORD; the two waiting words
+      // the row's state shape names itself in English (src/client.ts#STATE_WORD; the two waiting words
       // are read by the waiting block below)
       const words = await evaluate<Record<string, string>>("Object.fromEntries([...document.querySelectorAll('#msheet .mshrow[data-slot]')].map((r) => [r.dataset.slot, r.querySelector('.act')?.title ?? '']))");
       slots.splice(2, 2, { id: 3, cwd: null }, { id: 4, cwd: null });
-      const wordsClaim = "the state shapes name themselves in German: arbeitet · ruht · schläft — seit einer halben Stunde oder länger nichts · kaputt — hängt, oder eine Pane ohne Agent dahinter";
-      claims[wordsClaim] = JSON.stringify(words) === JSON.stringify({ 1: "arbeitet", 2: "ruht", 3: "schläft — seit einer halben Stunde oder länger nichts",
-        4: "kaputt — hängt, oder eine Pane ohne Agent dahinter" });
+      const wordsClaim = "the state shapes name themselves in English: working · resting · asleep — nothing for half an hour or more · broken — stuck, or a pane with no agent behind it";
+      claims[wordsClaim] = JSON.stringify(words) === JSON.stringify({ 1: "working", 2: "resting", 3: "asleep — nothing for half an hour or more",
+        4: "broken — stuck, or a pane with no agent behind it" });
       detail[wordsClaim] = words;
       await escape();
       await tap("document.querySelector('#mpill')"); await tap("document.querySelector('#mview')");
@@ -8672,14 +8672,14 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const toolsOpened = await openVia("#mmore", "tools");
       await shot(`${NW}-blatt-mehr-gespraech`);
       await escape(); await wait("!document.body.classList.contains('msheet')"); await settle(200);
-      // Modell und Effort's segments at the narrow width: they break into lines, nothing cut
+      // Model and effort's segments at the narrow width: they break into lines, nothing cut
       const directOpened = await openDirect();
-      fitClaims(claims, detail, "", "Modell und Effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
+      fitClaims(claims, detail, "", "Model and effort", await evaluate<FitRead>(DIRFIT), ["model", "effort"]);
       directApplyClaim(claims, detail, "", await readDirect());
       await shot(`${NW}-modell-effort`);
       await tap("document.querySelector('#mname')");
       Object.assign(facts, { sessOpened, chat, toolsOpened, directOpened, missing: [...missing] });
-      claims["Sessions, Mehr and Modell und Effort open here, in the conversation"] = sessOpened && chat && toolsOpened && directOpened;
+      claims["Sessions, More and Model and effort open here, in the conversation"] = sessOpened && chat && toolsOpened && directOpened;
       missing.length = 0;
       results.push({ width: NW, height: NH, claims, facts, detail });
     }
@@ -8706,11 +8706,11 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const none = await glyphAt('.slot[data-slot="3"] .r1 .act');
       const qWait = await inkOf("--q-wait"), mute = await inkOf("--chat-mute");
       Object.assign(facts, { owner, main, none, qWait, mute, missing: [...missing] });
-      const mainClaim = 'wait · a session waiting on its MAIN paints .act.wait in ink (--chat-mute), titled "wartet auf MAIN"';
-      claims[mainClaim] = !!main && main.cls === "act wait" && main.title.startsWith("wartet auf MAIN") && main.ink === mute;
+      const mainClaim = 'wait · a session waiting on its MAIN paints .act.wait in ink (--chat-mute), titled "waiting for MAIN"';
+      claims[mainClaim] = !!main && main.cls === "act wait" && main.title.startsWith("waiting for MAIN") && main.ink === mute;
       detail[mainClaim] = { main, mute };
-      const ownerClaim = 'wait · a session waiting on the owner paints .act.wait in --q-wait, titled "wartet auf dich" — even on screen';
-      claims[ownerClaim] = !!owner && owner.cls === "act wait owner" && owner.title.startsWith("wartet auf dich") && owner.ink === qWait;
+      const ownerClaim = 'wait · a session waiting on the owner paints .act.wait in --q-wait, titled "waiting for you" — even on screen';
+      claims[ownerClaim] = !!owner && owner.cls === "act wait owner" && owner.title.startsWith("waiting for you") && owner.ink === qWait;
       detail[ownerClaim] = { owner, qWait };
       claims["wait · a session without awaiting keeps its freshness glyph (Gamma rests)"] = !!none && none.cls === "act rest";
       claims["wait · the waiting glyph sits in the same 8 × 8 box as every other state"] =
@@ -8733,10 +8733,10 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       const main = await glyphAt("#mpill .act");
       await shot(`${W}-wartet-main`);
       Object.assign(facts, { owner, ownerLabel, main, repainted, qWait, mute, missing: [...missing] });
-      claims['wait · the island pill inherits the reading: .act.wait in --q-wait, "wartet auf dich" in its title and label'] = !!owner
-        && owner.cls === "act wait owner" && owner.title === "wartet auf dich" && owner.ink === qWait && /· wartet auf dich —/.test(ownerLabel ?? "");
-      claims['wait · when the slot moves to waiting on its MAIN, the next poll repaints the pill in ink, "wartet auf MAIN"'] = repainted
-        && !!main && main.title === "wartet auf MAIN" && main.ink === mute;
+      claims['wait · the island pill inherits the reading: .act.wait in --q-wait, "waiting for you" in its title and label'] = !!owner
+        && owner.cls === "act wait owner" && owner.title === "waiting for you" && owner.ink === qWait && /· waiting for you —/.test(ownerLabel ?? "");
+      claims['wait · when the slot moves to waiting on its MAIN, the next poll repaints the pill in ink, "waiting for MAIN"'] = repainted
+        && !!main && main.title === "waiting for MAIN" && main.ink === mute;
       missing.length = 0;
       results.push({ width: W, height: H, claims, facts, detail });
     }
@@ -8796,8 +8796,8 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       type Field = { h: number; one: number; line: number; pad: number; value: string; ph: string; foot: string | null; phWide: number; inner: number };
       const empty = await evaluate<Field>(FIELD);
       await shot(`${W}-feld-leer`);
-      const emptyClaim = "under a long name the empty field is exactly one text line high: it reads \"Nachricht\", the name stands once, in the foot line";
-      claims[emptyClaim] = !!empty && empty.value === "" && empty.ph === "Nachricht" && empty.phWide <= empty.inner && empty.foot === LONG_NAME && Math.abs(empty.h - empty.one) <= 1;
+      const emptyClaim = "under a long name the empty field is exactly one text line high: it reads \"Message\", the name stands once, in the foot line";
+      claims[emptyClaim] = !!empty && empty.value === "" && empty.ph === "Message" && empty.phWide <= empty.inner && empty.foot === LONG_NAME && Math.abs(empty.h - empty.one) <= 1;
       detail[emptyClaim] = empty;
       await tap("document.querySelector('#input')");
       const enter = async () => {
@@ -8852,34 +8852,34 @@ export type StripStep = "island" | "hold" | "direct" | "sessions" | "mehr" | "fi
 export type StripMutant = { name: string; width: 390 | 1440; steps: readonly StripStep[]; claims: readonly string[];
   file: "src/client.ts" | "src/composer.ts" | "src/board.ts" | "public/index.html"; needle: string; with: string };
 export const STRIP_MUTANTS: readonly StripMutant[] = [
-  { name: "a fifth symbol (the Wecker) on the strip", width: 390, steps: ["island"], claims: ["exactly four symbols right", "no Wecker, no hint card"],
+  { name: "a fifth symbol (the Schedule) on the strip", width: 390, steps: ["island"], claims: ["exactly four symbols right", "no Schedule, no hint card"],
     file: "public/index.html", needle: `<button id="mmore" class="mib"`,
-    with: `<button id="mwecker" class="mib" type="button" aria-label="Wecker" title="Wecker"></button><button id="mmore" class="mib"` },
+    with: `<button id="mwecker" class="mib" type="button" aria-label="Schedule" title="Schedule"></button><button id="mmore" class="mib"` },
   { name: "a word beside a symbol", width: 390, steps: ["island"], claims: ["no word with the symbols"],
-    file: "src/client.ts", needle: `mFind.appendChild(icon("search"));`, with: `mFind.append(icon("search"), "Suchen");` },
+    file: "src/client.ts", needle: `mFind.appendChild(icon("search"));`, with: `mFind.append(icon("search"), "Search");` },
   { name: "the view symbol shows where it is, not where it goes", width: 390, steps: ["island"], claims: ["the view symbol shows where it goes"],
     file: "src/client.ts", needle: `mView.replaceChildren(icon(chat ? "terminal" : "chat"));`, with: `mView.replaceChildren(icon(chat ? "chat" : "terminal"));` },
   { name: "a held symbol shows no word", width: 390, steps: ["hold"], claims: ["a finger held on a symbol"],
     file: "src/client.ts", needle: `mHold.textContent = word;`, with: `mHold.textContent = "";` },
-  { name: "Modell und Effort closes the strip", width: 390, steps: ["direct"], claims: ["Modell und Effort opens its popover"],
+  { name: "Model and effort closes the strip", width: 390, steps: ["direct"], claims: ["Model and effort opens its popover"],
     file: "src/client.ts", needle: `mDirect.onclick = () => setDirect(!directOpen);`, with: `mDirect.onclick = islandAction(() => setDirect(true));` },
-  { name: "a second Übernehmen", width: 390, steps: ["direct"], claims: ["Modell und Effort opens its popover"],
+  { name: "a second Apply", width: 390, steps: ["direct"], claims: ["Model and effort opens its popover"],
     file: "src/client.ts", needle: `    parts.push(apply);`, with: `    parts.push(apply, apply.cloneNode(true) as HTMLElement);` },
   { name: "the waiting count back in the Sessions head", width: 390, steps: ["sessions"], claims: ["counts what is open, not who waits"],
-    file: "src/client.ts", needle: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} offen`));",
-    with: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} offen · 1 wartet auf dich`));" },
-  { name: "the Wecker gone from Mehr", width: 390, steps: ["mehr"], claims: ["Mehr holds the Wecker"],
-    file: "src/client.ts", needle: `sheetRow("mshrow", "clock", "Wecker",`, with: `sheetRow("mshrow", "clock", "Geplant",` },
-  { name: "an English word in Mehr", width: 390, steps: ["mehr"], claims: ["German, with none of grammatik G0.5"],
-    file: "src/client.ts", needle: `"Frühere Nachrichten"`, with: `"History"` },
-  { name: "Suchen only in the terminal", width: 390, steps: ["find"], claims: ["Suchen searches in both views"],
+    file: "src/client.ts", needle: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} open`));",
+    with: "head.append(title, el(\"span\", \"mshsub\", `${rows.length} open · 1 waiting for you`));" },
+  { name: "the Wecker gone from Mehr", width: 390, steps: ["mehr"], claims: ["More holds the Schedule"],
+    file: "src/client.ts", needle: `sheetRow("mshrow", "clock", "Schedule",`, with: `sheetRow("mshrow", "clock", "Planned",` },
+  { name: "a process noun in Mehr", width: 390, steps: ["mehr"], claims: ["English, with none of grammatik G0.5"],
+    file: "src/client.ts", needle: `sheetRow("mshrow", "history", "History",`, with: `sheetRow("mshrow", "history", "Baton",` },
+  { name: "Search only in the terminal", width: 390, steps: ["find"], claims: ["Search searches in both views"],
     file: "src/client.ts", needle: `mFind.hidden = !slot || !view;`, with: `mFind.hidden = !slot || !view || chat;` },
   { name: "an Arbeitsort guessed without a known worktree", width: 390, steps: ["island"], claims: ["no Arbeitsort line while none is known"],
     file: "src/board.ts", needle: `const where = s?.cwd && (s.git || s.worktree) && repo ? baseName(repo) : "";`, with: `const where = s?.cwd && repo ? baseName(repo) : "";` },
   { name: "the card repeats the name", width: 390, steps: ["ort"], claims: ["the card names it", "repeats what it already says"],
     file: "src/board.ts", needle: `b.append(icon("branch"), el("span", "wtname", where));`, with: "b.append(icon(\"branch\"), el(\"span\", \"wtname\", `${name} · ${where}`));" },
   { name: "the placeholder names the session again", width: 390, steps: ["foot"], claims: ["the foot line names the session once"],
-    file: "src/composer.ts", needle: "return `Nachricht${isMobile() ? \"\" : \" — Enter sendet\"}`;", with: "return `Nachricht an ${s.label ?? \"\"}`;" },
+    file: "src/composer.ts", needle: "return `Message${isMobile() ? \"\" : \" — Enter sends\"}`;", with: "return `Message to ${s.label ?? \"\"}`;" },
   { name: "the send target draws the name again", width: 1440, steps: ["foot"], claims: ["the foot line names the session once"],
     file: "src/composer.ts", needle: `if (takes) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }`, with: `if (false) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }` },
   { name: "the model back in the foot line", width: 1440, steps: ["foot"], claims: ["the foot line names the session once"],
@@ -8888,7 +8888,7 @@ export const STRIP_MUTANTS: readonly StripMutant[] = [
     file: "src/board.ts", needle: `    b.append(el("span", "wtname", name));\n    if (branch) b.append(el("span", "wtsep", "·"), el("span", "wtref", branch));`,
     with: `    if (branch) b.append(el("span", "wtref", branch), el("span", "wtsep", "·"));\n    b.append(el("span", "wtname", name));` },
   { name: "the rebuild as a word", width: 390, steps: ["foot"], claims: ["a rebuild shows as a dot"],
-    file: "src/board.ts", needle: `const d = el("span", "wtdot");`, with: `const d = el("span", "wtdot", "Seite neu bauen");` },
+    file: "src/board.ts", needle: `const d = el("span", "wtdot");`, with: `const d = el("span", "wtdot", "Rebuild the page");` },
   { name: "no rebuild dot", width: 1440, steps: ["foot"], claims: ["a rebuild shows as a dot"],
     file: "src/board.ts", needle: `if (!rebuild && !restart) return null;`, with: `return null;` },
 ];
@@ -9041,7 +9041,7 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
     };
     // what a surface says, as the eye reads it (innerText: nothing hidden, nothing behind display: none)
     const count = (text: string, word: string) => text.split(word).length - 1;
-    const FORBIDDEN = /\b(baton|succession|rail|audit|suite|gate|mutex|tier|carry|srv|bundle|seed|ttl|ctx|only|prompts?|history|schedule|live|tasks?|apply|switch|cancel|default|reload|reconnect|tools?)\b/i;
+    const FORBIDDEN = /\b(baton|succession|rail|suite|gate|mutex|tier|carry|srv|bundle|seed|ttl|ctx)\b/i;
 
     const results: StripDomResult[] = [];
     const widths = m ? [m.width] : [390, 1440] as const;
@@ -9076,16 +9076,16 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           say("the open island is ONE capsule: the dot and the name left, exactly four symbols right, in the same glass",
             JSON.stringify(r.capsule) === JSON.stringify(["mname", "msep", "mtools"]) && r.name === "Alpha" && r.dot && r.inGlass
             && JSON.stringify(r.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]), r);
-          say("no word with the symbols: each is a <button> with one glyph and no text, its word in aria-label and title alike — Gespräch, Suchen, Modell und Effort, Mehr",
+          say("no word with the symbols: each is a <button> with one glyph and no text, its word in aria-label and title alike — Chat, Search, Model and effort, More",
             r.words.every((w) => w === "") && r.svgs.every((n) => n === 1)
-            && JSON.stringify(r.labels) === JSON.stringify(["Gespräch|Gespräch", "Suchen|Suchen", "Modell und Effort|Modell und Effort", "Mehr|Mehr"]), { words: r.words, svgs: r.svgs, labels: r.labels });
-          say("the view symbol shows where it goes: in the terminal it reads Gespräch and draws the conversation's glyph",
-            r.view === "Gespräch" && r.viewGlyph === GLYPH.chat, { view: r.view, glyph: r.viewGlyph, chat: GLYPH.chat });
+            && JSON.stringify(r.labels) === JSON.stringify(["Chat|Chat", "Search|Search", "Model and effort|Model and effort", "More|More"]), { words: r.words, svgs: r.svgs, labels: r.labels });
+          say("the view symbol shows where it goes: in the terminal it reads Chat and draws the conversation's glyph",
+            r.view === "Chat" && r.viewGlyph === GLYPH.chat, { view: r.view, glyph: r.viewGlyph, chat: GLYPH.chat });
           say("under the strip exactly the word buttons Sessions and Info, then ONE card saying what the session does now — and no Arbeitsort line while none is known",
             JSON.stringify(r.below) === JSON.stringify(["mz2", "mnow"]) && JSON.stringify(r.wordBtns) === JSON.stringify(["BUTTON:Sessions", "BUTTON:Info"])
-            && /^(Still|Arbeitet gerade)/.test(r.now) && r.ort === 0 && !r.ortShown, { below: r.below, wordBtns: r.wordBtns, now: r.now, ort: r.ort, ortShown: r.ortShown });
-          say("no Wecker, no hint card and no waiting count in the island — though Beta waits on the owner",
-            !/Wecker|Geplant/i.test(`${r.strip}\n${r.card}\n${r.labels.join("\n")}`) && !/wartet|warten/i.test(`${r.strip}\n${r.card}`) && r.below.length === 2,
+            && /^(Idle|Working now)/.test(r.now) && r.ort === 0 && !r.ortShown, { below: r.below, wordBtns: r.wordBtns, now: r.now, ort: r.ort, ortShown: r.ortShown });
+          say("no Schedule, no hint card and no waiting count in the island — though Beta waits on the owner",
+            !/Schedule|Planned/i.test(`${r.strip}\n${r.card}\n${r.labels.join("\n")}`) && !/waiting/i.test(`${r.strip}\n${r.card}`) && r.below.length === 2,
             { strip: r.strip, card: r.card, labels: r.labels });
           await closeAll();
         }
@@ -9101,8 +9101,8 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
             await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
           }
           const pressed = await wait("document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'tools'", 2000);
-          say("a finger held on a symbol for 300 ms shows its word in a capsule under it — Mehr under Mehr — and letting go there presses it",
-            !!held && held.shown && held.word === "Mehr" && held.under && pressed, { held, pressed });
+          say("a finger held on a symbol for 300 ms shows its word in a capsule under it — More under More — and letting go there presses it",
+            !!held && held.shown && held.word === "More" && held.under && pressed, { held, pressed });
           await closeAll();
           await settle(450); // the island swallows the engine's click for 400 ms after a finger lets go (islandRelease)
         }
@@ -9113,11 +9113,11 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           const d = await evaluate<{ shown: boolean; open: boolean; secs: string[]; segs: string[]; applies: number; below: boolean; text: string }>(`(() => { const p = document.querySelector('#mdirpop');
             return { shown: window.__fx.shown(p), open: document.body.classList.contains('mopen'), secs: [...p.querySelectorAll('.mdsec')].map((e) => e.textContent),
               segs: [...p.querySelectorAll('.mshsegs')].map((r) => r.dataset.field + ':' + r.querySelectorAll('button').length),
-              applies: [...p.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Übernehmen').length,
+              applies: [...p.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Apply').length,
               below: p.getBoundingClientRect().top >= document.querySelector('#mdirect').getBoundingClientRect().bottom, text: window.__fx.text(p) }; })()`);
           surfaces.push({ surface: "Modell und Effort", text: d.text });
-          say("Modell und Effort opens its popover at the button, the strip stays open: the Modell and the Effort segments and exactly one Übernehmen",
-            d.shown && d.open && d.below && JSON.stringify(d.secs) === JSON.stringify(["Modell", "Effort"]) && d.segs.length === 2 && d.segs[0].startsWith("model:") && d.segs[1] === "effort:4"
+          say("Model and effort opens its popover at the button, the strip stays open: the Model and the Effort segments and exactly one Apply",
+            d.shown && d.open && d.below && JSON.stringify(d.secs) === JSON.stringify(["Model", "Effort"]) && d.segs.length === 2 && d.segs[0].startsWith("model:") && d.segs[1] === "effort:4"
             && d.applies === 1, d);
           await closeAll();
         }
@@ -9126,8 +9126,8 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           await wait("document.body.classList.contains('msheet') && document.querySelector('#msheet').dataset.sheet === 'sessions'", 3000); await settle(200);
           const sh = await evaluate<{ head: string[]; text: string }>(`({ head: [...document.querySelectorAll('#msheet .mshhead > *')].map((e) => e.textContent), text: window.__fx.text(document.querySelector('#msheet')) })`);
           surfaces.push({ surface: "Sessions", text: sh.text });
-          say("the Sessions sheet counts what is open, not who waits: \"2 offen\" though Beta waits on the owner",
-            JSON.stringify(sh.head) === JSON.stringify(["Sessions", "2 offen"]) && !/\d+\s+(wartet|warten)/.test(sh.text), sh);
+          say("the Sessions sheet counts what is open, not who waits: \"2 open\" though Beta waits on the owner",
+            JSON.stringify(sh.head) === JSON.stringify(["Sessions", "2 open"]) && !/\d+\s+waiting/.test(sh.text), sh);
           await closeAll();
         }
         if (step === "mehr") {
@@ -9136,7 +9136,7 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           const sh = await evaluate<{ rows: string[]; text: string }>(`({ rows: [...document.querySelectorAll('#msheet .mshrow')].filter(window.__fx.shown).map((b) => (b.querySelector('.mshw')?.textContent ?? b.textContent).trim()),
             text: window.__fx.text(document.querySelector('#msheet')) })`);
           surfaces.push({ surface: "Mehr", text: sh.text });
-          say("Mehr holds the Wecker, first under Diese Session — the strip does not", sh.rows[0] === "Wecker", sh.rows);
+          say("More holds the Schedule, first under This session — the strip does not", sh.rows[0] === "Schedule", sh.rows);
           await closeAll();
         }
         if (step === "find") {
@@ -9150,8 +9150,8 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           const chatView = await evaluate<{ view: string; glyph: string }>(`({ view: document.querySelector('#mview').getAttribute('aria-label'), glyph: JSON.stringify([...document.querySelectorAll('#mview svg path')].map((p) => p.getAttribute('d'))) })`);
           const chat = await findIn();
           surfaces.push({ surface: "Suchen", text: `${term.ph}\n${chat.ph}` });
-          say("Suchen searches in both views: the terminal's history, and the conversation (Im Gespräch suchen), the caret in the field",
-            term.open && term.focus && term.ph === "Im Verlauf suchen" && chat.open && chat.focus && chat.ph === "Im Gespräch suchen", { term, chat });
+          say("Search searches in both views: the terminal's scrollback, and the conversation (Search chat), the caret in the field",
+            term.open && term.focus && term.ph === "Search scrollback" && chat.open && chat.focus && chat.ph === "Search chat", { term, chat });
           say("…and in the conversation the view symbol reads Terminal and draws the terminal's glyph", chatView.view === "Terminal" && chatView.glyph === GLYPH.terminal, chatView);
           await toView(false);
         }
@@ -9181,17 +9181,17 @@ export async function runStripDom(sourceRoot: string, only: { mutate?: StripMuta
           if (width === 390) surfaces.push({ surface: "Fußzeile", text: `${plain.comp}\n${plain.ph}` });
           say(`the foot line names the session once — Alpha, the branch behind it — and neither model nor context; in the whole composer, placeholder included, the name stands once`,
             plain.lines === 1 && JSON.stringify(plain.parts) === JSON.stringify(["wtname", "wtsep", "wtref"]) && plain.name === "Alpha" && plain.branch === BRANCH
-            && !/Opus|Sonnet|Haiku|\d\s?%|Kontext/.test(plain.text) && count(`${plain.comp}\n${plain.ph}`, "Alpha") === 1
-            && plain.ph === (width === 390 ? "Nachricht" : "Nachricht — Enter sendet"), plain);
+            && !/Opus|Sonnet|Haiku|\d\s?%|[Cc]ontext/.test(plain.text) && count(`${plain.comp}\n${plain.ph}`, "Alpha") === 1
+            && plain.ph === (width === 390 ? "Message" : "Message — Enter sends"), plain);
           say("a rebuild shows as a dot behind the branch — a dot, no word (its word in aria-label) — and leaves with it",
-            JSON.stringify(stale.parts) === JSON.stringify(["wtname", "wtsep", "wtref", "wtdot"]) && !!stale.dot?.shown && stale.dot.text === "" && stale.dot.label === "Seite neu bauen"
+            JSON.stringify(stale.parts) === JSON.stringify(["wtname", "wtsep", "wtref", "wtdot"]) && !!stale.dot?.shown && stale.dot.text === "" && stale.dot.label === "Rebuild the page"
             && back.dot === null, { stale, back });
         }
       }
       if (width === 390) {
         // G0.5 and the repeats, over every surface this run read
         const english = surfaces.map((s) => ({ surface: s.surface, hit: FORBIDDEN.exec(s.text)?.[0] ?? null })).filter((s) => s.hit);
-        say("every visible text of the chat view on the phone this run read — island, sheets, popover, foot line, placeholder — is German, with none of grammatik G0.5's process nouns",
+        say("every visible text of the chat view on the phone this run read — island, sheets, popover, foot line, placeholder — is English, with none of grammatik G0.5's process nouns",
           surfaces.length > 0 && english.length === 0, { english, surfaces: surfaces.map((s) => s.surface) });
         const facts = ["Alpha", BRANCH, "nordwerk"];
         const repeats = surfaces.flatMap((s) => facts.filter((w) => count(s.text, w) > 1).map((w) => `${s.surface}: ${w} ×${count(s.text, w)}`));
@@ -9612,8 +9612,8 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
             small: bs.filter((b) => { const r = b.getBoundingClientRect(); return Math.round(r.width) < 44 || Math.round(r.height) < 44; }).map((b) => b.id),
             off: bs.filter((b) => { const r = b.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2; return r.left < 0 || r.right > innerWidth || !b.contains(document.elementFromPoint(x, y)); }).map((b) => b.id) }; })()`;
         const term8 = await ev<Btns>(BTNS);
-        say("in the terminal: four symbols — Gespräch (the view it switches to), Suchen, Modell und Effort, Mehr — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
-          JSON.stringify(term8.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]) && term8.view === "Gespräch" && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
+        say("in the terminal: four symbols — Chat (the view it switches to), Search, Model and effort, More — each a <button> with aria-label and title, a glyph and no word, 44 × 44, met by a finger",
+          JSON.stringify(term8.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]) && term8.view === "Chat" && !term8.bad.length && !term8.small.length && !term8.off.length, term8);
         // under the strip: the two sides as words, and the card "jetzt" — with no Arbeitsort line while
         // no worktree is known for the session (this fixture's rows carry no git and no worktree)
         const below = await ev<{ words: string[]; now: string; ort: number; ortShown: boolean; glass: Box; card: Box }>(`(() => ({
@@ -9622,7 +9622,7 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
           ort: document.querySelector('#mort').childNodes.length, ortShown: window.__g.shown(document.querySelector('#mort')),
           glass: window.__g.box(document.querySelector('#mglas')), card: window.__g.box(document.querySelector('#mnow')) }))()`);
         say('under the strip the word buttons Sessions and Info, then the card with what the session does now — no Arbeitsort line while no worktree is known',
-          JSON.stringify(below.words) === JSON.stringify(["Sessions", "Info"]) && /^(Still|Arbeitet gerade)/.test(below.now) && below.ort === 0 && !below.ortShown
+          JSON.stringify(below.words) === JSON.stringify(["Sessions", "Info"]) && /^(Idle|Working now)/.test(below.now) && below.ort === 0 && !below.ortShown
           && !!below.card && !!below.glass && below.card.y >= below.glass.b && below.card.x >= 0 && below.card.r <= GLASS_W, below);
         // the open island closes by its name
         await tapAt(await ev<GlassPt>("(() => { const r = document.querySelector('#mname').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()"));
@@ -9637,7 +9637,7 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
         const chat8 = { ...await ev<Btns>(BTNS), toChat, state: await state() };
         const fade = await ev<string>("getComputedStyle(document.querySelector('#panes .pane'), '::after').backgroundImage");
         await shot("auf-konversation");
-        say("in the conversation: the same four symbols, the first now Terminal — Suchen stays — the same rules",
+        say("in the conversation: the same four symbols, the first now Terminal — Search stays — the same rules",
           JSON.stringify(chat8.ids) === JSON.stringify(["mview", "mfind", "mdirect", "mmore"]) && chat8.view === "Terminal" && !chat8.bad.length && !chat8.small.length && !chat8.off.length, chat8);
         say("the conversation runs on under the glass: no fade over its top", !/gradient/.test(fade ?? ""), fade);
         await reset();
@@ -9659,7 +9659,7 @@ export async function runGlassIslandDom(sourceRoot: string, opts: { artifacts?: 
           stays[id] = await ev<boolean>(`!!(${cond})`);
           await reset();
         }
-        say("a finger's whole tap — the engine's click after it included — on Sessions, Info and Mehr opens what it names, and it stays open",
+        say("a finger's whole tap — the engine's click after it included — on Sessions, Info and More opens what it names, and it stays open",
           Object.values(stays).every(Boolean), stays);
         // 5. the swipe: right opens Sessions from the left, left the Info from the right — the session stays
         const before = await state();
@@ -10404,9 +10404,9 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
 
       // --- 1. the owner sends; the transcript does not have it yet: „[Zitat entfernt]“
       await sendFromComposer(ownerA);
-      const waits = await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      const waits = await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'waiting')`);
       facts.sent = [...fx.sends];
-      claims["the composer's send goes out as the owner's text, and its bubble says \"wartet\" until the transcript has it"] = waits && fx.sends.at(-1) === ownerA;
+      claims["the composer's send goes out as the owner's text, and its bubble says \"waiting\" until the transcript has it"] = waits && fx.sends.at(-1) === ownerA;
       await shot(`${width}-1-wartet`);
 
       // --- 2. the transcript brings the BUNDLE the server typed: owner part 1/2, nudge 2/2, in the form
@@ -10418,9 +10418,9 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await settle(1600);
       const q0 = await evaluate<Read>(READ);
       facts.queuedBundle = q0.own;
-      claims["owner part 1/2 in the session's queue: the composer's send and the queued bundle are ONE \"wartet\" bubble, no raw mark"] =
+      claims["owner part 1/2 in the session's queue: the composer's send and the queued bundle are ONE \"waiting\" bubble, no raw mark"] =
         q0.own.filter((m) => m.pending).length === 1 && q0.own.find((m) => m.pending)?.text === ownerA
-        && q0.own.find((m) => m.pending)?.state === "wartet" && !q0.raw;
+        && q0.own.find((m) => m.pending)?.state === "waiting" && !q0.raw;
       fx.queued = [];
       fx.entries.push(text("user", `${stored}\n`, 55),
         text("assistant", "Freut mich. Genau so bleibt das Ganze aus einem Guss.", 56));
@@ -10430,7 +10430,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       facts.first = r1;
       const a = r1.own.filter((m) => m.text === ownerA);
       claims["owner part 1/2: the waiting bubble is gone — no pending bubble is left"] = r1.own.every((m) => !m.pending);
-      claims["owner part 1/2: the owner text stands ONCE, as its own bubble, and says \"durch\""] = a.length === 1 && a[0]!.state === "durch";
+      claims["owner part 1/2: the owner text stands ONCE, as its own bubble, and says \"arrived\""] = a.length === 1 && a[0]!.state === "arrived";
       claims["owner part 1/2: the part's mark rides in the meta row, the bundle's head in its tooltip"] = a.length === 1
         && /^fleet-buendel 1\/2 · path=owner · /.test(a[0]!.head ?? "") && (a[0]!.headTitle ?? "").startsWith("fleet-delivery · bundled");
       claims["no bubble shows a raw bundle mark or delivery head"] = !r1.raw;
@@ -10445,15 +10445,15 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
 
       // --- 3. a second send arrives as owner part 2/2, behind an event bundle riding as part 1/2
       await sendFromComposer(ownerB);
-      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'waiting')`);
       fx.entries.push(text("user", fixture.ownerSecond, 58));
       await wait(`[...document.querySelectorAll('.pane .panechat .msg.user')].filter((m) => !m.classList.contains('pending')).length >= 3`);
       await settle(300);
       const r2 = await evaluate<Read>(READ);
       facts.second = r2;
       const b = r2.own.filter((m) => m.text === ownerB);
-      claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"durch\""] = r2.own.every((m) => !m.pending)
-        && b.length === 1 && b[0]!.state === "durch" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
+      claims["owner part 2/2: its waiting bubble is gone and the owner text stands once, \"arrived\""] = r2.own.every((m) => !m.pending)
+        && b.length === 1 && b[0]!.state === "arrived" && /^fleet-buendel 2\/2 · path=owner/.test(b[0]!.head ?? "");
       claims["the event bundle is quiet lines: one per event and one for its closing line, no bubble, each labelled once"] = !r2.raw && r2.sys.length === 4
         && r2.sys[1]!.text === "Lane 3 ist gelandet." && r2.sys[2]!.text === "fleet-report von Slot 5: complete"
         && r2.sys[3]!.text === "Ende des Buendels." && r2.sys.slice(1).every((s) => s.who === "fleet") && r2.sys.every((s) => !s.inBubble)
@@ -10471,29 +10471,29 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       // mid-turn — no composer, no send from this tab — that the session holds in its queue
       const sendsBefore = fx.sends.length;
       fx.queued = [{ text: termQ, at: at(59) }];
-      const shownQ = await wait(`(() => { const m = [...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)}); return m && m.querySelector('.msend')?.innerText.trim() === 'wartet'; })()`);
+      const shownQ = await wait(`(() => { const m = [...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)}); return m && m.querySelector('.msend')?.innerText.trim() === 'waiting'; })()`);
       const q1 = await evaluate<Read>(READ);
       facts.queue = q1.own;
-      claims["queue: a prompt the session holds, sent from the terminal, stands as a \"wartet\" bubble — no send from this tab"] = shownQ
+      claims["queue: a prompt the session holds, sent from the terminal, stands as a \"waiting\" bubble — no send from this tab"] = shownQ
         && fx.sends.length === sendsBefore && q1.own.filter((m) => m.text === termQ).length === 1;
       claims["queue: the waiting bubble stands below everything that has arrived"] = q1.lastOwn === termQ;
       await shot(`${width}-4-wartet-terminal`);
       // --- 6. a RELOAD: the page forgot everything, the session's queue did not
       await navigate("http://fleet.fixture/");
       await wait(`document.querySelector('.pane .panechat .msg.assistant')`, 15000);
-      const keptQ = await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)} && m.querySelector('.msend')?.innerText.trim() === 'wartet')`);
-      claims["queue: after a reload the bubble still says \"wartet\""] = keptQ;
+      const keptQ = await wait(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].some((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(termQ)} && m.querySelector('.msend')?.innerText.trim() === 'waiting')`);
+      claims["queue: after a reload the bubble still says \"waiting\""] = keptQ;
       await shot(`${width}-5-wartet-nach-reload`);
       // --- 7. the composer sends while the turn runs: its own bubble shows at Enter, then the queue
       // names the same send — it becomes the queue's bubble, never a second one
       await sendFromComposer(ownerC);
-      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'wartet')`);
+      await wait(`[...document.querySelectorAll('.msg.user.pending .msend')].some((s) => s.innerText.trim() === 'waiting')`);
       fx.queued = [...fx.queued, { text: ownerHead + ownerC, at: at(59) }];
       await settle(1600);
       const q2 = await evaluate<Read>(READ);
       facts.adopted = q2.own;
-      claims["queue: the composer's send and the queue's entry for it are ONE \"wartet\" bubble"] =
-        q2.own.filter((m) => m.text === ownerC).length === 1 && q2.own.find((m) => m.text === ownerC)?.state === "wartet";
+      claims["queue: the composer's send and the queue's entry for it are ONE \"waiting\" bubble"] =
+        q2.own.filter((m) => m.text === ownerC).length === 1 && q2.own.find((m) => m.text === ownerC)?.state === "waiting";
       // --- 8. the turn ends: both leave the queue and arrive as the owner's turns
       fx.queued = [];
       fx.entries.push(text("user", termQ, 59), text("user", ownerHead + ownerC, 59));
@@ -10501,8 +10501,8 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await settle(300);
       const q3 = await evaluate<Read>(READ);
       facts.dequeued = q3.own;
-      claims["queue: after the dequeue both say \"durch\", each once, and nothing is left waiting"] = q3.own.every((m) => !m.pending)
-        && [termQ, ownerC].every((t) => q3.own.filter((m) => m.text === t).length === 1 && q3.own.find((m) => m.text === t)?.state === "durch");
+      claims["queue: after the dequeue both say \"arrived\", each once, and nothing is left waiting"] = q3.own.every((m) => !m.pending)
+        && [termQ, ownerC].every((t) => q3.own.filter((m) => m.text === t).length === 1 && q3.own.find((m) => m.text === t)?.state === "arrived");
       await shot(`${width}-6-durch`);
       // --- 9. Esc mid-turn: Claude Code's own marker arrives as meta (server.ts#viewEntry) — a quiet
       // line under the answer, not a bubble of yours
@@ -10542,7 +10542,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const upBack = await wait(`document.querySelector('#input').value === ${JSON.stringify(upQ)}`);
       await settle(300);
       const q5 = await evaluate<Read>(READ);
-      claims["↑ with a waiting message: ONE recall, the text stands in the composer, and its \"wartet\" bubble is gone"] =
+      claims["↑ with a waiting message: ONE recall, the text stands in the composer, and its \"waiting\" bubble is gone"] =
         upBack && JSON.stringify(fx.recalls) === JSON.stringify(["queued"]) && !q5.own.some((m) => m.text === upQ && m.pending);
       await evaluate(`(() => { const ta = document.querySelector('#input'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       // --- 12. ↑ with nothing waiting: the previous input, as before — no recall
@@ -10635,7 +10635,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await shot(`${width}-8-jetzt-senden`);
       await evaluate(`[...document.querySelectorAll('.pane .panechat .msg.user.pending')].find((m) => m.querySelector('.mbody').innerText.trim() === ${JSON.stringify(nowQ)})?.querySelector('.msendnow')?.click()`);
       for (let i = 0; i < 40 && !fx.recalls.length; i++) await Bun.sleep(25);
-      claims["jetzt senden: the waiting bubble carries it, and a click asks the session to send now"] =
+      claims["Send now: the waiting bubble carries it, and a click asks the session to send now"] =
         nowBtn && JSON.stringify(fx.recalls) === JSON.stringify(["send-now"]);
       // --- 14. the pane socket says the transcript grew (owner 13.10.: „[Zitat entfernt]“
       // , K10 S2, server/transcript-push.ts): the chat reads at once instead of at
@@ -10726,7 +10726,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       const xsRest = "K13 an die Bauleitung: S12c ist gebaut.";
       const ownerD = "Das ist ein erfundener Satz o.";
       // waiting in the session's queue first: a Fleet nudge and another session's message
-      fx.queued = [{ text: pasted(fixture.single("migrate-nudge", ""), "q1", "[fleet] Dein Kontext ist bei 41 %."), at: at(66) },
+      fx.queued = [{ text: pasted(fixture.single("migrate-nudge", ""), "q1", "[fleet] Your context is at 41 %."), at: at(66) },
         { text: xs("bau-neuaufbau-77", xsWords), at: at(66) }];
       await settle(1600);
       const q78 = await evaluate<Read>(READ);
@@ -10757,13 +10757,13 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         JSON.stringify(arrived(r78)) === JSON.stringify([...arrived(before78), ownerD]);
       claims["Mangel 78: the hover names the time and where a line came from — the delivery head, or the session"] = lines78.length === 4
         && lines78.slice(0, 2).every((l) => /^\d{1,2}:\d\d(?: [AP]M)?\nfleet-delivery · /.test(l.title))
-        && /Fleet-Ereignis/.test(lines78[0]!.title) && /path=succession/.test(lines78[1]!.title)
-        && /Nachricht der Claude-Session „bau-neuaufbau-77“/.test(lines78[2]!.title) && /„bau-postfach-b4“/.test(lines78[3]!.title);
+        && /Fleet event/.test(lines78[0]!.title) && /path=succession/.test(lines78[1]!.title)
+        && /Message from the Claude session “bau-neuaufbau-77”/.test(lines78[2]!.title) && /“bau-postfach-b4”/.test(lines78[3]!.title);
       claims["Mangel 78: the four lines are quiet — the meta row's size and the faint ink, one line high, inside the chat column"] = lines78.length === 4
         && lines78.every((l) => l.fs === r78.metaFs && l.color === r78.faint && l.h < 30 && l.left >= r78.chatLeft - 1 && l.right <= r78.chatRight + 1)
         && r78.pageScroll <= 0;
-      claims["Mangel 78: in the session's queue a Fleet nudge and another session's message wait as no „wartet“ bubble of yours"] =
-        !q78.own.some((m) => m.pending && /Dein Kontext ist bei 41|Bauleitung an K10/.test(m.text));
+      claims["Mangel 78: in the session's queue a Fleet nudge and another session's message wait as no “waiting” bubble of yours"] =
+        !q78.own.some((m) => m.pending && /Your context is at 41|Bauleitung an K10/.test(m.text));
       await shot(`${width}-9-meldungen`);
       const opened78 = await evaluate<boolean>(`(() => { const all = document.querySelectorAll('.pane .panechat .msys');
         for (const i of [${before78.sys.length + 1}, ${before78.sys.length + 2}]) all[i]?.querySelector('summary')?.click(); return all.length >= ${before78.sys.length + 4}; })()`);
@@ -10962,13 +10962,13 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
             if (at) { await settle(60); await pointer("mousePressed", at); await pointer("mouseReleased", at); await settle(150); }
             return { card: !!at, ...await evaluate<Link>(LINK) };
           };
-          const open = await viaCard("Öffnen");
+          const open = await viaCard("Open");
           await shot(`${width}-63-${mode}-karte`);
           const copy = await viaCard("Kopieren");
           await pointer("mouseMoved", away); await settle(300);
           loginFacts[mode] = { rows: rowsOfUrl.length, open: { card: open.card, opened: open.opened.map((u) => u.length), copied: open.copied.length },
             copy: { card: copy.card, opened: copy.opened.length, copied: copy.copied.map((t) => [t.length, (t.match(/\n/g) ?? []).length]) } };
-          claims[`Mangel 63 · ${mode}: over a row of the wrapped 400-char login url the card's Öffnen opens the whole url, once`] =
+          claims[`Mangel 63 · ${mode}: over a row of the wrapped 400-char login url the card's Open button opens the whole url, once`] =
             rowsOfUrl.length >= 3 && open.card && open.opened.length === 1 && open.opened[0] === loginUrl && open.copied.length === 0;
           claims[`Mangel 63 · ${mode}: the card's Kopieren copies the whole url in one piece, without a line break`] =
             copy.card && copy.copied.length === 1 && copy.copied[0] === loginUrl && copy.opened.length === 0;
@@ -10987,7 +10987,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
           claims[`Mangel 63 · ${mode}: on the phone a tap on a row of the wrapped 400-char login url opens the whole url, once`] =
             rowsOfUrl.length >= 3 && tap.opened.length === 1 && tap.opened[0] === loginUrl && tap.copied.length === 0;
           claims[`Mangel 63 · ${mode}: on the phone a long press on it offers the link and copies the whole url, without a line break`] =
-            pop?.text === "Link kopieren" && pressed.opened.length === 0 && copied.copied.length === 1 && copied.copied[0] === loginUrl && copied.opened.length === 0;
+            pop?.text === "Copy link" && pressed.opened.length === 0 && copied.copied.length === 1 && copied.copied[0] === loginUrl && copied.opened.length === 0;
         }
       }
       if (width === 390) await send("Emulation.setTouchEmulationEnabled", { enabled: false });
@@ -11139,13 +11139,13 @@ export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: strin
       const r1 = await evaluate<Read>(READ);
       const hhmm = await clock(dueAt);
       facts.held = r1; facts.hhmm = hhmm;
-      claims["held: the view ends in ONE quiet Fleet line \"2 Fleet-Zustellungen gehalten bis HH:MM\", HH:MM the bundle's due time"] = shown
-        && r1.lines === 1 && r1.last && r1.who === "fleet" && r1.text === `2 Fleet-Zustellungen gehalten bis ${hhmm}`;
+      claims["held: the view ends in ONE quiet Fleet line \"2 Fleet deliveries held until HH:MM\", HH:MM the bundle's due time"] = shown
+        && r1.lines === 1 && r1.last && r1.who === "fleet" && r1.text === `2 Fleet deliveries held until ${hhmm}`;
       claims["held: the line is quiet — outside every bubble, the meta row's size and the faint ink, one line high, inside the chat column"] =
         !r1.inBubble && r1.fs === r1.metaFs && r1.color === r1.faint && r1.h > 0 && r1.h < 30
         && r1.left >= r1.chatLeft - 1 && r1.right <= r1.chatRight + 1 && r1.pageScroll <= 0;
       claims["held: its tooltip names the held paths"] = (r1.title ?? "").includes("auto, inbox-nudge");
-      claims["held: the composer says \"Senden nimmt sie mit\", on one line inside the screen"] = r1.hint === "Senden nimmt sie mit" && r1.hintInside;
+      claims["held: the composer says \"Send takes them along\", on one line inside the screen"] = r1.hint === "Send takes them along" && r1.hintInside;
       await shot(`${width}-1-gehalten`);
 
       // --- 2. the agent writes on: what arrives stands above the held line
@@ -11158,8 +11158,8 @@ export async function runHeldDeliveriesDom(sourceRoot: string, artifacts?: strin
 
       // --- 3. one cold event, held without a deadline until the next send
       fx.held = { count: 1, dueAt: null, paths: ["fleet-event"] };
-      const single = await wait(`document.querySelector('.pane .panechat > .mheld .msystext')?.textContent === '1 Fleet-Zustellung gehalten bis zum nächsten Senden'`);
-      claims["held: one delivery without a deadline reads \"1 Fleet-Zustellung gehalten bis zum nächsten Senden\""] = single;
+      const single = await wait(`document.querySelector('.pane .panechat > .mheld .msystext')?.textContent === '1 Fleet delivery held until your next send'`);
+      claims["held: one delivery without a deadline reads \"1 Fleet delivery held until your next send\""] = single;
 
       // --- 4. the flush: the row no longer carries the field
       fx.held = null;
@@ -11342,7 +11342,7 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
         await settle(150);
         const ctl = await evaluate<{ found: boolean; label: string; w: number; h: number; inView: boolean }>(`(() => {
           const b = [...document.querySelectorAll('#mtop button, .pane .panetools button')].find((x) => {
-            const r = x.getBoundingClientRect(); return r.width > 0 && getComputedStyle(x).visibility !== 'hidden' && /such/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')) && !x.classList.contains('panehover'); });
+            const r = x.getBoundingClientRect(); return r.width > 0 && getComputedStyle(x).visibility !== 'hidden' && /search/i.test((x.textContent ?? '') + ' ' + (x.getAttribute('aria-label') ?? '')) && !x.classList.contains('panehover'); });
           if (!b) return { found: false, label: '', w: 0, h: 0, inView: false };
           window.__find = b; const r = b.getBoundingClientRect();
           return { found: true, label: (b.textContent ?? '').trim() || b.title, w: r.width, h: r.height, inView: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
@@ -11376,8 +11376,8 @@ export async function runTermFindDom(sourceRoot: string, artifacts?: string): Pr
           return { chat: !!document.querySelector('.pane.chat'), label, open: !!document.querySelector('.pane.chat .termfind.open'),
             focus: !!i && document.activeElement === i, ph: i?.placeholder ?? '' }; })()`);
         facts.chatFind = chatFind;
-        claims["in the conversation view the island's Suchen opens the search over the conversation, the caret in its field"] =
-          chatFind.chat && chatFind.label === "Suchen" && chatFind.open && chatFind.focus && chatFind.ph === "Im Gespräch suchen";
+        claims["in the conversation view the island's Search opens the search over the conversation, the caret in its field"] =
+          chatFind.chat && chatFind.label === "Search" && chatFind.open && chatFind.focus && chatFind.ph === "Search chat";
       }
       results.push({ width, height, claims, facts });
     }
@@ -12160,10 +12160,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     slot3: null as boolean | null, cold: false, idle3: 50, text3: null as string | null,
     // K16 Runde 3: how often Fleet asked the lane (the Kontext line says „gebeten 14:05“ behind its switch)
     nudges9: 0 };
-  const WARM_FLEET_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+  const WARM_FLEET_TEXT = "[fleet] Keep the cache warm. Answer with ok only — start nothing, call no tool.";
   const COMPACTED_AT = new Date(2026, 9, 13, 12, 40).getTime();
-  const SUCC_READY = "Die Nachfolgerin bekommt die stehende Übergabe von vor 12 min und 9 Einträge Transkript-Rest.";
-  const SUCC_LANE = "Geht gerade nicht: eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht.";
+  const SUCC_READY = "The successor gets the standing handover (12 min old) and 9 entries of transcript tail.";
+  const SUCC_LANE = "Not possible right now: a lane hands over from its own session, with a handover report.";
   const succession = (slot: number) => slot === 3
     ? { rail: "standard-main", fill: { usedTokens: 520_000, windowTokens: 1_000_000, pct: 52 }, thresholdPct: null, thresholdOff: "fleet",
       nudges: 0, nudgedAt: null, gaveUp: false, maxNudges: 3, session: 1, taken: null, cap: null, defaultPct: 0, pctFrom: "fleet", nudgeOn: true,
@@ -12474,7 +12474,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       return r;
     };
     const sha7 = (h: string) => h.slice(0, 7);
-    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString("de-DE", { hour: '2-digit', minute: '2-digit' })`);
+    const clock = (ms: number) => evaluate<string>(`new Date(${ms}).toLocaleTimeString("en-GB", { hour: '2-digit', minute: '2-digit' })`);
     // a click judged by its request: wait until the fixture has RECEIVED it, not a fixed pause
     const wrote = async (match: (w: { path: string; body: unknown }) => boolean, ms = 3000) => {
       for (const until = Date.now() + ms; !fx.writes.some(match) && Date.now() < until;) await Bun.sleep(20);
@@ -13010,7 +13010,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           claims[`${tag}Start makes the lane, hands it the sentence, starts its instance — POST /api/lanes on a fleet/live- branch, /send with the sentence and the fixed paragraph, then up for 4 hours; the lane is named by its sentence and drawn as a live lane`] =
             started && lw?.repo === REPO && /^fleet\/live-\d{10}-die-zeitleiste-soll-zur-[0-9a-f]{4}$/.test(lw?.branch ?? "")
             && sw?.slot === 14 && sw.whenFree === true && sw.openedAt === openedAt(14)
-            && (sw.text ?? "").startsWith("Die Zeitleiste soll zur Stunde springen\n\nLive-Session: Der Owner arbeitet in deiner Testinstanz mit")
+            && (sw.text ?? "").startsWith("Die Zeitleiste soll zur Stunde springen\n\nLive session: the owner works in your test instance")
             && JSON.stringify(tw) === JSON.stringify({ action: "up", ttlMin: 240 }) && JSON.stringify(nw) === JSON.stringify({ label: "⎇ Die Zeitleiste soll zur Stunde spring…" })
             && at("/api/lanes") < at("/send") && at("/send") < at("/api/slots/14/testinstanz");
           // 3 — the sentence does not arrive: said under the structure, the lane stands, its instance still starts
@@ -13338,7 +13338,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               return info();
             };
             const delivered = fx.now - 30 * 60_000;
-            const since = await evaluate<string>(`new Date(${delivered}).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })`);
+            const since = await evaluate<string>(`new Date(${delivered}).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })`);
             n = await holderCard({ ping: { status: "delivered", slot: 1, deliveredAt: delivered, sameSession: true } }, "session");
             facts.heldBySession = n.alarm.card;
             claims[`${it}an alarm a session holds recedes under the Arbeitsorte: no tint, no sentence what to do, no Seen — its foot "With the Orchestrator since <time>"`] =
@@ -14419,7 +14419,7 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
       release("/api/audit");
       await wait(`${W}.querySelector('.shelllist .auditrow')`);
       hold("/api/lane");
-      await tab("Akte");
+      await tab("Dossier");
       await see("akte list", "loading…");
       release("/api/lane");
       await wait(`${W}.querySelector('.shelllist .akterow')`);
@@ -14429,9 +14429,9 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
       release("/api/lane?branch");
       await wait(`${W}.querySelector('.shelldetail .aktehead')`);
       hold("/api/timeline");
-      await tab("Zeitleiste");
-      await see("timeline sessions", "Sessions werden geladen …");
-      await see("timeline canvas", "Zeitleiste wird geladen …");
+      await tab("Timeline");
+      await see("timeline sessions", "Loading sessions …");
+      await see("timeline canvas", "Loading timeline …");
       release("/api/timeline");
       await wait(`${W}.querySelector('.tlcanvas, .tllist')`);
       // a fresh window on Commits: the land ledger is not loaded there yet
@@ -14461,12 +14461,12 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
             out.push({ t: t.slice(0, 60), cls: String(p.className), mono: /mono|Menlo|Consolas/i.test(getComputedStyle(p).fontFamily) }); }
           return out; })()`)) prose.set(`${n.cls}|${n.t}`, n);
       };
-      for (const lens of ["Zeitleiste", "Lands", "Commits", "Audit", "Akte"]) {
+      for (const lens of ["Timeline", "Lands", "Commits", "Audit", "Dossier"]) {
         await tab(lens);
         await settle(250);
         await walk();
         await shot(`${width}-${lens}-liste`);
-        if (lens === "Zeitleiste") await click(`${W}.querySelector('.tlev')`, "a timeline mark");
+        if (lens === "Timeline") await click(`${W}.querySelector('.tlev')`, "a timeline mark");
         else await firstRow();
         await settle(400);
         await walk();
@@ -14488,18 +14488,18 @@ export async function runActivityDom(sourceRoot: string, artifacts?: string,
         slot: await face("Audit", `${W}.querySelector('.shelllist .aud-slot')`),
         time: await face("Audit", `${W}.querySelector('.shelldetail .aud-ts')`),
         path: await face("Audit", `${W}.querySelector('.shelldetail .pkdpath')`),
-        dossierBranch: await face("Akte", `${W}.querySelector('.shelldetail .rvhead')`),
-        packId: await face("Akte", `[...${W}.querySelectorAll('.aktectxrow span')].find((s) => s.textContent === 'verify-e2e')`),
-        verifyCmd: await face("Akte", `[...${W}.querySelectorAll('.aktepre')].find((s) => s.textContent === ${JSON.stringify(VERIFY_CMD)})`),
+        dossierBranch: await face("Dossier", `${W}.querySelector('.shelldetail .rvhead')`),
+        packId: await face("Dossier", `[...${W}.querySelectorAll('.aktectxrow span')].find((s) => s.textContent === 'verify-e2e')`),
+        verifyCmd: await face("Dossier", `[...${W}.querySelectorAll('.aktepre')].find((s) => s.textContent === ${JSON.stringify(VERIFY_CMD)})`),
         // the meta lines: the copyable part stands in mono beside its words
         landTime: await face("Lands", `${W}.querySelector('.shelllist .shrsub span')`),
         commitSha: await face("Commits", `${W}.querySelector('.shelllist .shrsub span')`),
         commitTime: await face("Commits", `${W}.querySelector('.shelldetail .diffstat span:nth-child(2)')`),
         auditTime: await face("Audit", `${W}.querySelector('.shelllist .shrsub span')`),
-        akteEventTime: await face("Akte", `${W}.querySelector('.aktestep.step-slot .shrsub span')`),
-        akteEventPath: await face("Akte", `${W}.querySelector('.aktestep.step-slot .shrsub span:last-child')`),
-        briefModel: await face("Akte", `${W}.querySelector('.aktebrief + .shrsub span')`),
-        briefTime: await face("Akte", `${W}.querySelector('.aktebrief + .shrsub span:nth-child(2)')`),
+        akteEventTime: await face("Dossier", `${W}.querySelector('.aktestep.step-slot .shrsub span')`),
+        akteEventPath: await face("Dossier", `${W}.querySelector('.aktestep.step-slot .shrsub span:last-child')`),
+        briefModel: await face("Dossier", `${W}.querySelector('.aktebrief + .shrsub span')`),
+        briefTime: await face("Dossier", `${W}.querySelector('.aktebrief + .shrsub span:nth-child(2)')`),
       };
       facts.tokens = tokens;
       claims[ACT_CLAIM.tokens] = Object.values(tokens).every((t) => t?.mono === true)

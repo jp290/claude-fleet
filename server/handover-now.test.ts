@@ -158,8 +158,8 @@ describe("the one setting: Nudge · Off", () => {
 
 describe("the texts typed into the session", () => {
   test("„later“ names the new threshold and, where Fleet acts, the cap above it", () => {
-    expect(laterText(50, "succeed", false)).toBe("Noch nicht weitergeben: Arbeite bitte weiter, bis dein Kontext bei 50 % steht, und gib dann selbst weiter. Bei 55 % öffnet Fleet sonst selbst eine neue Session.");
-    expect(laterText(45, "hint", true)).toBe("Noch nicht weitergeben: Arbeite bitte weiter, bis dein Kontext bei 45 % steht, und gib dann selbst weiter (mit deinem Bericht).");
+    expect(laterText(50, "succeed", false)).toBe("Not yet: keep working until your context is at 50 %, then hand over yourself. At 55 % Fleet otherwise starts a new session itself.");
+    expect(laterText(45, "hint", true)).toBe("Not yet: keep working until your context is at 45 %, then hand over yourself (with your report).");
   });
   test("„now“ names the doors the session hands over through", () => {
     expect(nowText(false)).toContain("POST /api/self/handover");

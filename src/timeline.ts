@@ -99,28 +99,28 @@ export interface TimelineModel {
 const ROUTE = "/api/timeline";
 // the clock note is prose for the view's banner; the raw key (`uncertainty`) stays a field, so the
 // view can print it once as an internal value and never as a sentence
-const CLOCK_NOTE = "Hostuhren ungemessen — gleiche Position heißt gleiche Aufzeichnungszeit, keine Kausalität";
+const CLOCK_NOTE = "Host clocks not measured — equal position means equal record time, not causation";
 const GAP_TEXT: Record<string, string> = {
-  "missing-result": "Aufruf ohne Resultat im Snapshot",
-  "orphan-result": "Resultat ohne Aufruf",
-  "ambiguous-result": "Resultat passt auf mehrere Aufrufe",
-  "malformed-record": "Aufzeichnung nicht lesbar",
-  "partial-record": "Aufzeichnung am Ende unvollständig",
-  "missing-record-id": "Aufzeichnung ohne Id",
-  "invalid-tool-metadata": "Tool-Metadaten ungültig",
-  "unsupported-codex-item": "Codex-Eintrag nicht unterstützt",
-  "source-rewritten": "Quelle wurde umgeschrieben",
-  "source-generation-or-binding-changed": "Quelle oder Bindung gewechselt",
-  "source-missing": "Quelldatei nicht gefunden",
-  "source-indexing": "Quelle wird noch gelesen",
-  "session-budget": "Quelle noch nicht im Index",
-  "occupation-source-ambiguous": "Session hält mehrere Belegungen, Zuordnung offen",
-  "additional-source-gaps": "weitere Lücken der Quelle",
+  "missing-result": "Call without a result in the snapshot",
+  "orphan-result": "Result without a call",
+  "ambiguous-result": "Result matches several calls",
+  "malformed-record": "Record not readable",
+  "partial-record": "Record incomplete at the end",
+  "missing-record-id": "Record without an id",
+  "invalid-tool-metadata": "Tool metadata invalid",
+  "unsupported-codex-item": "Codex item not supported",
+  "source-rewritten": "Source was rewritten",
+  "source-generation-or-binding-changed": "Source or binding changed",
+  "source-missing": "Source file not found",
+  "source-indexing": "Source is still being read",
+  "session-budget": "Source not in the index yet",
+  "occupation-source-ambiguous": "Session holds several occupations, assignment open",
+  "additional-source-gaps": "More gaps in the source",
 };
 const gapOf = (session: string | null, code: string, offset?: number, bytes?: number): TimelineGap =>
   ({ session, code, offset: offset ?? null, bytes: bytes ?? null, text: GAP_TEXT[code] ?? code });
 
-const toolLabel = (e: NativeEvent): string => e.kind === "tool.call" ? e.tool.name : `${e.tool.name === "unknown" ? "" : e.tool.name + " "}Resultat`.trim();
+const toolLabel = (e: NativeEvent): string => e.kind === "tool.call" ? e.tool.name : `${e.tool.name === "unknown" ? "" : e.tool.name + " "}result`.trim();
 
 function toolEvent(key: string | null, id: string, e: NativeEvent): TimelineEvent {
   const isCall = e.kind === "tool.call";
@@ -133,7 +133,7 @@ function toolEvent(key: string | null, id: string, e: NativeEvent): TimelineEven
     separationMs: e.separation?.ms ?? null, duration: null,
     // the page carries no detail texts: what a call said is not delivered, which is not "said nothing"
     args: null, result: null,
-    error: e.outcome === "error" ? "Fehler laut Quelle, Text nicht geliefert" : null,
+    error: e.outcome === "error" ? "Error per source, text not delivered" : null,
     source: { name: e.source, locator: e.detailRef?.locator ?? null, fp: e.detailRef?.fp ?? null,
       record: e.record, sidechain: e.record.sidechain === true,
       edge: e.edge ? `${e.edge.from.session ?? e.edge.from.kind} → ${e.edge.to.session ?? e.edge.to.kind} · ${e.edge.channel}` : null, refs },
@@ -146,9 +146,9 @@ function ledgerKind(kind: string): { kind: TimelineKind; label: string; verdict:
   const [fam = "", verb = "", ...rest] = kind.split(".");
   const qual = rest.join(".");
   if (fam === "report") return { kind: "report", label: "Report", verdict: qual || verb || null };
-  if (/clarif|rueckfrage|question/.test(kind)) return { kind: "clarification", label: "Rückfrage", verdict: null };
+  if (/clarif|rueckfrage|question/.test(kind)) return { kind: "clarification", label: "Question", verdict: null };
   if (fam === "task" && /^(created|founded|founding|filed)$/.test(verb) || fam === "lane" && /^(founded|opened|spawned)$/.test(verb))
-    return { kind: "founding", label: "Gründung", verdict: null };
+    return { kind: "founding", label: "Founding", verdict: null };
   if (fam === "commit") return { kind: "commit", label: "Commit", verdict: null };
   if (fam === "land" && verb === "gate") return { kind: "gate", label: "Gate", verdict: qual || null };
   if (fam === "land") return { kind: "land", label: "Land", verdict: qual || (verb === "main" ? null : verb) || null };
@@ -249,13 +249,13 @@ function modelOf(page: TimelinePage, status: number, continued: boolean): Timeli
     const h = s.source.horizon;
     sessions.push({
       key: s.key, label: s.session.slice(0, 8), harness: s.harness, host: s.host,
-      version: s.source.version ?? "unbekannt", slot: s.occupation.slot, openedAt: s.occupation.openedAt,
+      version: s.source.version ?? "unknown", slot: s.occupation.slot, openedAt: s.occupation.openedAt,
       project: s.project, program: s.program,
       state: SOURCE_STATES.has(s.source.state) ? s.source.state as TimelineSession["state"] : "unmeasured",
       occupation: { slot: s.occupation.slot, openedAt: s.occupation.openedAt },
       parentSession: null,
       horizon: h?.state === "read" ? { state: "read", oldestAt: h.oldestAt, newestAt: h.newestAt ?? null, reason: null }
-        : { state: "unmeasured", oldestAt: null, newestAt: null, reason: h?.state === "unmeasured" ? h.reason : "keine native Quelle im Index" },
+        : { state: "unmeasured", oldestAt: null, newestAt: null, reason: h?.state === "unmeasured" ? h.reason : "no native source in the index" },
       counts: { calls: mine.filter((e) => e.kind === "tool.call").length, results: mine.filter((e) => e.kind === "tool.result").length,
         errors: mine.filter((e) => e.status === "error").length, pending: mine.filter((e) => e.status === "pending").length,
         ledger: mine.filter((e) => e.family === "ledger").length },
@@ -287,7 +287,7 @@ function modelOf(page: TimelinePage, status: number, continued: boolean): Timeli
 export async function loadTimeline(query: TimelineQuery, fetchFn: typeof fetch = fetch): Promise<TimelineModel> {
   const cursor = query.page ? cursorOf(query.page) : null;
   const window = cursor ? { from: cursor.from, to: cursor.to } : { from: Math.min(query.from, query.to), to: Math.max(query.from, query.to) };
-  if (query.page && !cursor) return unavailable(Date.now(), window, null, "bekam einen Seitenzeiger, den diese Linse nicht ausgegeben hat");
+  if (query.page && !cursor) return unavailable(Date.now(), window, null, "got a page pointer this lens did not issue");
   const params = new URLSearchParams({ from: String(window.from), to: String(window.to) });
   if (query.harness) params.set("harness", query.harness);
   if (query.session) params.set("session", query.session);
@@ -296,21 +296,21 @@ export async function loadTimeline(query: TimelineQuery, fetchFn: typeof fetch =
   try { res = await fetchFn(`${ROUTE}?${params}`); }
   // `reason` is a predicate of the route ("antwortet 404 (no such route)") — the view names the
   // route ONCE in front of it, so the sentence never carries it twice (UI-MAIN review point 7)
-  catch (e) { return unavailable(Date.now(), window, null, `ist nicht erreichbar (${e instanceof Error ? e.message : String(e)})`); }
+  catch (e) { return unavailable(Date.now(), window, null, `is not reachable (${e instanceof Error ? e.message : String(e)})`); }
   if (!res.ok) {
-    let reason = `antwortet ${res.status}`;
+    let reason = `answers ${res.status}`;
     try { const body = (await res.json()) as { error?: unknown }; if (typeof body?.error === "string") reason += ` (${body.error})`; }
-    catch { reason += " (ohne lesbaren Fehlertext)"; }
+    catch { reason += " (no readable error text)"; }
     return unavailable(Date.now(), window, res.status, reason);
   }
   let body: unknown;
   try { body = await res.json(); }
-  catch { return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber kein JSON`); }
+  catch { return unavailable(Date.now(), window, res.status, `answers ${res.status}, but not JSON`); }
   if (!isObj(body) || body.schema !== "fleet.timeline/v1")
-    return unavailable(Date.now(), window, res.status, `antwortet mit Schema ${JSON.stringify(isObj(body) ? body.schema ?? null : null)} statt fleet.timeline/v1`);
+    return unavailable(Date.now(), window, res.status, `answers with schema ${JSON.stringify(isObj(body) ? body.schema ?? null : null)} instead of fleet.timeline/v1`);
   const bad = malformed(body);
-  if (bad) return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber das Feld ${bad} fehlt oder hat nicht die Form von fleet.timeline/v1`);
+  if (bad) return unavailable(Date.now(), window, res.status, `answers ${res.status}, but the field ${bad} is missing or not in the form of fleet.timeline/v1`);
   // the checks above cover every field the model reads; a form they missed still ends as a sentence, never a throw
   try { return modelOf(body as unknown as TimelinePage, res.status, !!cursor); }
-  catch (e) { return unavailable(Date.now(), window, res.status, `antwortet ${res.status}, aber die Seite ist nicht lesbar (${e instanceof Error ? e.message : String(e)})`); }
+  catch (e) { return unavailable(Date.now(), window, res.status, `answers ${res.status}, but the page is not readable (${e instanceof Error ? e.message : String(e)})`); }
 }

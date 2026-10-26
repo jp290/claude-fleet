@@ -18,7 +18,7 @@ const eingang = (over: Partial<FassungEingang> = {}): FassungEingang => ({
     textAbschnitt("effort", "Slot.effort", "high")],
   aufgabe: [textAbschnitt("aufgabe", "Queue-Zeile t1", "ZIEL: die Fassung zeigen\nDONE: Route und Test")],
   liest: [
-    textAbschnitt("rolle", "rollenkarte", "--- ROLLE --- Lane"),
+    textAbschnitt("rolle", "rollenkarte", "--- ROLE --- Lane"),
     textAbschnitt("projektregeln", "CLAUDE.md", "Regel A"),
     textAbschnitt("wissen", "Anker", "pack:portable-core"),
     textAbschnitt("uebergabe", "handoff", "offen: nichts"),
@@ -260,7 +260,7 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       expect(got.brief.startsWith(`${texte.join("\n\n")}\n\nOWNER-KORREKTUREN:`)).toBe(true);
       expect(got.brief).toContain("vor deinem ersten Akt");
       expect(got.brief).toContain("/api/self/konzepte/k-owner-korrekturen/leseansicht");
-      expect(got.brief).not.toContain("--- ROLLE ---");
+      expect(got.brief).not.toContain("--- ROLE ---");
       expect(got.succession).toContain("f1c70000000000000000cafe");
       expect(got.succession).toContain(got.brief);
       // CLAUDE: der Start steht als Datei im Systemprompt, der Nachfolge-Brief trägt nur noch die Übergabe — 32 KiB Paste-Grenze
@@ -286,7 +286,7 @@ describe("die Startbytes der übrigen Rollen bleiben", () => {
       expect(got.plan.sessionAgents.text).toBe(texte.join("\n\n"));
       expect(got.plan.sessionAgents.parts.map((part) => part.path)).toEqual(pfade);
       expect(got.plan.fassungsHash).toBe(got.laufend.hash);
-      expect(got.plan.sessionAgents.text).not.toContain("--- ROLLE ---");
+      expect(got.plan.sessionAgents.text).not.toContain("--- ROLE ---");
       const liest = got.fassung.teile.find((teil) => teil.id === "liest")!.abschnitte;
       // GENAU DIESE ACHT TEILE, IN DIESER REIHENFOLGE, mit Quelle und Bytes: die Richtung steht
       // als eigener Abschnitt vor der Rolle, danach Systemkonzept und die fünf Packs unter „Wissen“.
@@ -637,11 +637,11 @@ describe("die eigenen Regeln des Owners in Fleets Repo", () => {
       expect(vorher.fleet.grund).toContain("~/.claude/CLAUDE.md und ~/.claude/rules/** sind für einen Sitz in Fleets Repo ausgeschlossen");
       expect((JSON.parse(vorher.fleet.einstellungen!) as { claudeMdExcludes?: string[] }).claudeMdExcludes)
         .toEqual(expect.arrayContaining(["~/.claude/CLAUDE.md", "~/.claude/rules/**"]));
-      expect(vorher.fleet.eigenes).toContain("Regeln 0 — ausgeschlossen: eigen.md");
+      expect(vorher.fleet.eigenes).toContain("Rules 0 — excluded: eigen.md");
       // anderswo: geladen, ohne Exclude
       expect(vorher.anderswo.dateien).toEqual(expect.arrayContaining([global, regel]));
       expect(vorher.anderswo.einstellungen).not.toContain("claudeMdExcludes");
-      expect(vorher.anderswo.eigenes).toContain("Regeln 1: eigen.md");
+      expect(vorher.anderswo.eigenes).toContain("Rules 1: eigen.md");
       // der Hash folgt dem, was lädt
       expect(nachher.fleet.hash).toBe(vorher.fleet.hash);
       expect(nachher.anderswo.hash).not.toBe(vorher.anderswo.hash);

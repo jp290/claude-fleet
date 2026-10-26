@@ -416,7 +416,7 @@ async function foundingPacksServerHalf(check: ContextPackCheck): Promise<void> {
     // old role card.
     check("founding plan: the orchestratorin role names her seven start files, or their absence — never the old card",
       orchard.status === 200 && !!orchardFile && /--- MISSING --- [^\n]*docs\/start\/orchestrator\.md/.test(orchardFile.text)
-      && !orchardFile.text.includes("--- ROLLE --- Orchestratorin")
+      && !orchardFile.text.includes("--- ROLE --- Orchestrator")
       && !orchardFile.text.includes("HOW THIS PROGRAM IS EXECUTED"));
     const manifestIds = ["promise-anchor", "broken-pointer"];
     const namedOnce = manifestIds.every((id) =>

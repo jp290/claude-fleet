@@ -122,7 +122,7 @@ describe("das Notizbuch ist eine Wahl an der Tür", () => {
     expect(lane?.body.modus).toBe("fleet-sitz");
     offen(opened);
     expect(startzeile(f, f.repo)).not.toContain("autoMemory");
-    expect(await mitgegeben(f, 1)).toBe("nichts");
+    expect(await mitgegeben(f, 1)).toBe("nothing");
   }, LIFE_DEADLINE_MS * 3);
 
   test("„aus“ schaltet Claudes Gedächtnis ab und steht als Zeile da", async () => {

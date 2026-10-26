@@ -34,43 +34,43 @@ export interface SucceedPreviewFacts {
   summary?: boolean;
 }
 const REFUSAL_WORDS: Record<string, string> = {
-  "not-active": "hier läuft keine Session",
-  asleep: "die Session schläft, erst aufwecken",
-  "slot-changing": "der Slot startet oder endet gerade",
-  steward: "die Planungs-Session gibt nicht weiter",
-  lane: "eine Lane gibt aus ihrer eigenen Session weiter, mit Übergabebericht",
-  "game-maker": "eine game-maker-MAIN gibt nur über ihren Spielstand weiter, aus ihrer eigenen Session",
-  "in-flight": "eine Nachfolge läuft schon",
-  busy: "sie arbeitet gerade; sobald sie ruht, geht es",
-  "pointer-uncommitted": "der Zeiger ihrer stehenden Übergabe nennt keine committete Datei mehr",
-  "setting-changed": "die Einstellung hat sich gerade geändert",
-  "occupant-changed": "inzwischen läuft dort eine andere Session",
+  "not-active": "no session runs here",
+  asleep: "the session is asleep, wake it first",
+  "slot-changing": "the slot is starting or ending right now",
+  steward: "the planning session does not hand over",
+  lane: "a lane hands over from its own session, with a handover report",
+  "game-maker": "a game-maker MAIN hands over only through its game state, from its own session",
+  "in-flight": "a succession is already running",
+  busy: "it is working right now; once it is idle, it works",
+  "pointer-uncommitted": "the pointer of its standing handover names no committed file any more",
+  "setting-changed": "the setting just changed",
+  "occupant-changed": "another session runs there now",
 };
 export function agoText(ms: number): string {
   const min = Math.floor(Math.max(0, ms) / 60_000);
-  if (min < 1) return "eben";
-  if (min < 90) return `vor ${min} min`;
+  if (min < 1) return "just written";
+  if (min < 90) return `${min} min old`;
   const h = Math.round(min / 60);
-  if (h < 48) return `vor ${h} h`;
+  if (h < 48) return `${h} h old`;
   const d = Math.round(h / 24);
-  return `vor ${d} ${d === 1 ? "Tag" : "Tagen"}`;
+  return `${d} ${d === 1 ? "day" : "days"} old`;
 }
-const entriesText = (n: number): string => `${n} ${n === 1 ? "Eintrag" : "Einträge"}`;
+const entriesText = (n: number): string => `${n} ${n === 1 ? "entry" : "entries"}`;
 export function successorSentence(p: SucceedPreviewFacts): string {
-  if (p.refusal) return `Geht gerade nicht: ${REFUSAL_WORDS[p.refusal.reason] ?? p.refusal.reason}.`;
+  if (p.refusal) return `Not possible right now: ${REFUSAL_WORDS[p.refusal.reason] ?? p.refusal.reason}.`;
   const parts: string[] = [];
-  if (p.rail === "program") parts.push("den Program-Eintrag");
-  if (p.standingHandover) parts.push(`die stehende Übergabe von ${agoText(p.standingHandover.ageMs)}`);
-  if (p.summary) parts.push("eine Zusammenfassung des Gesprächs (die Session wird dafür nicht geweckt)");
+  if (p.rail === "program") parts.push("the Program record");
+  if (p.standingHandover) parts.push(`the standing handover (${agoText(p.standingHandover.ageMs)})`);
+  if (p.summary) parts.push("a summary of the conversation (the session is not woken for it)");
   const read = p.tail?.state === "read";
   if (read && p.tail && p.tail.entries > 0)
-    parts.push(`${entriesText(p.tail.entries)} Transkript-Rest${p.tail.omitted > 0 ? ` (${p.tail.omitted} ältere ausgelassen)` : ""}`);
-  const got = parts.length === 0 ? "nur ihren Start-Brief"
-    : parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} und ${parts.at(-1)!}`;
+    parts.push(`${entriesText(p.tail.entries)} of transcript tail${p.tail.omitted > 0 ? ` (${p.tail.omitted} older left out)` : ""}`);
+  const got = parts.length === 0 ? "only its start brief"
+    : parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)!}`;
   const notes: string[] = [];
-  if (!p.standingHandover) notes.push("eine Übergabe hat die Session nicht geschrieben");
-  if (!read) notes.push("das Transkript kann Fleet nicht lesen");
-  return `Die Nachfolgerin bekommt ${got}${notes.length ? `; ${notes.join(", ")}` : ""}.`;
+  if (!p.standingHandover) notes.push("the session wrote no handover");
+  if (!read) notes.push("Fleet cannot read the transcript");
+  return `The successor gets ${got}${notes.length ? `; ${notes.join(", ")}` : ""}.`;
 }
 
 // DIE WACHEN UND WIEDERHOLUNGEN LAUFEN WEITER (Mangel 100; Owner 17.10.: „[Zitat entfernt]“
@@ -443,37 +443,37 @@ export interface HintFacts { fillPct: number; usedTokens: number; windowTokens: 
   cache: CacheState; choice: ThresholdChoice }
 export function hintText(f: HintFacts): string {
   const lane = f.threshold.kind === "lane";
-  const why = f.step !== "due" ? "" : f.fillPct >= f.threshold.capPct ? " Die Obergrenze ist erreicht."
-    : f.cache === "kalt" ? " Dein Cache ist kalt: Jeder weitere Turn liest den ganzen Kontext neu."
-    : " Dein Cache wird bald kalt.";
-  const head = `[fleet] Dein Kontext ist bei ${f.fillPct}% (${f.usedTokens} von ${f.windowTokens} Tokens im Fenster). `
-    + `Die Schwelle ${lane ? "dieser Lane" : "dieser Session"} ist ${f.threshold.basePct} %, die Obergrenze ${f.threshold.capPct} %.${why} `;
-  const token = "x-fleet-self-token aus der Umgebungsvariablen FLEET_SELF_TOKEN";
-  const handover = `eine stehende Übergabe (POST /api/self/handover, \`intent\` ODER \`pointer\`, ${token})`;
-  const when = `Ab ${f.threshold.capPct} % oder kurz bevor dein Cache kalt wird`;
+  const why = f.step !== "due" ? "" : f.fillPct >= f.threshold.capPct ? " The cap is reached."
+    : f.cache === "kalt" ? " Your cache is cold: every further turn reads the whole context again."
+    : " Your cache will be cold soon.";
+  const head = `[fleet] Your context is at ${f.fillPct}% (${f.usedTokens} of ${f.windowTokens} tokens in the window). `
+    + `The threshold of ${lane ? "this lane" : "this session"} is ${f.threshold.basePct} %, the cap ${f.threshold.capPct} %.${why} `;
+  const token = "x-fleet-self-token from the environment variable FLEET_SELF_TOKEN";
+  const handover = `a standing handover (POST /api/self/handover, \`intent\` OR \`pointer\`, ${token})`;
+  const when = `From ${f.threshold.capPct} % or shortly before your cache goes cold`;
   if (f.choice === "compact")
-    return `${head}${when} tippt Fleet \`/compact\`, sobald du ruhst: Claude fasst das Gespräch zusammen, und du arbeitest `
-      + `weiter. ${lane ? "Committe vorher deinen Stand." : `Was die Zusammenfassung nicht verlieren darf, schreib vorher in ${handover}.`}`;
+    return `${head}${when} Fleet types \`/compact\` as soon as you are idle: Claude summarizes the conversation and you keep working. `
+      + `${lane ? "Commit your state first." : `Write what the summary must not lose into ${handover} first.`}`;
   // DIE SESSION GIBT SELBST WEITER (Owner 07.08.: „[Zitat entfernt]“; 18.10.: die
   // Session ruft die Übergabe auf, nicht das System): Fleets neue Session ist nur der Rückfall
   if (f.choice === "succeed")
-    return `${head}Gib selbst weiter: Schreib jetzt ${handover} und halte sie aktuell; am Ende deines laufenden Schritts, `
-      + `wenn nichts mehr läuft, rufst du POST /api/self/succeed (ohne Body nimmt sie deine stehende Übergabe). `
-      + `Nur wenn du das nicht tust, öffnet Fleet ${f.threshold.capPct > f.fillPct ? `ab ${f.threshold.capPct} %` : "jetzt"} `
-      + `oder kurz bevor dein Cache kalt wird selbst eine neue Session, sobald du ruhst.`;
-  const opening = `${head}Fleet übergibt nicht selbst, du wählst den Punkt`;
+    return `${head}Hand over yourself: write ${handover} now and keep it current; at the end of your current step, `
+      + `when nothing is running, call POST /api/self/succeed (without a body it takes your standing handover). `
+      + `Only if you do not, Fleet opens a new session itself ${f.threshold.capPct > f.fillPct ? `from ${f.threshold.capPct} %` : "now"} `
+      + `or shortly before your cache goes cold, as soon as you are idle.`;
+  const opening = `${head}Fleet does not hand over itself, you choose the point`;
   if (lane)
-    return `${opening}: Bring den laufenden Schnitt zu Ende und committe, file einen fleet-report mit status \`handoff\` `
-      + `und gib dann mit POST /api/self/succeed (${token}) an eine frische Session auf diesem Worktree weiter.`;
-  return `${opening}. Schreib eine stehende Übergabe (POST /api/self/handover, \`intent\` ODER \`pointer\`) und halte sie `
-    + "aktuell: Mit ihr öffnet der Owner jederzeit eine neue Session, ohne dir einen Turn zu schicken. "
-    + `Am Ende eines Schritts gibst du selbst weiter: POST /api/self/succeed. Beide Türen nehmen den ${token}.`;
+    return `${opening}: finish the current slice and commit, file a fleet-report with status \`handoff\` `
+      + `and then hand over with POST /api/self/succeed (${token}) to a fresh session on this worktree.`;
+  return `${opening}. Write a standing handover (POST /api/self/handover, \`intent\` OR \`pointer\`) and keep it `
+    + "current: with it the owner can open a new session at any time without sending you a turn. "
+    + `At the end of a step you hand over yourself: POST /api/self/succeed. Both doors take the ${token}.`;
 }
 
-// DIE KONTEXT-ZEILE DER ORCHESTRATORIN (S3c; Bauleitung 14.10.: „[Zitat entfernt]“ auf 45/50
+// DIE CONTEXT-ZEILE DER ORCHESTRATORIN (S3c; Bauleitung 14.10.: „[Zitat entfernt]“ auf 45/50
 // umschreiben). Ihre Rollenkarte nennt die Zeile der Tabelle, aus der sie kommt, statt einer zweiten Zahl:
 // Hinweis an der Basis, Übergabe an der Obergrenze, solange der Cache warm ist. ASCII wie die übrige Karte.
 export function orchestratorContextLine(t: Threshold): string {
-  return `--- KONTEXT --- Ab ${t.basePct} % schreibt Fleet dir einen Hinweis; bis ${t.capPct} % arbeitest du weiter, solange dein Cache `
-    + `warm ist, und waehlst den Punkt der Uebergabe selbst. Deine Werte stehen in GET /api/self -> context.`;
+  return `--- CONTEXT --- From ${t.basePct} % Fleet writes you a hint; up to ${t.capPct} % you keep working while your cache `
+    + `is warm, and you choose the point of handover yourself. Your values are in GET /api/self -> context.`;
 }

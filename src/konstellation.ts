@@ -37,7 +37,7 @@ import { openShell, type Shell } from "./shell";
 import type { BriefSuccession } from "./board";
 import type { BranchesView } from "./protocol";
 import { DU, WER_WORT, werBeiClaudeCode, type Wer } from "./k15-wer";
-import { autonomieAus, leseFassung, type AutoArt, type Autonomie } from "./k15-entwurf-modell";
+import { autonomieAus, type AutoArt, type Autonomie } from "./k15-entwurf-modell";
 
 let shell: Shell | null = null;
 let painted = "";
@@ -59,10 +59,10 @@ const why = new Set<string>();
 let peek: { key: string; touch: boolean } | null = null;
 
 const GROUP_WORD: Record<KGroupKey, string> = {
-  orchester: "Orchester", lanes: "Lanes ohne Zuordnung", branches: "Branches", sessions: "Sessions",
+  orchester: "Orchestrator", lanes: "Unassigned lanes", branches: "Branches", sessions: "Sessions",
 };
 const KIND_WORD: Record<KNode["kind"], string> = {
-  orchestrator: "Orchestratorin", "program-main": "Program-MAIN", lane: "Lane", bau: "Bau-Session", session: "Session",
+  orchestrator: "Orchestrator", "program-main": "Program-MAIN", lane: "Lane", bau: "Build session", session: "Session",
 };
 
 const keyOf = (s: SlotInfo) => `${s.id}:${s.openedAt ?? ""}`;
@@ -70,7 +70,7 @@ const isOpen = (s: SlotInfo) => flipped.has(keyOf(s));
 
 export function openKonstellation(): void {
   shell?.close();
-  shell = openShell({ id: "konstellation", title: "Konstellation",
+  shell = openShell({ id: "konstellation", title: "Constellation",
     onClose: () => { shell = null; painted = ""; peek = null; flipped.clear(); why.clear(); } });
   shell.root.classList.add("solo");
   try { detail = localStorage.getItem(DETAIL_KEY) === "alles" ? "alles" : "aufbau"; } catch { detail = "aufbau"; }
@@ -102,10 +102,10 @@ function paint(): void {
   readBranches();
   const tree = constellation(fleet, branches, programsList);
   for (const s of fleet) if (s.cwd) readBrief(s);
-  shell.setSubtitle(tree.count === 1 ? "1 Session läuft" : `${tree.count} Sessions laufen`);
+  shell.setSubtitle(tree.count === 1 ? "1 session running" : `${tree.count} sessions running`);
   const box = el("div", "kbaum");
   box.dataset.detail = detail;
-  if (!tree.count) box.appendChild(el("div", "shellhint", "Gerade läuft keine Session."));
+  if (!tree.count) box.appendChild(el("div", "shellhint", "No session is running."));
   else box.appendChild(detailBar());
   for (const g of tree.groups) {
     const sec = el("section", "kgrp");
@@ -136,8 +136,8 @@ function detailBar(): HTMLElement {
   const bar = el("div", "kdetail");
   const seg = el("div", "kseg");
   seg.setAttribute("role", "group");
-  seg.setAttribute("aria-label", "Detailgrad");
-  for (const [id, word] of [["aufbau", "Aufbau"], ["alles", "Alles"]] as const) {
+  seg.setAttribute("aria-label", "Detail level");
+  for (const [id, word] of [["aufbau", "Structure"], ["alles", "All"]] as const) {
     const b = el("button", detail === id ? "on" : "", word) as HTMLButtonElement;
     b.type = "button";
     b.dataset.detail = id;
@@ -145,7 +145,7 @@ function detailBar(): HTMLElement {
     b.onclick = () => { if (detail !== id) setDetail(id); };
     seg.append(b);
   }
-  bar.append(el("span", "kdk", "Detailgrad"), seg);
+  bar.append(el("span", "kdk", "Detail level"), seg);
   return bar;
 }
 
@@ -212,7 +212,7 @@ function placePeek(): void {
   const card = el("div", "kpeek");
   card.setAttribute("role", "tooltip");
   const n = nodeOf(s);
-  card.append(...(n ? cardValues(n) : []), el("span", "kpeekh", peek.touch ? "Noch einmal tippen: alle Eigenschaften" : "Klick: alle Eigenschaften"));
+  card.append(...(n ? cardValues(n) : []), el("span", "kpeekh", peek.touch ? "Tap again: all properties" : "Click: all properties"));
   line.appendChild(card);
   // the card opens below its line, above it where the window ends first
   const room = shell.detail.getBoundingClientRect().bottom - line.getBoundingClientRect().bottom;
@@ -223,7 +223,7 @@ function placePeek(): void {
 function cardValues(n: KNode): HTMLElement[] {
   const s = n.slot;
   const branch = s.worktree?.branch ?? n.branch?.branch ?? s.git?.branch;
-  return [val("modell", "Modell", modelOf(s)), val("effort", "Effort", effortOf(s)), val("kontext", "Kontext", contextOf(s)),
+  return [val("modell", "Model", modelOf(s)), val("effort", "Effort", effortOf(s)), val("kontext", "Context", contextOf(s)),
     val("uebergabe", "Succession", handoverOf(s)), ...(branch ? [val("branch", "Branch", branch)] : [])];
 }
 // „Alles“: the same values as one quiet line under the session's line
@@ -255,30 +255,30 @@ function propsEl(n: KNode, parent: KNode | null): HTMLElement {
   const repo = s.repo ?? s.worktree?.repo ?? null;
   box.append(
     autonomieEl(n, plan, startCardOf(s)),
-    section(s, "rechte", "Rechte", null, [
-      row(s, "befehle", "Befehle", commandsOf(s), s.permissions ? CODEX_WER : BEFEHLE_WER),
+    section(s, "rechte", "Rights", null, [
+      row(s, "befehle", "Commands", commandsOf(s), s.permissions ? CODEX_WER : BEFEHLE_WER),
       ...(claude ? [row(s, "modus", "Permission-Mode", modeOf(s), MODE_WER)] : []),
     ]),
-    section(s, "einstellungen", "Einstellungen", null, [
+    section(s, "einstellungen", "Settings", null, [
       row(s, "agent", "Agent", claude ? "Claude Code" : s.harness!, AGENT_WER),
-      row(s, "modell", "Modell", modelOf(s), DU),
+      row(s, "modell", "Model", modelOf(s), DU),
       row(s, "effort", "Effort", effortOf(s), DU),
       row(s, "uebergabe", "Succession", handoverOf(s), DU),
-      row(s, "maschine", "Maschine", instanceName ?? "diese", MASCHINE_WER, otherMachines()),
-      row(s, "isolation", "Isolation", "keine", ISOLATION_WER, [el("span", "kmehr", "Sandbox/VM möglich, nicht aktiv")]),
+      row(s, "maschine", "Machine", instanceName ?? "this one", MASCHINE_WER, otherMachines()),
+      row(s, "isolation", "Isolation", "none", ISOLATION_WER, [el("span", "kmehr", "Sandbox/VM possible, not active")]),
     ]),
     ...(claude ? [claudeCodeEl(n, plan)] : []),
-    section(s, "aufbau", "Aufbau", AUFBAU_WER, [
-      row(s, "art", "Art", KIND_WORD[n.kind], null),
-      row(s, "haengt", "Hängt an", parentOf(n, parent), null),
+    section(s, "aufbau", "Structure", AUFBAU_WER, [
+      row(s, "art", "Kind", KIND_WORD[n.kind], null),
+      row(s, "haengt", "Parent", parentOf(n, parent), null),
       ...(n.program || s.programId || n.kind === "program-main" ? [row(s, "program", "Program", programOf(n), null)] : []),
-      ...(s.taskTitle || s.taskId ? [row(s, "auftrag", "Auftrag", s.taskTitle ? `„${s.taskTitle}“` : s.taskId!.slice(0, 8), null)] : []),
-      row(s, "branch", "Branch", s.worktree?.branch ?? s.git?.branch ?? n.branch?.branch ?? "nicht gemeldet", null),
-      row(s, "ordner", "Ordner", `${folder(s.cwd ?? "")}${s.worktree ? " · eigener Worktree" : s.workplace?.mainCheckout ? " · Haupt-Checkout" : ""}`,
+      ...(s.taskTitle || s.taskId ? [row(s, "auftrag", "Task", s.taskTitle ? `“${s.taskTitle}”` : s.taskId!.slice(0, 8), null)] : []),
+      row(s, "branch", "Branch", s.worktree?.branch ?? s.git?.branch ?? n.branch?.branch ?? "not reported", null),
+      row(s, "ordner", "Folder", `${folder(s.cwd ?? "")}${s.worktree ? " · own worktree" : s.workplace?.mainCheckout ? " · main checkout" : ""}`,
         null, [], [place(s.cwd ?? ""), repo && repo !== s.cwd ? `Repo ${place(repo)}` : ""].filter(Boolean).join("\n")),
     ]),
   );
-  const go = el("button", "kgo", "Session zeigen") as HTMLButtonElement;
+  const go = el("button", "kgo", "Show session") as HTMLButtonElement;
   go.type = "button";
   go.onclick = () => { if (showSlot(s.id)) shell?.close(); };
   box.appendChild(go);
@@ -288,20 +288,20 @@ function propsEl(n: KNode, parent: KNode | null): HTMLElement {
 // WHO DECIDES, per row. A standard says first whether and where it can be set today („noch nicht einstellbar“, not „steht fest“), then
 // why, and where it follows from; „änderbar“ says where.
 const fest = (grund: string, herleitung: string): Wer => ({ art: "fleet", grund, herleitung });
-const DU_WO = "Einstellen in der Info-Karte dieser Session: „Session zeigen“.";
-const BEFEHLE_WER = fest("Noch nicht einstellbar: Befehle und Dateien laufen nach Fleets Vertrag.", "src/rights.ts, Ausführung „Fleet-Standard“");
-const CODEX_WER = fest("Noch nicht einstellbar: Sandbox und Freigabe setzt Fleet beim Start der Codex-Session.", "Slot-Einstellung permissions");
-const MODE_WER = fest("Noch nicht je Session einstellbar: Fleet startet jede Claude-Session im Auto Mode.", "server/session-start.ts#PERMISSION_MODE (Owner 16.10.)");
-const AGENT_WER = fest("Einstellbar beim Öffnen einer neuen Session; diese behält ihren Agenten.", "beim Öffnen gewählt");
-const MASCHINE_WER = fest("Noch nicht einstellbar: Heute läuft jede Session auf der Maschine ihrer Fleet.",
-  "/api/sessions → instance.name; FLEET_INSTANCES sind Links, keine Verbindung (server.ts)");
-const ISOLATION_WER = fest("Noch nicht einstellbar: Container und VM schneiden den Rückweg zu Fleet ab; Claude Codes Sandbox ginge, ist aber nicht eingeschaltet.",
+const DU_WO = "Set this in the info card of this session: “Show session”.";
+const BEFEHLE_WER = fest("Not settable yet: commands and files follow the Fleet contract.", "src/rights.ts, execution “Fleet default”");
+const CODEX_WER = fest("Not settable yet: Fleet sets sandbox and approval when it starts the Codex session.", "slot setting permissions");
+const MODE_WER = fest("Not settable per session yet: Fleet starts every Claude session in Auto Mode.", "server/session-start.ts#PERMISSION_MODE (Owner 16.10.)");
+const AGENT_WER = fest("Settable when you open a new session; this one keeps its agent.", "chosen when opened");
+const MASCHINE_WER = fest("Not settable yet: today every session runs on the machine of its Fleet.",
+  "/api/sessions → instance.name; FLEET_INSTANCES are links, not a connection (server.ts)");
+const ISOLATION_WER = fest("Not settable yet: a container or VM cuts off the way back to Fleet; the Claude Code sandbox would work but is not switched on.",
   "docs/neuaufbau/befunde/19-isolation.md");
-const AUFBAU_WER = fest("Einstellbar beim Öffnen einer neuen Session; diese behält Rolle, Ordner und Branch.", "Rolle, Ordner und Branch kommen vom Öffnen");
-const OHNE_KARTE_WER = fest("Noch nicht einstellbar: Eine freie Session bekommt keine Rollenkarte, nur Lane, MAIN und Orchestratorin.", "server.ts#plannedFileRows");
-const karteWer = (n: KNode, quelle: string): Wer => fest(`Noch nicht einstellbar: Fleet gibt jeder ${KIND_WORD[n.kind]} diese Rollenkarte mit; eine eigene Fassung aus „Neue Session“ geht beim Start noch nicht mit.`,
-  `${quelle} (Gründungsplan, Teil „role“)`);
-const START_WER = (quelle: string): Wer => fest("Noch nicht einstellbar: Diese Rollenkarte hat Fleet ihr beim Start in die Session-Datei geschrieben; eine andere gälte erst für eine neue Session.", quelle);
+const AUFBAU_WER = fest("Settable when you open a new session; this one keeps its role, folder and branch.", "role, folder and branch come from opening");
+const OHNE_KARTE_WER = fest("Not settable yet: a free session gets no role card; only a lane, a MAIN and the Orchestrator get one.", "server.ts#plannedFileRows");
+const karteWer = (n: KNode, quelle: string): Wer => fest(`Not settable yet: Fleet gives every ${KIND_WORD[n.kind]} this role card; a version of your own from “New session” is not sent along at start yet.`,
+  `${quelle} (founding plan, part “role”)`);
+const START_WER = (quelle: string): Wer => fest("Not settable yet: Fleet wrote this role card into the session file at start; a different one would apply only to a new session.", quelle);
 
 // a section: its title, and the one tag when all its rows share it
 function section(s: SlotInfo, key: string, title: string, wer: Wer | null, rows: HTMLElement[], note?: HTMLElement): HTMLElement {
@@ -340,13 +340,13 @@ const grundOf = (w: Wer): string => w.art === "du" ? DU_WO : w.grund;
 // other Fleets FLEET_INSTANCES names, as the head row's switcher links them: nothing appended to the url
 function otherMachines(): HTMLElement[] {
   const others = instanceLinks.filter((l) => { try { return new URL(l.url).origin !== location.origin; } catch { return false; } });
-  const out: HTMLElement[] = [el("span", "kmehr", "andere Maschinen möglich, nicht verbunden")];
+  const out: HTMLElement[] = [el("span", "kmehr", "other machines possible, not connected")];
   for (const l of others) {
     const a = document.createElement("a");
     a.className = "klink";
     a.href = l.url;
     a.textContent = l.name;
-    a.title = `Die Fleet „${l.name}“ öffnen; ihre Sessions laufen dort, nicht hier.`;
+    a.title = `Open the Fleet “${l.name}”; its sessions run there, not here.`;
     out.push(a);
   }
   return out;
@@ -354,39 +354,37 @@ function otherMachines(): HTMLElement[] {
 
 // DIE AUTONOMIE: the role card's three lists, as K15 shows them (src/k15-autonomie.ts), read only — a running session has
 // the card Fleet gave her at the start
-const AUTO_ART: readonly { art: AutoArt; wort: string }[] = [{ art: "selbst", wort: "Entscheidet selbst" }, { art: "fragt", wort: "Fragt zuerst" }, { art: "nie", wort: "Nie" }];
-// wen sie fragt, aus DEIN EMPFAENGER der Karte, im Akkusativ (as k15-autonomie.ts#wenAkk)
-const wenAkk = (wen: string): string => wen.replace(/^der /, "den ").replace(/^deine /, "ihre ");
+const AUTO_ART: readonly { art: AutoArt; wort: string }[] = [{ art: "selbst", wort: "Decides alone" }, { art: "fragt", wort: "Asks first" }, { art: "nie", wort: "Never" }];
+// whom she asks, from YOUR RECIPIENT on the card, said from her side ("your MAIN" becomes "its MAIN")
+const wenAkk = (wen: string): string => wen.replace(/^your /, "its ");
 function autonomieEl(n: KNode, plan: PlanRead | null, start: StartRead | null): HTMLElement {
   const s = n.slot;
   if (!PLAN_ROLE[n.kind])
-    return section(s, "autonomie", "Autonomie", OHNE_KARTE_WER, [el("div", "kleer", "Keine Rollenkarte · sie arbeitet nach der AGENTS.md ihres Ordners")]);
-  if (start?.state === "loading") return section(s, "autonomie", "Autonomie", null, [el("div", "kleer", "wird gelesen")]);
+    return section(s, "autonomie", "Autonomy", OHNE_KARTE_WER, [el("div", "kleer", "No role card · it follows the AGENTS.md in its folder")]);
+  if (start?.state === "loading") return section(s, "autonomie", "Autonomy", null, [el("div", "kleer", "reading …")]);
   const fromStart = start?.state === "ok" ? start.au : null;
   if (!fromStart && (!plan || plan.state !== "ok"))
-    return section(s, "autonomie", "Autonomie", null, [el("div", "kleer", plan?.state === "loading" ? "wird gelesen" : "nicht lesbar")]);
+    return section(s, "autonomie", "Autonomy", null, [el("div", "kleer", plan?.state === "loading" ? "reading …" : "unreadable")]);
   const au = fromStart ?? plan!.au;
-  if (!au) return section(s, "autonomie", "Autonomie", null, [el("div", "kleer", "Die Rollenkarte nennt keine Autonomie.")]);
+  if (!au) return section(s, "autonomie", "Autonomy", null, [el("div", "kleer", "The role card names no autonomy.")]);
   // which card this is: hers from the start, or today's where hers is not readable — and whether today's differs from hers
   const today = plan?.state === "ok" ? plan.au : null;
-  const note = !fromStart ? el("span", "kmehr kfass", "Fassung von heute")
-    : today && today.karte !== fromStart.karte ? el("span", "kmehr kfass", "heute gibt Fleet eine andere") : undefined;
+  const note = !fromStart ? el("span", "kmehr kfass", "Version as of today")
+    : today && today.karte !== fromStart.karte ? el("span", "kmehr kfass", "Fleet gives another one today") : undefined;
   if (note) note.title = !fromStart
-    ? (n.kind === "lane" ? "Ihre Session-Datei trägt keine Rolle. Gezeigt ist die Rollenkarte, die Fleet einer Lane heute mitgibt."
-      : "Sie bekam die Rollenkarte im Start-Prompt, und den zeigt keine Route. Gezeigt ist die Karte, die Fleet heute mitgibt.")
-    : "Fleet gibt einer neuen Lane heute eine andere Fassung dieser Karte. Für diese Session gilt die gezeigte.";
-  return section(s, "autonomie", "Autonomie", fromStart ? START_WER(au.quelle) : karteWer(n, au.quelle), AUTO_ART.map(({ art, wort }) => {
+    ? (n.kind === "lane" ? "Its session file carries no role. Shown is the role card Fleet gives a lane today."
+      : "It got its role card in the start prompt, and no route serves that prompt. Shown is the card Fleet gives today.")
+    : "Fleet gives a new lane another version of this card today. This session follows the one shown.";
+  return section(s, "autonomie", "Autonomy", fromStart ? START_WER(au.quelle) : karteWer(n, au.quelle), AUTO_ART.map(({ art, wort }) => {
     const punkte = au.punkte.filter((p) => p.art === art);
     const g = el("div", `kag ${art}`);
     g.dataset.art = art;
     const h = el("div", "kagh");
-    const satz = art === "selbst" ? "ohne Rückfrage" : art === "fragt" ? (au.wen ? `fragt ${wenAkk(au.wen)}` : "") : "gilt für jede Rolle gleich";
+    const satz = art === "selbst" ? "without asking" : art === "fragt" ? (au.wen ? `asks ${wenAkk(au.wen)}` : "") : "the same for every role";
     h.append(el("span", "kagn", wort), el("span", "kagz", String(punkte.length)), ...(satz ? [el("span", "kags", satz)] : []));
     const ul = el("ul", "kagl");
     for (const p of punkte) {
-      const li = el("li", "kagp", leseFassung(p.text));
-      if (leseFassung(p.text) !== p.text) li.title = `Wortlaut der Karte: ${p.text}`;
-      ul.append(li);
+      ul.append(el("li", "kagp", p.text));
     }
     g.append(h, ul);
     return g;
@@ -397,20 +395,20 @@ function autonomieEl(n: KNode, plan: PlanRead | null, start: StartRead | null): 
 // what Fleet's start line sets (tools, lists, MCP). The tools are the ones her last spawn put on her line where the server
 // recorded it (`spawn` on the poll): a MAIN bound at her spawn gets the MAIN's list, one founded in the window starts
 // without one (server.ts#ensureSlot). Without that record a MAIN's tools are not known.
-const CC_WERT: Readonly<Record<string, string>> = { systemprompt: "eingebaut" };
+const CC_WERT: Readonly<Record<string, string>> = { systemprompt: "built in" };
 function claudeCodeEl(n: KNode, plan: PlanRead | null): HTMLElement {
   const s = n.slot;
-  if (!plan || plan.state !== "ok") return section(s, "claude-code", "Claude Code", null, [el("div", "kleer", plan?.state === "loading" ? "wird gelesen" : "nicht lesbar")]);
-  if (!plan.zeilen?.length) return section(s, "claude-code", "Claude Code", null, [el("div", "kleer", "nicht gemeldet")]);
+  if (!plan || plan.state !== "ok") return section(s, "claude-code", "Claude Code", null, [el("div", "kleer", plan?.state === "loading" ? "reading …" : "unreadable")]);
+  if (!plan.zeilen?.length) return section(s, "claude-code", "Claude Code", null, [el("div", "kleer", "not reported")]);
   return section(s, "claude-code", "Claude Code", null, plan.zeilen.map((z) => {
     if (z.id !== "werkzeuge") return row(s, `cc-${z.id}`, z.wort, CC_WERT[z.id] ?? z.wert, werBeiClaudeCode(z), [], z.satz);
     if (s.spawn) {
       const tools = s.spawn.tools;
-      return row(s, "cc-werkzeuge", z.wort, tools === null ? "alle eingebauten" : `${tools} Werkzeuge`,
-        werBeiClaudeCode({ weg: tools === null ? "kein --tools" : "--tools", satz: z.satz, quelle: "server.ts#SESSION_TOOLS, ihr letzter Start" }), [], z.satz);
+      return row(s, "cc-werkzeuge", z.wort, tools === null ? "all built-in" : `${tools} tools`,
+        werBeiClaudeCode({ weg: tools === null ? "no --tools" : "--tools", satz: z.satz, quelle: "server.ts#SESSION_TOOLS, its last start" }), [], z.satz);
     }
-    if (n.kind === "program-main") return row(s, "cc-werkzeuge", z.wort, "je nach Start",
-      fest("Noch nicht je Session einstellbar: Fleet hat ihren letzten Start nicht festgehalten; gegründet startet sie mit allen eingebauten, gebunden mit der Liste der MAIN.",
+    if (n.kind === "program-main") return row(s, "cc-werkzeuge", z.wort, "depends on start",
+      fest("Not settable per session yet: Fleet did not record its last start; founded in the window it starts with all built-in tools, bound to a MAIN it gets that MAIN list of tools.",
         "server.ts#ensureSlot, spawn"), [], z.satz);
     return row(s, "cc-werkzeuge", z.wort, z.wert, werBeiClaudeCode(z), [], z.satz);
   }));
@@ -418,9 +416,9 @@ function claudeCodeEl(n: KNode, plan: PlanRead | null): HTMLElement {
 
 function programOf(n: KNode): string {
   const s = n.slot;
-  if (n.program) return `„${n.program.title}“${n.kind === "program-main" ? ", sie führt es" : ""}`;
-  if (s.programId) return programsRead === "fail" ? "nicht lesbar" : `${s.programId.slice(0, 8)}, keine laufende MAIN`;
-  return programsRead === "ok" ? "keins, das läuft" : programsRead === "fail" ? "nicht lesbar" : "wird gelesen";
+  if (n.program) return `“${n.program.title}”${n.kind === "program-main" ? ", this MAIN leads it" : ""}`;
+  if (s.programId) return programsRead === "fail" ? "unreadable" : `${s.programId.slice(0, 8)}, no running MAIN`;
+  return programsRead === "ok" ? "none running" : programsRead === "fail" ? "unreadable" : "reading …";
 }
 
 function val(key: string, word: string, text: string): HTMLElement {
@@ -442,26 +440,26 @@ function nameOf(n: KNode): string {
 // the line the tree draws, in words; a branch session's opener is not on the wire (BranchView has no `opener`)
 function parentOf(n: KNode, parent: KNode | null): string {
   if (parent) return `${nameOf(parent)} · Slot ${parent.slot.id}`;
-  if (n.kind === "orchestrator") return "keiner, sie führt";
-  if (n.kind === "bau") return "nicht gemeldet";
-  return "keiner";
+  if (n.kind === "orchestrator") return "none, it leads";
+  if (n.kind === "bau") return "not reported";
+  return "none";
 }
 
 function modelOf(s: SlotInfo): string {
   const pane = panes.find((p) => p.slot === s.id);
   const id = runningModel(s.model, pane?.observedModel, s.paneModel);
-  const name = id ? modelLabel(id) : "Standard des Agenten";
+  const name = id ? modelLabel(id) : "agent default";
   return s.harness && s.harness !== "claude" ? `${s.harness} · ${name}` : name;
 }
 
 function effortOf(s: SlotInfo): string {
   const pane = panes.find((p) => p.slot === s.id);
-  return runningEffort(s.effort, pane?.observedEffort) || "Standard";
+  return runningEffort(s.effort, pane?.observedEffort) || "default";
 }
 
 function contextOf(s: SlotInfo): string {
-  if (s.ctx === undefined) return "nicht gemeldet";
-  if (s.ctx === null) return "nicht messbar";
+  if (s.ctx === undefined) return "not reported";
+  if (s.ctx === null) return "not measurable";
   // a fresh session is not an empty one: 0.2 % reads „< 1 %“, never „0 %“
   // a number and its % never part at a line's end (NB)
   return s.ctx.pct > 0 && s.ctx.pct < 0.5 ? `< 1${NB}%` : `${Math.round(s.ctx.pct)}${NB}%`;
@@ -473,31 +471,31 @@ function briefOf(s: SlotInfo): BriefRead | "loading" {
 }
 
 function handoverOf(s: SlotInfo): string {
-  const line = s.succession && s.succession.session > 1 ? ` · ${s.succession.session}. Session der Linie` : "";
+  const line = s.succession && s.succession.session > 1 ? ` · session ${s.succession.session} of the succession` : "";
   const b = briefOf(s);
-  if (b === "loading") return `wird gelesen${line}`;
-  if (b.state === "fail") return `nicht lesbar${line}`;
-  if (!b.sc) return `nicht gemeldet${line}`;
+  if (b === "loading") return `reading …${line}`;
+  if (b.state === "fail") return `unreadable${line}`;
+  if (!b.sc) return `not reported${line}`;
   const at = handoverAt(b.sc);
-  if (!at) return `aus${line}`;
+  if (!at) return `off${line}`;
   // the cap waits while the cache is warm; into a cold cache Fleet types nothing and acts only at the cap (Runde C)
-  const cold = at.cache === "kalt" ? `, der Cache ist kalt: Fleet tippt nichts${at.cap !== null ? ` und handelt erst bei ${at.cap}${NB}%` : ""}` : "";
-  return `ab ${at.pct}${NB}%${cold || (at.cap !== null ? `, solange der Cache warm ist bis ${at.cap}${NB}%` : "")}${line}`;
+  const cold = at.cache === "kalt" ? `, the cache is cold: Fleet types nothing${at.cap !== null ? ` and acts only at ${at.cap}${NB}%` : ""}` : "";
+  return `from ${at.pct}${NB}%${cold || (at.cap !== null ? `, up to ${at.cap}${NB}% while the cache is warm` : "")}${line}`;
 }
 
 // Claude Code's permission modes in words (Bauleitung 16.10.); a mode this list does not know is shown as it is
 const MODE_WORD: Record<string, string> = {
-  auto: "Auto Mode, ein Prüfmodell sieht Shell- und Netzaktionen", bypassPermissions: "ohne Prüfung (bypass)",
-  default: "fragt vor jeder Aktion", acceptEdits: "Dateiänderungen ohne Rückfrage", plan: "Planmodus, ändert nichts",
-  dontAsk: "nur Erlaubtes, fragt nie",
+  auto: "Auto Mode, a reviewer model checks shell and network actions", bypassPermissions: "no checks (bypass)",
+  default: "asks before every action", acceptEdits: "file edits without asking", plan: "plan mode, changes nothing",
+  dontAsk: "only what is allowed, never asks",
 };
 function modeOf(s: SlotInfo): string {
-  return s.permissionMode ? MODE_WORD[s.permissionMode] ?? s.permissionMode : "nicht gemeldet";
+  return s.permissionMode ? MODE_WORD[s.permissionMode] ?? s.permissionMode : "not reported";
 }
 
 function commandsOf(s: SlotInfo): string {
   const p = s.permissions;
-  return !p ? "Fleet-Standard" : "state" in p ? "Einstellung ungültig" : `${p.sandbox}, ${p.approval}`;
+  return !p ? "Fleet default" : "state" in p ? "invalid setting" : `${p.sandbox}, ${p.approval}`;
 }
 
 function readBranches(): void {
@@ -582,7 +580,7 @@ function startCardOf(s: SlotInfo): StartRead | null {
     const j = rec(await r.json().catch(() => null));
     const text = r.ok && j && typeof j.text === "string" && !j.binary && !j.truncated ? j.text : null;
     const rolle = text ? /(?:^|\n)## Rolle\n\n([\s\S]*?)(?=\n\n## |\s*$)/.exec(text)?.[1] ?? null : null;
-    const au = rolle ? autonomieAus(rolle, `${place(path)} · Abschnitt „Rolle“`) : null;
+    const au = rolle ? autonomieAus(rolle, `${place(path)} · section “Rolle”`) : null;
     startCards.set(key, { opening: mine, state: au ? "ok" : "none", au });
   }).catch(() => {
     startCards.set(key, { opening: mine, state: "none", au: null });

@@ -48,12 +48,12 @@ describe("das Band einer Runde", () => {
     if (!src) throw new Error(`keine Messung: ${measured.stderr}`);
     const main = sh(repo, "rev-parse", "main").slice(0, 7);
     const band = instanceBandText(src, clock);
-    expect(band.text).toBe(`Runde probe · main ${main} · mit branch/a, branch/b · ohne branch/c: kollidiert mit branch/a in README`);
-    expect(band.title).toContain("Gelandet wird weiter Branch für Branch.");
+    expect(band.text).toBe(`Round probe · main ${main} · with branch/a, branch/b · without branch/c: kollidiert mit branch/a in README`);
+    expect(band.title).toContain("Landing still goes branch by branch.");
   });
   test("ohne Runde bleibt das Band, wie es war", () => {
     const src = instanceSourceFrom(JSON.stringify({ head: "a".repeat(40), branch: "branch/x", dirty: 0, measuredAt: 1, target: { branch: "main", head: "b".repeat(40), ahead: 0 } }));
-    expect(src && instanceBandText(src, clock).text).toBe("Zweig branch/x · Stand beim Start aaaaaaa · alles schon auf main");
+    expect(src && instanceBandText(src, clock).text).toBe("Branch branch/x · Head at start aaaaaaa · all already on main");
   });
   test("eine unlesbare Runde fällt weg, ein Mitglied ohne gültigen Namen auch, ein Grund wird gekürzt und ohne Steuerzeichen", () => {
     const base = { head: "a".repeat(40), branch: null, dirty: 0, measuredAt: 1, target: null };
@@ -66,6 +66,6 @@ describe("das Band einer Runde", () => {
     expect(r?.out.map((o) => o.why.length)).toEqual([200, "Grund unbekannt".length]);
     expect(r?.out[0].why.startsWith("zeile zwei")).toBe(true);
     expect(instanceBandText({ ...base, measuredAt: 1, round: { name: "p", main: null, in: [], out: [] } } as never, clock).text)
-      .toBe("Runde p · main unbekannt · kein Branch dabei");
+      .toBe("Round p · main unknown · no branch in it");
   });
 });

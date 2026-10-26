@@ -1155,11 +1155,11 @@ export async function run(ctx: Ctx): Promise<void> {
       && fleetSuccessionReceipt.deliveredBytes === new TextEncoder().encode(fleetSuccessionPrompt).byteLength,
     `${fleetSuccessionResponse.status} ${fleetSuccessionPrompt.slice(0, 500)}`);
   // (3) the stand before the material, as ONE sentence in the delivered MAIN card and in its doc mirror
-  const STAND_FIRST = "Uebernahme liest den Stand, Material erst fuer den gewaehlten Akt.";
+  const STAND_FIRST = "A takeover reads the state; material only for the act it picks.";
   // (docs/rollenkarten.md carries the same sentence; the staged instance holds no docs/ to read it from)
   check("Program-MAIN succession: the delivered MAIN card says once that a takeover reads the stand and opens material only for the chosen act",
     fleetSuccessionPrompt.split(STAND_FIRST).length === 2,
-    fleetSuccessionPrompt.split("\n").find((line) => line.startsWith("--- UEBERGABE ---")) ?? "no UEBERGABE line");
+    fleetSuccessionPrompt.split("\n").find((line) => line.startsWith("--- HANDOVER ---")) ?? "no HANDOVER line");
   // BREAKS IF: an unreadable source is printed as a zero. `0 unread of 0 entries` is what a block
   // that trusted the loaded record would say here, and it is the one sentence in the handover a
   // successor could not possibly catch — the record it would check against is the lost one.
@@ -9469,7 +9469,7 @@ export async function run(ctx: Ctx): Promise<void> {
       // the label carries the pack's hardness since 02cf9fb2 (session-agents.ts#renderSessionAgents: `- <id> [<hardness>]`)
       && cpRules.split(`- ${cpPack.id} [${cpExpectedRow.hardness}] —`).length === 2
       && cpDelivered?.text.endsWith("\n\nSession-Regeln: ./AGENTS.override.md") === true
-      && !cpDelivered.text.includes(cpPack.id) && !cpDelivered.text.includes("--- ROLLE ---")
+      && !cpDelivered.text.includes(cpPack.id) && !cpDelivered.text.includes("--- ROLE ---")
       && !cpDelivered.text.includes("ContextPlan v2 anchors") && !cpDelivered.text.includes("HOW THIS LANE ENDS"),
     JSON.stringify({ receipt: cpProgramReceipt?.sessionAgents, fileBytes: Buffer.byteLength(cpRules), part: cpPart, prompt: cpDelivered?.text }));
 
@@ -10265,8 +10265,8 @@ export async function run(ctx: Ctx): Promise<void> {
         nativeReceipt?.sessionAgents?.path === "AGENTS.override.md"
           && nativeReceipt.sessionAgents.bytes === Buffer.byteLength(dispatchRules)
           && nativeReceipt.sessionAgents.sha256 === createHash("sha256").update(dispatchRules).digest("hex")
-          && dispatchRules.includes("--- ROLLE --- Lane:") && dispatchRules.includes("HOW THIS LANE ENDS")
-          && !text.includes("--- ROLLE --- Lane:") && !text.includes("ContextPlan v2 anchors")
+          && dispatchRules.includes("--- ROLE --- Lane:") && dispatchRules.includes("HOW THIS LANE ENDS")
+          && !text.includes("--- ROLE --- Lane:") && !text.includes("ContextPlan v2 anchors")
           && !text.includes("HOW THIS LANE ENDS") && !text.includes("YOUR MEMORY"));
       if (succession && typeof body.slot === "number" && text) {
         const slot = body.slot;
@@ -15289,7 +15289,7 @@ exit 0
       && brief.includes("GET /api/self/programs returns the whole Program row");
     const bdNoRecord = (brief: string, c: ProgramContent): boolean =>
       [...c.decisions, ...c.evidence, ...c.openQuestions].every((row) => !brief.includes(row));
-    const bdKept = (brief: string): boolean => brief.includes("--- ROLLE --- Program-MAIN")
+    const bdKept = (brief: string): boolean => brief.includes("--- ROLE --- Program-MAIN")
       && brief.includes("OWNER-KORREKTUREN: Lies vor deinem ersten Akt");
     const bdJsonWas = (c: ProgramContent): number => bdBytes(JSON.stringify(c, null, 2));
 

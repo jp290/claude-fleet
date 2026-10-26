@@ -28,9 +28,9 @@ describe("was im eigenen Setup mitgegeben ist", () => {
   test("jede Wahl eine Zeile „<feld>: <wert>“", () => {
     expect(eigenesSetupGewaehlt({ model: "claude-haiku-5-5", effort: "low", permissionMode: "auto", rechte: "lesen", profil: "planer", bibliothek: true,
       notizbuch: "aus", remote: true, packMcp: ["playwright", "figma"], autoModeEnvironment: true, tools: ["Bash", "Read"] })).toEqual(["model: claude-haiku-5-5", "effort: low",
-      "permissionMode: auto", "tools: Bash, Read", "rechte: lesen", "bibliothek: an", "profil: planer", "notizbuch: aus", "remote: an", "mcp: playwright, figma", "autoModeEnvironment: an"]);
+      "permissionMode: auto", "tools: Bash, Read", "rechte: lesen", "bibliothek: on", "profil: planer", "notizbuch: aus", "remote: on", "mcp: playwright, figma", "autoModeEnvironment: on"]);
     expect(eigenesSetupGewaehlt({ ...nichts, notizbuch: "branch" })).toEqual(["notizbuch: branch"]);
-    expect(eigenesSetupGewaehlt({ ...nichts, tools: [] })).toEqual(["tools: keine eingebauten"]);
+    expect(eigenesSetupGewaehlt({ ...nichts, tools: [] })).toEqual(["tools: no built-in tools"]);
   });
   test("permissionMode nimmt genau Claude Codes Werte; ohne Feld keine Wahl", () => {
     expect(permissionModeDerTuer(undefined)).toEqual({ ok: true, wahl: null });
@@ -51,9 +51,9 @@ describe("die eingebauten Werkzeuge als Wahl", () => {
   });
   test("die Fassung nennt die Schema-Bytes der Liste aus der Tabelle, Aufgeschobenes nur beim Namen", () => {
     const t = { gemessen: "2026-10-23", claude: "2.1.309", bytes: { Artifact: 36119, Bash: 3368, Read: 1923 } };
-    expect(werkzeugSchemaSatz(["Bash", "Read", "TaskStop"], t)).toBe("Schemas am Start: 5 291 B von 41 410 B (Bash 3 368, Read 1 923) · "
-      + "aufgeschoben, nur der Name am Start: TaskStop · gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)");
-    expect(werkzeugSchemaSatz(null, t)).toStartWith("Schemas am Start: 41 410 B von 41 410 B (Artifact 36 119,");
+    expect(werkzeugSchemaSatz(["Bash", "Read", "TaskStop"], t)).toBe("Schemas at start: 5 291 B of 41 410 B (Bash 3 368, Read 1 923) · "
+      + "deferred, only the name at start: TaskStop · measured 2026-10-23 on claude 2.1.309 (.fleet/werkzeug-schemas.json)");
+    expect(werkzeugSchemaSatz(null, t)).toStartWith("Schemas at start: 41 410 B of 41 410 B (Artifact 36 119,");
     expect(werkzeugSchemaSatz(["Bash"], null)).toBeNull();
   });
 });
@@ -79,7 +79,7 @@ describe("Teile aus ~/.claude weglassen", () => {
       skillOverrides: { audit: "off" }, deny: ["mcp__playwright"], settings: { enabledPlugins: { "figma@claude-plugins-official": false }, disableAllHooks: true } });
     expect(weglassenStart(null, "/h/.claude")).toEqual({ excludes: [], disallowed: [], skillOverrides: {}, deny: [], settings: {} });
     expect(weglassenZeilen(w)).toEqual(["claudeMd: ~/.claude/CLAUDE.md", "rules: ~/.claude/rules/**", "plugins: figma@claude-plugins-official",
-      "agents: e2e-runner", "skills: audit", "mcp: playwright (ihre Werkzeuge; der Server startet weiter)", "hooks: alle (auch Statuszeile und @-Vorschlag)"]);
+      "agents: e2e-runner", "skills: audit", "mcp: playwright (their tools; the server keeps running)", "hooks: all (also the status line and the @ suggestion)"]);
     expect(weglassenZeilen(null)).toEqual([]);
   });
 });

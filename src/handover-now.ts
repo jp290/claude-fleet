@@ -170,13 +170,13 @@ export function flowSteps(sc: BriefSuccession, f: FlowFacts): Step[] {
 // already given (owner Z50: „[Zitat entfernt]“); the
 // cap above it is where Fleet acts itself.
 export function laterText(pct: number, act: Choice, lane: boolean): string {
-  const then = act === "succeed" ? ` Bei ${pct + CAP_GAP_PCT} % öffnet Fleet sonst selbst eine neue Session.`
-    : act === "compact" ? ` Bei ${pct + CAP_GAP_PCT} % fasst Fleet sonst deinen Verlauf zusammen.` : "";
-  return `Noch nicht weitergeben: Arbeite bitte weiter, bis dein Kontext bei ${pct} % steht, und gib dann selbst weiter${lane ? " (mit deinem Bericht)" : ""}.${then}`;
+  const then = act === "succeed" ? ` At ${pct + CAP_GAP_PCT} % Fleet otherwise starts a new session itself.`
+    : act === "compact" ? ` At ${pct + CAP_GAP_PCT} % Fleet otherwise compacts your conversation.` : "";
+  return `Not yet: keep working until your context is at ${pct} %, then hand over yourself${lane ? " (with your report)" : ""}.${then}`;
 }
 // „Succeed now“: the session leads its own succession (owner 16.10. 12:2x); the doors are named so it finds them
 export function nowText(lane: boolean): string {
   return lane
-    ? "Bitte gib jetzt weiter: Bring den laufenden Schritt zu Ende, committe, schreib deinen Übergabebericht (fleet-report mit status handoff) und gib dann selbst an eine frische Session weiter (POST /api/self/succeed)."
-    : "Bitte gib jetzt weiter: Schreib deine Übergabe (POST /api/self/handover) und starte dann selbst deine Nachfolge (POST /api/self/succeed).";
+    ? "Hand over now: finish the current step, commit, write your handover report (fleet-report with status handoff), then move on to a fresh session yourself (POST /api/self/succeed)."
+    : "Hand over now: write your handover (POST /api/self/handover), then start your successor yourself (POST /api/self/succeed).";
 }

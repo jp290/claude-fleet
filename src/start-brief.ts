@@ -65,7 +65,7 @@ export const imRepo = (pfad: string, repo: string): boolean => { const r = echt(
 // the note Fleet types into the pane at a mark of its context, read from the Fassung's text for arbeitet/schwelle
 // (server/fassung-umfeld.ts#schwelleAbschnitt: „Übergabe ab 40 % · … · Hinweis an“); null = none
 export const uebergabeHinweis = (t: string | null | undefined): number | null => {
-  const m = t && /Hinweis an/.test(t) ? /(\d+)\s*%/.exec(t) : null;
+  const m = t && /note on|Hinweis an/.test(t) ? /(\d+)\s*%/.exec(t) : null;
   return m ? Number(m[1]) : null;
 };
 // a file as the window names it: the repo's by its path in the repo (its owner word says „[Zitat entfernt]“), yours under ~/.claude, a project's

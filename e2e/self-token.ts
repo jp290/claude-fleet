@@ -1351,9 +1351,9 @@ export async function run(ctx: Ctx): Promise<void> {
     const fromB = lineC?.record?.from as { sessionId?: unknown; cwd?: unknown } | undefined;
     const bPast = oj.slot ? await get(`/api/slots/${oj.slot}/succession/2/transcript`) : null;
     const bPastBody = (await bPast?.json()) as { assigned?: boolean; reason?: string } | undefined;
-    check("(band) a predecessor without a session id writes `sessionId: null` beside its cwd, and its band stays 'nicht zugeordnet'",
+    check("(band) a predecessor without a session id writes `sessionId: null` beside its cwd, and its band stays 'not assigned'",
       fromB?.sessionId === null && fromB.cwd === sr && bPast?.status === 200 && bPastBody?.assigned === false
-        && (bPastBody.reason ?? "").includes("nicht zugeordnet"),
+        && (bPastBody.reason ?? "").includes("not assigned"),
       `${JSON.stringify(lineC?.record?.from)} ${bPast?.status} ${JSON.stringify(bPastBody)}`);
 
     // THE REBUILD READS THE RECORD AND NOTHING ELSE: kind + target fields -> the door's body
@@ -2084,7 +2084,7 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
   // by OCCUPANT, not slot number (server.ts#logPrompt writes openedAt for exactly this): an earlier
   // module's session on the same recycled slot can carry its own migrate nudge in the same log
   const migratePrompts = async (x: { slot: number; openedAt: number }) => (await plogRead())
-    .filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Dein Kontext ist bei "));
+    .filter((e) => e.slot === x.slot && e.openedAt === x.openedAt && e.text.startsWith("[fleet] Your context is at "));
   type CtxRow = { id: number; ctx: { pct: number } | null };
   const ctxRows = ((await (await get("/api/sessions")).json()) as { slots: CtxRow[] }).slots;
   check(LATER.ctx,

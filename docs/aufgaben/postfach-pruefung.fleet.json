@@ -39,7 +39,7 @@
         "rechteV": 1,
         "werte": {
           "permission-mode": "auto",
-          "subagenten": "nur lesende"
+          "subagenten": "read only"
         }
       }
     },
@@ -96,7 +96,7 @@
   ],
   "laeufe": [
     {
-      "fassung": "71044b5d3586fcf3b371322d2e66562c4f1995cb891718f60ba4bb046fe6a907",
+      "fassung": "024315a29281fa6a9060cfba493ff8e72f2314dcdb89b3202a16c0529a19239f",
       "quelle": "Recorded afterwards from the run's material: the finder's prompt and transcript, its final report, and the proof. The run did not start from this constellation: the prover was a free session that started the finder itself, and it had no brief of its own, so the task above is written afterwards from the proof and the check rule. In the texts, local paths are replaced by repository paths and the prover's slot number by \"the prover\"; nothing else is changed. Line numbers refer to the code at 4930071a1.",
       "start": "2026-10-21T19:50:22+02:00",
       "ende": "2026-10-21T20:05:00+02:00",

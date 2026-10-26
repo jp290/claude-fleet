@@ -14803,7 +14803,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
   // verbatim inheritance unless the body renamed the role, and an owner who renames it at
   // succeed time has renamed it. The record stays the ONE handover channel (the card's own
-  // UEBERGABE block says so), so nothing here is a second one.
+  // HANDOVER block says so), so nothing here is a second one.
   const orchestrator = isOrchestratorLabel(label);
   const harness = spawn.harness !== undefined ? spawn.harness : s.harness;
   // DIE ROLLE, IHR START UND IHRE FÜNF PACKS — gelesen aus dem Baum, in dem die Vorgängerin steht.
@@ -21097,7 +21097,7 @@ const LANE_EXIT_HANDOFF_CODEX = `you are laying the baton down DELIBERATELY (don
 // model name: codex is the one adapter whose native auto-compaction Fleet relies on (owner,
 // 2026-09-30) and whose spawn line carries its compaction budget (CODEX_HARNESS, Slot.context).
 // Every seam that would otherwise hand a codex session a context-derived stop or succession — the
-// lane footer, the Orchestratorin's KONTEXT line, the steward's context-only handoff — asks this one
+// lane footer, the Orchestrator's CONTEXT line, the steward's context-only handoff — asks this one
 // predicate. tickMigrate and the pulse band keep their own CLAUDE-only gate: they are a claude
 // fact, and narrowing them to "not codex" would hand pi a band its owner ruled out (2026-09-06).
 function nativeCompaction(harness: string | null): boolean {
@@ -21466,9 +21466,9 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
   if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter", laneExitFooter(harness, null), false), zustellung];
   if (rolle === "orchestrator") return [...fassungOrchestratorArbeitet(repoRoot), zustellung];
   if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
-    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false), zustellung];
+    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- YOUR RECIPIENT ---"), empf,
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ACCEPTANCE ---"),
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- HANDOVER ---")].filter(Boolean).join("\n"), false), zustellung];
   return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
     `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
@@ -21642,9 +21642,9 @@ function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Fassun
     laneExitFooter(s.harness, receiver), false), zustellung];
   if (rolle === "orchestrator") return [...fassungOrchestratorArbeitet(repoRoot), zustellung];
   if (rolle === "program-main") return [textAbschnitt("arbeitet", "server/rollenkarten.ts#MAIN_ROLE_CARD",
-    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- DEIN EMPFAENGER ---"), empf,
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ABNAHME ---"),
-      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- UEBERGABE ---")].filter(Boolean).join("\n"), false), zustellung];
+    [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- YOUR RECIPIENT ---"), empf,
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ACCEPTANCE ---"),
+      fassungCardAbschnitt(MAIN_ROLE_CARD, "--- HANDOVER ---")].filter(Boolean).join("\n"), false), zustellung];
   return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
     `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
 }
@@ -21669,17 +21669,17 @@ const markiereEigenes = (liest: FassungAbschnittEingang[]): FassungAbschnittEing
 // thresholdChoiceOf, keepCacheFleetOn). Gezeigt wird die Einstellung, nicht der Augenblick: ob die Session gerade wartet oder noch keine
 // Unterhaltung hat, ändert ihr Setup nicht. Ein Slot, den eine Vorschau stempelt, steht nicht in `slots`; seine Art kommt aus der Rolle.
 const KEEP_CACHE_AUS_WORT: Record<KeepCacheExempt, string> = {
-  steward: "der Steward wird nicht warmgehalten", lane: "eine Lane gibt mit ihrem handoff-Report weiter und wird nicht warmgehalten",
-  harness: "nur eine Claude-Session hat die gemessene Cache-Lebensdauer",
+  steward: "the steward is not kept warm", lane: "a lane hands over with its handoff report and is not kept warm",
+  harness: "only a Claude session has the measured cache lifetime",
 };
 function fassungLaufwerte(o: { art: SessionKind; claude: boolean; steward: boolean; eigen: HandoverSetting | null;
   wahl: ThresholdChoice; warmFleet: boolean; eigenesSetup: boolean }): FassungAbschnittEingang[] {
   const t = thresholdOf(o.art, railEnvPct(o.art), o.eigen?.thresholdPct ?? null, o.eigenesSetup);
-  const aus = o.steward ? "der Steward übergibt nicht" : !o.claude ? "nur eine Claude-Session steht auf der Übergabe-Schiene"
-    : MIGRATE_PCT <= 0 ? "FLEET_MIGRATE_PCT ist 0, Fleet hat keinen Übergabe-Takt"
-    : t.basePct <= 0 ? (t.from === "session" ? "für diese Session ausgeschaltet"
-      : t.from === "setup" ? "eigenes Setup — Fleet tippt keinen Hinweis und übergibt nicht, bis du eine Schwelle wählst (schwelle)"
-      : `${o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT"} ist 0`) : null;
+  const aus = o.steward ? "the steward does not hand over" : !o.claude ? "only a Claude session is on the handover track"
+    : MIGRATE_PCT <= 0 ? "FLEET_MIGRATE_PCT is 0, Fleet has no handover tick"
+    : t.basePct <= 0 ? (t.from === "session" ? "switched off for this session"
+      : t.from === "setup" ? "own setup — Fleet types no note and does not hand over until you pick a threshold (field schwelle)"
+      : `${o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT"} is 0`) : null;
   const exempt: KeepCacheExempt | null = o.steward ? "steward" : o.art === "lane" ? "lane" : !o.claude ? "harness" : null;
   return [
     schwelleAbschnitt({ art: o.art, basePct: t.basePct, capPct: t.capPct, von: t.from, envName: o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT",
@@ -23212,12 +23212,12 @@ function stallView(): { stallMs: number; detected: number; msTotal: number;
 // Stable while the heads stand still (no running minute count), so an unchanged stall rewrites nothing.
 function stallText(r: StallReading, since: number): string {
   const heads = stallHeads(r.waits);
-  const lines = heads.map((h) => `· ${h.adressat} — ${h.wurzel}${h.seit ? ` (seit ${new Date(h.seit).toISOString()})` : ""} ← ${h.ids.join(", ")}`);
-  const head = `Stau in ${basename(r.repo)} seit ${new Date(since).toISOString()}: freigegebene Arbeit wartet, keine Welle startbereit, `
-    + `${r.lanes}/${r.cap ?? "?"} Lanes belegt. Wurzel-Blocker:`;
-  const tail = "Der Sensor stellt fest und entscheidet nichts — Tabelle: GET /api/start-plan → waits.";
+  const lines = heads.map((h) => `· ${h.adressat} — ${h.wurzel}${h.seit ? ` (since ${new Date(h.seit).toISOString()})` : ""} ← ${h.ids.join(", ")}`);
+  const head = `Stall in ${basename(r.repo)} since ${new Date(since).toISOString()}: released work waits, no wave is ready to start, `
+    + `${r.lanes}/${r.cap ?? "?"} lanes taken. Root blockers:`;
+  const tail = "The sensor observes and decides nothing — table: GET /api/start-plan → waits.";
   const render = (n: number): string => [head, ...lines.slice(0, n),
-    ...(n < lines.length ? [`… ${lines.length - n} weitere`] : []), tail].join("\n");
+    ...(n < lines.length ? [`… ${lines.length - n} more`] : []), tail].join("\n");
   let shown = lines.length;
   while (shown > 1 && render(shown).length > MAX_ATTENTION_TEXT) shown--;
   return render(shown).slice(0, MAX_ATTENTION_TEXT);
@@ -27754,7 +27754,7 @@ const postfachVersuche = new PostfachVersuche(POSTFACH_TICK_MS);
 function postfachSenderLabel(a: MessageAddress): string {
   if (a.kind === "program") return `Program ${a.id}`;
   if (a.kind === "role") return a.role === "owner" ? "Owner"
-    : a.role === "orchestrator" ? "Orchestratorin" : `Rolle ${a.role}`;
+    : a.role === "orchestrator" ? "Orchestrator" : `Role ${a.role}`;
   return `${a.kind === "lane" ? "Lane" : "Session"} Slot ${a.slot}`;
 }
 function postfachEntryOf(m: Message): PostfachEntry {
@@ -28400,7 +28400,7 @@ function keepCacheRowView(s: Slot): { at: number; act: "warm"; outcome: string; 
 }
 // what the session is told: that this is a warm turn and what to answer — nothing about its state.
 // The fleet's text; a session's own (HandoverSetting.keepCacheText) replaces it whole.
-const KEEP_CACHE_TEXT = "[fleet] Cache warmhalten. Antworte nur mit „ok“ — beginne nichts, rufe kein Werkzeug auf.";
+const KEEP_CACHE_TEXT = "[fleet] Keep the cache warm. Answer with ok only — start nothing, call no tool.";
 
 // e2e only: parks at the point the latch file names, so a probe can change the setting in between —
 // `<slot>` right after tickKeepCache's decision for that slot, `kill:<slot>` at the start of the owner
@@ -28635,7 +28635,7 @@ function contextFillOf(s: Slot, cwd: string, sessionId: string): ContextFill | n
   if (windowTokens === null) return null;
   return { usedTokens, windowTokens, pct: Math.round((usedTokens / windowTokens) * 1000) / 10 };
 }
-const TRANSCRIPT_UNASSIGNED = "Transkript nicht zugeordnet — für diese Session liegt weder im Nachfolge-Record noch in einem Übergabe-Report eine Session-Kennung vor";
+const TRANSCRIPT_UNASSIGNED = "Transcript not assigned — this session has no session id, neither in the succession record nor in a handover report";
 async function pastTranscript(s: Slot, n: number, after: number) {
   const past = successionLine(s).past.find((p) => p.session === n);
   if (!past) return null;
@@ -30363,17 +30363,17 @@ const MACHINE_SETTINGS = [
   { name: "FLEET_DISPATCH_MAX_LANES", value: DISPATCH_MAX_LANES, default: 3, how: "watchdog.sh + kickstart" },
   { name: "FLEET_VERIFY_TIMEOUT_MS", value: VERIFY_TIMEOUT_MS, default: 120_000, how: "watchdog.sh + kickstart" },
   { name: "FLEET_VERIFY_WAIT_MS", value: VERIFY_WAIT_MS, default: 900_000, how: "watchdog.sh + kickstart" },
-  { name: "FLEET_MIGRATE_PCT", value: MIGRATE_PCT, default: 0, how: ".env + Neustart" },
+  { name: "FLEET_MIGRATE_PCT", value: MIGRATE_PCT, default: 0, how: ".env + restart" },
   { name: "FLEET_LANE_MIGRATE_PCT", value: thresholdOf("lane", LANE_MIGRATE_PCT_ENV, null).basePct,
-    default: thresholdOf("lane", null, null).basePct, how: ".env + Neustart" },
-  { name: "FLEET_MODEL", value: DEFAULT_MODEL, default: FLEET_DEFAULT_MODEL, how: ".env + Neustart" },
-  { name: "FLEET_STALLED_IDLE_MS", value: STALLED_IDLE_MS, default: 30 * 60_000, how: ".env + Neustart" },
-  { name: "FLEET_CARD_MS", value: CARD_TICK_MS, default: 0, how: ".env + Neustart" },
-  { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + Neustart" },
-  { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + Neustart" },
+    default: thresholdOf("lane", null, null).basePct, how: ".env + restart" },
+  { name: "FLEET_MODEL", value: DEFAULT_MODEL, default: FLEET_DEFAULT_MODEL, how: ".env + restart" },
+  { name: "FLEET_STALLED_IDLE_MS", value: STALLED_IDLE_MS, default: 30 * 60_000, how: ".env + restart" },
+  { name: "FLEET_CARD_MS", value: CARD_TICK_MS, default: 0, how: ".env + restart" },
+  { name: "FLEET_LAND_FF_RETRY_ROUNDS", value: LAND_FF_RETRY_ROUNDS, default: 2, how: ".env + restart" },
+  { name: "FLEET_MERGE_REPAIR_ROUNDS", value: MERGE_REPAIR_ROUNDS, default: 2, how: ".env + restart" },
   { name: "FLEET_AUTO_REVIEW_MS", value: AUTO_REVIEW_MS, default: 15_000, how: "watchdog.sh + kickstart" },
   // read in server/types.ts (it sizes MAX_SLOTS there); binding only with FLEET_SEPARATE_LANE_SLOTS=1
-  { name: "FLEET_MAX_SESSIONS", value: FLEET_MAX_SESSIONS, default: 16, how: ".env + Neustart" },
+  { name: "FLEET_MAX_SESSIONS", value: FLEET_MAX_SESSIONS, default: 16, how: ".env + restart" },
 ] as const;
 const VERIFY_OUT_CAP = 2048; // verify.out is a byte-capped RETENTION of stdout+stderr (~2KB) — see retainRunOutput
 // --- the SKIP contract, and the decision behind it -------------------------------------------
@@ -44567,7 +44567,7 @@ function buildOrchestratorSpawnBrief(start: OrchestratorStartTeile, imSystemprom
 }
 
 // The succession twin: the SAME start, in front of it the line record and the optional carry.
-// The card's own UEBERGABE/Handing over block names the record as the one handover channel; this
+// The card's own HANDOVER/Handing over block names the record as the one handover channel; this
 // brief adds no second one.
 function buildOrchestratorSuccessionBrief(start: OrchestratorStartTeile, lineageId: string, lineage: HandoverFacts,
   carry: string | null, imSystemprompt = false): string {

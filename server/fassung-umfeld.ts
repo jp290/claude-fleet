@@ -59,13 +59,13 @@ function lies(pfad: string): Gelesen {
   try { roh = readFileSync(pfad, "utf8"); }
   catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    return { pfad, roh: null, json: null, fehler: code === "ENOENT" || code === "ENOTDIR" ? null : `nicht lesbar (${code ?? "?"})` };
+    return { pfad, roh: null, json: null, fehler: code === "ENOENT" || code === "ENOTDIR" ? null : `not readable (${code ?? "?"})` };
   }
   try {
     const j = obj(JSON.parse(roh));
-    return { pfad, roh, json: j, fehler: j ? null : "kein JSON-Objekt" };
+    return { pfad, roh, json: j, fehler: j ? null : "not a JSON object" };
   } catch {
-    return { pfad, roh, json: null, fehler: "kein gültiges JSON" };
+    return { pfad, roh, json: null, fehler: "not valid JSON" };
   }
 }
 
@@ -169,10 +169,10 @@ export function leseEigenes(o: UmfeldOrte): Eigenes {
   const mcpRepo = obj(lies(join(o.cwd, ".mcp.json")).json?.mcpServers) ?? {};
   return {
     agenten: liste("agents", (r) => r.endsWith(".md"), (r) => r.replace(/\.md$/, "")),
-    skills: liste("skills", (r) => r.endsWith("/SKILL.md"), (r) => r.split("/").at(-2)!, (_i, r) => r.startsWith("synced/") ? "vom Konto" : undefined),
+    skills: liste("skills", (r) => r.endsWith("/SKILL.md"), (r) => r.split("/").at(-2)!, (_i, r) => r.startsWith("synced/") ? "from your account" : undefined),
     befehle: liste("commands", (r) => r.endsWith(".md"), (r) => r.replace(/\.md$/, "").replaceAll("/", ":")),
     stile: liste("output-styles", (r) => r.endsWith(".md"), (r) => r.replace(/\.md$/, "")),
-    regeln: liste("rules", (r) => r.endsWith(".md"), (r) => r, (inhalt) => /^---\n[\s\S]*?^paths:/m.test(inhalt) ? "bei passenden Pfaden" : "immer"),
+    regeln: liste("rules", (r) => r.endsWith(".md"), (r) => r, (inhalt) => /^---\n[\s\S]*?^paths:/m.test(inhalt) ? "for matching paths" : "always"),
     mcp: [
       ...Object.entries(obj(claudeJson?.mcpServers) ?? {}).map(([name, v]) => ({ name, wo: "owner" as const, was: mcpWas(v) })),
       ...Object.entries(obj(ordner?.mcpServers) ?? {}).map(([name, v]) => ({ name, wo: "ordner" as const, was: mcpWas(v) })),
@@ -228,12 +228,12 @@ const ohneLangeWerte = (s: string): string => s.replace(/[A-Za-z0-9_\-+=]{32,}/g
 
 const hookZeile = (h: HookEintrag, zeige: (pfad: string) => string): string =>
   `${h.ereignis}${h.matcher ? ` · ${h.matcher}` : ""} · ${h.art === "command" ? "" : `${h.art}: `}${ohneLangeWerte(h.befehl)}`
-  + (h.datei ? `\n  Skript ${zeige(h.datei.pfad)} · ${h.datei.bytes} B · sha256 ${h.datei.sha}` : "")
-  + `\n  aus ${h.quelle}`;
+  + (h.datei ? `\n  script ${zeige(h.datei.pfad)} · ${h.datei.bytes} B · sha256 ${h.datei.sha}` : "")
+  + `\n  from ${h.quelle}`;
 
 const istEigenes = (herkunft: HookEintrag["herkunft"]): boolean => herkunft !== "repo";
-const QUELL_ORT: Record<QuellArt, string> = { verwaltet: "in der verwalteten Datei", owner: "in deiner Datei", repo: "in der Datei des Repos",
-  lokal: "in der lokalen Datei des Checkouts" };
+const QUELL_ORT: Record<QuellArt, string> = { verwaltet: "set in the managed file", owner: "set in your file", repo: "set in the repo's file",
+  lokal: "set in the checkout's local file" };
 
 /** Die Abschnitte für „Darf“ (Hooks und Einstellungen) und „Arbeitet mit“ (Plugins). Nur für Claude; ein anderer Harness liest sie nicht.
  *  `regelnAus`: der Grund, aus dem die Zeile dem Sitz die eigenen Regeln nimmt (server.ts#eigeneRegelnExcludes), sonst null. */
@@ -241,48 +241,48 @@ export function umfeldAbschnitte(u: Umfeld, home: string, cwd: string, regelnAus
   const zeige = (pfad: string): string => zeigePfad(pfad, home, cwd);
   const kaputt = u.quellen.filter((q) => q.fehler);
   const grund = kaputt.length ? kaputt.map((q) => `${zeige(q.pfad)}: ${q.fehler}`).join(" · ") : undefined;
-  const aus = u.hooksAus ? `\n(keiner läuft: disableAllHooks ${QUELL_ORT[u.hooksAus]})` : "";
+  const aus = u.hooksAus ? `\n(none runs: disableAllHooks ${QUELL_ORT[u.hooksAus]})` : "";
   // je Skript eine Datei, auch wenn mehrere Hooks es aufrufen
   const skripte = (liste: readonly HookEintrag[]) => [...new Map(liste.flatMap((h) => h.datei ? [[h.datei.pfad, h.datei.bytes] as const] : [])).entries()]
     .map(([pfad, bytes]) => ({ pfad: zeige(pfad), bytes }));
   const hookAbschnitt = (id: string, quelle: string, liste: readonly HookEintrag[], eigen: boolean): FassungAbschnittEingang => ({
-    ...textAbschnitt(id, quelle, liste.length ? liste.map((h) => hookZeile(h, zeige)).join("\n") + aus : "(keine Hooks)", true,
+    ...textAbschnitt(id, quelle, liste.length ? liste.map((h) => hookZeile(h, zeige)).join("\n") + aus : "(no hooks)", true,
       undefined, skripte(liste), grund),
     ...(eigen ? { eigentum: "owner" as const } : {}) });
   const einstellung = (arten: readonly QuellArt[], id: string, eigen: boolean): FassungAbschnittEingang => {
     const da = u.quellen.filter((q) => arten.includes(q.art) && q.json);
     const text = da.map((q) => {
       const { hooks: _h, enabledPlugins: _p, ...rest } = q.json!;
-      return `${zeige(q.pfad)} (${Buffer.byteLength(q.roh ?? "")} B, Hooks und Plugins stehen eigens):\n${JSON.stringify(ohneGeheimes(rest), null, 1)}`;
+      return `${zeige(q.pfad)} (${Buffer.byteLength(q.roh ?? "")} B, hooks and plugins are listed separately):\n${JSON.stringify(ohneGeheimes(rest), null, 1)}`;
     }).join("\n");
     return { ...textAbschnitt(id, u.quellen.filter((q) => arten.includes(q.art) && q.roh !== null).map((q) => zeige(q.pfad)).join("\n") || null,
-      text || "(keine Datei)", true, undefined, da.map((q) => ({ pfad: zeige(q.pfad), bytes: Buffer.byteLength(q.roh ?? "") })), grund),
+      text || "(no file)", true, undefined, da.map((q) => ({ pfad: zeige(q.pfad), bytes: Buffer.byteLength(q.roh ?? "") })), grund),
       ...(eigen ? { eigentum: "owner" as const } : {}) };
   };
   const an = u.plugins.filter((p) => p.an), ab = u.plugins.filter((p) => !p.an);
   const pluginText = [
-    ...an.map((p) => `${p.name}${p.version ? ` ${p.version}` : ""} · an ${QUELL_ORT[p.von]}`
-      + (p.bringt ? ` · Skills ${p.bringt.skills} · Agenten ${p.bringt.agenten} · Befehle ${p.bringt.befehle} · Hooks ${p.bringt.hooks}${p.bringt.mcp ? " · MCP" : ""}`
-        : " · nicht installiert gefunden")),
-    ...[...new Set(ab.map((p) => p.von))].map((von) => `aus ${QUELL_ORT[von]}: ${ab.filter((p) => p.von === von).map((p) => p.name).join(", ")}`),
+    ...an.map((p) => `${p.name}${p.version ? ` ${p.version}` : ""} · on (${QUELL_ORT[p.von]})`
+      + (p.bringt ? ` · skills ${p.bringt.skills} · agents ${p.bringt.agenten} · commands ${p.bringt.befehle} · hooks ${p.bringt.hooks}${p.bringt.mcp ? " · MCP" : ""}`
+        : " · install not found")),
+    ...[...new Set(ab.map((p) => p.von))].map((von) => `off (${QUELL_ORT[von]}): ${ab.filter((p) => p.von === von).map((p) => p.name).join(", ")}`),
   ].join("\n");
   return {
     darf: [
-      hookAbschnitt("hooks", ".claude/settings.json des Repos", u.hooks.filter((h) => !istEigenes(h.herkunft)), false),
-      hookAbschnitt("hooks-eigene", "deine Claude-Code-Dateien und Plugins", u.hooks.filter((h) => istEigenes(h.herkunft)), true),
+      hookAbschnitt("hooks", ".claude/settings.json of the repo", u.hooks.filter((h) => !istEigenes(h.herkunft)), false),
+      hookAbschnitt("hooks-eigene", "your Claude Code files and plugins", u.hooks.filter((h) => istEigenes(h.herkunft)), true),
       einstellung(["repo"], "cc-einstellungen", false),
       einstellung(["verwaltet", "owner", "lokal"], "cc-einstellungen-eigene", true),
     ],
-    arbeitet: [eigenesAbschnitt(u.eigenes, regelnAus), ...(u.eigenes.mcpRepo.length ? [textAbschnitt("mcp-repo", ".mcp.json des Repos",
+    arbeitet: [eigenesAbschnitt(u.eigenes, regelnAus), ...(u.eigenes.mcpRepo.length ? [textAbschnitt("mcp-repo", ".mcp.json of the repo",
       u.eigenes.mcpRepo.map((m) => `${m.name} · ${m.was}`).join("\n"), true)] : []),
-      { ...textAbschnitt("plugins", "enabledPlugins der Einstellungen · plugins/installed_plugins.json", pluginText || "(keine Plugins)", true),
+      { ...textAbschnitt("plugins", "enabledPlugins of the settings · plugins/installed_plugins.json", pluginText || "(no plugins)", true),
       eigentum: "owner" }],
   };
 }
 
 /** Für einen anderen Harness: Claude Codes Dateien gelten nicht, und das steht da. */
 export const umfeldOhneClaude = (): { darf: FassungAbschnittEingang[]; arbeitet: FassungAbschnittEingang[] } => ({ darf: [], arbeitet: [
-  unknownAbschnitt("plugins", "dieser Harness liest keine Claude-Code-Plugins, -Hooks oder -Einstellungen")] });
+  unknownAbschnitt("plugins", "this harness reads no Claude Code plugins, hooks or settings")] });
 
 // FLEETS EINSTELLUNGEN, DIE DEN LAUF FORMEN, nicht den Start: die Übergabe-Schwelle (server.ts#thresholdFor) und das Cache-Warmhalten
 // (server.ts#keepCacheOn). Beide gehören dem Slot und können sich nach dem Start ändern; die Route führt sie darum an der festgehaltenen
@@ -295,36 +295,36 @@ export interface SchwelleFakten {
   /** warum keine Schwelle wirkt (Steward, Harness, Fleet-Schalter, 0 %), null = sie wirkt */
   readonly aus: string | null; readonly wahl: "hint" | "compact" | "succeed"; readonly hinweis: boolean;
 }
-const WAHL_WORT = { hint: "Hinweis", compact: "Compact", succeed: "neue Session" } as const;
+const WAHL_WORT = { hint: "note", compact: "compact", succeed: "new session" } as const;
 export function schwelleAbschnitt(f: SchwelleFakten): FassungAbschnittEingang {
-  const quelle = f.von === "session" ? "Slot.handover (für diese Session gesetzt)" : f.von === "env" ? `${f.envName} (.env)`
-    : f.von === "setup" ? "server/succession.ts#thresholdOf (eigenes Setup)" : `server/succession.ts#FLEET_BASE_PCT (${f.art})`;
-  return textAbschnitt("schwelle", quelle, f.aus ? `Übergabe-Schwelle aus: ${f.aus}`
-    : `Übergabe ab ${f.basePct} % · fällig ab ${f.capPct} % · an der Schwelle: ${WAHL_WORT[f.wahl]} · Hinweis ${f.hinweis ? "an" : "aus"}`, true);
+  const quelle = f.von === "session" ? "Slot.handover (set for this session)" : f.von === "env" ? `${f.envName} (.env)`
+    : f.von === "setup" ? "server/succession.ts#thresholdOf (own setup)" : `server/succession.ts#FLEET_BASE_PCT (${f.art})`;
+  return textAbschnitt("schwelle", quelle, f.aus ? `Handover threshold off: ${f.aus}`
+    : `Handover at ${f.basePct} % · due at ${f.capPct} % · at the threshold: ${WAHL_WORT[f.wahl]} · note ${f.hinweis ? "on" : "off"}`, true);
 }
 export interface WarmFakten {
   readonly an: boolean; readonly von: "session" | "fleet"; readonly ausGrund: string | null; readonly ruheMin: number; readonly text: string;
   readonly hoechstens: number; readonly jeStunde: number; readonly lebensdauerMin: number;
 }
 export function warmhaltenAbschnitt(f: WarmFakten): FassungAbschnittEingang {
-  const quelle = f.von === "session" ? "Slot.handover.keepCache (für diese Session gesetzt)" : "server.ts#keepCacheFleetOn (Fleet-Wert für diese Art Session)";
-  if (f.ausGrund) return textAbschnitt("warmhalten", quelle, `Cache warmhalten aus: ${f.ausGrund}`, false);
+  const quelle = f.von === "session" ? "Slot.handover.keepCache (set for this session)" : "server.ts#keepCacheFleetOn (Fleet's value for this kind of session)";
+  if (f.ausGrund) return textAbschnitt("warmhalten", quelle, `Keep cache warm: off — ${f.ausGrund}`, false);
   return textAbschnitt("warmhalten", quelle, f.an
-    ? `Cache warmhalten an: nach ${f.ruheMin} min Ruhe (Cache lebt ${f.lebensdauerMin} min) tippt Fleet höchstens ${f.hoechstens} Züge, ${f.jeStunde} je Stunde:\n${f.text}`
-    : "Cache warmhalten aus", true, f.an ? Buffer.byteLength(f.text) : 0);
+    ? `Keep cache warm: on, after ${f.ruheMin} min quiet (the cache lives ${f.lebensdauerMin} min) Fleet types at most ${f.hoechstens} turns, ${f.jeStunde} per hour:\n${f.text}`
+    : "Keep cache warm: off", true, f.an ? Buffer.byteLength(f.text) : 0);
 }
 
 // DAS ÜBRIGE EIGENE als ein Abschnitt unter „Arbeitet mit“: je Art die Dateien mit Bytes und Kurz-Hash, die MCP-Server mit ihrem Ziel
-const EIGENES_ARTEN = [["agenten", "Agenten"], ["skills", "Skills"], ["befehle", "Befehle"], ["stile", "Ausgabestile"], ["regeln", "Regeln"]] as const;
+const EIGENES_ARTEN = [["agenten", "Agents"], ["skills", "Skills"], ["befehle", "Commands"], ["stile", "Output styles"], ["regeln", "Rules"]] as const;
 function eigenesAbschnitt(e: Eigenes, regelnAus: string | null): FassungAbschnittEingang {
   // ausgeschlossene Regeln erreichen den Sitz nicht: sie zählen 0 und stehen mit dem Grund da, ohne Datei im Hash
   const arten = EIGENES_ARTEN.filter(([k]) => !(regelnAus && k === "regeln"));
   const zeilen = [
     ...EIGENES_ARTEN.map(([k, wort]) => regelnAus && k === "regeln"
-      ? `${wort} 0${e[k].length ? ` — ausgeschlossen: ${e[k].map((d) => d.name).join(", ")}` : ""} (${regelnAus})`
+      ? `${wort} 0${e[k].length ? ` — excluded: ${e[k].map((d) => d.name).join(", ")}` : ""} (${regelnAus})`
       : `${wort} ${e[k].length}${e[k].length ? `: ${e[k].map((d) => `${d.name}${d.art ? ` (${d.art})` : ""} ${d.bytes} B ${d.sha}`).join(", ")}` : ""}`),
-    `MCP-Server aus ~/.claude.json ${e.mcp.length}${e.mcp.length ? `: ${e.mcp.map((m) => `${m.name}${m.wo === "ordner" ? " (nur dieser Ordner)" : ""} · ${m.was}`).join(", ")}` : ""}`,
-    "Konnektoren des claude.ai-Kontos: stehen in keiner Datei, Claude Code holt sie beim Start",
+    `MCP servers from ~/.claude.json ${e.mcp.length}${e.mcp.length ? `: ${e.mcp.map((m) => `${m.name}${m.wo === "ordner" ? " (this folder only)" : ""} · ${m.was}`).join(", ")}` : ""}`,
+    "Connectors of your claude.ai account: in no file, Claude Code fetches them at start",
   ];
   const dateien = arten.flatMap(([k]) => e[k].map((d) => ({ pfad: d.pfad, bytes: d.bytes })));
   return { ...textAbschnitt("claude-eigenes", "~/.claude (agents, skills, commands, output-styles, rules) · ~/.claude.json (mcpServers)",

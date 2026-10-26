@@ -4,10 +4,10 @@
 import { describe, expect, test } from "bun:test";
 import { harnessOffReason } from "../model-register";
 
-describe("harnessOffReason: ist eine Harness auf diesem Rechner abgeschaltet?", () => {
+describe("harnessOffReason: is a harness switched off on this machine?", () => {
   test("eine gelistete Harness ist abgeschaltet und sagt, woher das kommt", () => {
-    expect(harnessOffReason("pi-zai", "pi-zai,pi-unfenced")).toBe("auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)");
-    expect(harnessOffReason("pi-unfenced", "pi-zai,pi-unfenced")).toBe("auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)");
+    expect(harnessOffReason("pi-zai", "pi-zai,pi-unfenced")).toBe("switched off on this machine (FLEET_HARNESSES_OFF)");
+    expect(harnessOffReason("pi-unfenced", "pi-zai,pi-unfenced")).toBe("switched off on this machine (FLEET_HARNESSES_OFF)");
   });
   test("eine nicht gelistete Harness bleibt an, auch wenn ihr Name in einer gelisteten steckt", () => {
     expect(harnessOffReason("pi", "pi-zai,pi-unfenced")).toBeNull();
@@ -17,14 +17,14 @@ describe("harnessOffReason: ist eine Harness auf diesem Rechner abgeschaltet?", 
     expect(harnessOffReason("pi-zai", "")).toBeNull();
   });
   test("Leerzeichen um die Kommas zählen nicht, ein leerer Eintrag schaltet nichts ab", () => {
-    expect(harnessOffReason("pi-zai", " codex , pi-zai ")).toBe("auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)");
+    expect(harnessOffReason("pi-zai", " codex , pi-zai ")).toBe("switched off on this machine (FLEET_HARNESSES_OFF)");
     expect(harnessOffReason("", "pi-zai,,")).toBeNull();
   });
   test("ohne zweites Argument liest sie FLEET_HARNESSES_OFF bei jedem Aufruf", () => {
     const vorher = process.env.FLEET_HARNESSES_OFF;
     try {
       process.env.FLEET_HARNESSES_OFF = "codex";
-      expect(harnessOffReason("codex")).toBe("auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)");
+      expect(harnessOffReason("codex")).toBe("switched off on this machine (FLEET_HARNESSES_OFF)");
       delete process.env.FLEET_HARNESSES_OFF;
       expect(harnessOffReason("codex")).toBeNull();
     } finally {

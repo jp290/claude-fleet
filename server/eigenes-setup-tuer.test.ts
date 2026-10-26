@@ -63,7 +63,7 @@ describe("ein Sitz von vor dem eigenen Setup startet weiter wie heute", () => {
     writeFileSync(join(f.state, "fleet.json"), JSON.stringify(alt));
     // die laufende Fassung ist die, die beim Öffnen der Belegung festgehalten wurde; die Wahl zeigt die Fassung der Nachfolgerin, die sie erbt
     const [neustart, fassung] = await life(f, [post("/api/slots/1/restart", {}), get("/api/slots/1/fassung?anlass=nachfolge")]);
-    expect(darf(fassung, "mitgegeben")).toBe("permissionMode: auto\nbibliothek: an\nautoModeEnvironment: an");
+    expect(darf(fassung, "mitgegeben")).toBe("permissionMode: auto\nbibliothek: on\nautoModeEnvironment: on");
     expect(recordOf(f, 1)).toMatchObject({ permissionMode: "auto", bibliothek: true, autoModeEnvironment: true });
     expect(recordOf(f, 2)).toMatchObject({ permissionMode: "auto", bibliothek: false, autoModeEnvironment: true });
     expect(neustart?.status).toBeLessThan(300);
@@ -105,9 +105,9 @@ describe("Teile aus ~/.claude weglassen", () => {
     offen(mit);
     offen(umgebung);
     expect(falsch?.status).toBe(400);
-    expect(darf(fOhne, "weggelassen")).toBe("nichts");
+    expect(darf(fOhne, "weggelassen")).toBe("nothing");
     expect(darf(fMit, "weggelassen")).toBe(["claudeMd: ~/.claude/CLAUDE.md", "rules: ~/.claude/rules/**", "agents: e2e-runner", "skills: audit",
-      "mcp: playwright (ihre Werkzeuge; der Server startet weiter)", "hooks: alle (auch Statuszeile und @-Vorschlag)"].join("\n"));
+      "mcp: playwright (their tools; the server keeps running)", "hooks: all (also the status line and the @ suggestion)"].join("\n"));
     const zeile = startzeile(f, zwei(f));
     // Claudes Ordner liegt im Kit unter seinem Temp-Ordner (FLEET_CLAUDE_PROJECTS_DIR), darum nur das Pfadende
     for (const da of ["/CLAUDE.md\",", "/rules/**\"]", "--disallowedTools 'Agent(e2e-runner)'", '"skillOverrides":{"audit":"off"}',
@@ -258,8 +258,8 @@ describe("die eingebauten Werkzeuge sind eine Wahl", () => {
     expect(darf(nachfolge, "weggelassen")).toBe("claudeMd: ~/.claude/CLAUDE.md\nrules: ~/.claude/rules/**");
     const werkzeuge = ((nachfolge?.body.teile as { id: string; abschnitte: { id: string; grund?: string }[] }[]).find((t) => t.id === "darf")
       ?.abschnitte.find((a) => a.id === "werkzeuge"))?.grund ?? "";
-    expect(werkzeuge).toContain("Schemas am Start:");
-    expect(werkzeuge).toContain("aufgeschoben, nur der Name am Start: TaskStop");
+    expect(werkzeuge).toContain("Schemas at start:");
+    expect(werkzeuge).toContain("deferred, only the name at start: TaskStop");
   }, LIFE_DEADLINE_MS * 3);
 });
 
@@ -283,8 +283,8 @@ describe("im eigenen Setup tippt Fleet ohne gewählte Schwelle keinen Übergabe-
     const pruefe = (a: Answer[]): void => {
       expect(a[0]?.body.context).toMatchObject({ basePct: null, from: "setup", off: "setup" });
       expect(a[1]?.body.context).toMatchObject({ basePct: 40, capPct: 45, from: "session", off: null });
-      expect(arbeitet(a[2], "schwelle")).toStartWith("Übergabe-Schwelle aus: eigenes Setup");
-      expect(arbeitet(a[3], "schwelle")).toStartWith("Übergabe ab 40 % · fällig ab 45 %");
+      expect(arbeitet(a[2], "schwelle")).toStartWith("Handover threshold off: own setup");
+      expect(arbeitet(a[3], "schwelle")).toStartWith("Handover at 40 % · due at 45 %");
     };
     pruefe(await lesen());
     // der Spawn-Datensatz trägt es über den Neustart (server/session-start.ts#slotSpawnFrom)
@@ -317,14 +317,14 @@ describe("ein Purpose als Text an der Tür", () => {
     expect(zeile).toContain(zweck);
     expect(zeile).not.toContain("autoMemoryDirectory");
     expect(liest(fassung, "eigenes")).toBe(`PURPOSE (written by the owner at start):\n${zweck}`);
-    expect(darf(fassung, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
-    expect(darf({ status: 200, body: vorschau?.body.fassung as Record<string, unknown> }, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
+    expect(darf(fassung, "mitgegeben")).toBe("purpose: written at the door");
+    expect(darf({ status: 200, body: vorschau?.body.fassung as Record<string, unknown> }, "mitgegeben")).toBe("purpose: written at the door");
     expect((persisted(f).slots as Record<string, { agentMd?: { getippt?: boolean; text?: string } }>)["1"]?.agentMd)
       .toMatchObject({ getippt: true, text: zweck });
     const [neustart, danach] = await life(f, [post("/api/slots/1/restart", {}), get("/api/slots/1/fassung?anlass=nachfolge")]);
     expect(neustart?.status).toBeLessThan(300);
     expect(startzeile(f, f.repo)).toContain(zweck);
-    expect(darf(danach, "mitgegeben")).toBe("purpose: an der Tür geschrieben");
+    expect(darf(danach, "mitgegeben")).toBe("purpose: written at the door");
   }, LIFE_DEADLINE_MS * 3);
 
   // der Block sagt „vom Owner geschrieben“: das stimmt nur an seiner Tür. Eine Session gibt dem Sitz, den sie öffnet, ein Ziel (Orchestratorin 24.10.)

@@ -55,13 +55,13 @@ export function eigenesSetup(f: { claude: boolean; role: ClaudeStartRole | null;
 
 // WAS FLEET IM EIGENEN SETUP NOCH SETZT, je Flag mit Grund: die Setup-Ansicht zeigt genau diese Zeilen (server.ts#fassungFleetStart)
 export const EIGENES_SETUP_MINIMUM: readonly { readonly was: string; readonly warum: string }[] = [
-  { was: "eine Terminal-Pane in deinem Ordner (tmux), mit der Umgebung deiner Login-Shell; vorn im PATH der Ordner des `claude`, das Fleet startet",
-    warum: "damit Fleet die Sitzung zeigen, am Leben halten und `claude` finden kann, und du darin hast, was dein Terminal hat" },
-  { was: "--session-id bzw. --resume", warum: "über diese ID findet Fleet das Gespräch wieder, misst den Füllstand und setzt es nach einem Neustart fort" },
-  { was: "FLEET_SELF_TOKEN, FLEET_SELF_SLOT, FLEET_SELF_URL in der Umgebung", warum: "der Ausweis der Sitzung bei Fleet: Postfach, Übergabe und Rückmeldungen" },
+  { was: "a terminal pane in your folder (tmux) with the environment of your login shell; the folder of the `claude` Fleet starts comes first in PATH",
+    warum: "so Fleet can show the session, keep it alive and find `claude`, and you have in it what your terminal has" },
+  { was: "--session-id or --resume", warum: "this id is how Fleet finds the conversation again, measures how full it is and continues it after a restart" },
+  { was: "FLEET_SELF_TOKEN, FLEET_SELF_SLOT, FLEET_SELF_URL in the environment", warum: "the session's pass to Fleet: mailbox, handover and replies" },
 ];
-export const EIGENES_SETUP_SATZ = "Eigenes Setup: Diese Sitzung startet wie `claude`, das du in diesem Ordner selbst startest — mit deinen "
-  + "Einstellungen, Skills, Agenten, Regeln und MCP-Servern. Fleet nimmt nichts weg und legt nur das Folgende dazu.";
+export const EIGENES_SETUP_SATZ = "Own setup: this session starts like a `claude` you start yourself in this folder — with your "
+  + "settings, skills, agents, rules and MCP servers. Fleet takes nothing away and adds only the following.";
 
 /** DIE GITIGNORIERTEN DATEIEN EINES WORKTREES nach Claude Codes `.worktreeinclude` (code.claude.com/docs/en/worktrees, „Copy gitignored
  *  files into worktrees“): `.gitignore`-Syntax, kopiert wird nur, was ein Muster trifft UND gitignoriert ist. null = das Repo hat keine
@@ -101,7 +101,7 @@ export async function kopiereWorktreeInclude(root: string, ziel: string, dateien
 // ): standardmäßig nichts. Jede Zugabe ist eine Wahl an der Tür und steht als eigene Zeile „[Zitat entfernt]“, mit dem Namen
 // des Türfelds; ohne Wahl ist der Text genau MITGEGEBEN_NICHTS. Ein Pack landet hier nur als seine MCP-Server auf der Zeile, darum heißt
 // seine Zeile `mcp`. Die Übergabe-Schwelle steht nicht hier: sie kann sich nach dem Start ändern und hat ihren Abschnitt „schwelle“.
-export const MITGEGEBEN_NICHTS = "nichts";
+export const MITGEGEBEN_NICHTS = "nothing";
 
 // DER BERECHTIGUNGSMODUS ALS WAHL AN DER TÜR (Feld `permissionMode`, Claude Codes eigener Name): die Werte, die `claude --help` (2.1.309)
 // für `--permission-mode` nennt. Ohne Wahl setzt Fleet im eigenen Setup keinen, und es gilt der Default des Nutzers.
@@ -126,21 +126,21 @@ export function eigenesSetupGewaehlt(o: EigenesSetupWahl): string[] {
     o.model ? `model: ${o.model}` : null,
     o.effort ? `effort: ${o.effort}` : null,
     o.permissionMode ? `permissionMode: ${o.permissionMode}` : null,
-    o.tools ? `tools: ${o.tools.join(", ") || "keine eingebauten"}` : null,
+    o.tools ? `tools: ${o.tools.join(", ") || "no built-in tools"}` : null,
     o.rechte ? `rechte: ${o.rechte}` : null,
-    Array.isArray(o.bibliothek) ? `bibliothek: ${o.bibliothek.join(", ")}` : o.bibliothek ? "bibliothek: an" : null,
+    Array.isArray(o.bibliothek) ? `bibliothek: ${o.bibliothek.join(", ")}` : o.bibliothek ? "bibliothek: on" : null,
     o.profil ? `profil: ${o.profil}` : null,
-    o.purpose ? "purpose: an der Tür geschrieben" : null,
+    o.purpose ? "purpose: written at the door" : null,
     o.notizbuch ? `notizbuch: ${o.notizbuch}` : null,
-    o.remote ? "remote: an" : null,
+    o.remote ? "remote: on" : null,
     o.packMcp.length ? `mcp: ${o.packMcp.join(", ")}` : null,
-    o.autoModeEnvironment ? "autoModeEnvironment: an" : null,
+    o.autoModeEnvironment ? "autoModeEnvironment: on" : null,
   ].filter((z): z is string => z !== null);
 }
 
 /** Was Fleet auf einer Testinstanz mit echten Sitzen zusätzlich setzt: keine Wahl, darum unter Fleets Minimum (Owner-Regel 22.10.). */
-export const EIGENES_SETUP_TESTINSTANZ = { was: "--permission-mode auto und Sperrregeln (kein weiteres claude aus dem Sitz)",
-  warum: "nur auf einer Testinstanz mit echten Sitzen" } as const;
+export const EIGENES_SETUP_TESTINSTANZ = { was: "--permission-mode auto and deny rules (no further claude from the seat)",
+  warum: "only on a test instance with real seats" } as const;
 
 /** DIE WAHL `autoModeEnvironment` AN DER TÜR: Fleets Beschreibung seiner Umgebung für den Klassifizierer des Auto-Modus (session-start.ts
  *  #startAspects, autoMode.environment). true | false; ohne Feld keine Wahl (in Fleets Repo an, im eigenen Setup aus). */
@@ -175,7 +175,7 @@ export function werkzeugSchemaSatz(liste: readonly string[] | null, t: WerkzeugS
   const da = liste ? alle.filter(([name]) => liste.includes(name)) : alle;
   const ohne = liste ? liste.filter((name) => !(name in t.bytes)) : [];
   const summe = da.reduce((a, [, b]) => a + b, 0), voll = alle.reduce((a, [, b]) => a + b, 0);
-  return [`Schemas am Start: ${tsd(summe)} B von ${tsd(voll)} B (${da.map(([name, b]) => `${name} ${tsd(b)}`).join(", ") || "keins"})`,
-    ohne.length ? `aufgeschoben, nur der Name am Start: ${ohne.join(", ")}` : null,
-    `gemessen ${t.gemessen} an claude ${t.claude} (.fleet/werkzeug-schemas.json)`].filter(Boolean).join(" · ");
+  return [`Schemas at start: ${tsd(summe)} B of ${tsd(voll)} B (${da.map(([name, b]) => `${name} ${tsd(b)}`).join(", ") || "none"})`,
+    ohne.length ? `deferred, only the name at start: ${ohne.join(", ")}` : null,
+    `measured ${t.gemessen} on claude ${t.claude} (.fleet/werkzeug-schemas.json)`].filter(Boolean).join(" · ");
 }

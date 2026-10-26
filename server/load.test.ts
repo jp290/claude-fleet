@@ -229,10 +229,10 @@ describe("K15-Speicher über die Route", () => {
     const vorher = readFileSync(datei, "utf8");
     const schief: [string, number, string][] = [
       ["{ kaputt", 400, "kein gültiges JSON"],
-      [JSON.stringify([gut]), 400, "erwartet ist ein Objekt mit fassungen, packs und profile"],
-      [JSON.stringify({ ...gut, token: "x" }), 400, "unbekanntes Feld „token“"],
-      [JSON.stringify({ ...gut, packs: "pk1" }), 400, "„packs“ fehlt oder ist keine Liste"],
-      [JSON.stringify({ ...gut, profile: [{ id: 1, rolle: "lane", schiene: "lane" }] }), 400, "Eintrag 1 in „profile“ braucht id, rolle, schiene als Text"],
+      [JSON.stringify([gut]), 400, "expected an object with fassungen, packs and profile"],
+      [JSON.stringify({ ...gut, token: "x" }), 400, "unknown field “token”"],
+      [JSON.stringify({ ...gut, packs: "pk1" }), 400, "“packs” is missing or not a list"],
+      [JSON.stringify({ ...gut, profile: [{ id: 1, rolle: "lane", schiene: "lane" }] }), 400, "entry 1 in “profile” needs id, rolle, schiene as text"],
       [JSON.stringify({ ...gut, fassungen: [{ abschnitt: "lane|x", text: "x".repeat(10_000_001) }] }), 413, "größer als 10 MB"],
     ];
     for (const [body, status, error] of schief) {

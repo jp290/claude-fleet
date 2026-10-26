@@ -24,12 +24,12 @@ export function katalogAus(j: unknown): Katalog | null {
     if (!h || typeof h.id !== "string" || (h.role ?? "agent") !== "agent") continue;
     const sup = rec(h.supports) ?? {};
     const av = rec(h.availability);
-    const grund = typeof h.grund === "string" ? h.grund : "auf diesem Rechner abgeschaltet";
+    const grund = typeof h.grund === "string" ? h.grund : "switched off on this machine";
     agenten.push({ id: h.id, models: texte(h.models), effortLevels: texte(h.effortLevels), modell: sup.model === true, effort: sup.effort === true,
       standard: h.default === true, lanes: h.allowsLanes !== false,
       // Bauleitung e768d9f5: was dieser Rechner nicht startet, heißt „nur auf einem anderen Rechner“; der Grund des Servers steht im Title
-      aus: h.hier === false ? { wort: "nur auf einem anderen Rechner", grund }
-        : av?.status === "unavailable" ? { wort: "pausiert", grund: typeof av.reason === "string" ? av.reason : "pausiert (model-register.ts#HARNESS_AVAILABILITY)" } : null });
+      aus: h.hier === false ? { wort: "only on another machine", grund }
+        : av?.status === "unavailable" ? { wort: "paused", grund: typeof av.reason === "string" ? av.reason : "paused (model-register.ts#HARNESS_AVAILABILITY)" } : null });
   }
   const abgeloest = new Set((Array.isArray(o.modelRegistry) ? o.modelRegistry : []).flatMap((x) => {
     const e = rec(x);
@@ -66,7 +66,7 @@ export function passtEffort(k: Katalog | null, id: string, e: string): boolean {
 export interface AgentOption { wert: string; wort: string; aus?: string; grund?: string }
 export function agentOptionen(k: Katalog, lane: boolean): AgentOption[] {
   return k.agenten.map((a) => {
-    const nein = a.aus ?? (lane && !a.lanes ? { wort: "keine Lanes", grund: `${agentWort(a.id)} läuft nur als Haupt-Session, nicht als Lane (allowsLanes)` } : null);
+    const nein = a.aus ?? (lane && !a.lanes ? { wort: "no lanes", grund: `${agentWort(a.id)} runs only as a main session, not as a lane (allowsLanes)` } : null);
     return { wert: a.id, wort: agentWort(a.id), ...(nein ? { aus: nein.wort, grund: nein.grund } : {}) };
   });
 }

@@ -23,7 +23,7 @@ import { exists, landedAsOne, setMergeMode, settleForMerge, waitMerge } from "./
 // what of it is not on its target yet; the live fleet says nothing. One claim per statement, each
 // with the mutation that must turn it red, stated next to it and RUN:
 //   words   — the three DONE sentences come out of src/protocol.ts#instanceBandText; mutation: a
-//             missing count reads "alles schon" → the "never guessed" row is red; a process word
+//             missing count reads "all already" → the "never guessed" row is red; a process word
 //             planted in a text → the vocabulary row is red.
 //   measure — testinstanz.sh `source` (the very function `up` records as sourceBefore) against a
 //             real git fixture; mutation: the change of one lane commit put on the target by
@@ -278,27 +278,27 @@ async function instanceBandChecks(): Promise<void> {
   const lane = (ahead: number | null, dirty: number | null) =>
     ({ head: H, branch: "fleet/r11-fixture", dirty, measuredAt: 1, target: { branch: "overhaul", head: T, ahead } });
   const three = words(lane(3, 0)), all = words(lane(0, 0)), none = words({});
-  check("band words: branch, stand at start and '3 Commits noch nicht auf overhaul'",
-    three?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul", three?.text);
-  check("band words: both counts measured zero read 'alles schon auf overhaul'",
-    all?.text === "Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · alles schon auf overhaul", all?.text);
-  check("band words: an instance without a readable record reads 'Stand unbekannt', set-but-garbage likewise",
-    none?.text === "Zweig unbekannt · Stand unbekannt"
-      && instanceBandText(instanceSourceFrom("not json")!, clock).text === "Zweig unbekannt · Stand unbekannt", none?.text);
+  check("band words: branch, head at start and '3 commits not yet on overhaul'",
+    three?.text === "Branch fleet/r11-fixture · Head at start aaaaaaa · 3 commits not yet on overhaul", three?.text);
+  check("band words: both counts measured zero read 'all already on overhaul'",
+    all?.text === "Branch fleet/r11-fixture · Head at start aaaaaaa · all already on overhaul", all?.text);
+  check("band words: an instance without a readable record reads 'Head unknown', set-but-garbage likewise",
+    none?.text === "Branch unknown · Head unknown"
+      && instanceBandText(instanceSourceFrom("not json")!, clock).text === "Branch unknown · Head unknown", none?.text);
   const guessed = [words(lane(null, 0)), words(lane(0, null)), words({ ...lane(0, 0), target: null })];
-  const neverGuessed = (b: ReturnType<typeof words>) => !!b && !b.text.includes("alles schon") && b.text.includes("unbekannt");
-  check("band words: a missing count or target is 'unbekannt', never 'alles schon'",
+  const neverGuessed = (b: ReturnType<typeof words>) => !!b && !b.text.includes("all already") && b.text.includes("unknown");
+  check("band words: a missing count or target is 'unknown', never 'all already'",
     guessed.every(neverGuessed), JSON.stringify(guessed.map((b) => b?.text)));
-  check("band words MUTATION: the never-guessed predicate is red on a text that claims 'alles schon' without a count",
-    !neverGuessed({ segments: [], title: "", text: "Zweig x · Stand beim Start aaaaaaa · alles schon auf overhaul" }));
+  check("band words MUTATION: the never-guessed predicate is red on a text that claims 'all already' without a count",
+    !neverGuessed({ segments: [], title: "", text: "Branch x · Head at start aaaaaaa · all already on overhaul" }));
   // a count is a comparison only when the target's sha was measured with it. Mutation: the text a
-  // band would show if it ignored the missing sha ("3 Commits …") → the predicate is red.
+  // band would show if it ignored the missing sha ("3 commits …") → the predicate is red.
   const unmatched = words({ ...lane(3, 0), target: { branch: "overhaul", head: null, ahead: 3 } });
-  const noBlindCount = (text: string | undefined) => !!text && text.endsWith("Abgleich mit overhaul unbekannt") && !/Commit|alles schon/.test(text.split(" · ")[2] ?? "");
-  check("band words: without a measured target sha the band says 'Abgleich mit overhaul unbekannt', no count",
+  const noBlindCount = (text: string | undefined) => !!text && text.endsWith("Comparison with overhaul unknown") && !/commit|all already/.test(text.split(" · ")[2] ?? "");
+  check("band words: without a measured target sha the band says 'Comparison with overhaul unknown', no count",
     noBlindCount(unmatched?.text) && noBlindCount(words(lane(null, 0))?.text), unmatched?.text);
   check("band words MUTATION: the no-blind-count predicate is red on a count shown without the target sha",
-    !noBlindCount("Zweig fleet/r11-fixture · Stand beim Start aaaaaaa · 3 Commits noch nicht auf overhaul"));
+    !noBlindCount("Branch fleet/r11-fixture · Head at start aaaaaaa · 3 commits not yet on overhaul"));
   const PROCESS = /\b(baton|audit|gate|suite|deploy)\b/i;
   const every = [three, all, none, ...guessed, words(lane(1, 2)), words(lane(0, 1))];
   check("band words: no process word in any band text or tooltip (G0.5)",
@@ -311,9 +311,9 @@ async function instanceBandChecks(): Promise<void> {
   const charset = (shown: (b: string) => boolean) => shown("fleet/feature+x") && shown("fleet/überarbeitung") && shown("fix/a#b@c")
     && !shown("fleet/a..b") && !shown("-x") && !shown("x.lock") && !shown("a b");
   const folded = (b: string) => instanceSourceFrom(JSON.stringify({ head: H, branch: b, target: { branch: b, ahead: 0 } }))?.branch === b
-    && words({ head: H, branch: b, dirty: 0, target: null })?.text.startsWith(`Zweig ${b} ·`) === true;
-  check("band words: a branch with '+', '#', '@' or an umlaut is shown, one with '..' stays 'unbekannt' (git check-ref-format)",
-    charset(folded) && words({ head: H, branch: "fleet/a..b" })?.text.startsWith("Zweig unbekannt") === true);
+    && words({ head: H, branch: b, dirty: 0, target: null })?.text.startsWith(`Branch ${b} ·`) === true;
+  check("band words: a branch with '+', '#', '@' or an umlaut is shown, one with '..' stays 'unknown' (git check-ref-format)",
+    charset(folded) && words({ head: H, branch: "fleet/a..b" })?.text.startsWith("Branch unknown") === true);
   check("band words MUTATION: the old positive-list fold is red on the same branches",
     !charset((b) => /^(?!-)[A-Za-z0-9._/-]{1,200}$/.test(b)));
 
@@ -342,19 +342,19 @@ async function instanceBandChecks(): Promise<void> {
     check("band measure: source reports head, branch, clean tree and 3 commits not on overhaul",
       m3.code === 0 && m3.json?.head === head && m3.json.branch === "fleet/r11-fixture" && m3.json.dirty === 0
         && m3.json.target?.branch === "overhaul" && m3.json.target.head === overhaul && m3.json.target.ahead === 3
-        && instanceBandText(instanceSourceFrom(m3.raw.trim())!, clock).text.endsWith("3 Commits noch nicht auf overhaul"), m3.raw);
+        && instanceBandText(instanceSourceFrom(m3.raw.trim())!, clock).text.endsWith("3 commits not yet on overhaul"), m3.raw);
     const first = git("rev-list", "--reverse", "overhaul..HEAD").stdout.split("\n")[0];
     const picked = [git("checkout", "-q", "overhaul"), git("cherry-pick", first), git("checkout", "-q", "fleet/r11-fixture")];
     writeFileSync(`${fx}/scratch.txt`, "uncommitted\n");
     const m2 = measure("overhaul");
     check("band measure MUTATION: a lane change already on the target (cherry-picked) leaves the count, an uncommitted file joins it",
       picked.every((r) => r.status === 0) && m2.json?.target?.ahead === 2 && m2.json.dirty === 1
-        && instanceBandText(instanceSourceFrom(m2.raw.trim())!, clock).text.endsWith("2 Commits und 1 Datei ohne Commit noch nicht auf overhaul"), m2.raw);
+        && instanceBandText(instanceSourceFrom(m2.raw.trim())!, clock).text.endsWith("2 commits and 1 uncommitted file not yet on overhaul"), m2.raw);
     rmSync(`${fx}/scratch.txt`);
     const ff = git("branch", "-f", "overhaul", "fleet/r11-fixture"), m0 = measure("overhaul");
-    check("band measure: a lane fully on overhaul with a clean tree reads 'alles schon auf overhaul'",
+    check("band measure: a lane fully on overhaul with a clean tree reads 'all already on overhaul'",
       ff.status === 0 && m0.json?.target?.ahead === 0 && m0.json.dirty === 0
-        && instanceBandText(instanceSourceFrom(m0.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"), m0.raw);
+        && instanceBandText(instanceSourceFrom(m0.raw.trim())!, clock).text.endsWith("all already on overhaul"), m0.raw);
     // a merge of the target into the lane brings the target's content, it is not lane work: the
     // count stays 0. Mutation: the same measurement by a copy of the script without --no-merges
     // counts the merge commit (1) → red.
@@ -367,9 +367,9 @@ async function instanceBandChecks(): Promise<void> {
     writeFileSync(noMergesGone, readFileSync(`${fx}/testinstanz.sh`, "utf8").replace('"--no-merges",', ""));
     const mMutant = measure("overhaul", noMergesGone);
     rmSync(noMergesGone, { force: true });
-    check("band measure: a merge of overhaul into the lane counts 0 and reads 'alles schon auf overhaul'",
+    check("band measure: a merge of overhaul into the lane counts 0 and reads 'all already on overhaul'",
       merged.every((r) => r.status === 0) && mMerge.json?.target?.ahead === 0 && mMerge.json.dirty === 0
-        && instanceBandText(instanceSourceFrom(mMerge.raw.trim())!, clock).text.endsWith("alles schon auf overhaul"),
+        && instanceBandText(instanceSourceFrom(mMerge.raw.trim())!, clock).text.endsWith("all already on overhaul"),
       `${merged.map((r) => r.stderr).join("").slice(0, 200)} ${mMerge.raw}`);
     check("band measure MUTATION: the script without --no-merges counts the merge commit",
       mMutant.json?.target?.ahead === 1, mMutant.raw);
@@ -424,8 +424,8 @@ async function instanceBandChecks(): Promise<void> {
     await restartSrv({ FLEET_INSTANCE_SOURCE: "{not json" });
     const garbled = await sessions();
     const garbledText = garbled.instance?.source ? instanceBandText(instanceSourceFrom(JSON.stringify(garbled.instance.source))!, clock).text : null;
-    check("band wire: an unreadable record still marks the test instance and reads 'Stand unbekannt'",
-      garbledText === "Zweig unbekannt · Stand unbekannt", JSON.stringify(garbled.instance));
+    check("band wire: an unreadable record still marks the test instance and reads 'Head unknown'",
+      garbledText === "Branch unknown · Head unknown", JSON.stringify(garbled.instance));
   } finally { await restartSrv(); }
   check("band wire: back on the plain server, no instance.source again", noBand(await sessions()));
 
@@ -813,7 +813,7 @@ esac
     check("testinstanz starts known main and two slotless targets separately", main.status === 200 && upA.status === 200 && upB.status === 200
       && [...states.values()].every(exists), `HTTP ${main.status}/${upA.status}/${upB.status}`);
     const handed = [a, b].map((p) => { const f = `${states.get(p)}.target`; return exists(f) ? readFileSync(f, "utf8") : "missing"; });
-    check("testinstanz up of a worktree without a session hands no target — the band says 'Ziel unbekannt' instead of a guess",
+    check("testinstanz up of a worktree without a session hands no target — the band says 'Target unknown' instead of a guess",
       handed.every((t) => t === "unset"), handed.join(","));
     const mainRead = await read(repo), readA = await read(a), readB = await read(b);
     check("testinstanz reports measured main/worktree identity and distinct HEAD/dirty", mainRead.body.mainCheckout === true && readA.body.mainCheckout === false
@@ -1756,7 +1756,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         { timeoutMs: 15_000, what: `native rules ${cause}: generic recovery` });
       const rules = readFileSync(rulesPath);
       check(`native rules ${cause} starts a live pane with generic Lane rules`,
-        rules.toString("utf8").startsWith("## Rolle\n\n--- ROLLE --- Lane:") && rules.includes("/api/self/fleet-report"));
+        rules.toString("utf8").startsWith("## Rolle\n\n--- ROLE --- Lane:") && rules.includes("/api/self/fleet-report"));
       check(`native rules ${cause} keeps the exact Claude import`, readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") === priorLocal);
       const recovered = Buffer.concat([rules, Buffer.from("\nRecovery preservation probe: ä\r\n")]);
       writeFileSync(rulesPath, recovered);
@@ -1780,7 +1780,7 @@ export async function run(lc: LaneCtx): Promise<void> {
     const local = lane.cwd && existsSync(`${lane.cwd}/CLAUDE.local.md`) ? readFileSync(`${lane.cwd}/CLAUDE.local.md`, "utf8") : "";
     const status = spawnSync("git", ["-C", lane.cwd ?? REPO, "status", "--porcelain"], { encoding: "utf8" });
     const ignored = spawnSync("git", ["-C", lane.cwd ?? REPO, "check-ignore", "AGENTS.override.md", "CLAUDE.local.md"], { encoding: "utf8" });
-    check(`native lane start: ${harness} has its role file and exact Claude import`, agents.startsWith("## Rolle\n\n--- ROLLE --- Lane:")
+    check(`native lane start: ${harness} has its role file and exact Claude import`, agents.startsWith("## Rolle\n\n--- ROLE --- Lane:")
       && agents.includes("/api/self/fleet-report") && local === "@AGENTS.override.md\n");
     check(`native lane start: ${harness} ignores both files and keeps git clean`, ignored.status === 0
       && ignored.stdout.trim() === "AGENTS.override.md\nCLAUDE.local.md" && status.status === 0 && status.stdout === "");
@@ -1881,7 +1881,7 @@ export async function run(lc: LaneCtx): Promise<void> {
         const meta = receipt?.sessionAgents, part = meta?.parts.find((row) => row.id === "role");
         check(`native dispatch ${harness}: first message carries the order and pointer without role, anchors or exit`,
           prompt.startsWith(`${marker}\n\nSession-Regeln: ./AGENTS.override.md`)
-            && !prompt.includes("--- ROLLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
+            && !prompt.includes("--- ROLE ---") && !prompt.includes("ContextPlan v2 anchors") && !prompt.includes("HOW THIS LANE ENDS"));
         check(`native dispatch ${harness}: receipt measures the actual file and role part`, meta?.path === "AGENTS.override.md"
           && meta.bytes === Buffer.byteLength(agents) && meta.sha256 === createHash("sha256").update(agents).digest("hex")
           && part?.path === "server.ts" && part.anchor === "LANE_ROLE_CARD" && part.bytes === Buffer.byteLength(role)
@@ -1957,7 +1957,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       const status = spawnSync("git", ["-C", lane?.cwd ?? repo, "status", "--porcelain"], { encoding: "utf8" });
       check("native detached receipt names the actual commit and keeps both native files clean", receipt?.head === head
         && !!lane?.worktree && !("base" in lane.worktree) && !("baseSha" in lane.worktree)
-        && agents.includes("--- ROLLE --- Lane:") && agents.includes("HOW THIS LANE ENDS")
+        && agents.includes("--- ROLE --- Lane:") && agents.includes("HOW THIS LANE ENDS")
         && local === "@AGENTS.override.md\n" && status.status === 0 && status.stdout === "");
       await post(`/api/slots/${opened.slot}/kill`, {});
     }
@@ -3119,7 +3119,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       `${succeedRes.status} ${JSON.stringify(succeedBody)}`);
     const successorRules = readFileSync(`${batonCwd}/AGENTS.override.md`, "utf8");
     check("(baton) the successor replaces stale predecessor rules before its founding delivery",
-      succeedRes.ok && successorRules !== staleRules && successorRules.startsWith("## Rolle\n\n--- ROLLE --- Lane:")
+      succeedRes.ok && successorRules !== staleRules && successorRules.startsWith("## Rolle\n\n--- ROLE --- Lane:")
         && successorRules.includes("then POST /api/self/succeed"));
     const after = batonSlot(batonSlotId);
     check("(baton) the successor is a NEW session on the SAME lane: worktree, row and Program held, credential and occupant rotated",
@@ -3162,9 +3162,9 @@ export async function run(lc: LaneCtx): Promise<void> {
         ?.find((r) => r.id === handoffBody.report?.id);
       // (1) FLEET_CMD=true pins no session, so the report names none — the premise is asserted too
       const bare = await pastOf(batonSlotId, 1);
-      check("(band) a past session whose handoff report names no session is 'nicht zugeordnet' — no file is guessed from its cwd",
+      check("(band) a past session whose handoff report names no session is 'not assigned' — no file is guessed from its cwd",
         reportRow()?.worker.sessionId === null && bare.status === 200 && bare.body.assigned === false
-          && (bare.body.reason ?? "").includes("nicht zugeordnet") && (bare.body.entries ?? []).length === 0
+          && (bare.body.reason ?? "").includes("not assigned") && (bare.body.entries ?? []).length === 0
           && bare.body.report === handoffBody.report?.id,
         `${bare.status} ${JSON.stringify(bare.body).slice(0, 240)} sid=${reportRow()?.worker.sessionId}`);
       // (2) only a PAST session of the line: 0, the running session (2) and beyond are 404
@@ -3216,7 +3216,7 @@ export async function run(lc: LaneCtx): Promise<void> {
       const mainPast = mainId ? await pastOf(mainId, 1) : { status: 0, body: {} as PastBody };
       check("(band) a MAIN's past session on an OLD lineage record (slot + openedAt only, written before `from` named a session) stays the honest empty state — no backfill",
         mainId > 0 && mainPast.status === 200 && mainPast.body.assigned === false
-          && (mainPast.body.reason ?? "").includes("nicht zugeordnet") && (mainPast.body.entries ?? []).length === 0,
+          && (mainPast.body.reason ?? "").includes("not assigned") && (mainPast.body.entries ?? []).length === 0,
         `main=${mainId} ${mainPast.status} ${JSON.stringify(mainPast.body).slice(0, 240)}`);
 
       // (5) THE SEAT: the succession wrote the leaving occupant onto the slot itself (Slot.laneSeats),

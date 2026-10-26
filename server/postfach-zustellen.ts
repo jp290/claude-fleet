@@ -53,7 +53,7 @@ export const isDirectPostfachTarget = (target: PostfachTarget): boolean =>
 // One entry is one readable block: sender and id first, then the full, unchanged text. The blank line
 // between entries is the only separator, so a text that ends in a newline keeps it.
 export const postfachEntryText = (entry: PostfachEntry): string =>
-  `${POSTFACH_BODY_PREFIX} ${entry.id} von ${entry.from}\n\n${entry.text}`;
+  `${POSTFACH_BODY_PREFIX} ${entry.id} from ${entry.from}\n\n${entry.text}`;
 
 // Oldest first; ties are broken by id so a plan is stable across map/read order. A single entry is
 // always delivered even if it alone exceeds maxChars — a message is at most 2000 chars, so that can

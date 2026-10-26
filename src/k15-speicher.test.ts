@@ -17,36 +17,36 @@ describe("speicherFehler", () => {
   });
   test("kein Objekt: null, Liste, Text, Zahl", () => {
     for (const x of [null, undefined, [gut], "gut", 3])
-      expect(speicherFehler(x)).toBe("erwartet ist ein Objekt mit fassungen, packs und profile");
+      expect(speicherFehler(x)).toBe("expected an object with fassungen, packs and profile");
   });
   test("ein fremdes Feld wird genannt", () => {
-    expect(speicherFehler({ ...gut, token: "x" })).toBe("unbekanntes Feld „token“");
+    expect(speicherFehler({ ...gut, token: "x" })).toBe("unknown field “token”");
   });
   test("jede der drei Listen muss da und eine Liste sein", () => {
-    expect(speicherFehler({ packs: [], profile: [] })).toBe("„fassungen“ fehlt oder ist keine Liste");
-    expect(speicherFehler({ ...gut, packs: { 0: pack } })).toBe("„packs“ fehlt oder ist keine Liste");
-    expect(speicherFehler({ ...gut, profile: "p1" })).toBe("„profile“ fehlt oder ist keine Liste");
+    expect(speicherFehler({ packs: [], profile: [] })).toBe("“fassungen” is missing or not a list");
+    expect(speicherFehler({ ...gut, packs: { 0: pack } })).toBe("“packs” is missing or not a list");
+    expect(speicherFehler({ ...gut, profile: "p1" })).toBe("“profile” is missing or not a list");
   });
   test("eins über der Grenze wird abgelehnt, je Liste", () => {
-    expect(speicherFehler({ ...gut, fassungen: viele(MAX_FASSUNGEN + 1, fassung) })).toBe("201 Fassungen sind mehr als 200");
-    expect(speicherFehler({ ...gut, packs: viele(MAX_PACKS + 1, pack) })).toBe("51 Packs sind mehr als 50");
-    expect(speicherFehler({ ...gut, profile: viele(MAX_PROFILE + 1, profil) })).toBe("41 Profile sind mehr als 40");
+    expect(speicherFehler({ ...gut, fassungen: viele(MAX_FASSUNGEN + 1, fassung) })).toBe("201 Fassungen are more than 200");
+    expect(speicherFehler({ ...gut, packs: viele(MAX_PACKS + 1, pack) })).toBe("51 Packs are more than 50");
+    expect(speicherFehler({ ...gut, profile: viele(MAX_PROFILE + 1, profil) })).toBe("41 Profile are more than 40");
   });
   test("ein Eintrag ohne seine Pflichtfelder als Text wird mit Stelle genannt", () => {
-    expect(speicherFehler({ ...gut, fassungen: [fassung, { abschnitt: "lane|x" }] })).toBe("Eintrag 2 in „fassungen“ braucht abschnitt, text als Text");
-    expect(speicherFehler({ ...gut, packs: [{ ...pack, id: 7 }] })).toBe("Eintrag 1 in „packs“ braucht id, name, text als Text");
-    expect(speicherFehler({ ...gut, profile: [profil, profil, null] })).toBe("Eintrag 3 in „profile“ braucht id, rolle, schiene als Text");
-    expect(speicherFehler({ ...gut, profile: [[profil]] })).toBe("Eintrag 1 in „profile“ braucht id, rolle, schiene als Text");
+    expect(speicherFehler({ ...gut, fassungen: [fassung, { abschnitt: "lane|x" }] })).toBe("entry 2 in “fassungen” needs abschnitt, text as text");
+    expect(speicherFehler({ ...gut, packs: [{ ...pack, id: 7 }] })).toBe("entry 1 in “packs” needs id, name, text as text");
+    expect(speicherFehler({ ...gut, profile: [profil, profil, null] })).toBe("entry 3 in “profile” needs id, rolle, schiene as text");
+    expect(speicherFehler({ ...gut, profile: [[profil]] })).toBe("entry 1 in “profile” needs id, rolle, schiene as text");
   });
   test("Konstellationen: eine vierte Liste, die fehlen darf (ein Fenster von vorher), sonst wie die anderen geprüft", () => {
     const konst = { id: "n1", name: "Orchestratorin → freie Session", fleet: "konstellation", positionen: [] };
     expect(speicherFehler({ ...gut, konstellationen: [konst] })).toBeNull();
     expect(speicherFehler({ ...gut, konstellationen: viele(MAX_KONSTELLATIONEN, konst) })).toBeNull();
-    expect(speicherFehler({ ...gut, konstellationen: viele(MAX_KONSTELLATIONEN + 1, konst) })).toBe("51 Konstellationen sind mehr als 50");
-    expect(speicherFehler({ ...gut, konstellationen: null })).toBe("„konstellationen“ fehlt oder ist keine Liste");
-    expect(speicherFehler({ ...gut, konstellationen: [{ id: "n1" }] })).toBe("Eintrag 1 in „konstellationen“ braucht id, name als Text");
+    expect(speicherFehler({ ...gut, konstellationen: viele(MAX_KONSTELLATIONEN + 1, konst) })).toBe("51 Konstellationen are more than 50");
+    expect(speicherFehler({ ...gut, konstellationen: null })).toBe("“konstellationen” is missing or not a list");
+    expect(speicherFehler({ ...gut, konstellationen: [{ id: "n1" }] })).toBe("entry 1 in “konstellationen” needs id, name as text");
   });
   test("ein geerbtes Feld zählt nicht als eigenes", () => {
-    expect(speicherFehler({ ...gut, fassungen: [Object.create(fassung)] })).toBe("Eintrag 1 in „fassungen“ braucht abschnitt, text als Text");
+    expect(speicherFehler({ ...gut, fassungen: [Object.create(fassung)] })).toBe("entry 1 in “fassungen” needs abschnitt, text as text");
   });
 });

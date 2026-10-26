@@ -91,7 +91,7 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
       if (!mainSlot && !lanes.length) return;
       const box = el("div", "prog");
       const t = el("div", "t");
-      t.appendChild(el("span", "", p.title || "(ohne Titel)"));
+      t.appendChild(el("span", "", p.title || "(untitled)"));
       t.appendChild(el("span", "id", String(p.id).slice(0, 8)));
       t.appendChild(el("span", "st", p.status || ""));
       box.appendChild(t);
@@ -104,15 +104,15 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     if (rest.length) {
       const box2 = el("div", "prog");
       const t2 = el("div", "t");
-      t2.appendChild(el("span", "", "ohne Program"));
-      t2.appendChild(el("span", "st", rest.length + " Slots"));
+      t2.appendChild(el("span", "", "No Program"));
+      t2.appendChild(el("span", "st", rest.length + " slots"));
       box2.appendChild(t2);
       rest.forEach(function (s) { box2.appendChild(slotRow(s, isLane(s) ? "lane" : "main")); n++; });
       host.appendChild(box2);
     }
 
-    if (!n) host.appendChild(el("div", "empty", "keine belegten Slots in diesem Repo"));
-    q("workN").textContent = n + " Slots";
+    if (!n) host.appendChild(el("div", "empty", "No occupied slots in this repo"));
+    q("workN").textContent = n + " slots";
   }
 
   function kv(host: HTMLElement, k: string, v: string): void {
@@ -127,18 +127,18 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     host.textContent = "";
     var s = S.slots.filter(function (x) { return x.id === S.sel; })[0];
     if (!s) {
-      host.appendChild(el("div", "empty", "Klick links einen Slot - hier erscheinen Brief, die zugestellte Datei, Tools und Modell."));
+      host.appendChild(el("div", "empty", "Pick a slot on the left - its brief, delivered file, tools and model show here."));
       q("detN").textContent = "";
       return;
     }
     q("detN").textContent = (isLane(s) ? "Lane " : "Slot ") + s.id;
 
     kv(host, "cwd", s.cwd || "-");
-    kv(host, "worktree", s.worktree ? s.worktree.branch + " von " + s.worktree.repo : "- (Haupt-Checkout)");
+    kv(host, "worktree", s.worktree ? s.worktree.branch + " in " + s.worktree.repo : "- (main checkout)");
     if (s.git) kv(host, "git", s.git.branch + "  dirty " + s.git.dirty + "  ahead " + s.git.ahead + "  behind " + s.git.behind);
     kv(host, "Agent", s.agent || "-");
-    kv(host, "Modell", s.model || "- (Datensatz leer, Env gilt)");
-    kv(host, "Kontext", s.ctx ? (s.ctx.pct + "%  " + s.ctx.usedTokens + " / " + s.ctx.windowTokens) : "nicht messbar");
+    kv(host, "Model", s.model || "- (record empty, env applies)");
+    kv(host, "Context", s.ctx ? (s.ctx.pct + "%  " + s.ctx.usedTokens + " / " + s.ctx.windowTokens) : "not measurable");
 
     var ts = tasksOfSlot(s.id);
     var t = ts[0];
@@ -151,7 +151,7 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
       chips.appendChild(el("span", "chip", "model: " + (sp.model || "-")));
       chips.appendChild(el("span", "chip", "effort: " + (sp.effort || "-")));
     } else {
-      chips.appendChild(el("span", "chip none", "kein Spawn-Tripel - Fleet-Default"));
+      chips.appendChild(el("span", "chip none", "no spawn settings - Fleet default"));
     }
     const r1 = el("div", "kv");
     r1.appendChild(el("span", "k", "Tools"));
@@ -161,13 +161,13 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     /* Die zugestellte Datei: was tatsaechlich an diese Session ging, aus dem Receipt */
     var rec = S.receipts.filter(function (x) { return x && (x.slot === s.id); });
     const r2 = el("div", "kv");
-    r2.appendChild(el("span", "k", "Zugestellt"));
+    r2.appendChild(el("span", "k", "Delivered"));
     const v2 = el("span", "v");
     if (rec.length) {
       const newest = rec.reduce(function (a, b) { return num(b.at) > num(a.at) ? b : a; });
       receiptFile(v2, newest, rec.length);
     } else {
-      v2.appendChild(el("span", "chip none", "keine Context-Receipt-Zeile fuer diesen Slot"));
+      v2.appendChild(el("span", "chip none", "no context receipt for this slot"));
     }
     r2.appendChild(v2);
     host.appendChild(r2);
@@ -185,13 +185,13 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     /* Brief */
     const head = el("div", "kv");
     head.appendChild(el("span", "k", "Brief"));
-    head.appendChild(el("span", "v", t ? (t.kind + " - " + t.status + " - " + String(t.id).slice(0, 8)) : "keine Aufgabe an diesem Slot"));
+    head.appendChild(el("span", "v", t ? (t.kind + " - " + t.status + " - " + String(t.id).slice(0, 8)) : "no task at this slot"));
     host.appendChild(head);
-    if (t) host.appendChild(el("pre", "brief", t.text || "(leer)"));
+    if (t) host.appendChild(el("pre", "brief", t.text || "(empty)"));
   }
 
   function num(v: unknown): number { return typeof v === "number" && Number.isFinite(v) ? v : 0; }
-  function kb(bytes: number): string { return (bytes / 1000).toFixed(1).replace(".", ",") + " KB"; }
+  function kb(bytes: number): string { return (bytes / 1000).toFixed(1) + " KB"; }
 
   /* THE DELIVERED FILE in the founding window's form (src/founding.ts#renderFile): the fixed order
      Rolle, Auftrag, Anleitung, Wissen, Packs auf Abruf, Schluss, each with its sentence and size. A
@@ -207,38 +207,38 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
     }) : [];
     const delivered = typeof r.deliveredBytes === "number" ? r.deliveredBytes : null;
     const head = el("div", "chips");
-    head.appendChild(el("span", "chip", delivered === null ? "Groesse nicht gemeldet" : kb(delivered) + " zugestellt"));
+    head.appendChild(el("span", "chip", delivered === null ? "Size not reported" : kb(delivered) + " delivered"));
     head.appendChild(el("span", "chip", "harness " + (r.harness || "claude") + " · " + (r.model || "-") + " · " + (r.effort || "-")));
-    if (typeof r.at === "number") head.appendChild(el("span", "chip", new Date(r.at).toLocaleString("de-DE")));
-    if (count > 1) head.appendChild(el("span", "chip none", count + " Receipts fuer diesen Slot — das juengste gilt"));
+    if (typeof r.at === "number") head.appendChild(el("span", "chip", new Date(r.at).toLocaleString("en-GB")));
+    if (count > 1) head.appendChild(el("span", "chip none", count + " receipts for this slot — the newest one counts"));
     host.appendChild(head);
-    const said = "im Receipt nicht gemeldet";
+    const said = "not reported in the receipt";
     const sum = function (pred: (p: Record<string, unknown>) => boolean): string | null {
       if (!parts) return null;
       const hit = parts.filter(pred);
       return hit.length ? kb(hit.reduce(function (n, p) { return n + num(p.bytes); }, 0)) : null;
     };
     const box = function (sorte: string) { return function (p: Record<string, unknown>) { return p.sorte === sorte && p.ort === "box"; }; };
-    const groups: Record<string, string> = { "grundlagen": "Grundlagen", "pruefen-landen": "Pruefen und Landen", "sessions-fuehren": "Sessions fuehren", "vor-arbeiten": "Vor bestimmten Arbeiten" };
+    const groups: Record<string, string> = { "grundlagen": "Basics", "pruefen-landen": "Checking and landing", "sessions-fuehren": "Running sessions", "vor-arbeiten": "Before certain work" };
     const groupOf = function (p: Record<string, unknown>): string {
       const own = typeof p.group === "string" ? p.group : CONTEXT_PACKS.find(function (c) { return c.id === p.id; })?.group;
-      return own && groups[own] ? groups[own]! : "ohne Gruppe";
+      return own && groups[own] ? groups[own]! : "No group";
     };
     const byGroup: Record<string, string[]> = {};
     selected.forEach(function (p) { (byGroup[groupOf(p)] = byGroup[groupOf(p)] || []).push(String(p.id)); });
     const rows: [string, string, string][] = [
-      ["Rolle", "Wer der Agent ist, was er selbst entscheidet und an wen er meldet.", sum(function (p) { return p.id === "role"; }) ?? said],
-      ["Auftrag", "Die Karte dieses Starts.", "im Brief"],
-      ["Anleitung", "Regeln und Schritte, ganz in der Datei.", parts ? sum(box("anleitung")) ?? "nichts ganz darin" : said],
-      ["Wissen", "Hintergrund, ganz in der Datei.", parts ? sum(box("wissen")) ?? "nichts ganz darin" : said],
-      ["Packs auf Abruf", selected.length ? selected.length + " Hinweise: " + Object.keys(byGroup).map(function (g) { return g + " (" + byGroup[g]!.join(", ") + ")"; }).join(" · ") : "keine Hinweise", parts ? "" : "Groesse " + said],
-      ["Schluss", "Wie sie am Ende abgibt.", sum(function (p) { return p.id === "footer"; }) ?? said],
+      ["Role", "Who the agent is, what it decides itself and who it reports to.", sum(function (p) { return p.id === "role"; }) ?? said],
+      ["Task", "The card for this start.", "in the brief"],
+      ["Instructions", "Rules and steps, in full in the file.", parts ? sum(box("anleitung")) ?? "nothing in full" : said],
+      ["Knowledge", "Background, in full in the file.", parts ? sum(box("wissen")) ?? "nothing in full" : said],
+      ["Packs on demand", selected.length ? selected.length + " pointers: " + Object.keys(byGroup).map(function (g) { return g + " (" + byGroup[g]!.join(", ") + ")"; }).join(" · ") : "no pointers", parts ? "" : "Size " + said],
+      ["Closing", "How it hands in at the end.", sum(function (p) { return p.id === "footer"; }) ?? said],
     ];
     rows.forEach(function (row, i) {
       const line = el("div", "kv");
       line.appendChild(el("span", "k", (i + 1) + " " + row[0]));
       const v = el("span", "v", row[1]);
-      if (row[2]) { v.appendChild(document.createTextNode("  ")); v.appendChild(el("span", "chip" + (row[2].indexOf("nicht gemeldet") >= 0 ? " none" : ""), row[2])); }
+      if (row[2]) { v.appendChild(document.createTextNode("  ")); v.appendChild(el("span", "chip" + (row[2].indexOf("not reported") >= 0 ? " none" : ""), row[2])); }
       line.appendChild(v);
       host.appendChild(line);
     });
@@ -247,16 +247,16 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
   function renderCommits(): void {
     var host = q("commits");
     host.textContent = "";
-    if (!S.commits.length) { host.appendChild(el("div", "empty", "keine Commits")); q("cmN").textContent = ""; return; }
+    if (!S.commits.length) { host.appendChild(el("div", "empty", "No commits")); q("cmN").textContent = ""; return; }
     S.commits.slice(0, 40).forEach(function (c) {
       const r = el("div", "cm");
       r.appendChild(el("span", "h", c.hash));
       r.appendChild(el("span", "s", c.subject));
-      r.appendChild(el("span", "d", new Date(c.ts).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })));
+      r.appendChild(el("span", "d", new Date(c.ts).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" })));
       r.title = c.subject + "\n" + (c.stat || "");
       host.appendChild(r);
     });
-    q("cmN").textContent = S.commits.length + " gelesen";
+    q("cmN").textContent = S.commits.length + " commits read";
   }
 
   function fail(m: string): void { var e = q("error"); e.hidden = false; e.textContent = m; }
@@ -286,7 +286,7 @@ function el<K extends keyof HTMLElementTagNameMap>(t: K, c?: string, x?: string)
         sel.appendChild(o);
       });
       q("branch").textContent = cm.branch ? "branch " + cm.branch : "";
-      q("stamp").textContent = new Date().toLocaleTimeString("de-DE");
+      q("stamp").textContent = new Date().toLocaleTimeString("en-GB");
 
       renderWork(); renderDetail(); renderCommits();
     })["catch"](function (e: Error) { fail(String(e.message || e)); });

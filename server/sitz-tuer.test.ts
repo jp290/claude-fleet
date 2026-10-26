@@ -75,7 +75,7 @@ describe("ein Fremder importiert die Datei, und beide Sitze starten mit dem Setu
     expect([offen?.status, offen?.body.auftrag, laufend?.body.hash]).toEqual([200, "follows", gezeigt]);
     // seine Aufgabe ist sein Brief aus der Datei, Wort für Wort, dazu die Bitte seines Profils (werte.subagenten, ein Satz im Brief), und Modell
     // und Effort sind die der Datei
-    const auftrag = `${brief("beweiser")}\n\nSubagenten: nur lesende.`;
+    const auftrag = `${brief("beweiser")}\n\nSubagents: read only.`;
     expect(aufgabeVon(laufend)).toBe(auftrag);
     expect(aufgabeVon(a[0]?.body.fassung ? { status: 200, body: a[0].body.fassung as Record<string, unknown> } : undefined)).toBe(auftrag);
     expect([recordOf(f, 3).model, recordOf(f, 3).effort, recordOf(f, 3).sitz?.pos]).toEqual([roh("beweiser").profil.modell, roh("beweiser").profil.effort, "beweiser"]);
@@ -160,7 +160,7 @@ describe("der Lauf schreibt je Sitz auf, welches Modell wirklich antwortete", ()
     expect(pos.map((p) => [p.pos, p.modelle])).toEqual([
       ["beweiser", [{ modell: "claude-opus-5-5", ab: "2026-10-23T02:03:54.938Z", aufrufe: 2, grund: null },
         { modell: "claude-opus-4-8", ab: "2026-10-23T02:14:42.416Z", aufrufe: 1,
-          grund: "Claude Code stellte nach einer Meldung seiner Sicherung („cyber“) von claude-opus-5-5[1m] auf claude-opus-4-8 um (model_refusal_fallback)" }]],
+          grund: "Claude Code switched from claude-opus-5-5[1m] to claude-opus-4-8 after a safety flag (“cyber”) (model_refusal_fallback)" }]],
       ["finder", [{ modell: "claude-sonnet-5-5", ab: "2026-10-23T02:20:00.000Z", aufrufe: 1, grund: null }]]]);
     expect(datei?.status).toBe(200);
     const sitze = ((datei?.body.datei as { laeufe: { sitze: { pos: string; modelle: { modell: string }[] | null }[] }[] }).laeufe[0]!).sitze;

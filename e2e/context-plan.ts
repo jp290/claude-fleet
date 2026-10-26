@@ -1549,7 +1549,7 @@ function sessionAgentsChecks(check: ContextPlanCheck): void {
     huge.bytes > SESSION_AGENTS_LIMIT && huge.projectDocMaxBytes === huge.bytes);
   const duplicate = "Read the exact output. Preserve this footer sentence.";
   check("session agents: sentence-equal instructions disappear from the footer only",
-    sessionExitFooter(duplicate, "--- DER LOOP --- Read the exact output.") === "Preserve this footer sentence.");
+    sessionExitFooter(duplicate, "--- THE LOOP --- Read the exact output.") === "Preserve this footer sentence.");
   const legacy = { id: "legacy", hardness: "guidance" as const, useWhen: "Read on demand", estimatedBytes: 0, sources: [{ path: "old.md", anchor: "## Old" }] };
   const legacyRender = renderSessionAgents({ ...base, harness: "claude", plan: { selected: [legacy], omitted: [] }, sourceBytes: new Map([["old.md", "## Old\nold bytes\n"]]) });
   check("session agents: an unsplit pack retains its exact existing pointer bytes",

@@ -36,7 +36,7 @@ function lade(oeffne: (m: K15) => void): void {
   geladen ??= Promise.all([import(new URL("/k15.js", location.href).href) as Promise<K15>, stil("k15.css"), stil("sitzung.css")]).then(([m]) => m);
   geladen.then(oeffne, () => {
     geladen = null;
-    toast("Das Fenster „Neue Session“ ließ sich nicht laden.");
+    toast("The window “New session” could not be loaded.");
   });
 }
 export const openK15Entwurf = (eingang?: Eingang): void => lade((m) => m.openK15Entwurf(eingang));

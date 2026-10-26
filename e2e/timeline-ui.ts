@@ -37,12 +37,12 @@ export interface TimelineMutant { name: string; claim: string; file: "src/timeli
 
 // the claims, named once so the mutants can point at them
 export const TL_CLAIM = {
-  open: "the ⋯ panel's Zeitleiste entry opens the Activity window on the Zeitleiste lens, its switch pressed, the overview drawn",
+  open: "the ⋯ panel's Timeline entry opens the Activity window on the Timeline lens, its switch pressed, the overview drawn",
   axis: "every session is its own track on ONE axis: marks across all tracks keep record-time order, and the axis carries ticks",
   kinds: "tool calls and the eight ledger kinds are told apart by kind and glyph, and a report carries its verdict",
   unknown: "what was not observed stays visible: the clock note, one gap chip per session gap, the pending call's open bar, the unmeasured horizon's hatch, the timeless mark",
   zoom: "Zoom narrows to the session (two crumbs, one track), Zoom Call to the pair (two marks), and back steps one level at a time",
-  inspect: "a click opens the inspector with Argumente, Resultat, Fehler, Zeitpunkte, Dauer and Quelle; an error shows its text, a pending call says wartet",
+  inspect: "a click opens the inspector with Arguments, Result, Error, Times, Duration and Source; an error shows its text, a pending call says waiting",
   legend: "every glyph on the canvas has its word once in the legend at the axis head, and every mark's title begins with that word",
   phoneList: "on the phone the session zoom lists its marks in time order: no two overlap, no word is cut, the hatch keeps its word",
   apart: "in the session zoom no two chips share a pixel, however many events fall on one instant",
@@ -55,8 +55,8 @@ export const TL_CLAIM = {
   headBtn: "in the overview each session's track head is the one button into it (name and chevron, touch-high on the phone), no track carries a Zoom button, and the session zoom has none",
   oneAmber: "amber means not observed and nothing else: the hatch, the gap chips, the rail's gap count and the legend's word are amber; no mark, bar or state word carries amber or the wait colour on text, fill or border — in the overview, the codex session's zoom (a list on the phone) and the claude zoom",
   emptyOne: "without the route the lens says it in one sentence that names GET /api/timeline exactly once, with the status and the server's error text",
-  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Rohwert summary; opening it shows Kopieren, which writes exactly the full raw value to the clipboard; the visible Quelle text carries none of it",
-  toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind Mehr and appear on tap; on the desktop they stand in the row and there is no Mehr",
+  rawSource: "the inspector folds locator, fingerprint and record bytes behind a closed Raw value summary; opening it shows Copy, which writes exactly the full raw value to the clipboard; the visible Source text carries none of it",
+  toolbarRow: "the toolbar is one row on every zoom level: on the phone zoom, pan and the harness picker sit behind More and appear on tap; on the desktop they stand in the row and there is no More",
   // owner 2026-10-11: „[Zitat entfernt]“ — the lens read a prototype wire, the route serves TimelinePage
   wire: "the lens reads the route's own TimelinePage: every session header is a track, the error call and the report are marks, and the page raises no exception",
   foreign: "an answer of another form — the prototype wire, or a page whose session lacks its occupation — ends as state unavailable in one sentence naming the field, with no track and no exception",
@@ -81,7 +81,7 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `if (tlZoom === "call") { tlSetZoom("session", tlScope, null); return true; }`,
     with: `if (tlZoom === "call") { tlSetZoom("overview", null, null); return true; }` },
   { name: "the inspector drops the source", claim: TL_CLAIM.inspect, file: "src/client.ts",
-    needle: `field("Quelle", src);`, with: "void src;" },
+    needle: `field("Source", src);`, with: "void src;" },
   { name: "the route's error status ignored", claim: TL_CLAIM.noRoute, file: "src/timeline.ts",
     needle: "if (!res.ok) {", with: "if (res.status === 599) {" },
   { name: "a closed window's late answer is kept", claim: TL_CLAIM.stale, file: "src/client.ts",
@@ -98,10 +98,10 @@ export const TIMELINE_MUTANTS: readonly TimelineMutant[] = [
     needle: `.tlev[data-status="unknown"] .tlst, .tlev[data-status="late"] .tlst { color: var(--chat-mute); }`,
     with: `.tlev[data-status="unknown"] .tlglyph { color: var(--amber); }` },
   { name: "the empty state names the route a second time", claim: TL_CLAIM.emptyOne, file: "src/client.ts",
-    needle: `" Bis dahin zeigt sie nichts und behauptet nichts."`, with: `" Bis GET /api/timeline antwortet, zeigt sie nichts und behauptet nichts."` },
+    needle: `" Until then it shows nothing and claims nothing."`, with: `" Until GET /api/timeline answers, it shows nothing and claims nothing."` },
   { name: "the raw value stands open as flowing text", claim: TL_CLAIM.rawSource, file: "src/client.ts",
     needle: `const raw = el("details", "tlraw");`, with: `const raw = el("div", "tlraw");` },
-  { name: "Kopieren copies only the first raw line", claim: TL_CLAIM.rawSource, file: "src/client.ts",
+  { name: "Copy copies only the first raw line", claim: TL_CLAIM.rawSource, file: "src/client.ts",
     needle: `copyText(rawLines.join("\\n"));`, with: `copyText(rawLines[0] ?? "");` },
   { name: "a codex call's bar filled amber", claim: TL_CLAIM.oneAmber, file: "public/index.html",
     needle: `.tlbar.error { background: var(--danger); }`, with: `.tlbar.error { background: var(--danger); } .tltrack[data-harness="codex"] .tlbar { background: var(--amber); }` },
@@ -304,7 +304,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
     };
     const openLens = async () => {
       const entry = await wait(`document.querySelector('#morepanel [data-lens="timeline"]')`, 15000);
-      if (!entry) throw new Error("timeline DOM probe: the ⋯ panel has no Zeitleiste entry: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+      if (!entry) throw new Error("timeline DOM probe: the ⋯ panel has no Timeline entry: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
       await click('#morepanel [data-lens="timeline"]');
       await wait(`document.querySelector('#shell-outcomes .tlcanvas, #shell-outcomes .tlstate')`, 8000);
       await settle(150);
@@ -349,7 +349,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const tools = tb ? { rows: new Set(vis.map(mid)).size, controls: vis.length, zoomVisible: shown('.tlzoom'), selVisible: shown('select'),
         more: moreBtn ? { text: moreBtn.textContent, expanded: moreBtn.getAttribute('aria-expanded'), h: Math.round(moreBtn.getBoundingClientRect().height) } : null,
         overflow: Math.max(0, ...vis.map((n) => Math.round(n.getBoundingClientRect().right))) - Math.round(tb.closest('.shelltools').getBoundingClientRect().right) } : null;
-      const rawEl = sh.querySelector('.tlinspect dd[data-field="Quelle"] .tlraw');
+      const rawEl = sh.querySelector('.tlinspect dd[data-field="Source"] .tlraw');
       const raw = rawEl ? { details: rawEl.tagName === 'DETAILS', open: rawEl.open === true, summary: rawEl.querySelector('summary')?.textContent ?? '',
         code: [...rawEl.querySelectorAll('code')].map((c) => c.textContent).join('\\n'), copy: rawEl.querySelector('.tlcopy')?.textContent ?? null,
         // a closed details keeps its content's boxes (content-visibility), so the rect alone lies: checkVisibility() tells
@@ -410,7 +410,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       // --- 1. open on the lens, the overview drawn
       const r1 = await read();
       facts.open = { lens: r1.lens, zoom: r1.zoom, tracks: r1.tracks.length, marks: r1.marks.length, hits: fx.timelineHits };
-      claims[TL_CLAIM.open] = r1.lens === "Zeitleiste" && r1.zoom === "overview" && r1.tracks.length === wire.sessions.length && fx.timelineHits === 1;
+      claims[TL_CLAIM.open] = r1.lens === "Timeline" && r1.zoom === "overview" && r1.tracks.length === wire.sessions.length && fx.timelineHits === 1;
       await shot(`${width}-1-ueberblick`);
       // --- 1b. the route's own page read as such: headers are tracks, entries are marks, nothing thrown
       facts.wire = { state: r1.state, stateText: r1.stateText.slice(0, 160), tracks: r1.tracks.length, sessions: wire.sessions.length,
@@ -443,7 +443,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const chipGaps = r1.gapChips.reduce((n, c) => n + (Number(/^(\d+)/.exec(c)?.[1]) || 0), 0);
       facts.unknown = { note: r1.note.slice(0, 80), chipGaps, expectedGaps, pendingBars: r1.pendingBars, hatches: r1.hatches,
         timeless: r1.marks.filter((m) => m.atKnown === "false").length };
-      claims[TL_CLAIM.unknown] = r1.note.includes("Uhrunsicherheit: unbekannt") && chipGaps === expectedGaps && expectedGaps > 0
+      claims[TL_CLAIM.unknown] = r1.note.includes("Clock uncertainty: unknown") && chipGaps === expectedGaps && expectedGaps > 0
         && r1.pendingBars >= 1 && r1.hatches.includes("unmeasured") && r1.marks.some((m) => m.atKnown === "false");
 
       // --- 4b. the legend: one word per glyph on the canvas, the same word first on every mark's title
@@ -453,7 +453,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const legendGlyphs = r1.legend.every((l) => l.glyph === r1.marks.find((m) => m.kind === l.kind)?.glyph);
       facts.legend = { legend: r1.legend.map((l) => l.text), covers: legendCovers, titled, sample: r1.marks.slice(0, 2).map((m) => m.title.slice(0, 40)) };
       claims[TL_CLAIM.legend] = r1.legend.length >= 10 && legendCovers && titled && legendGlyphs
-        && !!wordOf.get("tool.call")?.startsWith("Aufruf") && (!wordOf.has("other") || !!wordOf.get("other")?.startsWith("Ereignis"));
+        && !!wordOf.get("tool.call")?.startsWith("Call") && (!wordOf.has("other") || !!wordOf.get("other")?.startsWith("Event"));
 
       // --- 4c. the head is the button into a session (point 5)
       facts.headBtn = { heads: r1.heads.length, btn: r1.heads.filter((h) => h.btn).length, chev: r1.heads.filter((h) => h.chev).length, minH: Math.min(...r1.heads.map((h) => h.h)),
@@ -464,7 +464,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       // marks stand alone and large (Kern-MAIN review of 9c96d400) — and once more in the claude zoom below
       const c = r1.colours;
       let amberOk = c.amberMarks === 0 && c.waitMarks === 0 && c.hatch && c.hatches >= 1 && c.gaps && c.gapN >= 1 && c.railGaps && c.railGapN >= 1
-        && !!c.legend && c.legend.amber && /ungemessen/.test(c.legend.text) && /Lücke/.test(c.legend.text);
+        && !!c.legend && c.legend.amber && /not measured/.test(c.legend.text) && /gap/.test(c.legend.text);
       if (!codexKey) throw new Error("timeline DOM probe: the wire fixture has no codex session");
       await click(`.tltrack[data-session="${codexKey}"] .tlheadbtn`);
       const rc = await read();
@@ -511,7 +511,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
         facts.phoneList = { marks: r5a.marks.length, overlap, cut: r5a.marks.filter((m) => m.cut).length, ordered, hatchCut: r5a.hatchCut, hatchWords: r5a.hatchWords,
           minH: Math.min(...r5a.marks.map((m) => m.h)), minW, zoomTools: r5a.shortControls.length };
         claims[TL_CLAIM.phoneList] = r5a.marks.length >= 8 && !overlap && ordered && !r5a.marks.some((m) => m.cut) && !r5a.hatchCut
-          && r5a.hatchWords.some((w) => /ungemessen/.test(w ?? "")) && Math.min(...r5a.marks.map((m) => m.h)) >= 40 && minW >= width * 0.6;
+          && r5a.hatchWords.some((w) => /not measured/.test(w ?? "")) && Math.min(...r5a.marks.map((m) => m.h)) >= 40 && minW >= width * 0.6;
       }
       const call = r5a.marks.find((m) => m.kind === "tool.call" && m.status === "ok");
       if (call) await click(`.tlev[data-id="${call.id}"]`);
@@ -545,7 +545,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const f = r6.fields;
       const pendingMark = r6.marks.find((m) => m.status === "pending" && m.kind === "tool.call" && m.at === pendingCallAt && m.track !== claudeKey);
       let pendingResult = "";
-      if (pendingMark) { await click(`.tlev[data-id="${pendingMark.id}"]`); pendingResult = (await read()).fields.Resultat ?? ""; }
+      if (pendingMark) { await click(`.tlev[data-id="${pendingMark.id}"]`); pendingResult = (await read()).fields.Result ?? ""; }
       facts.inspect = { title: r6.inspectTitle, fields: Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.slice(0, 60)])), pendingResult: pendingResult.slice(0, 60) };
       // --- 6b. the raw value folded, copyable (point 8): read on the error call's inspector
       await click(`.tlev[data-id="${errorCall.id}"]`);
@@ -564,19 +564,19 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       const copiedText = await evaluate<string | null>("window.__fleetCopied ?? null");
       const rec = errorCall.record, ref = errorCall.detailRef;
       const expectedRaw = [ref ? `${ref.locator} fp ${ref.fp}` : null,
-        `Aufzeichnung ${rec.id ?? "?"}${rec.parent ? ` ← ${rec.parent}` : ""} · Bytes ${rec.offset} + ${rec.bytes} #${rec.block}`].filter((l) => l !== null).join("\n");
-      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, quelle: (r6b.fields.Quelle ?? "").slice(0, 80), hiddenBefore, copyVisible, copied,
+        `Record ${rec.id ?? "?"}${rec.parent ? ` ← ${rec.parent}` : ""} · Bytes ${rec.offset} + ${rec.bytes} #${rec.block}`].filter((l) => l !== null).join("\n");
+      facts.rawSource = { raw: r6b.raw ? { ...r6b.raw, code: r6b.raw.code.slice(0, 80) } : null, source: (r6b.fields.Source ?? "").slice(0, 80), hiddenBefore, copyVisible, copied,
         copiedText: (copiedText ?? "").slice(0, 80), expectedRaw: expectedRaw.slice(0, 80), copiedMatches: copiedText === expectedRaw };
-      claims[TL_CLAIM.rawSource] = !!r6b.raw && r6b.raw.details && !r6b.raw.open && r6b.raw.summary.startsWith("Rohwert") && r6b.raw.code.includes("native:")
-        && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Kopieren" && hiddenBefore && copyVisible && copied === "Kopiert"
+      claims[TL_CLAIM.rawSource] = !!r6b.raw && r6b.raw.details && !r6b.raw.open && r6b.raw.summary.startsWith("Raw value") && r6b.raw.code.includes("native:")
+        && r6b.raw.code.includes(" fp ") && r6b.raw.code.includes("Bytes ") && r6b.raw.copy === "Copy" && hiddenBefore && copyVisible && copied === "Copied"
         && expectedRaw.includes("native:") && copiedText === expectedRaw
-        && !(r6b.fields.Quelle ?? "").includes("native:") && !(r6b.fields.Quelle ?? "").includes("Bytes ") && (r6b.fields.Quelle ?? "").includes("Sidechain");
-      claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Aufruf") && ["Argumente", "Resultat", "Fehler", "Zeitpunkte", "Dauer", "Quelle"].every((k) => k in f)
+        && !(r6b.fields.Source ?? "").includes("native:") && !(r6b.fields.Source ?? "").includes("Bytes ") && (r6b.fields.Source ?? "").includes("sidechain");
+      claims[TL_CLAIM.inspect] = r6.inspectOpen && !!r6.inspectTitle?.startsWith("Call") && ["Arguments", "Result", "Error", "Times", "Duration", "Source"].every((k) => k in f)
         // the page carries no detail texts (the detail door is not read): not delivered, and said so
-        && (f.Argumente ?? "").startsWith("nicht geliefert") && (f.Resultat ?? "").startsWith("nicht geliefert")
-        && (f.Fehler ?? "").startsWith("Fehler laut Quelle, Text nicht geliefert") && (f.Zeitpunkte ?? "").includes("Aufzeichnung:") && (f.Zeitpunkte ?? "").includes("2026-01-01T00:00:02.000Z")
-        && (f.Dauer ?? "").includes("Abstand der Aufzeichnungen") && (f.Dauer ?? "").includes("keine Laufzeit") && (f.Quelle ?? "").startsWith("claude") && (f.Quelle ?? "").includes("Sidechain")
-        && pendingResult.startsWith("wartet");
+        && (f.Arguments ?? "").startsWith("not delivered") && (f.Result ?? "").startsWith("not delivered")
+        && (f.Error ?? "").startsWith("Error per source, text not delivered") && (f.Times ?? "").includes("Record:") && (f.Times ?? "").includes("2026-01-01T00:00:02.000Z")
+        && (f.Duration ?? "").includes("interval between records") && (f.Duration ?? "").includes("no run time") && (f.Source ?? "").startsWith("claude") && (f.Source ?? "").includes("sidechain")
+        && pendingResult.startsWith("waiting");
       await click(".tliclose");
 
       // --- 7. keyboard: → walks the marks, Enter opens, Escape closes and returns focus
@@ -632,7 +632,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       claims[TL_CLAIM.noRoute] = r10.state === "unavailable" && r10.stateText.includes("404") && r10.stateText.includes("/api/timeline") && r10.tracks.length === 0 && r10.marks.length === 0;
       const routeNamed = (r10.stateText.match(/\/api\/timeline/g) ?? []).length;
       facts.emptyOne = { routeNamed, text: r10.stateText.slice(0, 160) };
-      claims[TL_CLAIM.emptyOne] = routeNamed === 1 && r10.stateText.startsWith("Die Zeitleiste hat noch keine Quelle: GET /api/timeline antwortet 404 (no such route).");
+      claims[TL_CLAIM.emptyOne] = routeNamed === 1 && r10.stateText.startsWith("The timeline has no source yet: GET /api/timeline answers 404 (no such route).");
       await click("#shell-outcomes .shellclose");
 
       // --- 10b. an answer of another form: the prototype wire this lens once read, then a page whose
@@ -653,7 +653,7 @@ export async function runTimelineDom(sourceRoot: string, artifacts?: string,
       facts.foreign = { cases: foreign.map((c) => ({ name: c.name, state: c.read?.state, text: c.read?.stateText.slice(0, 200), tracks: c.read?.tracks.length })),
         exceptions: fx.exceptions.slice(before, before + 3) };
       claims[TL_CLAIM.foreign] = foreign.every((c) => !!c.read && c.read.state === "unavailable" && c.read.tracks.length === 0 && c.read.marks.length === 0
-        && c.read.stateText.includes(`das Feld ${c.field} fehlt`) && (c.read.stateText.match(/\/api\/timeline/g) ?? []).length === 1)
+        && c.read.stateText.includes(`the field ${c.field} is missing`) && (c.read.stateText.match(/\/api\/timeline/g) ?? []).length === 1)
         && fx.exceptions.length === before;
 
       // --- 11. a late answer of a closed window: open (answer held back, one session), close, open

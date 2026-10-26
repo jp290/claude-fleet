@@ -6,12 +6,14 @@
 import { el, baseName, agoDe } from "./k15-haupt";
 import { icon } from "./icons";
 import { projectHue } from "./marks";
-import { gehe, info, oeffneOrdner, pinne, plural, render, repoZeilen, tilde, verwirft, type Ordner, type St } from "./k15-zustand";
-import { schliesseAblauf } from "./k15-agentmd";
-import { packUngesichert } from "./k15-packs-ui";
-import { knopf } from "./k15-teile";
+import { info, oeffneOrdner, pinne, plural, render, repoZeilen, tilde, type Ordner, type St } from "./k15-zustand";
 import { startSchliesst } from "./start-fenster";
 
+const knopf = (cls: string): HTMLButtonElement => {
+  const b = el("button", cls) as HTMLButtonElement;
+  b.type = "button";
+  return b;
+};
 const punkt = (repo: string): HTMLElement => {
   const dot = el("i", "fddot");
   dot.style.setProperty("--proj-h", String(projectHue(repo)));
@@ -27,27 +29,27 @@ export function repoKopf(s: St): void {
   b.setAttribute("aria-haspopup", "menu");
   b.setAttribute("aria-expanded", String(s.repoMenu));
   if (s.repo) b.dataset.repo = s.repo;
-  b.title =s.repo ? `${baseName(s.repo)} · ${tilde(s.repo)}: anderes Repo wählen` : "Repo wählen";
-  b.append(...(s.repo ? [punkt(s.repo)] : []), el("span", "k15wor", s.repo ? baseName(s.repo) : "Repo wählen"), icon("chevron"));
+  b.title =s.repo ? `${baseName(s.repo)} · ${tilde(s.repo)}: choose another repo` : "Choose a repo";
+  b.append(...(s.repo ? [punkt(s.repo)] : []), el("span", "k15wor", s.repo ? baseName(s.repo) : "Choose a repo"), icon("chevron"));
   b.onclick = () => { s.repoMenu = !s.repoMenu; s.ordner = null; render(); };
-  h2.replaceChildren(el("span", "k15woi", "Neue Session in"), b);
+  h2.replaceChildren(el("span", "k15woi", "New session in"), b);
   sub.replaceChildren(...repoStand(s));
 }
 // Branch, offene Änderungen, voraus/zurück, Worktrees und der letzte Commit, klein in einer Zeile; der Pfad im Title
 function repoStand(s: St): HTMLElement[] {
-  if (!s.repo) return [el("span", "", s.pins === null ? "Die Repos werden gelesen …" : "Noch kein Repo: Wähl oben eines oder füg eines hinzu.")];
+  if (!s.repo) return [el("span", "", s.pins === null ? "Reading your repos …" : "No repo yet: choose one above or add one.")];
   const i = info(s, s.repo);
-  if (i === "laedt") return [el("span", "", "wird gelesen …")];
-  if ("fehler" in i) return [el("span", "", `nicht lesbar: ${i.fehler}`)];
-  if (!i.exists || !i.git) return [el("span", "", i.exists ? "kein Git-Repo: Eine Session mit Rolle braucht eines." : "Den Ordner gibt es nicht mehr.")];
-  const stand = el("span", "k15wos", [i.branch ? `Branch ${i.branch}` : "ohne Branch",
-    i.dirty ? plural(i.dirty, "offene Änderung", "offene Änderungen") : "nichts offen",
-    ...(i.ahead ? [`${i.ahead} voraus`] : []), ...(i.behind ? [`${i.behind} zurück`] : []),
+  if (i === "laedt") return [el("span", "", "reading …")];
+  if ("fehler" in i) return [el("span", "", `not readable: ${i.fehler}`)];
+  if (!i.exists || !i.git) return [el("span", "", i.exists ? "Not a Git repo: a session with a role needs one." : "The folder no longer exists.")];
+  const stand = el("span", "k15wos", [i.branch ? `Branch ${i.branch}` : "no branch",
+    i.dirty ? plural(i.dirty, "open change", "open changes") : "nothing open",
+    ...(i.ahead ? [`${i.ahead} ahead`] : []), ...(i.behind ? [`${i.behind} behind`] : []),
     ...(i.lanes ? [plural(i.lanes, "Worktree", "Worktrees")] : [])].join(" · "));
   stand.title = tilde(s.repo);
   if (!i.last) return [stand];
   const c = el("span", "k15woc", `${agoDe(Date.now() - i.last.ts)}: ${i.last.subject}`);
-  c.title = `letzter Commit ${i.last.hash} ${i.last.subject}`;
+  c.title = `last commit ${i.last.hash} ${i.last.subject}`;
   return [stand, el("span", "k15wopf", "·"), c];
 }
 
@@ -56,7 +58,7 @@ export function repoMenue(s: St): HTMLElement | null {
   if (!s.repoMenu) return null;
   const m = el("div", "k15repomenu");
   m.setAttribute("role", "menu");
-  m.setAttribute("aria-label", "Repo der neuen Session");
+  m.setAttribute("aria-label", "Repo of the new session");
   if (s.ordner) { m.append(ordnerWahl(s, s.ordner)); return m; }
   const zeilen = repoZeilen(s);
   for (const z of zeilen) if (z.gepinnt && !z.sessions) info(s, z.repo);
@@ -70,13 +72,14 @@ export function repoMenue(s: St): HTMLElement | null {
     b.title = `${baseName(z.repo)} · ${tilde(z.repo)}`;
     const t = el("span", "k15kt");
     t.append(el("span", "k15kn", baseName(z.repo)),
-      el("span", "k15ks", `${z.sessions ? plural(z.sessions, "Session läuft", "Sessions laufen") : "keine Session"}${z.gepinnt ? " · gepinnt" : ""}`));
+      el("span", "k15ks", `${z.sessions ? plural(z.sessions, "session running", "sessions running") : "no session"}${z.gepinnt ? " · pinned" : ""}`));
     b.append(punkt(z.repo), t, ...(on ? [icon("check")] : []));
-    b.onclick = () => { s.repoMenu = false; if (s.repo !== z.repo) { s.repo = z.repo; gehe(s.tief, 2); } else render(); };
+    b.onclick = () => { s.repoMenu = false; if (s.repo !== z.repo) s.repo = z.repo;
+      render(); };
     r.append(b);
     if (z.gepinnt && !z.sessions) {
       const x = el("button", "k15repox");
-      x.title = `${baseName(z.repo)} aus der Auswahl nehmen; der Ordner bleibt`;
+      x.title = `Remove ${baseName(z.repo)} from the list; the folder stays`;
       x.setAttribute("aria-label", x.title);
       x.append(icon("x"));
       x.onclick = () => { void pinne(s, z.repo, false); };
@@ -84,10 +87,10 @@ export function repoMenue(s: St): HTMLElement | null {
     }
     m.append(r);
   }
-  if (!zeilen.length) m.append(el("div", "k15leer", s.pins === null ? "Die Repos werden gelesen …" : "Noch kein Repo: Füg eines hinzu."));
+  if (!zeilen.length) m.append(el("div", "k15leer", s.pins === null ? "Reading your repos …" : "No repo yet: add one."));
   const neu = el("button", "k15repoplus");
   neu.setAttribute("role", "menuitem");
-  neu.append(icon("plus"), el("span", "", "Repo hinzufügen …"));
+  neu.append(icon("plus"), el("span", "", "Add repo …"));
   neu.onclick = () => { void oeffneOrdner(s, "~"); };
   m.append(neu);
   return m;
@@ -111,11 +114,7 @@ export function menueZu(s: St, signal: AbortSignal): void {
     render();
   }, { capture: true, signal });
   s.shell.setCloseGuard(() => {
-    // Escape schließt zuerst den Ablauf „Deine Agent-MD“ (mit Warnung, wenn darin Ungesichertes steht), dann die Auswahl, dann das
-    // Fenster; steht anderswo ungesicherter Text, warnt das erste Schließen (Prüfung Punkt 2)
-    if (s.ablauf) { schliesseAblauf(s); return true; }
-    const wo = packUngesichert(s) ? "im Kontextpack" : s.bearbeite !== null && s.bearbeiteText !== null ? "in deiner eigenen Fassung" : null;
-    if (wo && !verwirft(s, wo)) return true;
+    // Escape closes the menu first, then the window (which may hold back for unsaved text, src/start-fenster.ts#startSchliesst)
     if (!s.repoMenu) return startSchliesst(s);
     s.repoMenu = false;
     s.ordner = null;
@@ -130,22 +129,22 @@ function ordnerWahl(s: St, o: Ordner): HTMLElement {
   const box = el("div", "k15ordner");
   const nav = el("div", "k15ordnk");
   const hoch = knopf("k15ordnh");
-  hoch.title = "eine Ebene höher";
+  hoch.title = "one level up";
   hoch.setAttribute("aria-label", hoch.title);
   hoch.append(icon("up"));
   hoch.disabled = !o.liste?.parent;
   hoch.onclick = () => { if (o.liste?.parent) void oeffneOrdner(s, o.liste.parent); };
-  const zu = el("button", "k15link", "Zurück");
+  const zu = el("button", "k15link", "Back");
   zu.onclick = () => { s.ordner = null; render(); };
   nav.append(hoch, el("span", "k15ordnp", tilde(o.liste?.path ?? o.pfad)), zu);
   box.append(nav);
   if (o.fehler) { box.append(el("div", "k15leer", o.fehler)); return box; }
-  if (!o.liste) { box.append(el("div", "k15leer", "wird gelesen …")); return box; }
+  if (!o.liste) { box.append(el("div", "k15leer", "reading …")); return box; }
   const liste = o.liste;
   const schon = new Set(repoZeilen(s).map((r) => r.repo));
   if (liste.git) {
     const hier = knopf("k15ghost k15ordnhier");
-    hier.append(icon("plus"), el("span", "", `${baseName(liste.path)} hinzufügen`));
+    hier.append(icon("plus"), el("span", "", `Add ${baseName(liste.path)}`));
     hier.disabled = schon.has(liste.path);
     hier.onclick = () => { void pinne(s, liste.path, true); };
     box.append(hier);
@@ -157,19 +156,19 @@ function ordnerWahl(s: St, o: Ordner): HTMLElement {
     const git = repoSet.has(d);
     const r = el("div", "k15ordnz");
     const b = knopf(`k15ordnb${git ? " git" : ""}`);
-    b.append(icon(git ? "branch" : "folder"), el("span", "k15ordnn", d), el("span", "k15ordnt", git && schon.has(pfad) ? "in der Auswahl" : ""));
-    b.title = `${d} öffnen`;
+    b.append(icon(git ? "branch" : "folder"), el("span", "k15ordnn", d), el("span", "k15ordnt", git && schon.has(pfad) ? "in the list" : ""));
+    b.title = `Open ${d}`;
     b.onclick = () => { void oeffneOrdner(s, pfad); };
     r.append(b);
     if (git && !schon.has(pfad)) {
-      const dazu = el("button", "k15ordnadd", "Hinzufügen");
-      dazu.title = `${tilde(pfad)} in die Auswahl nehmen`;
+      const dazu = el("button", "k15ordnadd", "Add");
+      dazu.title = `Add ${tilde(pfad)} to the list`;
       dazu.onclick = () => { void pinne(s, pfad, true); };
       r.append(dazu);
     }
     rows.append(r);
   }
-  if (!liste.dirs.length) rows.append(el("div", "k15leer", "Hier gibt es keine Unterordner."));
+  if (!liste.dirs.length) rows.append(el("div", "k15leer", "No subfolders here."));
   box.append(rows);
   return box;
 }

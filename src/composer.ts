@@ -102,11 +102,11 @@ export function mountComposer(): void {
 export function promptPlaceholder(): string {
   const pane = panes[focused];
   const slot = pane?.slot ?? 0;
-  if (pane?.pastN != null) return `Session ${pane.pastN} liest nur — ↩ oder Esc auf der Zeile führt zur laufenden`;
-  if (!slot) return "Diese Ansicht zeigt keine Session";
+  if (pane?.pastN != null) return `Session ${pane.pastN} is read-only — ↩ or Esc on its row goes to the running one`;
+  if (!slot) return "This view shows no session";
   const s = fleet.find((x) => x.id === slot);
-  if (!s?.cwd) return "Hier läuft keine Session";
-  return `Nachricht${isMobile() ? "" : " — Enter sendet"}`;
+  if (!s?.cwd) return "No session runs here";
+  return `Message${isMobile() ? "" : " — Enter sends"}`;
 }
 
 // THE SEND TARGET (Grammatik G2.4, card 929fdbe7): where the composer writes, on screen while the
@@ -128,11 +128,11 @@ export function renderTarget(): void {
   const lane = s?.cwd && s.worktree ? laneBandNames(stacksOf()).get(slot) : undefined;
   const addr = !slot ? "—" : lane ?? String(slot);
   const where = lane ? `Lane ${lane} (Slot ${slot})` : `Slot ${slot}`;
-  const [name, title] = !slot ? ["keine Session", "Diese Pane zeigt keine Session — eine Nachricht hat kein Ziel"]
-    : !s ? ["unbekannt", `${where}: die Belegung ist noch nicht gelesen`]
-    : !s.cwd ? ["leer", `${where} ist leer — keine laufende Session, die eine Nachricht annimmt`]
-    : pane?.pastN != null ? [`${s.label ?? baseName(s.cwd)} · liest nur`, `${where} zeigt Session ${pane.pastN} — sie liest nur, gesendet wird an die laufende`]
-    : [s.label ?? baseName(s.cwd), `Senden geht an ${where} · ${s.label ?? baseName(s.cwd)}`];
+  const [name, title] = !slot ? ["no session", "This pane shows no session — a message has no target"]
+    : !s ? ["unknown", `${where}: not read yet`]
+    : !s.cwd ? ["empty", `${where} is empty — no running session to take a message`]
+    : pane?.pastN != null ? [`${s.label ?? baseName(s.cwd)} · read-only`, `${where} shows session ${pane.pastN} — it is read-only; a send goes to the running one`]
+    : [s.label ?? baseName(s.cwd), `Sends to ${where} · ${s.label ?? baseName(s.cwd)}`];
   const openedAt = s?.cwd ? String(s.openedAt ?? "") : "";
   const orphan = !!slot && boxOrphan();
   // what runs now and takes the draft once adopted; an empty slot or a past session takes nothing
@@ -149,27 +149,27 @@ export function renderTarget(): void {
   // disabled — it keeps its focus and its click, which says why (doSend's toast); the quiet surface
   // of an empty field is index.html's
   send.setAttribute("aria-disabled", String(orphan));
-  send.title = orphan ? "Nicht senden: der Entwurf war für die beendete Session" : "send to this session";
+  send.title = orphan ? "Not sending: the draft was for the ended session" : "send to this session";
   if (!orphan) {
     t.title = title;
     // a running session's name is the foot line's (src/board.ts#renderWorkplaceField): the target
     // draws nothing then; it keeps its word where a send takes nothing ("leer", "liest nur")
     const takes = !!s?.cwd && pane?.pastN == null;
     if (takes) { t.removeAttribute("aria-label"); t.replaceChildren(); return; }
-    t.setAttribute("aria-label", `Sendeziel: ${addr} ${name}`);
+    t.setAttribute("aria-label", `Send target: ${addr} ${name}`);
     t.replaceChildren(el("span", "ctaddr", addr), el("span", "ctname", name));
     return;
   }
-  const word = "Entwurf für beendete Session";
-  t.title = `Dieser Entwurf wurde für die Session geschrieben, die in ${where} lief — sie ist beendet. `
-    + (heir ? `Enter sendet ihn nicht an ${heir}: „übernehmen" richtet ihn an ${heir}, ein leeres Feld gibt es frei.`
-      : "Enter sendet ihn nicht; ein leeres Feld gibt es frei.");
-  t.setAttribute("aria-label", `Sendeziel: ${addr} — ${word}`);
+  const word = "Draft for ended session";
+  t.title = `This draft was written for the session that ran in ${where}, which has ended. `
+    + (heir ? `Enter does not send it to ${heir}: "Adopt" addresses it to ${heir}, and an empty field releases it.`
+      : "Enter does not send it; an empty field releases it.");
+  t.setAttribute("aria-label", `Send target: ${addr} — ${word}`);
   const parts: HTMLElement[] = [el("span", "ctaddr", addr), el("span", "ctname", word)];
   if (heir) {
-    const adopt = el("button", "ctadopt", "übernehmen") as HTMLButtonElement;
+    const adopt = el("button", "ctadopt", "Adopt") as HTMLButtonElement;
     adopt.type = "button";
-    adopt.title = `Entwurf an ${heir} richten — danach sendet Enter an ${heir}`;
+    adopt.title = `Address the draft to ${heir} — Enter then sends to ${heir}`;
     adopt.onclick = () => adoptBox();
     parts.push(adopt);
   }
@@ -194,7 +194,7 @@ export function renderHeldHint(): void {
   const pane = panes[focused];
   const hd = pane?.pastN == null ? fleet.find((x) => x.id === pane?.slot)?.heldDeliveries : undefined;
   hint.hidden = !hd;
-  const text = !hd ? "" : pane?.isChat ? "Senden nimmt sie mit" : `${heldDeliveriesLine(hd)} · Senden nimmt sie mit`;
+  const text = !hd ? "" : pane?.isChat ? "Send takes them along" : `${heldDeliveriesLine(hd)} · Send takes them along`;
   if (hint.textContent !== text) hint.textContent = text;
 }
 
@@ -487,7 +487,7 @@ export function renderComposerOpts(force: boolean): void {
     // stand — never a level guessed from a config. Apply compares against THIS value, so picking
     // the level a stale record already names still types it into the pane.
     const running = runningEffort(s?.effort, pane?.observedEffort);
-    compOpts.appendChild(optSwitch("effort", slot, running, running || "Standard", [], (stage) => {
+    compOpts.appendChild(optSwitch("effort", slot, running, running || "default", [], (stage) => {
       const levels = el("div", "cmdlevels");
       for (const lv of h.effortLevels) {
         const b = el("button", "cmdlevel", lv) as HTMLButtonElement;
@@ -627,15 +627,15 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
   const btn = el("button", "optsw") as HTMLButtonElement;
   const inPane = switchesInPane(harnessEntry(slot));
   const what = inPane
-    ? `Stellt die Session um und tippt ${paneCommand(harnessEntry(slot), field, "")?.trim() ?? `/${field}`} in sie — erst mit Übernehmen`
-    : `Stellt die Session um und STARTET sie damit neu (dieser Harness kennt kein /${field} in der Session) — erst mit Übernehmen`;
+    ? `Switches the session by typing ${paneCommand(harnessEntry(slot), field, "")?.trim() ?? `/${field}`} into it — only on Apply`
+    : `Switches the session by RESTARTING it (this harness has no /${field} in the session) — only on Apply`;
   const tip = (v: string) => `${mark ? `${harnessEntry(slot)?.id ?? ""} · ` : ""}${field} ${v} — ${what}`;
   if (mark) lead[0]?.appendChild(mark);
   const val = el("span", `optval${field === "effort" ? " dim" : ""}`, label(optStaged[field] ?? shown));
   btn.append(...lead, val);
   btn.appendChild(el("span", "optchev")).appendChild(icon("chevron"));
   const pop = el("div", `optpop ${field}`);
-  const apply = el("button", "cmdapply", "Übernehmen") as HTMLButtonElement;
+  const apply = el("button", "cmdapply", "Apply") as HTMLButtonElement;
   apply.title = what;
   // after an Übernehmen, the sentence follows what Claude Code made of that very switch (the slot row's modelSwitch)
   const sw = fleet.find((x) => x.id === slot)?.modelSwitch, follow = optFollow[field];
@@ -656,7 +656,7 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
     const v = optStaged[field];
     if (!v || v === current) return;
     apply.disabled = true;
-    apply.textContent = "Wird umgestellt …";
+    apply.textContent = "Switching …";
     const verdict = await setSlotSetting(slot, field, v);
     optStaged = { ...optStaged, [field]: undefined };
     optMsg = { ...optMsg, [field]: verdict.text };
@@ -679,18 +679,18 @@ function optSwitch(field: "model" | "effort", slot: number, current: string, sho
     box.setAttribute("role", "alertdialog");
     const ms = cacheAge();
     box.appendChild(el("div", "cfmsg", inPane
-      ? "Ein Modellwechsel verwirft den Zwischenspeicher dieser Session — die nächste Antwort liest das ganze Gespräch neu."
-      : `${harnessEntry(slot)?.id ?? "Dieser Harness"} kennt kein /${field} in der Session: Umstellen startet sie neu und setzt das Gespräch fort. Was sie gerade tut, bricht ab.`));
+      ? "Switching the model discards this session's prompt cache — the next reply reads the whole conversation again."
+      : `${harnessEntry(slot)?.id ?? "This harness"} has no /${field} in the session: switching restarts it and resumes the conversation. Whatever it is doing stops.`));
     const ttl = panes[focused]?.cacheTtl ?? CACHE_TTL_MS;
-    if (ms !== null) box.appendChild(el("div", "cfage", `Letzte Anfrage vor ${fmtAge(ms)}${ms >= ttl ? " — der Zwischenspeicher ist wohl schon kalt" : ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null) ? " — der Zwischenspeicher läuft gleich ab" : ""}.`));
+    if (ms !== null) box.appendChild(el("div", "cfage", `Last request ${fmtAge(ms)} ago${ms >= ttl ? " — the prompt cache is probably cold" : ms >= ttl - cacheLeadMs(panes[focused]?.cacheTtlSec ?? null) ? " — the prompt cache expires shortly" : ""}.`));
     const opt = el("label", "cfskip");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    opt.append(cb, document.createTextNode("Nicht mehr fragen"));
+    opt.append(cb, document.createTextNode("Don't ask again"));
     opt.hidden = !inPane; // a restart is asked every time
-    const cancel = el("button", "cmdcancel", "Abbrechen") as HTMLButtonElement;
+    const cancel = el("button", "cmdcancel", "Cancel") as HTMLButtonElement;
     cancel.onclick = () => cancelConfirm();
-    const go = el("button", "cmdapply", "Umstellen") as HTMLButtonElement;
+    const go = el("button", "cmdapply", "Switch") as HTMLButtonElement;
     go.onclick = () => {
       if (inPane && cb.checked) setModelWarnOff();
       optConfirm = false;
@@ -746,7 +746,7 @@ export function buildTray(): void {
   for (const entry of TRAY) {
     if (entry.run) {
       const b = el("button", "") as HTMLButtonElement;
-      b.title = "Dateien an diese Session anhängen.";
+      b.title = "Attach files to this session.";
       b.append(el("span", "tricon"), el("span", "trlabel", entry.label));
       b.onclick = entry.run;
       compTray.appendChild(b);

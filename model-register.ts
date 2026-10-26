@@ -37,7 +37,7 @@ export const harnessAvailability = (id: string, resume = process.env.FLEET_HARNE
 // list, default empty, restart). Read per call. The doors that start something refuse it (server.ts#harnessPausedError), GET
 // /api/harnesses publishes it as `hier`/`grund`; a founding plan for it still computes.
 export const harnessOffReason = (id: string, off = process.env.FLEET_HARNESSES_OFF ?? ""): string | null =>
-  id !== "" && off.split(",").map((x) => x.trim()).includes(id) ? "auf diesem Rechner abgeschaltet (FLEET_HARNESSES_OFF)" : null;
+  id !== "" && off.split(",").map((x) => x.trim()).includes(id) ? "switched off on this machine (FLEET_HARNESSES_OFF)" : null;
 
 type RoleDefault = { harness: ModelHarness; id: string; effort: string | null };
 const OPUS_WORKER = { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" } as const;

@@ -33,17 +33,17 @@ const LISTEN = [
 
 // null = der Server nimmt es an; sonst ein Satz, warum nicht
 export function speicherFehler(o: unknown): string | null {
-  if (!o || typeof o !== "object" || Array.isArray(o)) return "erwartet ist ein Objekt mit fassungen, packs und profile";
+  if (!o || typeof o !== "object" || Array.isArray(o)) return "expected an object with fassungen, packs and profile";
   const fremd = Object.keys(o).find((k) => !LISTEN.some((l) => l.feld === k));
-  if (fremd !== undefined) return `unbekanntes Feld „${fremd.slice(0, 40)}“`;
+  if (fremd !== undefined) return `unknown field “${fremd.slice(0, 40)}”`;
   for (const l of LISTEN) {
     const liste: unknown = Object.getOwnPropertyDescriptor(o, l.feld)?.value;
     if (liste === undefined && "kann" in l) continue;
-    if (!Array.isArray(liste)) return `„${l.feld}“ fehlt oder ist keine Liste`;
-    if (liste.length > l.max) return `${liste.length} ${l.wort} sind mehr als ${l.max}`;
+    if (!Array.isArray(liste)) return `“${l.feld}” is missing or not a list`;
+    if (liste.length > l.max) return `${liste.length} ${l.wort} are more than ${l.max}`;
     const i = liste.findIndex((x: unknown) => !x || typeof x !== "object"
       || l.pflicht.some((k) => typeof Object.getOwnPropertyDescriptor(x, k)?.value !== "string"));
-    if (i >= 0) return `Eintrag ${i + 1} in „${l.feld}“ braucht ${l.pflicht.join(", ")} als Text`;
+    if (i >= 0) return `entry ${i + 1} in “${l.feld}” needs ${l.pflicht.join(", ")} as text`;
   }
   return null;
 }

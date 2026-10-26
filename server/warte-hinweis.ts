@@ -105,13 +105,13 @@ export function warteSchritt(prev: WarteEpisode | undefined, openedAt: number, f
   return { episode: { ...ep, gemeldet: true }, melden: true };
 }
 
-const uhr = (ms: number): string => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const uhr = (ms: number): string => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 export function warteHinweisText(o: { slot: number; label: string | null; frage: string; seit: number; now: number }): string {
   const min = Math.floor((o.now - o.seit) / 60_000);
-  return `[fleet · warte-hinweis] Slot ${o.slot}${o.label ? ` (${o.label})` : ""} wartet seit ${uhr(o.seit)} (${min} min) `
-    + `auf eine Antwort in seiner Pane: „${o.frage}“. Fleet tippt dort nichts; Zustellungen beantworten die Frage nie. `
-    + `Bewusst freigeben oder ablehnen (mit deinem Self-Token, x-fleet-self-token): erst den Dialog samt Befehl lesen, `
-    + `GET /api/self/rueckfrage?slot=${o.slot}, dann POST /api/self/rueckfrage mit {"slot":${o.slot},"kennung":"<kennung aus dem `
-    + `GET>","wahl":"freigeben"} oder "wahl":"ablehnen". Die Tür tippt nur, wenn genau dieser Dialog noch steht. `
-    + "Dieser Hinweis kommt einmal je Frage.";
+  return `[fleet · waiting notice] Slot ${o.slot}${o.label ? ` (${o.label})` : ""} has been waiting since ${uhr(o.seit)} (${min} min) `
+    + `for an answer in its pane: "${o.frage}". Fleet types nothing there; deliveries never answer the question. `
+    + `To approve or reject on purpose (with your self token, x-fleet-self-token): first read the dialog with its command, `
+    + `GET /api/self/rueckfrage?slot=${o.slot}, then POST /api/self/rueckfrage with {"slot":${o.slot},"kennung":"<kennung from the `
+    + `GET>","wahl":"freigeben"} or "wahl":"ablehnen". The door types only if exactly this dialog is still showing. `
+    + "This notice comes once per question.";
 }

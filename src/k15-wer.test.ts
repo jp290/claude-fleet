@@ -10,11 +10,11 @@ const plan = (x: Partial<WerPlan> = {}): WerPlan => ({ traeger: new Map(), nativ
 
 describe("werBestimmt", () => {
   test("an im Plan, aber dieser Start liefert es nicht: Fleet legt fest, mit dem Grund der Lieferung, auch vor Pflicht und Schalter", () => {
-    const fehlt = new Map([["task-brief", "die Tür eines offenen Starts liefert keine Karte"], ["lane-notes", "x"]]);
-    const herleitung = "an im Plan, aber die Tür dieses Starts liefert es nicht (Gründungsplan, lieferung.ausgelassen)";
+    const fehlt = new Map([["task-brief", "the door of an open start delivers no card"], ["lane-notes", "x"]]);
+    const herleitung = "on in the plan, but the door of this start does not deliver it (founding plan, lieferung.ausgelassen)";
     expect(werBestimmt(bst("task-brief", { grenze: { art: "noetig", grund: "Ohne Auftrag weiß die Session nicht, was zu tun ist." } }), plan({ fehlt })))
-      .toEqual({ art: "fleet", grund: "Dieser Start liefert es nicht: die Tür eines offenen Starts liefert keine Karte.", herleitung });
-    expect(werBestimmt(bst("lane-notes"), plan({ fehlt }))).toEqual({ art: "fleet", grund: "Dieser Start liefert es nicht: x.", herleitung });
+      .toEqual({ art: "fleet", grund: "This start does not deliver it: the door of an open start delivers no card.", herleitung });
+    expect(werBestimmt(bst("lane-notes"), plan({ fehlt }))).toEqual({ art: "fleet", grund: "This start does not deliver it: x.", herleitung });
     // aus liefert ohnehin nichts: dann gilt, was sonst gilt
     expect(werBestimmt(bst("lane-notes", { zustand: "aus" }), plan({ fehlt }))).toEqual(DU);
   });
@@ -25,11 +25,11 @@ describe("werBestimmt", () => {
   test("eine Pflicht, die an ist, legt Fleet fest, mit dem Grund aus dem Plan; ein Ersatz derselben Funktion steht in der Herleitung", () => {
     const w = werBestimmt(bst("task-brief", { grenze: { art: "noetig", grund: "Ohne Auftrag weiß die Session nicht, was zu tun ist." }, ersatzKandidaten: ["main-rail"] }), plan());
     expect(w).toEqual({ art: "fleet", grund: "Ohne Auftrag weiß die Session nicht, was zu tun ist.",
-      herleitung: "nötig für diese Rolle (session-blocks.ts, grenze); ersetzbar nur durch einen Baustein derselben Funktion: main-rail" });
+      herleitung: "required for this role (session-blocks.ts, grenze); replaceable only by a block with the same function: main-rail" });
   });
   test("gesperrt: auch kein gleichwertiger Ersatz", () => {
     const w = werBestimmt(bst("portable-contract", { grenze: { art: "noetig", grund: "Owner-Entscheid: nötig und gesperrt.", gesperrt: true } }), plan());
-    expect(w).toEqual({ art: "fleet", grund: "Owner-Entscheid: nötig und gesperrt.", herleitung: "nötig und gesperrt: auch eine gleichwertige Funktion ersetzt es nicht (session-blocks.ts, grenze)" });
+    expect(w).toEqual({ art: "fleet", grund: "Owner-Entscheid: nötig und gesperrt.", herleitung: "required and locked: not even an equivalent function replaces it (session-blocks.ts, grenze)" });
   });
   test("eine Pflicht, die bei dieser Rolle aus ist, lässt sich dazuschalten: änderbar", () => {
     expect(werBestimmt(bst("main-rail", { zustand: "aus", grenze: { art: "noetig", grund: "x" } }), plan())).toEqual(DU);
@@ -37,24 +37,24 @@ describe("werBestimmt", () => {
   test("was eine Pflicht trägt, legt Fleet fest und nennt die Pflicht beim Namen", () => {
     const vertrag = bst("portable-contract", { grenze: { art: "noetig", grund: "g", gesperrt: true } });
     expect(werBestimmt(bst("pack:portable-core"), plan({ traeger: new Map([["pack:portable-core", vertrag]]) }))).toEqual({ art: "fleet",
-      grund: "Darin steckt „Name portable-contract“, und das ist Pflicht; ohne dies käme es bei diesem Start nicht an.", herleitung: "portable-contract steckt über enthaltenIn darin (Gründungsplan)" });
+      grund: "It is part of “Name portable-contract”, which is required; without it, that would not arrive at this start.", herleitung: "portable-contract is part of it through enthaltenIn (founding plan)" });
     // aus trägt es nichts
     expect(werBestimmt(bst("pack:portable-core", { zustand: "aus" }), plan({ traeger: new Map([["pack:portable-core", vertrag]]) }))).toEqual(DU);
   });
   test("gilt nicht für diesen Agenten: Fleet legt fest, mit dem Grund des Registers", () => {
     expect(werBestimmt(bst("private-rulebook", { zustand: "aus", harness: { gueltig: false, grund: "CLAUDE.md liest nur Claude Code." } }), plan()))
-      .toEqual({ art: "fleet", grund: "CLAUDE.md liest nur Claude Code.", herleitung: "gilt nur für bestimmte Agenten (session-blocks.ts, harness)" });
+      .toEqual({ art: "fleet", grund: "CLAUDE.md liest nur Claude Code.", herleitung: "applies to certain agents only (session-blocks.ts, harness)" });
   });
   test("was Claude Code selbst lädt und an ist, legt Claude Code fest; ist es aus, hat Fleet es beim Start abgeschaltet", () => {
     const grund = "Claude lädt seine Notizen selbst; Fleet schaltet sie nur beim Start einer Lane ab.";
     expect(werBestimmt(bst("native-agents", { schaltbar: { ja: false, grund: "Der Agent lädt den Ordner selbst." } }), plan()))
-      .toEqual({ art: "claude-code", grund: "Der Agent lädt den Ordner selbst.", herleitung: "Claude Code lädt es selbst; Fleet hat dafür keinen Schalter (session-blocks.ts, nichtSchaltbar)" });
+      .toEqual({ art: "claude-code", grund: "Der Agent lädt den Ordner selbst.", herleitung: "Claude Code loads it itself; Fleet has no switch for it (session-blocks.ts, nichtSchaltbar)" });
     expect(werBestimmt(bst("auto-memory", { zustand: "aus", schaltbar: { ja: false, grund } }), plan()))
-      .toEqual({ art: "fleet", grund, herleitung: "Fleet schaltet es beim Start dieser Rolle ab (session-blocks.ts, nichtSchaltbar)" });
+      .toEqual({ art: "fleet", grund, herleitung: "Fleet switches it off when this role starts (session-blocks.ts, nichtSchaltbar)" });
   });
   test("bei „Nur Ordner“ ist alles andere nicht schaltbar: das legt Fleet fest", () => {
     expect(werBestimmt(bst("role-card", { zustand: "aus", schaltbar: { ja: false, grund: "Nur Ordner liefert nur native-agents und auto-memory." } }), plan()))
-      .toEqual({ art: "fleet", grund: "Nur Ordner liefert nur native-agents und auto-memory.", herleitung: "der Plan dieser Rolle lässt es nicht schalten (Gründungsplan, schaltbar)" });
+      .toEqual({ art: "fleet", grund: "Nur Ordner liefert nur native-agents und auto-memory.", herleitung: "the plan for this role does not let it be switched (founding plan, schaltbar)" });
   });
   test("ohne den Plan von „Nur Ordner“ ist ein nicht schaltbarer Baustein noch nicht zuzuordnen: kein Kennzeichen statt eines geratenen", () => {
     expect(werBestimmt(bst("native-agents", { schaltbar: { ja: false, grund: "x" } }), plan({ nativ: null }))).toBeNull();
@@ -62,9 +62,9 @@ describe("werBestimmt", () => {
   });
   test("ein Pack ohne Quelle und eine unerfüllte Bedingung lehnt der Plan ab: fest, mit Grund", () => {
     expect(werBestimmt(bst("pack:verify-e2e", { zustand: "aus" }), plan({ ohneQuelle: new Map([["pack:verify-e2e", "die Quelldatei fehlt im Repo"]]) })))
-      .toEqual({ art: "fleet", grund: "Die Quelle des Packs fehlt: die Quelldatei fehlt im Repo.", herleitung: "der Plan nimmt einen Pack ohne Quelle nicht an (Gründungsplan, omitted)" });
+      .toEqual({ art: "fleet", grund: "The pack has no source: die Quelldatei fehlt im Repo.", herleitung: "the plan does not accept a pack without a source (founding plan, omitted)" });
     expect(werBestimmt(bst("private-rulebook", { zustand: "aus", bedingung: { grund: "Claude mit dem Regelbuch-Auszug seiner Rolle", erfuellt: false } }), plan()))
-      .toEqual({ art: "fleet", grund: "Nur wenn: Claude mit dem Regelbuch-Auszug seiner Rolle; das trifft hier nicht zu.", herleitung: "eine unerfüllte Bedingung lehnt der Plan ab (session-blocks.ts, rollenDefault bedingt)" });
+      .toEqual({ art: "fleet", grund: "Only if: Claude mit dem Regelbuch-Auszug seiner Rolle; that does not hold here.", herleitung: "the plan rejects an unmet condition (session-blocks.ts, rollenDefault bedingt)" });
   });
   test("eine Bedingung, die erst beim Start bekannt ist, oder eine erfüllte, bleibt änderbar", () => {
     expect(werBestimmt(bst("lane-notes", { zustand: "aus", bedingung: { grund: "Notizen", erfuellt: "unknown" } }), plan())).toEqual(DU);
@@ -83,12 +83,12 @@ describe("nativVon: was eine Session „Nur Ordner“ bekommen kann, lädt Claud
 describe("werBeiClaudeCode: der Systemprompt ist ein Claude-Code-Standard, ein Schalter der Startzeile ein Fleet-Standard; der Grund sagt, ob es einstellbar ist", () => {
   const z = (weg: string) => ({ weg, satz: "Satz", quelle: "server.ts#agentCmd" });
   test("ein Schalter, auch sein Fehlen, ist Fleets Startzeile", () => {
-    expect(werBeiClaudeCode(z("--tools"))).toEqual({ art: "fleet", grund: "Noch nicht je Session einstellbar, Fleet setzt es beim Start: Satz", herleitung: "Fleets Startzeile: --tools (server.ts#agentCmd); je Session einstellbar erst mit einer eigenen Startzeile" });
+    expect(werBeiClaudeCode(z("--tools"))).toEqual({ art: "fleet", grund: "Not settable per session yet, Fleet sets it at start: Satz", herleitung: "Fleet’s start line: --tools (server.ts#agentCmd); settable per session only with a start line of its own" });
     expect(werBeiClaudeCode(z("kein --tools")).art).toBe("fleet");
     expect(werBeiClaudeCode(z("--settings · --disallowedTools")).art).toBe("fleet");
   });
   test("was Claude Code selbst schreibt oder aus seiner Konfiguration lädt, ist ein Claude-Code-Standard und nicht in Fleet einstellbar", () => {
-    expect(werBeiClaudeCode(z("Claude Code"))).toEqual({ art: "claude-code", grund: "Nicht in Fleet einstellbar: Satz", herleitung: "Claude Code (server.ts#agentCmd)" });
+    expect(werBeiClaudeCode(z("Claude Code"))).toEqual({ art: "claude-code", grund: "Not settable in Fleet: Satz", herleitung: "Claude Code (server.ts#agentCmd)" });
     expect(werBeiClaudeCode(z("native Datei")).art).toBe("claude-code");
     expect(werBeiClaudeCode(z("Konfiguration des Accounts")).art).toBe("claude-code");
   });
@@ -101,10 +101,10 @@ describe("werBeiClaudeCode: der Systemprompt ist ein Claude-Code-Standard, ein S
 
 describe("werBeiTeil", () => {
   test("ein Schalter der Startzeile ist ein Fleet-Standard, ein Ort ein Claude-Code-Standard; der Grund sagt, ob es einstellbar ist, dann den Satz des Teils", () => {
-    expect(werBeiTeil({ weg: "--settings skillOverrides", satz: "Fleet nimmt es aus der Liste." })).toEqual({ art: "fleet", grund: "Noch nicht je Session einstellbar, Fleet setzt es beim Start: Fleet nimmt es aus der Liste.",
-      herleitung: "Fleets Startzeile: --settings skillOverrides; je Session einstellbar erst mit einer eigenen Startzeile" });
-    expect(werBeiTeil({ weg: "Plugin figma", satz: "kommt mit dem Plugin figma" })).toEqual({ art: "claude-code", grund: "Nicht in Fleet einstellbar: kommt mit dem Plugin figma",
-      herleitung: "Plugin figma: Claude Code lädt es selbst" });
+    expect(werBeiTeil({ weg: "--settings skillOverrides", satz: "Fleet nimmt es aus der Liste." })).toEqual({ art: "fleet", grund: "Not settable per session yet, Fleet sets it at start: Fleet nimmt es aus der Liste.",
+      herleitung: "Fleet’s start line: --settings skillOverrides; settable per session only with a start line of its own" });
+    expect(werBeiTeil({ weg: "Plugin figma", satz: "kommt mit dem Plugin figma" })).toEqual({ art: "claude-code", grund: "Not settable in Fleet: kommt mit dem Plugin figma",
+      herleitung: "Plugin figma: Claude Code loads it itself" });
   });
   test("ein Wort mit Bindestrich ist kein Schalter", () => {
     expect(werBeiTeil({ weg: "claude.ai-Anbindung", satz: "s" }).art).toBe("claude-code");
@@ -116,8 +116,8 @@ describe("werBeiTeil", () => {
 describe("werDesAbschnitts", () => {
   const F: Wer = { art: "fleet", grund: "g", herleitung: "h" }, C: Wer = { art: "claude-code", grund: "c", herleitung: "h" };
   test("die Art der meisten Zeilen steht einmal im Kopf; ihr Grund zählt die Zeilen", () => {
-    expect(werDesAbschnitts([F, F, DU, F, C])).toEqual({ art: "fleet", grund: "3 von 5 Zeilen dieses Abschnitts; eine Zeile, die abweicht, trägt ihr eigenes Kennzeichen.",
-      herleitung: "der Grund je Zeile steht in ihrem Title" });
+    expect(werDesAbschnitts([F, F, DU, F, C])).toEqual({ art: "fleet", grund: "3 of 5 rows in this section; a row that differs carries its own tag.",
+      herleitung: "the reason for each row is in its title" });
     expect(werDesAbschnitts([DU, F, DU, DU, F])).toEqual(DU);
   });
   test("bei Gleichstand gilt die zuerst genannte Art", () => {
@@ -130,7 +130,7 @@ describe("werDesAbschnitts", () => {
     expect(werDesAbschnitts([null, C, null])?.art).toBe("claude-code");
   });
   test("was an der Zeile wegfällt, steht in ihrem Title", () => {
-    expect(werTitel(F)).toBe("Fleet-Standard: g");
-    expect(werTitel(DU)).toBe("änderbar: du stellst es hier ein");
+    expect(werTitel(F)).toBe("Fleet default: g");
+    expect(werTitel(DU)).toBe("settable: you set it here");
   });
 });

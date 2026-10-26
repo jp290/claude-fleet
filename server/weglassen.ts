@@ -59,7 +59,7 @@ export function weglassenStart(w: Weglassen | null, claudeDir: string): { exclud
   };
 }
 
-export const WEGGELASSEN_NICHTS = "nichts";
+export const WEGGELASSEN_NICHTS = "nothing";
 /** Je Wegnahme eine Zeile „<teil>: <was>“ mit dem Namen aus dem Türfeld; leer = nichts weggelassen. `kurz` zeigt einen Pfad (etwa mit ~). Rein. */
 export function weglassenZeilen(w: Weglassen | null, kurz: (pfad: string) => string = (pfad) => pfad): string[] {
   if (!w) return [];
@@ -69,8 +69,8 @@ export function weglassenZeilen(w: Weglassen | null, kurz: (pfad: string) => str
     w.plugins?.length ? `plugins: ${w.plugins.join(", ")}` : null,
     w.agents?.length ? `agents: ${w.agents.join(", ")}` : null,
     w.skills?.length ? `skills: ${w.skills.join(", ")}` : null,
-    w.mcp?.length ? `mcp: ${w.mcp.join(", ")} (ihre Werkzeuge; der Server startet weiter)` : null,
-    w.hooks ? "hooks: alle (auch Statuszeile und @-Vorschlag)" : null,
+    w.mcp?.length ? `mcp: ${w.mcp.join(", ")} (their tools; the server keeps running)` : null,
+    w.hooks ? "hooks: all (also the status line and the @ suggestion)" : null,
     w.dateien?.length ? `dateien: ${w.dateien.map(kurz).join(", ")}` : null,
   ].filter((z): z is string => z !== null);
 }

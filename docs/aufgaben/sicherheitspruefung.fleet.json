@@ -39,7 +39,7 @@
         "rechteV": 1,
         "werte": {
           "permission-mode": "auto",
-          "subagenten": "nur lesende"
+          "subagenten": "read only"
         }
       },
       "eigeneDatei": {

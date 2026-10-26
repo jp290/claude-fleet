@@ -44,13 +44,13 @@ describe("Postfach-Zustellung: was direkt kommt und was im Bündel bleibt", () =
 
 describe("Postfach-Zustellung: der Wortlaut einer Zustellung", () => {
   test("jeder Eintrag trägt Kennung, Absender und den vollen Text, mehrere in einer Zustellung mit einer Trennzeile", () => {
-    const a = entry("aaaa", now - 90_000, "erste Zeile\nzweite Zeile", undefined, "Orchestratorin");
+    const a = entry("aaaa", now - 90_000, "erste Zeile\nzweite Zeile", undefined, "Orchestrator");
     const b = entry("bbbb", now - 80_000, "und danach", { kind: "lane", slot: 4, openedAt: 9 });
-    expect(postfachEntryText(a)).toBe(`${POSTFACH_BODY_PREFIX} aaaa von Orchestratorin\n\nerste Zeile\nzweite Zeile`);
+    expect(postfachEntryText(a)).toBe(`${POSTFACH_BODY_PREFIX} aaaa from Orchestrator\n\nerste Zeile\nzweite Zeile`);
     const plan = planPostfachDelivery([a, b], now, { windowMs: 60_000, maxChars: 8_000 });
     expect(plan?.text).toBe(`${postfachEntryText(a)}\n\n${postfachEntryText(b)}`);
     expect(plan?.text).toContain("erste Zeile\nzweite Zeile");
-    expect(plan?.text).toContain("bbbb von Session Slot 3");
+    expect(plan?.text).toContain("bbbb from Session Slot 3");
   });
 
   test("die Grenze einer Zustellung: so viele älteste Nachrichten wie hineinpassen, eine immer, der Rest wartet auf den nächsten Takt", () => {

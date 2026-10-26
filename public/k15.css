@@ -1,7 +1,5 @@
-/* K15 · DAS FENSTER „NEUE SESSION“ (src/k15-entwurf.ts, seit Runde 5 das einzige Startfenster): vier Spalten, links grob, rechts genau.
-   Geladen beim ersten Öffnen (src/k15-lader.ts), nicht mit index.html */
-/* DAS FENSTER SELBST (src/shell.ts mit id „found“): Grund, Kopf, Fuß und Knöpfe. Bis Runde 5 (17.10.) stand das im Block des alten
-   Startfensters in public/index.html; seit das neue Fenster es abgelöst hat, gehört es hierher */
+/* THE START WINDOW'S SHELL (src/k15-entwurf.ts): the frame, head and foot of the window "New session", the repo menu and the folder picker.
+   The window's content is styled in sitzung.css. Loaded on first open (src/k15-lader.ts), not with index.html */
 #shell-found { background: color-mix(in srgb, var(--chat-void) 60%, transparent); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
   font-family: var(--chat-sans); font-size: var(--chat-fs); color: var(--chat-prose); }
 #shell-found .shellwin { position: relative; width: min(760px, calc(100vw - 32px)); height: min(600px, calc(100vh - 32px));
@@ -23,11 +21,11 @@
 #shell-found .shellclose svg { width: 18px; height: 18px; }
 #shell-found svg { flex: none; }
 #shell-found .shellfoot { display: flex; align-items: center; gap: 16px; padding: 14px 22px 18px; border-top: 1px solid var(--chat-edge-soft); }
-#shell-found .fdglyph { display: grid; place-items: center; color: var(--chat-mute); }
-#shell-found .fdglyph svg { width: 22px; height: 22px; }
 #shell-found .fddot { flex: none; width: 8px; height: 8px; border-radius: 50%;
   background: hsl(var(--proj-h, 220) var(--proj-s) var(--proj-l)); }
-@media (prefers-reduced-motion: reduce) { #shell-found * { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) {
+  #shell-found * { animation: none !important; transition: none !important; }
+}
 @media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
   #shell-found .shellwin { width: 100vw; height: 100dvh; height: var(--vvh, 100dvh); border-radius: 0; border: 0; }
   #shell-found .shellhead { padding: 10px 8px 6px 16px; }
@@ -40,104 +38,13 @@
 #shell-found.k15 .shellfoot { padding: 12px 18px 14px 22px; }
 .k15 button { cursor: pointer; }
 .k15 .k15hb { display: flex; gap: 6px; margin-right: 6px; }
-.k15 .k15hbtn { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 8px;
-  border: 1px solid var(--chat-edge); font-size: 13px; color: var(--chat-mute); }
-.k15 .k15hbtn:hover, .k15 .k15hbtn.on { color: var(--chat-ink); background: var(--c-hover); }
-.k15 .k15hbtn svg { width: 15px; height: 15px; }
-.k15 .k15d { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(220px, 276px) minmax(250px, 320px) minmax(290px, 356px) minmax(300px, 1fr); }
-.k15 .k15col { min-width: 0; min-height: 0; overflow-y: auto; padding: 0 14px 24px; border-left: 1px solid var(--chat-edge-soft);
-  scrollbar-width: thin; scrollbar-color: var(--chat-edge) transparent; }
-.k15 .k15c1 { border-left: 0; padding-left: 18px; }
-.k15 .k15c4 { --k15-bg: color-mix(in srgb, var(--chat-surface) 70%, var(--chat-void)); background: var(--k15-bg); padding: 0 26px 32px; }
-.k15 .k15lab { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
-  column-gap: 8px; row-gap: 3px; padding: 16px 4px 12px; background: var(--k15-bg, var(--chat-void)); }
-.k15 .k15labi { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--chat-edge);
-  font: 10px/1 var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15labw { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15lab > .k15ver { grid-column: 3; grid-row: 1; }
-.k15 .k15labs { grid-column: 2 / -1; font-size: 12px; line-height: 1.35; color: var(--chat-faint); }
-.k15 .k15sub { display: flex; flex-direction: column; gap: 2px; padding: 22px 4px 8px; }
-.k15 .k15subw { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15ver { flex: none; font: 11px/1 var(--chat-mono); color: var(--chat-faint); padding: 4px 6px; border: 1px solid var(--chat-edge);
-  border-radius: 6px; white-space: nowrap; }
-.k15 .k15konst, .k15 .k15role, .k15 .k15eb { width: 100%; display: flex; align-items: center; gap: 11px; min-height: 52px; padding: 8px 10px;
-  border-radius: 12px; border: 1px solid transparent; text-align: left; color: var(--chat-ink); }
-.k15 .k15konst + .k15konst, .k15 .k15role + .k15role, .k15 .k15eb + .k15eb { margin-top: 2px; }
-.k15 .k15konst:hover, .k15 .k15role:hover, .k15 .k15eb:hover { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); }
-.k15 .k15konst.on, .k15 .k15role.on, .k15 .k15eb.on { background: var(--c-hover); border-color: color-mix(in srgb, var(--chat-ink) 55%, transparent); }
-.k15 .k15minibox { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--chat-edge); }
-.k15 .k15mini { width: 26px; height: 26px; }
-.k15 .k15mini line { stroke: var(--chat-faint); stroke-width: 1.3; }
-.k15 .k15mini circle { fill: var(--chat-mute); }
-.k15 .on .k15mini line { stroke: var(--chat-mute); }
-.k15 .on .k15mini circle { fill: var(--chat-ink); }
 .k15 .k15kt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .k15 .k15kn { font-size: 14px; line-height: 1.3; font-weight: 600; }
 .k15 .k15ks { font-size: 12px; line-height: 1.35; color: var(--chat-mute); }
-.k15 .k15role .fdglyph svg { width: 19px; height: 19px; }
-.k15 .k15role .fdglyph { width: 32px; }
-.k15 .k15row2 { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
 .k15 .k15ghost { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border-radius: 8px;
   border: 1px dashed var(--chat-edge); font-size: 12.5px; color: var(--chat-mute); }
 .k15 .k15ghost:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
 .k15 .k15ghost svg { width: 14px; height: 14px; }
-.k15 .k15drop { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 12px; border: 1px dashed var(--chat-edge);
-  border-radius: 12px; font-size: 12.5px; color: var(--chat-faint); }
-.k15 .k15drop svg { width: 16px; height: 16px; }
-.k15 .k15opt { width: 100%; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border-radius: 12px;
-  border: 1px solid transparent; color: var(--chat-ink); text-align: left; }
-.k15 .k15opt + .k15opt { margin-top: 2px; }
-.k15 .k15opt.on { background: var(--c-hover); border-color: color-mix(in srgb, var(--chat-ink) 55%, transparent); }
-.k15 .k15opt svg { width: 15px; height: 15px; color: var(--chat-mute); }
-.k15 .k15opt:not(.on) svg { transform: rotate(-90deg); color: var(--chat-faint); }
-.k15 .k15optw { flex: 1; font-size: 14px; }
-.k15 .k15optw code { font: var(--chat-code-fs) var(--chat-mono); }
-.k15 .k15dot { width: 8px; height: 8px; border-radius: 50%; background: #c084fc; }
-.k15 .k15kname { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 15px; font-weight: 600; line-height: 1.3;
-  color: var(--chat-ink); padding: 0 4px 14px; }
-.k15 .k15baum, .k15 .k15ast, .k15 .k15kids { display: flex; flex-direction: column; gap: 8px; }
-.k15 .k15card { width: 100%; display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border-radius: 12px; border: 1px solid var(--chat-edge);
-  background: var(--chat-void); text-align: left; color: var(--chat-ink); transition: border-color .12s, background .12s; }
-.k15 .k15card:hover { border-color: color-mix(in srgb, var(--chat-ink) 30%, transparent); }
-.k15 .k15card.weg { border-color: color-mix(in srgb, var(--chat-ink) 24%, transparent); }
-.k15 .k15card.on { background: var(--c-hover); border-color: color-mix(in srgb, var(--chat-ink) 65%, transparent); }
-.k15 .k15card.nutzt { border-color: color-mix(in srgb, var(--chat-ink) 50%, transparent); border-style: dashed; }
-.k15 .k15ct { display: flex; align-items: center; gap: 8px; }
-.k15 .k15ct .fdglyph svg { width: 16px; height: 16px; }
-.k15 .k15card.on .fdglyph, .k15 .k15card.weg .fdglyph { color: var(--chat-ink); }
-.k15 .k15cn { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
-.k15 .k15cp { font: 11px/1 var(--chat-mono); color: var(--chat-faint); white-space: nowrap; }
-.k15 .k15ag { display: flex; align-items: center; gap: 6px; padding-left: 24px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--chat-mute); }
-.k15 .k15ag .k15agw { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15ag .mark { flex: none; }
-.k15 .k15ag .mark.clawd { display: block; width: auto; height: 11px; }
-.k15 .k15ag .mark.codexmark, .k15 .k15ag .mark.pimark { font: 700 11px/1 var(--chat-mono); }
-.k15 .k15ag .mark.codexmark { color: var(--chat-ink); }
-.k15 .k15ag .mark.pimark { color: #8abeb7; }
-.k15 .k15cs, .k15 .k15cm { padding-left: 24px; font-size: 12px; line-height: 1.35; color: var(--chat-mute); }
-.k15 .k15cm { color: var(--chat-faint); font-size: 11.5px; }
-.k15 .k15kids { margin-left: 12px; padding-left: 14px; }
-.k15 .k15kids > .k15ast { position: relative; }
-.k15 .k15kids > .k15ast::before { content: ""; position: absolute; left: -14px; top: -8px; width: 10px; height: 30px;
-  border-left: 1px solid var(--chat-edge); border-bottom: 1px solid var(--chat-edge); border-bottom-left-radius: 9px; }
-.k15 .k15kids > .k15ast:not(:last-child)::after { content: ""; position: absolute; left: -14px; top: 14px; bottom: -8px; border-left: 1px solid var(--chat-edge); }
-.k15 .k15plus { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; min-height: 30px; padding: 0 10px; border-radius: 8px;
-  border: 1px dashed var(--chat-edge); font-size: 12px; color: var(--chat-faint); }
-.k15 .k15ast > .k15plus { margin-left: 26px; }
-.k15 .k15plus:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
-.k15 .k15plus svg { width: 13px; height: 13px; }
-.k15 .k15quer { align-self: center; display: flex; flex-direction: column; align-items: center; font-size: 11.5px; color: var(--chat-faint); }
-.k15 .k15quer::before, .k15 .k15quer::after { content: ""; width: 1px; height: 10px; background: var(--chat-edge); }
-.k15 .k15sh { display: flex; align-items: center; gap: 12px; padding: 0 4px 6px; }
-.k15 .k15sh .fdglyph svg { width: 24px; height: 24px; }
-.k15 .k15sh .fdglyph { color: var(--chat-ink); }
-.k15 .k15shn { font-size: 17px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15shname { font: inherit; font-size: 17px; font-weight: 600; background: transparent; border: 0; border-bottom: 1px dashed var(--chat-edge); padding: 0 0 2px; width: 100%; min-width: 0; }
-.k15 .k15shname:focus { outline: none; border-bottom-color: var(--chat-ink); }
-.k15 .k15einf { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
-.k15 .k15einf textarea { width: 100%; box-sizing: border-box; font: 12px var(--chat-mono); resize: vertical; }
-.k15 .k15sec { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 14px 4px 6px; font-size: 12px; font-weight: 600; color: var(--chat-mute); }
-.k15 .k15grp { border: 1px solid var(--chat-edge-soft); border-radius: 12px; overflow: hidden; background: var(--chat-void); }
 .k15 .k15z { display: grid; grid-template-columns: 88px minmax(0, 1fr) 14px; align-items: center; gap: 10px; min-height: 44px; padding: 7px 10px 7px 12px; }
 .k15 .k15z.geht { cursor: pointer; }
 .k15 .k15z + .k15z { border-top: 1px solid var(--chat-edge-soft); }
@@ -146,56 +53,9 @@
 .k15 .k15z:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
 .k15 .k15z > svg { width: 14px; height: 14px; transform: rotate(-90deg); color: var(--chat-faint); }
 .k15 .k15z.on > svg { color: var(--chat-ink); }
-.k15 .k15zk { font-size: 12px; color: var(--chat-faint); }
-.k15 .k15zv { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
-.k15 .k15zt { font-size: 13px; line-height: 1.4; color: var(--chat-prose); overflow-wrap: anywhere; }
-.k15 .k15zabw { font-size: 11.5px; color: var(--chat-faint); }
-.k15 .k15sw { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border: 1px solid var(--chat-edge); border-radius: 7px;
-  font-size: 13px; color: var(--chat-ink); }
-.k15 .k15sw:hover { border-color: var(--chat-mute); }
-.k15 .k15z.abw .k15sw { border-color: color-mix(in srgb, var(--chat-ink) 55%, transparent); }
-.k15 .k15sw svg { width: 13px; height: 13px; color: var(--chat-faint); }
-.k15 .k15sfuss { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; padding: 12px 4px 0; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15sfuss > .k15labs { flex: 1 1 100%; }
-.k15 .k15sfuss > .k15packin { flex: 1 1 180px; min-width: 0; }
-.k15 .k15qh { display: flex; align-items: center; gap: 10px; padding: 0 0 4px; }
-.k15 .k15qn { font-size: 19px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15qp { font: 11.5px/1.45 var(--chat-mono); color: var(--chat-faint); overflow-wrap: anywhere; }
-.k15 .k15qd { font-size: 12.5px; line-height: 1.45; color: var(--chat-faint); }
-.k15 .k15qs { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 16px 0 2px; padding: 0 0 10px;
-  border-bottom: 1px solid var(--chat-edge-soft); font-size: 12px; color: var(--chat-mute); }
 .k15 .k15link { flex: none; font-size: 12px; color: var(--chat-mute); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--chat-edge); }
 .k15 .k15link:hover { color: var(--chat-ink); }
-.k15 .k15abs { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; border-bottom: 1px solid var(--chat-edge-soft); }
-.k15 .k15absh { display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 44px; padding: 0 2px; text-align: left; color: var(--chat-ink); }
-.k15 .k15absh > svg { flex: none; width: 14px; height: 14px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform .14s; }
-.k15 .k15abs.open .k15absh > svg { transform: none; color: var(--chat-mute); }
-.k15 .k15absn { flex: 1; min-width: 0; font: 600 12.5px/1.35 var(--chat-mono); }
-.k15 .k15abst { flex: none; font: 11px/1 var(--chat-mono); color: var(--chat-faint); }
-.k15 .k15abs.aus .k15absn { color: var(--chat-faint); text-decoration: line-through; text-decoration-color: var(--chat-edge); }
-.k15 .k15abs.aus .k15abst { opacity: .5; }
-.k15 .k15absb { grid-column: 1 / -1; padding: 0 0 16px 23px; }
-.k15 .k15tog { position: relative; width: 34px; height: 20px; border-radius: 10px; background: var(--chat-edge); transition: background .15s; }
-.k15 .k15tog > span { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--chat-mute);
-  transition: transform .15s, background .15s; }
-.k15 .k15tog.on { background: color-mix(in srgb, var(--chat-ink) 80%, transparent); }
-.k15 .k15tog.on > span { transform: translateX(14px); background: var(--chat-void); }
-.k15 .k15fest { font-size: 11px; color: var(--chat-faint); }
-.k15 .k15pre { margin: 6px 0 0; padding: 0; font: 12.5px/1.65 var(--chat-mono); color: var(--chat-prose); white-space: pre-wrap; overflow-wrap: anywhere; max-width: 80ch; }
-.k15 .k15code { margin-top: 14px; padding: 12px 14px; background: var(--chat-void); border: 1px solid var(--chat-edge-soft); border-radius: 10px; }
 .k15 .k15leer { padding: 20px 4px; font-size: 13px; color: var(--chat-faint); }
-.k15 .k15pop { position: absolute; top: 10px; right: 14px; z-index: 5; width: min(440px, calc(100% - 28px)); max-height: calc(100% - 20px); overflow-y: auto;
-  padding: 14px 14px 16px; background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 16px;
-  box-shadow: 0 24px 64px color-mix(in srgb, var(--chat-void) 75%, transparent); animation: k15in .16s ease-out; }
-.k15 .k15popt { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 0; font-size: 16px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15popx { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--chat-mute); }
-.k15 .k15popx svg, .k15 .k15eb > svg { width: 16px; height: 16px; }
-.k15 .k15pop .k15sub { padding-top: 14px; }
-.k15 .k15popsay { padding: 8px 4px 0; }
-.k15 .k15seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--chat-edge); border-radius: 9px; }
-.k15 .k15seg button { min-height: 30px; padding: 0 12px; border-radius: 7px; font-size: 12.5px; color: var(--chat-mute); }
-.k15 .k15seg button.on { background: var(--c-hover); color: var(--chat-ink); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-.k15 .k15json { max-height: 240px; overflow: auto; font-size: 11.5px; line-height: 1.55; }
 .k15 .k15menu { position: absolute; z-index: 8; display: flex; flex-direction: column; min-width: 180px; padding: 4px; background: var(--chat-raised);
   border: 1px solid var(--chat-edge); border-radius: 10px; box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: k15in .12s ease-out; }
 .k15 .k15menu button { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 0 10px; border-radius: 7px;
@@ -204,245 +64,15 @@
 .k15 .k15menu button.on { color: var(--chat-ink); }
 .k15 .k15menu button:disabled { cursor: default; color: var(--chat-faint); }
 .k15 .k15menu button:disabled:hover { background: none; color: var(--chat-faint); }
-.k15 .k15menu .k15menuaus { font-size: 11.5px; }
 .k15 .k15menu svg { width: 14px; height: 14px; }
-.k15 .k15ov { position: absolute; inset: 0; z-index: 9; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-  border: 1px dashed var(--chat-mute); border-radius: inherit; background: color-mix(in srgb, var(--chat-void) 84%, transparent); pointer-events: none; }
-.k15 .k15ov.on { display: flex; }
-.k15 .k15ovt { font-size: 20px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15ovs { max-width: 560px; padding: 0 24px; font-size: 13px; line-height: 1.5; color: var(--chat-mute); text-align: center; }
 .k15 .k15toast { position: absolute; left: 50%; bottom: 84px; z-index: 9; transform: translateX(-50%); max-width: min(560px, calc(100% - 32px)); padding: 10px 14px;
   border-radius: 10px; background: var(--chat-raised); border: 1px solid var(--chat-edge); font-size: 13px; line-height: 1.4; color: var(--chat-ink);
   box-shadow: 0 12px 32px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: k15toast .18s ease-out; }
-.k15 .k15card.ziel { border-style: dashed; border-color: var(--chat-ink); background: var(--c-hover); }
-.k15 .k15role[draggable="true"] { cursor: grab; }
-.k15 .k15role.nutzt:not(.on) { background: color-mix(in srgb, var(--chat-ink) 3%, transparent); }
-.k15 .k15role.nutzt .fdglyph { color: var(--chat-ink); }
-.k15 .k15secw { color: var(--chat-mute); }
-.k15 .k15glink { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; min-height: 26px; padding: 0 2px 0 8px; border-radius: 6px;
-  font-size: 12px; font-weight: 500; color: var(--chat-faint); }
-.k15 .k15glink svg { width: 13px; height: 13px; transform: rotate(-90deg); }
-.k15 .k15glink:hover, .k15 .k15glink.on { color: var(--chat-ink); }
-.k15 .k15zsub { font-size: 11.5px; line-height: 1.4; color: var(--chat-faint); }
-.k15 .k15tz { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 10px 8px 12px; }
-.k15 .k15tz + .k15tz, .k15 .k15z + .k15tz { border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15tzn { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15tz.aus .k15tzn { color: var(--chat-faint); }
-.k15 .k15tzp { font-size: 11.5px; line-height: 1.4; color: var(--chat-mute); }
-.k15 .k15tog.fest { opacity: .45; cursor: default; }
-.k15 .k15tzk { display: flex; align-items: center; gap: 8px; }
-.k15 .k15tzk .k15ver { padding: 3px 5px; font-size: 10px; }
-.k15 .k15mark { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--chat-mute); }
-.k15 .k15zv > .k15mark { position: relative; top: -2px; }
-.k15 .k15ct > .k15mark { margin-right: 2px; }
-.k15 .k15x { display: none; flex-direction: column; gap: 3px; padding-top: 4px; font-size: 11.5px; line-height: 1.45; color: var(--chat-faint); }
-.k15 .k15tz:hover .k15x, .k15 .k15tz:focus-within .k15x, .k15 .k15tz.zeig .k15x,
-.k15 .k15z:hover .k15x, .k15 .k15z:focus-within .k15x, .k15 .k15z.zeig .k15x,
-.k15 .k15card:hover .k15x, .k15 .k15card:focus-visible .k15x, .k15 .k15gr:hover > .k15grw, .k15 .k15gr:focus-within > .k15grw { display: flex; }
-.k15 .k15cx { padding-left: 24px; }
-.k15 .k15xk { color: var(--chat-mute); }
-.k15 .k15info { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--chat-faint); }
-.k15 .k15info:hover, .k15 .k15tz.zeig .k15info { color: var(--chat-ink); }
-.k15 .k15info svg { width: 15px; height: 15px; }
-.k15 .k15teil { display: flex; align-items: center; gap: 12px; padding: 22px 0 8px; border-bottom: 1px solid var(--chat-edge-soft); }
-.k15 .k15teilg { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--chat-edge); color: var(--chat-mute); }
-.k15 .k15teilg svg { width: 15px; height: 15px; }
-.k15 .k15teiln { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15teiln > span:first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15drop2 { margin: 18px 0 4px; }
-.k15 .k15recht { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 4px; border-bottom: 1px solid var(--chat-edge-soft); }
-.k15 .k15rechtn { font-size: 13.5px; color: var(--chat-ink); }
-.k15 .k15hinweis { padding: 10px 4px 0; font-size: 12px; line-height: 1.45; color: var(--chat-faint); max-width: 62ch; }
-.k15 .k15tueren { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
-.k15 .k15tuer { font: 11.5px/1 var(--chat-mono); color: var(--chat-prose); padding: 6px 8px; border: 1px solid var(--chat-edge); border-radius: 7px; }
-.k15 .k15pad { padding: 0 4px; }
-.k15 .k15neu { animation: k15fade .2s ease-out; }
 @keyframes k15fade { from { opacity: .25; } }
 @keyframes k15in { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes k15toast { from { opacity: 0; transform: translate(-50%, 6px); } }
-/* K15 Owner 11:1x: Kennzeichen, Regler, Token-Summe unten, aktive Spalte, Baustein genau, Rundgang */
-.k15 .k15tag { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--chat-edge);
-  font: 500 10.5px/1 var(--chat-sans, inherit); letter-spacing: .01em; color: var(--chat-mute); white-space: nowrap; }
-/* Owner 12:3x: die Herkunft leicht getönt (Fleet blau, eigene grün, von einem Autor violett), die Version als eigenes Tag daneben */
-.k15 .k15tag.fleet { border-color: transparent; background: color-mix(in srgb, var(--accent) 15%, transparent); color: color-mix(in srgb, var(--accent) 78%, var(--chat-ink)); }
-.k15 .k15tag.eigen { border-color: transparent; background: color-mix(in srgb, var(--add) 14%, transparent); color: color-mix(in srgb, var(--add) 78%, var(--chat-ink)); }
-.k15 .k15tag.autor { border-color: transparent; background: color-mix(in srgb, #bb9af7 15%, transparent); color: color-mix(in srgb, #bb9af7 78%, var(--chat-ink)); }
-.k15 .k15tag.ver { font: 10.5px/1 var(--chat-mono); letter-spacing: 0; color: var(--chat-faint); }
-.k15 .k15tags { flex: none; display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
-.k15 .k15tag.neu { color: var(--chat-ink); border-color: color-mix(in srgb, var(--chat-ink) 55%, transparent); }
-.k15 .k15tag.alt { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
-.k15 .k15tag.an { color: var(--chat-ink); }
-.k15 .k15tag.aus { border-style: dashed; color: var(--chat-faint); }
-/* WER BESTIMMT (src/k15-wer.ts): „änderbar“ leise, „Fleet-Standard“ in der Farbe des Fleet-Kennzeichens, „Claude-Code-Standard“ grau */
-.k15 .k15tag.wer { font-weight: 500; }
-.k15 .k15tag.wer.du { color: var(--chat-mute); }
-.k15 .k15tag.wer.fleet { border-color: transparent; background: color-mix(in srgb, var(--accent) 12%, transparent); color: color-mix(in srgb, var(--accent) 72%, var(--chat-ink)); }
-.k15 .k15tag.wer.claude-code { border-color: transparent; background: color-mix(in srgb, var(--chat-ink) 9%, transparent); color: var(--chat-mute); }
-.k15 .k15subw:has(> .k15tag.wer) { display: flex; align-items: center; gap: 8px; }
-.k15 .k15bsttags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-/* der Grund eines „fest“ in „Wo es landet“: mit „Alles zeigen“ (beim Darüberfahren steht er am Kennzeichen) */
-.k15 .k15lkw { display: none; }
-.k15.k15alles .k15lkw { display: block; }
-/* am Handy gibt es kein Darüberfahren: neben dem Kennzeichen hält die Größe dort nur mit „Alles zeigen“ ihren Platz, und eine zu lange Zeile bricht um */
-@media (max-width: 600px) { .k15 .k15lkz { flex-wrap: wrap; } .k15:not(.k15alles) .k15lkz .k15n { display: none; } }
 .k15 .k15ks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
-.k15 .k15kname:has(+ .k15kmeta) { padding-bottom: 6px; }
-.k15 .k15kmeta { display: flex; align-items: center; gap: 6px; padding: 0 4px 14px; }
-.k15 .k15kname > .k15tags .k15tag { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15konst .k15ks { display: block; }
-.k15 .k15konst .k15ks > .k15tag, .k15 .k15role .k15ks > .k15tag { display: inline-flex; vertical-align: 1px; margin-right: 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15role .k15ks { display: block; }
-.k15 .k15kmeta .k15link { margin-left: auto; }
-.k15 .k15ct { flex-wrap: wrap; row-gap: 4px; }
-.k15 .k15ct > .k15cn { flex: 1 1 64px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15ct > .k15tags { margin-left: auto; }
-.k15 .k15footr { display: flex; align-items: center; gap: 18px; }
-.k15 .k15tok { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; cursor: default; }
-.k15 .k15tokw { font: 600 14px/1.2 var(--chat-mono); color: var(--chat-ink); white-space: nowrap; }
-.k15 .k15toks { font-size: 11.5px; color: var(--chat-faint); white-space: nowrap; }
-.k15 .k15say { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
-.k15 .k15labi { transition: background .2s, color .2s, border-color .2s; }
-.k15 .k15col.aktiv .k15labi { background: var(--chat-ink); border-color: var(--chat-ink); color: var(--chat-void); }
-@media (min-width: 1201px) {
-  .k15 .k15d[data-aktiv] > .k15col { transition: opacity .25s; }
-  /* Owner 17.10. 00:3x „[Zitat entfernt]“, 09:0x „[Zitat entfernt]“ (Screenshots), 09:3x zu .9
-     „[Zitat entfernt]“, 09:5x nach dem Bild 80/85 „[Zitat entfernt]“: eine ruhende
-     Spalte nur einen Hauch blasser; vorn bleibt die aktive über ihre gefüllte Nummer */
-  .k15 .k15d[data-aktiv] > .k15col:not(.aktiv):not(:hover):not(:focus-within) { opacity: .8; }
-}
-.k15 .k15regler { padding: 8px 0 0; }
-.k15 .k15rkopf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }
-.k15 .k15rk { font-size: 12px; color: var(--chat-faint); }
-.k15 .k15rw { flex: 1; font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15spur { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 3px; max-width: calc(var(--n) * 26px); margin-top: 8px; }
-.k15 .k15spur:focus-visible { outline: none; box-shadow: 0 0 0 1px var(--chat-mute); }
-.k15 .k15rc { height: 18px; border-radius: 3px; border: 1px solid var(--chat-edge); background: transparent; transition: background .15s, border-color .15s; }
-.k15 .k15rc.pflicht.an { background: color-mix(in srgb, var(--chat-ink) 92%, transparent); border-color: transparent; }
-.k15 .k15rc.std.an { background: color-mix(in srgb, var(--chat-ink) 50%, transparent); border-color: transparent; }
-.k15 .k15rc.dazu.an { background: color-mix(in srgb, var(--chat-ink) 24%, transparent); border-color: transparent; }
-.k15 .k15rc.std:not(.an) { border-color: color-mix(in srgb, var(--chat-ink) 30%, transparent); }
-.k15 .k15rc.fest { border-style: dashed; }
-.k15 .k15rc:hover { border-color: var(--chat-ink); }
-.k15 .k15regler:hover .k15x, .k15 .k15regler:focus-within .k15x, .k15 .k15regler.zeig .k15x { display: flex; }
-.k15 .k15regler.zeig .k15info { color: var(--chat-ink); }
-.k15 .k15tz[role="button"] { cursor: pointer; }
-.k15 .k15tz[role="button"]:hover { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); }
-.k15 .k15tz.on { background: var(--c-hover); }
-.k15 .k15tz:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--chat-mute); }
-.k15 .k15bst { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--chat-edge-soft);
-  background: var(--chat-void); scroll-margin: 80px; transition: border-color .2s, box-shadow .2s; }
-.k15 .k15bst.ziel { border-color: color-mix(in srgb, var(--chat-ink) 70%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--chat-ink) 10%, transparent); }
-.k15 .k15bst.aus .k15bstn { color: var(--chat-faint); }
-.k15 .k15bst:not(.ziel) { cursor: pointer; }
-.k15 .k15bst .k15link { align-self: flex-start; }
-.k15 .k15bstk { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.k15 .k15bstn { font-size: 14px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15bstz { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 5px 12px; font-size: 12.5px; line-height: 1.45; }
-.k15 .k15bstzk { color: var(--chat-faint); }
-.k15 .k15bstzv { color: var(--chat-prose); overflow-wrap: anywhere; }
-.k15 .k15tour { --pfeil-y: 24px; position: absolute; z-index: 7; width: 300px; padding: 14px 16px 12px; border-radius: 14px; background: var(--chat-ink);
-  color: var(--chat-void); box-shadow: 0 18px 48px color-mix(in srgb, var(--chat-void) 70%, transparent); animation: k15in .18s ease-out; }
-.k15 .k15tour::before { content: ""; position: absolute; width: 12px; height: 12px; background: inherit; transform: rotate(45deg); border-radius: 2px; }
-.k15 .k15tour.pfeil-links::before { left: -5px; top: calc(var(--pfeil-y) - 6px); }
-.k15 .k15tour.pfeil-rechts::before { right: -5px; top: calc(var(--pfeil-y) - 6px); }
-.k15 .k15tour.pfeil-unten::before { left: calc(50% - 6px); bottom: -5px; }
-.k15 .k15tour.unten { left: 12px; right: 12px; bottom: 84px; width: auto; }
-.k15 .k15tour.unten::before { display: none; }
-.k15 .k15tourk { display: flex; align-items: baseline; gap: 8px; }
-.k15 .k15touri { font: 11px/1 var(--chat-mono); opacity: .6; }
-.k15 .k15tourt { font-size: 14px; font-weight: 600; }
-.k15 .k15tourx { padding-top: 6px; font-size: 13px; line-height: 1.45; }
-.k15 .k15tourb { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; }
-.k15 .k15tour .k15link { color: var(--chat-void); opacity: .7; text-decoration-color: currentColor; }
-.k15 .k15tour .k15link:hover { color: var(--chat-void); opacity: 1; }
-.k15 .k15tour .k15tourw { border: 0; background: var(--chat-void); color: var(--chat-ink); font-weight: 600; }
-.k15 .k15tour .k15tourw:hover { color: var(--chat-ink); }
-.k15 .k15tourziel { animation: k15ziel 1.4s ease-out; }
 @keyframes k15ziel { 0%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--chat-ink) 45%, transparent); } 100% { box-shadow: 0 0 0 3px transparent; } }
-/* K15 Owner 12:3x: Gruppen nach Funktion, Detailgrad, Regler je Gruppe, Spalte 4 „[Zitat entfernt]“ */
-.k15 .k15detail { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 4px 2px; }
-/* K15 Owner 16.10.: Tokens, Größen und Einstellungen erst beim Darüberfahren (sie halten ihren Platz, nichts springt); „[Zitat entfernt]“
-   blendet sie und alle Erklärungen überall ein */
-.k15 .k15n { visibility: hidden; }
-.k15 .k15gr:hover > .k15grk .k15n, .k15 .k15grk:focus-visible .k15n,
-.k15 .k15tz:hover .k15n, .k15 .k15tz:focus-within .k15n, .k15 .k15tz.zeig .k15n,
-.k15 .k15ort:hover > .k15ortk .k15n, .k15 .k15lkz:hover .k15n, .k15 .k15lkz:focus-visible .k15n,
-.k15 .k15abs:hover > .k15absh .k15n, .k15 .k15absh:focus-visible .k15n, .k15 .k15bst:hover .k15n, .k15 .k15packe:hover .k15n,
-.k15 .k15qs:hover .k15n, .k15 .k15c4:has(> .k15qh:hover) .k15qs .k15n,
-.k15.k15alles .k15n { visibility: visible; }
-.k15.k15alles .k15x { display: flex; }
-.k15 .k15cx .k15cs { padding-left: 0; color: var(--chat-mute); }
-.k15 .k15grs0 { display: flex; flex-direction: column; gap: 8px; }
-.k15 .k15gr { padding: 10px 12px 12px; border: 1px solid var(--chat-edge-soft); border-radius: 12px; background: var(--chat-void); }
-.k15 .k15grk { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 28px; text-align: left; color: var(--chat-ink); }
-.k15 .k15grk > svg { flex: none; width: 14px; height: 14px; color: var(--chat-faint); transform: rotate(-90deg); transition: transform .14s; }
-.k15 .k15gr.auf .k15grk > svg { transform: none; color: var(--chat-mute); }
-.k15 .k15grn { font-size: 13.5px; font-weight: 600; }
-.k15 .k15grz { flex: 1; font-size: 11.5px; color: var(--chat-faint); }
-.k15 .k15grt { flex: none; font: 11px/1 var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15grs { padding: 2px 0 0 22px; font-size: 12px; line-height: 1.4; color: var(--chat-faint); }
-.k15 .k15grw { padding-left: 22px; }
-.k15 .k15gr .k15spur, .k15 .k15gr .k15regler { margin-left: 22px; }
-.k15 .k15gr .k15rc { height: 14px; }
-.k15 .k15stufen button { min-height: 26px; padding: 0 9px; font-size: 12px; }
-.k15 .k15gr > .k15grp { margin: 10px -12px -12px; border-width: 1px 0 0; border-radius: 0 0 12px 12px; }
-.k15 .k15tz + .k15z { border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15togleer { flex: none; width: 34px; }
-.k15 .k15tz.fehlt .k15tzk .k15ver { opacity: .6; }
-.k15 .k15innen { padding-left: 30px; }
-.k15 .k15fremd { margin-top: 8px; }
-.k15 .k15vseg { margin: 0 0 14px 4px; }
-.k15 .k15absg { padding: 18px 2px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--chat-mute); }
-.k15 .k15ort { scroll-margin-top: 76px; margin-top: 14px; padding: 12px 14px 10px; border: 1px solid var(--chat-edge-soft); border-radius: 12px; background: var(--chat-void); }
-.k15 .k15ortk { display: flex; align-items: center; gap: 9px; }
-.k15 .k15orti { flex: none; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--chat-edge);
-  font: 10px/1 var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15ortn { flex: 1; font-size: 14px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15ortt { flex: none; font: 11.5px/1 var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15orts { padding: 3px 0 8px 27px; font-size: 12px; line-height: 1.45; color: var(--chat-faint); max-width: 70ch; }
-.k15 .k15ortb { display: flex; flex-direction: column; padding-left: 27px; }
-.k15 .k15lkz { width: 100%; display: flex; align-items: baseline; gap: 10px; min-height: 30px; padding: 5px 6px; margin: 0 -6px; border-radius: 7px;
-  text-align: left; color: var(--chat-ink); }
-.k15 button.k15lkz:hover { background: color-mix(in srgb, var(--chat-ink) 4%, transparent); }
-.k15 .k15lkz.on { background: var(--c-hover); }
-.k15 .k15lkn { font-size: 13px; }
-.k15 .k15lkg { flex: 1; font-size: 11px; color: var(--chat-faint); }
-.k15 .k15lkt { flex: none; font: 11px/1 var(--chat-mono); color: var(--chat-faint); }
-.k15 .k15lkp { padding: 0 0 6px; font-size: 11.5px; line-height: 1.45; color: var(--chat-faint); overflow-wrap: anywhere; }
-.k15 .k15lkk { position: relative; margin-left: 4px; padding-left: 16px; }
-.k15 .k15lkk::before { content: ""; position: absolute; left: 0; top: 0; bottom: 14px; border-left: 1px solid var(--chat-edge); }
-.k15 .k15lkk > .k15lk { position: relative; }
-.k15 .k15lkk > .k15lk::before { content: ""; position: absolute; left: -16px; top: 15px; width: 10px; border-top: 1px solid var(--chat-edge); }
-.k15 .ort-nicht { border-style: dashed; }
-@media (max-width: 600px) { .k15 .k15footr { flex: 1 1 100%; justify-content: space-between; } .k15 .k15tok { align-items: flex-start; }
-  .k15 .k15footr .k15go { flex: 0 0 auto; padding: 0 18px; white-space: nowrap; } }
-.k15 .k15foot { justify-content: space-between; }
-.k15 .k15say { font-size: 13px; line-height: 1.4; color: var(--chat-mute); }
-.k15 .k15sayk { color: var(--chat-ink); font-weight: 600; }
-.k15 .k15go { flex: none; min-height: 44px; padding: 0 26px; border-radius: 12px; background: var(--chat-ink); color: var(--chat-void); font-size: 15px; font-weight: 600; }
-.k15 .k15go:hover { background: #fff; }
-.k15 .k15go:disabled { opacity: .4; cursor: default; }
-.k15 .k15go:disabled:hover { background: var(--chat-ink); }
-/* DER START (src/k15-start.ts): der Satz neben dem Knopf, warum er (noch) nicht geht oder was er nicht kann, und die Felder, die nur
-   der Start braucht, oben in Spalte 3 unter dem Kopf der Session, die startet */
-.k15 .k15sayc { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
-.k15 .k15stsatz { font-size: 12.5px; line-height: 1.4; color: var(--chat-mute); max-width: 90ch; }
-.k15 .k15stsatz.warn { color: var(--amber); }
-.k15 .k15stfass { font: 12px/1.3 var(--chat-mono); color: var(--chat-faint); }
-.k15 .k15start { display: flex; flex-direction: column; gap: 12px; margin: 2px 0 14px; padding: 12px 14px; border: 1px solid var(--chat-edge); border-radius: 12px; }
-.k15 .k15stf { display: flex; flex-direction: column; gap: 6px; }
-.k15 .k15stl { font-size: 12px; font-weight: 600; color: var(--chat-mute); }
-.k15 .k15stl2 { display: flex; flex-direction: column; }
-.k15 .k15stopt { min-height: 40px; }
-.k15 .k15stopt .k15optw { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; }
-.k15 .k15stsub { font-size: 12px; color: var(--chat-faint); }
-.k15 .k15stopt.grau { opacity: .5; cursor: default; }
-.k15 .k15stin { min-height: 36px; padding: 0 10px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-void); font: inherit; font-size: 13.5px; color: var(--chat-ink); }
-.k15 .k15stta { padding: 8px 10px; min-height: 64px; resize: vertical; line-height: 1.45; }
-.k15 .k15stin:focus { outline: none; border-color: var(--chat-mute); }
-.k15 .k15stwarn { font-size: 12.5px; color: var(--amber); }
-/* K15 Owner 16.10.: „[Zitat entfernt]“ im Kopf, darunter klein der Stand des Repos; die Auswahl (Z32: sehen, wählen,
-   hinzufügen, aus der Auswahl nehmen) liegt darunter im Fenster */
 #shell-found.k15 .shelltitles { min-width: 0; }
 #shell-found.k15 .shelltitles h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .k15 .k15woi { white-space: nowrap; }
@@ -471,7 +101,6 @@
 .k15 .k15repo.on { background: var(--c-hover); border-color: color-mix(in srgb, var(--chat-ink) 55%, transparent); }
 .k15 .k15repob { display: flex; align-items: center; gap: 11px; min-width: 0; min-height: 48px; padding: 7px 10px; text-align: left; color: var(--chat-ink); }
 .k15 .k15repob .fddot { margin: 0 3px; }
-/* Bauleitung 15.10. (Postfach 4d33e626): ein langer Repo-Name endet mit …; der volle Name und Pfad stehen im Title */
 .k15 .k15repob .k15kn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k15 .k15repox { display: grid; place-items: center; width: 32px; height: 32px; margin-right: 6px; border-radius: 8px; color: var(--chat-faint); opacity: 0; }
 .k15 .k15repo:hover .k15repox, .k15 .k15repox:focus-visible, .k15 .k15repo.on .k15repox { opacity: 1; }
@@ -495,297 +124,32 @@
 .k15 .k15ordnt { flex: none; font-size: 11.5px; color: var(--chat-faint); }
 .k15 .k15ordnadd { flex: none; min-height: 28px; margin-left: 4px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--chat-edge); font-size: 12px; color: var(--chat-mute); }
 .k15 .k15ordnadd:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
-/* der Knopf erscheint an der Zeile, über der man ist (oder im Fokus); eine Spalte gleicher Knöpfe wäre Lärm. Am Touchgerät immer */
 .k15 .k15ordnz:not(:hover, :focus-within) .k15ordnadd { opacity: 0; }
-@media (pointer: coarse) { .k15 .k15ordnz .k15ordnadd { opacity: 1; } }
+@media (pointer: coarse) {
+  .k15 .k15ordnz .k15ordnadd { opacity: 1; }
+}
 .k15 .k15toastb { margin-left: 6px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--chat-edge); font: inherit; font-weight: 600; color: var(--chat-ink); }
 .k15 .k15toastb:hover { border-color: var(--chat-mute); }
-/* K15 §9 Z16: Autonomie aus der Rollenkarte, die eigene Fassung zum Ausprobieren, Spalte 4 die Karte selbst */
-.k15 .k15auto { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 12px; border: 1px solid var(--chat-edge-soft); border-radius: 12px; background: var(--chat-void); }
-.k15 .k15autosum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 36px; padding-top: 6px; font-size: 12.5px; color: var(--chat-mute); text-align: left; }
-.k15 .k15autosum:hover { color: var(--chat-ink); }
-.k15 .k15autod { color: var(--chat-faint); }
-.k15 .k15autog { padding: 8px 0 4px; }
-.k15 .k15autog + .k15autog { border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15autoh { display: flex; align-items: baseline; gap: 8px; }
-.k15 .k15auton { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15autoz { font: 11px/1 var(--chat-mono); color: var(--chat-faint); }
-.k15 .k15autos { padding: 1px 0 4px; font-size: 11.5px; line-height: 1.4; color: var(--chat-faint); }
-.k15 .k15autol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
-.k15 .k15autop { position: relative; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 3px 0 3px 14px; font-size: 12.5px; line-height: 1.4; color: var(--chat-prose); }
-.k15 .k15autop::before { content: ""; position: absolute; left: 3px; top: calc(50% - 2px); width: 4px; height: 4px; border-radius: 50%; background: var(--chat-faint); }
-.k15 .k15autog.nie .k15autop { color: var(--chat-mute); }
-.k15 .k15autop.anders::before { width: 6px; height: 6px; left: 2px; top: calc(50% - 3px); background: var(--chat-ink); }
-.k15 .k15autop.weg .k15autot { color: var(--chat-faint); text-decoration: line-through; text-decoration-color: var(--chat-edge); }
-.k15 .k15autot { flex: 1; min-width: 0; }
-.k15 .k15autok { flex: none; display: inline-flex; align-items: center; gap: 2px; }
-.k15 .k15autob { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--chat-faint); }
-.k15 .k15autob:hover { color: var(--chat-ink); background: color-mix(in srgb, var(--chat-ink) 6%, transparent); }
-.k15 .k15autob svg { width: 14px; height: 14px; }
-.k15 .k15autoin { width: 100%; min-height: 32px; margin-top: 4px; padding: 0 10px; border: 1px dashed var(--chat-edge); border-radius: 8px; background: transparent;
-  font: inherit; font-size: 12.5px; color: var(--chat-ink); }
-.k15 .k15autoin::placeholder { color: var(--chat-faint); }
-.k15 .k15autoin:focus { outline: none; border-style: solid; border-color: var(--chat-mute); }
-.k15 .k15autof { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15autof > .k15labs { flex: 1 1 180px; }
-.k15 .k15kz { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: 2px; padding: 10px 0; border-bottom: 1px solid var(--chat-edge-soft); }
-.k15 .k15kzk { font: 600 10.5px/1.6 var(--chat-mono); letter-spacing: .02em; color: var(--chat-faint); }
-.k15 .k15kzt { font: 12.5px/1.6 var(--chat-mono); color: var(--chat-mute); white-space: pre-wrap; overflow-wrap: anywhere; }
-.k15 .k15kz.auto .k15kzk { color: var(--chat-ink); }
-.k15 .k15kz.auto .k15kzt { color: var(--chat-prose); }
-.k15 .k15kz.anders { box-shadow: inset 2px 0 0 var(--chat-ink); padding-left: 10px; }
-.k15 .k15kzv { padding-top: 4px; font: 11.5px/1.5 var(--chat-mono); color: var(--chat-faint); text-decoration: line-through; text-decoration-color: var(--chat-edge); }
-/* K15 Wortlaut (src/k15-wortlaut-ui.ts): Aktionen je Abschnitt, Editor einer eigenen Fassung; Owner 16.10.: Merkstellen zurückgebaut */
-.k15 .k15tabz { margin-left: 6px; font: 10.5px/1 var(--chat-mono); color: var(--chat-faint); }
-.k15 .k15seg button.on .k15tabz { color: var(--chat-mute); }
-.k15 .k15absh .k15tag { flex: none; }
-.k15 .k15absa { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding-top: 10px; }
-.k15 .k15absa > .k15labs { font-size: 11.5px; }
-.k15 .k15edit { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
-.k15 .k15editk { font-size: 12px; line-height: 1.45; color: var(--chat-mute); max-width: 70ch; }
-.k15 .k15editt { width: 100%; max-width: 80ch; min-height: 120px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--add) 45%, var(--chat-edge)); border-radius: 10px;
-  background: var(--chat-void); font: 12.5px/1.65 var(--chat-mono); color: var(--chat-prose); white-space: pre-wrap; overflow-wrap: anywhere; resize: vertical; }
-.k15 .k15editt:focus { outline: none; border-color: var(--add); }
-.k15 .k15editt::selection { background: color-mix(in srgb, var(--accent) 34%, transparent); }
-.k15 .k15editok { border-style: solid; color: var(--chat-ink); }
-.k15 .k15absw { padding: 2px 0 8px; }
-.k15 .k15wlh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 4px 0 2px; font-size: 12px; line-height: 1.45; color: var(--chat-faint); max-width: 70ch; }
-.k15 .k15loesch { color: var(--chat-faint); }
-/* K15 Owner 16.10.: Kontextpack als Entwurf (src/k15-packs-ui.ts): in Spalte 3 unter Wissen, in „[Zitat entfernt]“ unter den Lesehinweisen */
-.k15 .k15tag.entw { border-style: dashed; color: var(--chat-mute); }
-.k15 .k15tz.k15entw { min-height: 46px; opacity: .78; }
-.k15 .k15tz.k15entw > svg { flex: none; width: 14px; height: 14px; color: var(--chat-faint); transform: rotate(-90deg); }
-.k15 .k15tz.k15entw:hover { opacity: 1; background: color-mix(in srgb, var(--chat-ink) 3%, transparent); }
-.k15 .k15lk.k15entw .k15lkn { color: var(--chat-mute); }
-.k15 .k15packz { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 2px 0; }
-.k15 .k15packz .k15labs { font-size: 12px; }
-.k15 .k15packneu { align-self: flex-start; margin: 0 0 12px; }
-.k15 .k15packed { display: flex; flex-direction: column; gap: 12px; margin: 0 0 18px; padding: 14px 16px 16px; border: 1px solid color-mix(in srgb, var(--chat-ink) 30%, var(--chat-edge));
-  border-radius: 12px; background: var(--chat-void); scroll-margin: 70px; }
-.k15 .k15packk { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.k15 .k15packn { min-width: 0; font-size: 14px; font-weight: 600; color: var(--chat-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k15 .k15packk .k15abst { margin-left: auto; }
-.k15 .k15packf { display: flex; flex-direction: column; gap: 6px; }
-.k15 .k15packl { font-size: 12px; font-weight: 600; color: var(--chat-mute); }
-.k15 .k15packl2 { margin-top: 2px; }
-.k15 .k15packin { min-height: 36px; padding: 0 10px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-void); font: inherit; font-size: 13.5px; color: var(--chat-ink); }
-.k15 .k15packin:focus { outline: none; border-color: var(--chat-mute); }
-.k15 .k15packt { min-height: 140px; }
-.k15 .k15packr { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 4px 12px; }
-.k15 .k15packr .k15seg { justify-self: start; }
-.k15 .k15packr .k15packrl { grid-column: 2; }
-.k15 .k15packrl:empty { display: none; }
-.k15 .k15packrw { font-size: 13px; color: var(--chat-ink); }
-.k15 .k15packr .k15seg button { min-height: 28px; padding: 0 10px; font-size: 12px; }
-.k15 .k15packrl { font-size: 11.5px; line-height: 1.4; color: var(--chat-mute); }
-.k15 .k15packrl.nicht { color: var(--chat-faint); }
-.k15 .k15packe { width: 100%; display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 10px 12px; border: 1px dashed var(--chat-edge); border-radius: 10px; text-align: left; }
-.k15 .k15packe:hover, .k15 .k15packe.on { border-color: color-mix(in srgb, var(--chat-ink) 45%, transparent); }
-@media (max-width: 600px) { .k15 .k15vseg { display: flex; flex-wrap: wrap; } .k15 .k15vseg button { padding: 0 9px; }
-  .k15 .k15packr { grid-template-columns: minmax(0, 1fr); } .k15 .k15packr .k15packrl { grid-column: 1; }
-  /* am Handy: „Neue Session in [Repo ▾]“ und ✕ in der ersten Zeile, der Stand darunter, die Knöpfe in eigener Zeile */
+@media (max-width: 600px) {
   #shell-found.k15 .shellhead { flex-wrap: wrap; row-gap: 6px; }
   #shell-found.k15 .shelltitles { order: 1; flex: 1 1 calc(100% - 56px); }
   #shell-found.k15 .shellclose { order: 2; align-self: flex-start; }
   .k15 .k15hb { order: 3; flex: 1 1 100%; margin: 0; }
   .k15 .k15wopf { display: none; }
-  .k15 .k15woc { flex: 1 1 100%; max-width: 100%; } }
-/* DEINE AGENT-MD (src/k15-agentmd.ts): ein Ablauf in vier Schritten über den Spalten, je Schritt eine Sache */
-.k15 .k15mdneu { margin-top: 10px; }
-.k15 .k15mdcta { width: 100%; display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; padding: 12px 14px; border-radius: 12px; text-align: left;
-  border: 1px solid color-mix(in srgb, var(--add) 40%, var(--chat-edge)); background: color-mix(in srgb, var(--add) 7%, transparent); }
-.k15 .k15mdcta:hover { background: color-mix(in srgb, var(--add) 12%, transparent); }
-.k15 .k15mdcta > svg { flex: none; width: 18px; height: 18px; color: color-mix(in srgb, var(--add) 78%, var(--chat-ink)); }
-.k15 .k15mdcta > svg:last-child { width: 14px; height: 14px; color: var(--chat-mute); transform: rotate(-90deg); }
-.k15 .k15mdctaw { font-size: 14px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15mdctas { font-size: 12px; color: var(--chat-mute); }
-.k15 .k15abdim { position: absolute; z-index: 6; inset: 0; background: color-mix(in srgb, var(--chat-void) 55%, transparent); animation: k15dim .16s ease-out; }
+  .k15 .k15woc { flex: 1 1 100%; max-width: 100%; }
+}
 @keyframes k15dim { from { opacity: 0; } }
-.k15 .k15ab { position: absolute; z-index: 6; top: 28px; bottom: 28px; left: 0; right: 0; margin: 0 auto; width: min(880px, calc(100% - 32px));
-  display: flex; flex-direction: column; background: var(--chat-raised); border: 1px solid var(--chat-edge); border-radius: 18px;
-  box-shadow: 0 30px 80px color-mix(in srgb, var(--chat-void) 80%, transparent); animation: k15in .16s ease-out; }
-.k15 .k15abkopf { flex: none; display: flex; align-items: center; gap: 18px; padding: 14px 14px 14px 22px; border-bottom: 1px solid var(--chat-edge-soft); }
-.k15 .k15abtitel { flex: none; font-size: 16px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15abschritte { flex: 1 1 auto; min-width: 0; display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
-.k15 .k15abschritte li { flex: 1 1 auto; min-width: 0; }
-.k15 .k15abschritte button { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border-radius: 9px;
-  font-size: 12.5px; color: var(--chat-faint); white-space: nowrap; overflow: hidden; }
-.k15 .k15abschritte button:disabled { cursor: default; }
-.k15 .k15abschritte button span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.k15 .k15abi { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--chat-edge); font-size: 11.5px; }
-.k15 .k15abschritte li.fertig button { color: var(--chat-mute); }
-.k15 .k15abschritte li.fertig .k15abi { border-color: transparent; background: color-mix(in srgb, var(--add) 22%, transparent); color: color-mix(in srgb, var(--add) 80%, var(--chat-ink)); }
-.k15 .k15abschritte li.on button { background: var(--c-hover); color: var(--chat-ink); }
-.k15 .k15abschritte li.on .k15abi { border-color: var(--chat-ink); background: var(--chat-ink); color: var(--chat-void); }
-.k15 .k15abin { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 22px 26px 26px; }
-.k15 .k15abin > * { flex-shrink: 0; }
-.k15 .k15abreihe { display: flex; flex-wrap: wrap; gap: 12px; }
-.k15 .k15abreihe > .k15packf { flex: 1 1 220px; max-width: 280px; }
-.k15 .k15abreihe .k15absel { width: 100%; max-width: none; }
-.k15 .k15abh { font-size: 20px; font-weight: 600; letter-spacing: -.01em; color: var(--chat-ink); }
-.k15 .k15abs2 { margin-top: -4px; font-size: 13.5px; line-height: 1.5; color: var(--chat-mute); max-width: 68ch; }
-.k15 .k15abl { margin-top: 10px; font-size: 12px; font-weight: 600; color: var(--chat-mute); }
-.k15 .k15abf { font-size: 12.5px; color: var(--del, #e5484d); }
-.k15 .k15abk { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 6px; }
-.k15 .k15abt { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-height: 148px; padding: 18px; border-radius: 14px; text-align: left;
-  border: 1px solid var(--chat-edge); background: color-mix(in srgb, var(--chat-ink) 2%, transparent); transition: border-color .12s, transform .12s; }
-.k15 .k15abt:hover { border-color: color-mix(in srgb, var(--chat-ink) 45%, transparent); transform: translateY(-1px); }
-.k15 .k15abt.zieh { border-style: dashed; }
-.k15 .k15abt.ziel { border-color: var(--add); background: color-mix(in srgb, var(--add) 10%, transparent); }
-.k15 .k15abtg { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 8px; border-radius: 12px; background: var(--c-hover); color: var(--chat-ink); }
-.k15 .k15abtg svg { width: 20px; height: 20px; }
-.k15 .k15abtw { font-size: 15px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15abts { font-size: 12.5px; line-height: 1.4; color: var(--chat-mute); }
-.k15 .k15abda { display: flex; flex-direction: column; gap: 4px; }
-.k15 .k15abz { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; border-radius: 10px; text-align: left; color: var(--chat-prose); }
-.k15 .k15abz:hover { background: var(--c-hover); }
-.k15 .k15abz svg { flex: none; width: 15px; height: 15px; color: var(--chat-mute); }
-.k15 .k15abzn { font-size: 13.5px; color: var(--chat-ink); }
-.k15 .k15abzs { margin-left: auto; font-size: 12px; color: var(--chat-faint); }
-.k15 .k15abal { display: flex; flex-direction: column; gap: 8px; }
-.k15 .k15aba { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--chat-edge-soft); border-radius: 12px; cursor: pointer; }
-.k15 .k15aba:hover { border-color: color-mix(in srgb, var(--chat-ink) 30%, transparent); }
-.k15 .k15aba:hover .k15n, .k15 .k15abp:hover .k15n { visibility: visible; }
-.k15 .k15aba.offen { cursor: default; border-color: color-mix(in srgb, var(--add) 45%, var(--chat-edge)); }
-.k15 .k15aba.offen .k15abti { font-weight: 600; font-size: 14px; }
-.k15 .k15aba.offen .k15editt { max-width: none; }
-.k15 .k15abak { display: flex; align-items: center; gap: 8px; }
-.k15 .k15abat { font-size: 14px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15abab { margin-left: auto; font-size: 11.5px; color: var(--chat-faint); white-space: nowrap; }
-.k15 .k15abax { font-size: 12.5px; line-height: 1.5; color: var(--chat-mute); white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-/* TEIL 3 · WIE VIEL FLEET MITKOMMT (src/k15-anbindung-ui.ts): die Vorschau-Rolle, darunter vier Stufen in Graustufen von hell nach dunkel,
-   gefüllt bis zur gewählten; je Stufe Wort und was Fleet dazugibt */
-.k15 .k15abvz { display: flex; align-items: center; gap: 10px; }
-.k15 .k15abvk { font-size: 12px; color: var(--chat-mute); }
-.k15 .k15abvs button { min-height: 28px; padding: 0 12px; font-size: 12.5px; }
-.k15 .k15abreg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; max-width: calc(var(--n, 4) * 160px); padding: 4px; border: 1px solid var(--chat-edge); border-radius: 12px; }
-.k15 .k15abreg button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; min-width: 0; min-height: 56px; padding: 8px 12px;
-  border-radius: 9px; text-align: left; color: var(--chat-mute); background: color-mix(in srgb, var(--chat-ink) var(--g0), transparent); transition: background .15s, color .15s, box-shadow .15s; }
-.k15 .k15abreg button.voll { background: color-mix(in srgb, var(--chat-ink) var(--g), transparent); color: var(--chat-ink); }
-.k15 .k15abreg button.on { box-shadow: inset 0 0 0 1.5px var(--chat-ink); }
-.k15 .k15abreg button:not(.on):not(:disabled):hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-ink) 40%, transparent); }
-.k15 .k15abrw { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-.k15 .k15abrt { font: 11.5px/1.25 var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15abreg button.voll .k15abrt { color: color-mix(in srgb, var(--chat-ink) 72%, transparent); }
-.k15 .k15abrs { color: var(--chat-prose); }
-.k15 .k15abrc { margin-top: -8px; font-size: 11.5px; line-height: 1.45; color: var(--chat-faint); max-width: 68ch; }
-.k15 .k15abneu { color: var(--chat-ink); font-weight: 600; }
-.k15 .k15abdl { display: flex; flex-direction: column; gap: 6px; padding: 0 14px; }
-.k15 .k15abd { display: grid; grid-template-columns: minmax(136px, 196px) minmax(0, 1fr); gap: 14px; font-size: 12.5px; line-height: 1.45; color: var(--chat-mute); }
-.k15 .k15abdk { color: var(--chat-faint); }
-.k15 .k15abg { display: flex; flex-direction: column; border: 1px solid var(--chat-edge-soft); border-radius: 12px; overflow: hidden; }
-.k15 .k15abgz { display: grid; grid-template-columns: minmax(150px, 210px) minmax(0, 1fr); gap: 14px; padding: 10px 14px; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15abgz:first-child { border-top: 0; }
-.k15 .k15abgz.eigen { background: color-mix(in srgb, var(--add) 7%, transparent); }
-.k15 .k15abgw { font-size: 13px; font-weight: 600; color: var(--chat-ink); }
-.k15 .k15abgs { font-size: 11.5px; color: var(--chat-faint); }
-.k15 .k15abgv { font-size: 12.5px; line-height: 1.5; color: var(--chat-prose); }
-.k15 .k15abp { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 12px; border: 1px solid var(--chat-edge-soft); border-radius: 10px; text-align: left; }
-.k15 .k15abp.on { border-color: color-mix(in srgb, var(--add) 45%, var(--chat-edge)); }
-.k15 .k15abpc { flex: none; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--chat-edge); }
-.k15 .k15abp.on .k15abpc { border-color: transparent; background: var(--add); color: var(--chat-void); }
-.k15 .k15abpc svg { width: 12px; height: 12px; }
-.k15 .k15abpn { font-size: 13.5px; color: var(--chat-ink); }
-.k15 .k15abps { font-size: 12px; color: var(--chat-mute); }
-.k15 .k15absel { min-height: 36px; padding: 0 10px; border: 1px solid var(--chat-edge); border-radius: 8px; background: var(--chat-void); font: inherit; font-size: 13.5px; color: var(--chat-ink); max-width: 280px; }
-.k15 .k15absum { margin-top: 6px; padding: 12px 14px; border: 1px solid var(--chat-edge-soft); border-radius: 12px; }
-.k15 .k15abfuss { flex: none; display: flex; align-items: center; gap: 14px; padding: 12px 14px 12px 22px; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15abwo { flex: 1 1 auto; text-align: right; font-size: 12px; color: var(--chat-faint); }
-.k15 .k15abfuss .k15go:disabled { opacity: .4; cursor: default; }
-.k15.k15alles .k15ab .k15n { visibility: visible; }
-@media (max-width: 1200px) { .k15 .k15ab { top: 8px; bottom: 8px; width: min(880px, calc(100% - 16px)); } }
-@media (max-width: 700px), ((pointer: coarse) and (max-height: 500px)) {
-  .k15 .k15ab { top: 8px; bottom: 8px; width: calc(100% - 16px); }
-  .k15 .k15abkopf { flex-wrap: wrap; gap: 10px; padding: 12px 10px 10px 16px; }
-  .k15 .k15abtitel { flex: 1 1 auto; }
-  .k15 .k15abschritte { order: 3; flex: 1 1 100%; }
-  .k15 .k15abschritte li:not(.on) button span:last-child { display: none; }
-  .k15 .k15abschritte li:not(.on) { flex: none; }
-  .k15 .k15abin { padding: 16px; }
-  .k15 .k15abk { grid-template-columns: minmax(0, 1fr); }
-  .k15 .k15abt { min-height: 0; flex-direction: row; align-items: center; flex-wrap: wrap; column-gap: 12px; padding: 14px; }
-  .k15 .k15abtg { margin: 0; }
-  .k15 .k15abts { flex: 1 1 100%; }
-  .k15 .k15abgz { grid-template-columns: minmax(0, 1fr); gap: 4px; }
-  .k15 .k15abreg button { padding: 8px; min-height: 52px; }
-  .k15 .k15abrw { font-size: 12.5px; }
-  .k15 .k15abru { display: none; }
-  .k15 .k15abdl { padding: 0; }
-  .k15 .k15abd { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .k15 .k15abfuss { padding: 10px; }
-  .k15 .k15abwo { display: none; }
-  .k15 .k15abfuss .k15go { flex: 1 1 auto; padding: 0 14px; } }
-@media (pointer: coarse) { .k15 .k15repox { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .k15 * { animation: none !important; transition: none !important; } }
+@media (pointer: coarse) {
+  .k15 .k15repox { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .k15 * { animation: none !important; transition: none !important; }
+}
 @media (max-width: 1200px), ((pointer: coarse) and (max-height: 500px)) {
   #shell-found.k15 .shellwin { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   #shell-found.k15 .shellhead { padding: 10px 8px 8px 16px; }
-  .k15 .k15hbtn { width: 40px; height: 40px; padding: 0; justify-content: center; }
-  .k15 .k15hbtn span { display: none; }
-  /* „Alles zeigen“ behält sein Wort, sonst findet man es am Handy nicht (Prüfung Punkt 14) */
-  .k15 .k15hbtn.k15alleb { width: auto; padding: 0 12px; }
-  .k15 .k15hbtn.k15alleb span { display: inline; }
-  .k15 .k15d { grid-template-columns: minmax(0, 760px); justify-content: center; }
-  .k15 .k15col { display: none; border-left: 0; padding: 0 16px 24px; }
-  .k15 .k15d[data-tief="0"] > .k15c1, .k15 .k15d[data-tief="1"] > .k15c2, .k15 .k15d[data-tief="2"] > .k15c3, .k15 .k15d[data-tief="3"] > .k15c4 { display: block; }
-  .k15 .k15crumb { flex: none; display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 10px; border-bottom: 1px solid var(--chat-edge-soft); }
-  .k15 .k15crumbb { flex: none; display: inline-flex; align-items: center; gap: 4px; min-height: 40px; padding: 0 8px 0 2px; font-size: 13px; color: var(--chat-ink); }
-  .k15 .k15crumbb svg { width: 16px; height: 16px; transform: rotate(90deg); }
-  .k15 .k15crumbw { min-width: 0; font-size: 12px; color: var(--chat-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .k15 .k15z, .k15 .k15absh { min-height: 48px; }
-  .k15 .k15pop { inset: 8px; width: auto; max-height: none; }
 }
 @media (max-width: 600px) {
-  .k15 .k15foot { flex-wrap: wrap; }
-  .k15 .k15go { flex: 1 1 100%; }
   .k15 .k15toast { bottom: 132px; }
 }
-/* „Systemprompt und Werkzeuge“ aufgeschlüsselt (src/k15-anatomie-ui.ts): Gruppen mit Pfeil, Teile darunter, ihr Text aufgeklappt */
-.k15 .k15ccg > .k15lkz > svg { flex: none; width: 12px; height: 12px; align-self: center; margin-left: -2px; color: var(--chat-faint);
-  transform: rotate(-90deg); transition: transform .14s; }
-.k15 .k15ccg.open > .k15lkz > svg { transform: none; color: var(--chat-mute); }
-.k15 .k15ccg > .k15lkz .k15lkn { font-weight: 600; }
-.k15 .k15cct.aus > .k15lkz .k15lkn { color: var(--chat-faint); text-decoration: line-through; text-decoration-color: var(--chat-edge); }
-.k15 .k15cct > .k15lkz .k15lkn { flex: 0 1 auto; min-width: 0; font: 12.5px/1.35 var(--chat-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k15 .k15cct.prosa > .k15lkz .k15lkn { font: 12.5px/1.35 inherit; font-family: inherit; }
-.k15 .k15cct > .k15lkz .k15lkg { flex: 1 0 auto; text-align: right; }
-.k15 .k15ccpre { max-height: 260px; overflow: auto; margin: 0 0 10px; font-size: 11.5px; }
-.k15 .k15ccrechte { padding-left: 0; margin-top: 6px; }
-.k15 .k15ccz { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 0 6px 18px; font-size: 11px; color: var(--chat-faint); }
-.k15 .k15ccg > .k15lkz .k15lkn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k15 .k15ccg > .k15lkz { flex-wrap: nowrap; align-items: center; }
-.k15 .k15ccg > .k15lkz .k15lkn { flex: 0 1 auto; min-width: 0; }
-
-/* FESTE FASSUNGEN der gewählten Konstellation (src/k15-konst-fassungen.ts) */
-.k15 .k15fass { margin: 0 4px 14px; border: 1px solid var(--chat-edge-soft); border-radius: 10px; font-size: 12.5px; }
-.k15 .k15fkopf { display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 7px 10px; text-align: left; color: var(--chat-mute); }
-.k15 .k15fkopf b { color: var(--chat-ink); font-weight: 600; }
-.k15 .k15fkopf:hover { background: var(--chat-surface); }
-.k15 .k15mit .k15fkopf:hover { background: none; }
-.k15 .k15mitsitz { display: grid; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15mitsitz > b { color: var(--chat-ink); font-weight: 600; }
-.k15 .k15mitz { color: var(--chat-mute); }
-.k15 .k15mitz .k15mitk { display: inline-block; min-width: 6.5em; color: var(--chat-faint); }
-.k15 .k15mitz button { margin-top: 4px; }
-.k15 .k15mitsitz .k15platz { padding: 8px 0 0; display: grid; gap: 4px; }
-.k15 .k15mitsitz .k15platz textarea { width: 100%; box-sizing: border-box; }
-.k15 .k15mitsitz .k15platz button { justify-self: start; }
-.k15 .k15darf .k15seg { display: flex; flex-wrap: wrap; }
-.k15 .k15frow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 10px; border-top: 1px solid var(--chat-edge-soft); }
-.k15 .k15frow code { font: 11.5px var(--chat-mono); color: var(--chat-mute); }
-.k15 .k15erlz > span { color: var(--chat-faint); }
-.k15 .k15erlz > .k15erlw { color: #f59e0b; flex-basis: 100%; }
-.k15 .k15frow.aktiv b { color: #4ade80; }
-.k15 .k15fwann { color: var(--chat-faint); }
-.k15 .k15frow .k15faktiv { color: #4ade80; border-color: #4ade8066; }
-.k15 .k15frow .k15link[aria-pressed="true"] { color: var(--chat-ink); }
-.k15 .k15fvon { padding: 6px 10px 2px; color: var(--chat-faint); font-size: 11.5px; }
-.k15 .k15fdiff { padding: 2px 10px 10px; display: flex; flex-direction: column; gap: 3px; }
-.k15 .k15fz { font: 12px/1.45 var(--chat-mono); color: var(--chat-prose); word-break: break-word; }
-.k15 .k15fz.neu { color: #4ade80; } .k15 .k15fz.weg { color: #ff8f8f; } .k15 .k15fz.kante { color: #8fb8ff; } .k15 .k15fz.warn { color: #ffb38a; }
-/* das Protokoll der Konstellation (src/k15-protokoll.ts), in der Form der Fassungen */
-.k15 .k15protz { align-items: center; flex-wrap: nowrap; }
-.k15 .k15protz > span { flex: none; color: var(--chat-mute); }
-.k15 .k15protz .k15packin { flex: 1; min-width: 0; min-height: 30px; }
-.k15 .k15protz .k15packin:disabled { color: var(--chat-faint); }
-.k15 .k15protz .k15protzahl { flex: 0 0 4em; }

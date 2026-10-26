@@ -3,7 +3,6 @@
 // und die Zahl seiner Nachrichten. Ein laufender Lauf lässt sich von Hand beenden; seine Sessions laufen dabei weiter.
 import { el, api } from "./k15-haupt";
 import { LAEUFE_ROUTE } from "./k15-speicher";
-import { vergissLaeufe } from "./k15-lauf";
 import { aufgabeAlsText, aufgabeAus } from "./aufgabe";
 
 interface Pos { pos: string; slot: number; zu: number | null; folgtAuf: boolean }
@@ -37,17 +36,17 @@ function lies(id: string, neu: () => void): void {
   geladen.set(id, "laedt");
   const json = (pfad: string) => api(pfad).then(async (r) => {
     const j: unknown = await r.json().catch(() => null);
-    if (!r.ok) throw new Error(text(rec(j).error) ?? `Antwort ${r.status}`);
+    if (!r.ok) throw new Error(text(rec(j).error) ?? `HTTP ${r.status}`);
     return rec(j);
   });
   const pfad = `${LAEUFE_ROUTE}/${encodeURIComponent(id)}`;
   Promise.all([json(pfad), json(`${pfad}/ergebnis`)])
     .then(([l, e]) => { geladen.set(id, daten(rec(l.lauf), e)); })
-    .catch((x: unknown) => { geladen.set(id, { fehler: x instanceof Error ? x.message : "Server nicht erreichbar" }); })
+    .catch((x: unknown) => { geladen.set(id, { fehler: x instanceof Error ? x.message : "Server not reachable" }); })
     .finally(neu);
 }
 
-const uhr = (ms: number): string => new Date(ms).toLocaleString("de-DE", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+const uhr = (ms: number): string => new Date(ms).toLocaleString("en-GB", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
 function zeile(wort: string, inhalt: string): HTMLElement {
   const z = el("div", "attsatz");
   z.append(el("span", "attwort", `${wort} · `), document.createTextNode(inhalt));
@@ -58,34 +57,34 @@ export function laufAnsicht(id: string, neu: () => void): HTMLElement {
   const box = el("div", "attdetail");
   const d = geladen.get(id);
   if (d === undefined) lies(id, neu);
-  if (d === undefined || d === "laedt") { box.append(el("div", "attsatz", "Lauf wird gelesen …")); return box; }
-  if ("fehler" in d) { box.append(el("div", "attsatz", `Der Lauf ist nicht lesbar: ${d.fehler}`)); return box; }
+  if (d === undefined || d === "laedt") { box.append(el("div", "attsatz", "Reading the run …")); return box; }
+  if ("fehler" in d) { box.append(el("div", "attsatz", `Can't read the run: ${d.fehler}`)); return box; }
   const name = (pos: string): string => d.namen[pos] ?? pos;
-  box.append(zeile("Stand", d.ende ? `zu Ende seit ${uhr(d.ende.at)}, ${d.ende.wie === "hand" ? "von Hand beendet" : "alle seine Sessions sind zu"}`
-    : `läuft seit ${uhr(d.at)}; er endet von Hand oder wenn alle seine Sessions zu sind`));
-  box.append(zeile("Aufgabe", d.aufgabe ?? "keine am Lauf"));
-  box.append(zeile("Endbedingung", d.endbedingung ? `${d.endbedingung} (steht im Protokoll; Fleet prüft sie nicht)` : "keine im Protokoll"));
-  box.append(zeile("Positionen", d.positionen.map((p) => `${name(p.pos)}${p.folgtAuf ? " (Nachfolge)" : ""} auf Slot ${p.slot}, Session ${p.zu === null ? "offen" : "zu"}`).join(" · ")));
-  box.append(zeile("Nachrichten", `${d.nachrichten} im Protokoll des Laufs`));
+  box.append(zeile("Status", d.ende ? `ended ${uhr(d.ende.at)}, ${d.ende.wie === "hand" ? "ended by hand" : "all its sessions are closed"}`
+    : `running since ${uhr(d.at)}; it ends when you end it or when all its sessions are closed`));
+  box.append(zeile("Task", d.aufgabe ?? "none on the run"));
+  box.append(zeile("End condition", d.endbedingung ? `${d.endbedingung} (from the protocol; Fleet does not check it)` : "none in the protocol"));
+  box.append(zeile("Positions", d.positionen.map((p) => `${name(p.pos)}${p.folgtAuf ? " (succession)" : ""} on Slot ${p.slot}, session ${p.zu === null ? "open" : "closed"}`).join(" · ")));
+  box.append(zeile("Messages", `${d.nachrichten} in the run's protocol`));
   for (const b of d.branches)
-    box.append(zeile(`Commits auf ${b.branch}`, b.commits === null ? "nicht lesbar"
-      : b.commits.length ? b.commits.slice(0, 10).map((c) => `${c.sha.slice(0, 8)} ${c.subject}`).join(" · ") + (b.commits.length > 10 ? ` · und ${b.commits.length - 10} weitere` : "")
-      : "noch keiner im Lauf"));
-  for (const z of d.ziele) box.append(zeile(`Ziel von ${name(z.pos)} (Slot ${z.slot})`, z.ziel.split("\n").join(" · ")));
-  for (const b of d.ohneBranch) box.append(zeile(`${name(b.pos)} (Slot ${b.slot})`, "Branch unbekannt, dort zählt Fleet keine Commits"));
-  box.append(zeile("Reports", d.reports.length ? d.reports.map((r) => `${name(r.pos)}${r.status ? ` (${r.status})` : ""}: ${r.text.split("\n")[0]}`).join(" · ") : "keiner"));
+    box.append(zeile(`Commits on ${b.branch}`, b.commits === null ? "unreadable"
+      : b.commits.length ? b.commits.slice(0, 10).map((c) => `${c.sha.slice(0, 8)} ${c.subject}`).join(" · ") + (b.commits.length > 10 ? ` · and ${b.commits.length - 10} more` : "")
+      : "none yet in this run"));
+  for (const z of d.ziele) box.append(zeile(`Goal of ${name(z.pos)} (Slot ${z.slot})`, z.ziel.split("\n").join(" · ")));
+  for (const b of d.ohneBranch) box.append(zeile(`${name(b.pos)} (Slot ${b.slot})`, "Branch unknown, so Fleet counts no commits"));
+  box.append(zeile("Reports", d.reports.length ? d.reports.map((r) => `${name(r.pos)}${r.status ? ` (${r.status})` : ""}: ${r.text.split("\n")[0]}`).join(" · ") : "none"));
   if (!d.ende) {
     const knopf = document.createElement("button");
     knopf.className = "attghost";
-    knopf.textContent = bestaetigen.has(id) ? "Ja, Lauf beenden (die Sessions laufen weiter)" : "Lauf beenden";
+    knopf.textContent = bestaetigen.has(id) ? "Yes, end the run (its sessions keep running)" : "End run";
     knopf.onclick = () => {
       if (!bestaetigen.has(id)) { bestaetigen.add(id); neu(); return; }
       bestaetigen.delete(id);
       knopf.disabled = true;
       void api(`${LAEUFE_ROUTE}/${encodeURIComponent(id)}/ende`, { method: "POST" }).then(async (r) => {
-        if (!r.ok) throw new Error(text(rec(await r.json().catch(() => null)).error) ?? `Antwort ${r.status}`);
-      }).then(() => { geladen.delete(id); vergissLaeufe(); }, (x: unknown) => {
-        geladen.set(id, { fehler: x instanceof Error ? x.message : "Server nicht erreichbar" });
+        if (!r.ok) throw new Error(text(rec(await r.json().catch(() => null)).error) ?? `HTTP ${r.status}`);
+      }).then(() => { geladen.delete(id); }, (x: unknown) => {
+        geladen.set(id, { fehler: x instanceof Error ? x.message : "Server not reachable" });
       }).finally(neu);
     };
     const k = el("div", "attknoepfe");

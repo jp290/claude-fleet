@@ -762,7 +762,7 @@ Body-Override ist erlaubt. Es landet nichts, es wird nichts abgerissen.
   Orchestratorin (der eine Slot, auf den die Rollenadresse `orchestrator` auflöst; Owner 10.10.), **aus**
   für jede andere Session. Eine Entscheidung (`server/succession.ts#warmDecision`, Tick
   `server.ts#tickKeepCache`): Schalter an, `keepCacheIdleMin` Minuten nach dem letzten Modellaufruf und vor
-  60 min ein kurzer Turn („[fleet] Cache warmhalten. Antworte nur mit „ok" …“, Pfad `cache-warm`), der
+  60 min ein kurzer Turn („[fleet] Keep the cache warm. Answer with ok only …“, Pfad `cache-warm`), der
   nichts über ihren Stand sagt. Keinen Turn gibt es ausgeschaltet (`off`), schlafend, ohne gelesenen
   Aufruf, bei einer 5-min-Cache-Stufe (`cache-5m`), nach einer Kompaktierung (`compacted`), nach Ablauf
   (`expired` — ein kalter Cache wird nicht gewärmt), über `KEEP_CACHE_WARM_MAX` ohne eigenen Turn

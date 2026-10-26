@@ -125,7 +125,7 @@ describe("die empfangende Fleet nimmt, was ankam", () => {
   test("ein persönlicher Pack unter liest wird abgelehnt", async () => {
     const o = JSON.parse((await datei()).text);
     o.positionen[0].sitz.liest.push({ id: "working-with-the-owner", weg: "start", quellen: [], wofuer: null, text: "x" });
-    expect(importKonst(JSON.stringify(o), PROFILE0, 7)).toBe("Session Bauer: working-with-the-owner ist persönlich und gehört unter persoenlich, ohne Text");
+    expect(importKonst(JSON.stringify(o), PROFILE0, 7)).toBe("session Bauer: working-with-the-owner ist persönlich und gehört unter persoenlich, ohne Text");
   });
   test("das Notizbuch wird nur in einen leeren Ordner gesät", () => {
     const dir = mkdtempSync(join(tmpdir(), "sitz-nb-"));

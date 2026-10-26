@@ -1238,7 +1238,7 @@ export async function run(ctx: Ctx, sc: StewardCtx): Promise<void> {
   const profiles = (cat.harnesses as { id: string; browserProfile?: string }[])
     .map((h) => `${h.id}:${h.browserProfile ?? "MISSING"}`).sort().join(",");
   check("§6 the catalogue disposes the browser profile per adapter — claude/codex apply, pi family not-applicable, container unsupported",
-    profiles === "claude:apply,codex:apply,container:unsupported,pi-unfenced:not-applicable,pi-zai:not-applicable,pi:not-applicable",
+    profiles === "claude:apply,codex:apply,container:unsupported,pi-deepseek:not-applicable,pi-unfenced:not-applicable,pi-zai-unfenced:not-applicable,pi-zai:not-applicable,pi:not-applicable",
     profiles);
 
   // TWO AXES, NOT ONE. `container` answers "where does this run"; claude/pi/codex answer "what am

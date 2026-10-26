@@ -829,7 +829,12 @@ interface Harness {
     // the built-in tools chosen at the door (Slot.tools); claude alone reads it
     tools?: readonly string[] | null;
     // the Orchestratorin's start as a system-prompt file (orchestratorStartDatei); claude alone reads it
-    startDatei?: string | null }): string;
+    startDatei?: string | null;
+    // TEST SEAM, not a slot field: the bwrap path this line builds its fence with, or null for "no
+    // fence on this host". Absent = the boot-decided PI_ZAI_BWRAP. It exists so the suite can hold
+    // BOTH sides of the decision (fenced / fence missing) on one host instead of reading the platform
+    // it happens to run on; ensureSlot never sets it, so the server's behaviour is unchanged.
+    fenceBwrap?: string | null }): string;
   // The OTHER spawn this server makes, and the one that used to have no adapter at all: a throwaway
   // WORKER session (summaryViaSession — summary, ② review, commit message, ✨ enhance, ⏫ merge
   // resolver and its repair round, 🧭 digest, ↻ refine). It is a genuinely different shape from a
@@ -1201,6 +1206,23 @@ const PI_ZAI_KEY_FILE = (() => {
     throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
   return path.replace(/\/+$/, "");
 })();
+// The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“
+// ) owns its own agent home and its own key file, and the
+// same two boot checks as pi-zai's: both paths enter single-quoted shell words, and a location the
+// operator named must not silently become another one. The key file's DEFAULT is the owner's path on
+// the Workhorse, spelled here because Fleet may only ever name it, never read or print it.
+const PI_DEEPSEEK_AGENT_DIR = (() => {
+  const path = process.env.FLEET_PI_DEEPSEEK_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-deepseek-agent`;
+  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_DEEPSEEK_AGENT_DIR must be a safe absolute path without ..");
+  return path.replace(/\/+$/, "");
+})();
+const PI_DEEPSEEK_KEY_FILE = (() => {
+  const path = process.env.FLEET_PI_DEEPSEEK_KEY_FILE ?? `${HOME}/.config/fleet-deepseek/key`;
+  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
+    throw new Error("FLEET_PI_DEEPSEEK_KEY_FILE must be a safe absolute path without ..");
+  return path.replace(/\/+$/, "");
+})();
 // pi-zai's READ fence (server/pi-zai-fence.ts; measured draft: docs/messungen/2026-09-21-pi-zai-
 // lesezaun.md). ABSOLUTE by default, never PATH-resolved: pi and its children may write anywhere
 // under the owner's home, and a `sandbox-exec` dropped into ~/.bun/bin would otherwise neuter the
@@ -1294,18 +1316,23 @@ function piZaiDevPath(): string {
   return piZaiDevPathMemo;
 }
 // null = the fence cannot be BUILT for this cwd; the spawn line then starts no pi (PI_ZAI_FENCE_FAILED).
-function piZaiFenceInput(cwd: string, laneBranch: string | null): PiZaiFenceInput {
+// The agent home and the key file are the only things a Pi seat behind this fence may differ in
+// (pi-zai, pi-deepseek): they are parameters, so a second seat cannot grow a second, drifting fence.
+function piFenceInputFor(agentDir: string, keyFile: string, cwd: string, laneBranch: string | null): PiZaiFenceInput {
   const home = realpathLoose(HOME);
   const realCwd = realpathLoose(cwd);
   return {
     home, fleetDir: realpathLoose(import.meta.dir),
-    agentDir: realpathLoose(PI_ZAI_AGENT_DIR), keyFile: realpathLoose(PI_ZAI_KEY_FILE), cwd: realCwd,
+    agentDir: realpathLoose(agentDir), keyFile: realpathLoose(keyFile), cwd: realCwd,
     tmuxDir: `${realpathLoose(process.env.TMUX_TMPDIR || "/tmp")}/tmux-${process.getuid?.() ?? 0}`, sockets: [SOCK],
     denyRoots: PI_ZAI_DENY_ROOTS,
     tmpRoots: piZaiTmpRoots(), ownTmp: piZaiTmpFor(realpathLoose("/tmp"), realCwd),
     suiteLock: realpathLoose(SUITE_LOCK), toolRoots: piZaiToolRoots(home), git: piZaiGitOf(realCwd, laneBranch),
     userTemp: piZaiUserTemp(), darwin: process.platform === "darwin",
   };
+}
+function piZaiFenceInput(cwd: string, laneBranch: string | null): PiZaiFenceInput {
+  return piFenceInputFor(PI_ZAI_AGENT_DIR, PI_ZAI_KEY_FILE, cwd, laneBranch);
 }
 function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
   return piZaiFenceProfile(piZaiFenceInput(cwd, laneBranch));
@@ -1452,51 +1479,83 @@ const PI_HARNESS: Harness = {
 // measured 2026-10-16: paneAgentAt read `no-agent` for a pane that showed the 1.0M gauge), so the
 // adapter's `comms` also counts `bwrap` - the sandbox ends the moment pi does, and its self-test at
 // /usr/bin/true lives for milliseconds.
-const PI_ZAI_COMMS = PI_ZAI_BWRAP ? ["pi", "bwrap"] : ["pi"];
-function piZaiBwrapLine(guard: string, o: { cwd: string; laneBranch?: string | null }, cmd: string): string {
-  const bw = PI_ZAI_BWRAP ? piZaiBwrapArgs(piZaiFenceInput(o.cwd, o.laneBranch ?? null)) : null;
-  if (!PI_ZAI_BWRAP || !bw || [PI_ZAI_BWRAP, ...bw.args, ...bw.mkdirs].some((x) => x.includes("'") || x.includes("\n"))) {
-    console.error(`pi-zai: no bwrap fence buildable for ${o.cwd} - pi not started`);
-    return `${guard}printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}`;
+const PI_FENCED_COMMS = PI_ZAI_BWRAP ? ["pi", "bwrap"] : ["pi"];
+// ONE bwrap spawn line for every Pi seat behind this fence (pi-zai, pi-deepseek): a copied fence is
+// what drifts. A seat differs only in the words naming its own things — agent home, key file, the one
+// variable pi reads its key from — so those are parameters; every keeping-safe word is spelled once.
+interface PiFencedSeat {
+  prefix: string;      // names the seat in the console line when no fence can be built
+  agentDir: string;    // its process-local PI_CODING_AGENT_DIR
+  keyFile: string;     // the file the OUTER shell reads the key from (never inside the fence)
+  keyEnv: string;      // the variable pi itself reads the key from (ZAI_API_KEY, DEEPSEEK_API_KEY)
+  fenceFailed: string; // the pane's one line, no apostrophe by construction
+}
+// The bwrap path a line builds its fence with: the boot-decided PI_ZAI_BWRAP, unless a test names
+// one explicitly (fenceBwrap above). One reader, so both fenced seats answer the same question.
+function piFenceBwrapFor(o: { fenceBwrap?: string | null }): string | null {
+  return o.fenceBwrap === undefined ? PI_ZAI_BWRAP : o.fenceBwrap;
+}
+function piFencedBwrapLine(seat: PiFencedSeat, guard: string,
+  o: { cwd: string; laneBranch?: string | null; fenceBwrap?: string | null }, cmd: string): string {
+  const bwrap = piFenceBwrapFor(o);
+  const bw = bwrap ? piZaiBwrapArgs(piFenceInputFor(seat.agentDir, seat.keyFile, o.cwd, o.laneBranch ?? null)) : null;
+  if (!bwrap || !bw || [bwrap, ...bw.args, ...bw.mkdirs].some((x) => x.includes("'") || x.includes("\n"))) {
+    console.error(`${seat.prefix}: no bwrap fence buildable for ${o.cwd} - pi not started`);
+    return `${guard}printf '%s\\n' '${seat.fenceFailed}'; exec ${SHELL}`;
   }
   const own = piZaiTmpFor(realpathLoose("/tmp"), realpathLoose(o.cwd));
-  const auth = `${PI_ZAI_AGENT_DIR}/auth.json`;
+  const auth = `${seat.agentDir}/auth.json`;
   const q = (x: string): string => `'${x}'`;
-  return `${guard}fleet_pz() { ${q(PI_ZAI_BWRAP)} ${bw.args.map(q).join(" ")} "$@"; }; `
-    + `{ mkdir -p '${PI_ZAI_AGENT_DIR}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' ${bw.mkdirs.map(q).join(" ")} `
+  return `${guard}fleet_pz() { ${q(bwrap)} ${bw.args.map(q).join(" ")} "$@"; }; `
+    + `{ mkdir -p '${seat.agentDir}/sessions/${piSessionSlug(realpathLoose(o.cwd))}' ${bw.mkdirs.map(q).join(" ")} `
     + `&& (umask 077; mkdir -p '${own}/home' '${own}/tmp') && { [ -e '${auth}' ] || printf '{}' > '${auth}'; } && fleet_pz /usr/bin/true; } `
-    + `|| { printf '%s\\n' '${PI_ZAI_FENCE_FAILED}'; exec ${SHELL}; }; `
+    + `|| { printf '%s\\n' '${seat.fenceFailed}'; exec ${SHELL}; }; `
     + `HOME='${own}/home' TMPDIR='${own}/tmp' BUN_INSTALL_CACHE_DIR='${own}/home/.bun/install/cache' `
     + `GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=gc.auto GIT_CONFIG_VALUE_0=0 GIT_CONFIG_KEY_1=maintenance.auto GIT_CONFIG_VALUE_1=false `
-    + `PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" fleet_pz ${cmd}; exec ${SHELL}`;
+    + `PI_CODING_AGENT_DIR='${seat.agentDir}' ${seat.keyEnv}="$(cat '${seat.keyFile}')" fleet_pz ${cmd}; exec ${SHELL}`;
+}
+function piZaiBwrapLine(guard: string, o: { cwd: string; laneBranch?: string | null; fenceBwrap?: string | null }, cmd: string): string {
+  return piFencedBwrapLine({ prefix: "pi-zai", agentDir: PI_ZAI_AGENT_DIR, keyFile: PI_ZAI_KEY_FILE,
+    keyEnv: "ZAI_API_KEY", fenceFailed: PI_ZAI_FENCE_FAILED }, guard, o, cmd);
+}
+const PI_ZAI_DEFAULT_MODEL = "glm-5.3";
+const PI_ZAI_MODEL_RE = /^glm-5\.3(-flash)?$/;
+const PI_ZAI_MODEL_ERR = "one of: glm-5.3, glm-5.3-flash";
+// Both GLM adapters write this one catalogue. The entries carry the facts pi's own catalogue
+// declares for these ids (read from the installed 0.84.x dist, not guessed): 1M context, 131072
+// maxTokens, reasoning, and the same thinkingLevelMap. Written fresh on every spawn, so the pane's
+// Pi never depends on what the installed version bundles under `zai`, and the fenced and unfenced
+// seats can never disagree about a model's window.
+function piZaiCatalogJson(): string {
+  const zaiEntry = (id: string, name: string): string =>
+    `{"id":"${id}","name":"${name}","contextWindow":1000000,"maxTokens":131072,"reasoning":true,`
+    + `"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}`;
+  return `{"providers":{"zai":{"models":[${zaiEntry("glm-5.3", "GLM-5.3")},${zaiEntry("glm-5.3-flash", "GLM-5.3-Flash")}]}}}`;
+}
+// The key and catalogue guard shared by both GLM adapters. The key stays a FILE that the pane shell
+// reads into the environment: this line never contains its contents and never puts it on argv.
+function piZaiSpawnGuard(prefix: string): string {
+  const keyError = `${prefix}: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
+  const catalogError = `${prefix}: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
+  return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
+    + `mkdir -p '${PI_ZAI_AGENT_DIR}' && printf '%s\\n' '${piZaiCatalogJson()}' > '${PI_ZAI_AGENT_DIR}/models.json' `
+    + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `;
 }
 const PI_ZAI_HARNESS: Harness = {
   id: "pi-zai",
   spawnCmd: (o) => {
     // o.model is one of the two ids modelRe admitted at SET time; absent = the default tier.
-    const model = o.model ?? "glm-5.3";
+    const model = o.model ?? PI_ZAI_DEFAULT_MODEL;
     // The fence's HOME makes the real ~/.agents/skills look project-local to Pi's ancestor scan.
     // Ignore trust-gated resources for this run; Pi still loads AGENTS context files independently.
     let cmd = `pi --provider zai --model '${model}' --no-approve`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
-    // Both entries carry the facts pi's own catalogue declares for these ids (read from the
-    // installed 0.84.x dist, not guessed): 1M context, 131072 maxTokens, reasoning, and the same
-    // thinkingLevelMap. Written fresh on every spawn, so the pane's Pi never depends on what the
-    // installed version bundles under `zai`.
-    const zaiEntry = (id: string, name: string): string =>
-      `{"id":"${id}","name":"${name}","contextWindow":1000000,"maxTokens":131072,"reasoning":true,`
-      + `"thinkingLevelMap":{"off":null,"minimal":null,"low":"low","medium":null,"high":"high","xhigh":null,"max":"max"}}`;
-    const catalog = `{"providers":{"zai":{"models":[${zaiEntry("glm-5.3", "GLM-5.3")},${zaiEntry("glm-5.3-flash", "GLM-5.3-Flash")}]}}}`;
-    const keyError = `pi-zai: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
-    const catalogError = `pi-zai: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
-    const guard = `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
-      + `mkdir -p '${PI_ZAI_AGENT_DIR}' && printf '%s\\n' '${catalog}' > '${PI_ZAI_AGENT_DIR}/models.json' `
-      + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `;
+    const guard = piZaiSpawnGuard("pi-zai");
     // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
     // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
     // session dir is created out here because the fence denies creating it under sessions/.
-    if (PI_ZAI_BWRAP) return piZaiBwrapLine(guard, o, cmd);
+    if (piFenceBwrapFor(o)) return piZaiBwrapLine(guard, o, cmd);
     const profile = piZaiFenceFor(o.cwd, o.laneBranch ?? null);
     if (!profile) {
       console.error(`pi-zai: no read fence buildable for ${o.cwd} — pi not started`);
@@ -1528,7 +1587,7 @@ const PI_ZAI_HARNESS: Harness = {
   context: { file: piZaiContextFile, used: readPiUsedTokens },
   conversation: { file: piZaiContextFile, read: readPiSession },
   pinsSession: true,
-  comms: PI_ZAI_COMMS, // depth one, as PI_HARNESS (see piZaiBwrapLine for bwrap)
+  comms: PI_FENCED_COMMS, // depth one, as PI_HARNESS (see piFencedBwrapLine for bwrap)
   composer: PI_COMPOSER,
   // MEASURED 2026-09-18 (Pi 0.85.0, this exact spawn line, fresh agent home, 140×44 pane): in a
   // project with local `.pi` resources Pi opens `Trust project folder?` before any composer. An
@@ -1558,8 +1617,8 @@ const PI_ZAI_HARNESS: Harness = {
   allowsLanes: true,
   singleton: false,
   laneForm: null,
-  modelRe: /^glm-5\.3(-flash)?$/,
-  modelErr: "one of: glm-5.3, glm-5.3-flash",
+  modelRe: PI_ZAI_MODEL_RE,
+  modelErr: PI_ZAI_MODEL_ERR,
   // SAME EVIDENCE AS THE pi ADAPTER (pi 0.85.0 shipped usage.md — pi-zai is pi on another
   // provider, measured 2026-09-18 to render the same TUI: same readiness dialog, same footer).
   commands: [
@@ -1578,6 +1637,154 @@ const PI_ZAI_HARNESS: Harness = {
     container: false,
   },
   note: "fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan); key from ~/.config/claude-fleet/secrets/zai-coding-plan.key; read fence (sandbox-exec): home and shared temp closed except the lane worktree, its git, the pi runtime, PATH tools and an own temp home; owner secrets, other sessions, other process environments and the live tmux socket denied; no copied CLAUDE.md/OWNER.md/.env in its lanes; network open; process-local agent directory leaves ~/.pi untouched",
+  role: "agent",
+  browserProfile: "not-applicable", // Pi has no MCP layer
+};
+
+// Adapter #2c — the owner's open GLM seat on the Workhorse (owner 2026-10-26: „[Zitat entfernt]“
+// , and he takes the
+// risk to its files, network and /dev for this one conversation). It is the SAME provider wiring as `pi-zai` —
+// provider zai, the two GLM ids, the key file read into the pane environment, the process-local
+// agent directory and its catalogue — without the read fence: pi runs with the owner's own reach
+// against the real host, including /dev. It is NOT pi-zai relaxed in place: pi-zai keeps its fence
+// for everyone who did not choose this one, and this one is off by default in model-register.ts
+// (#harnessOffReason) until the host names it in FLEET_HARNESSES_ON, and never on the Mac.
+// Policy follows `pi-unfenced` for the same reason it exists: one owner conversation, so MAIN only,
+// no lanes and no unattended work prompts. The key reaches pi through the environment exactly as in
+// pi-zai; it is never on argv and never printed.
+const PI_ZAI_UNFENCED_HARNESS: Harness = {
+  id: "pi-zai-unfenced",
+  spawnCmd: (o) => {
+    const model = o.model ?? PI_ZAI_DEFAULT_MODEL;
+    let cmd = `pi --provider zai --model '${model}' --no-approve`;
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    if (o.effort) cmd += ` --thinking ${o.effort}`;
+    // No fence, no sandbox-exec, no bwrap: this is the whole point of the seat. The guard and the
+    // key expansion are the same two words pi-zai uses, so the credential handling cannot drift.
+    return `${piZaiSpawnGuard("pi-zai-unfenced")}PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' `
+      + `ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${cmd}; exec ${SHELL}`;
+  },
+  worker: () => null,
+  context: { file: piZaiContextFile, used: readPiUsedTokens },
+  conversation: { file: piZaiContextFile, read: readPiSession },
+  pinsSession: true,
+  comms: ["pi"],
+  composer: PI_COMPOSER,
+  hostCommits: false,
+  automatable: false,
+  allowsLanes: false,
+  singleton: true,
+  laneForm: null,
+  modelRe: PI_ZAI_MODEL_RE,
+  modelErr: PI_ZAI_MODEL_ERR,
+  commands: [
+    { name: "/new", purpose: "Start a new session", confirm: true },
+    { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
+    { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
+  ],
+  models: modelsForHarness("pi-zai-unfenced"),
+  effortLevels: ["low", "high", "max"],
+  supports: {
+    resume: true,
+    transcript: false,
+    model: true,
+    effort: true,
+    selfSchedule: false,
+    container: false,
+  },
+  note: "UNFENCED FULL HOST AND DEVICE ACCESS: pi runs on the real machine — its files, its network and its /dev, no read or write fence; fixed provider zai/glm-5.3 (default) or glm-5.3-flash (Coding Plan), key from ~/.config/claude-fleet/secrets/zai-coding-plan.key via the environment; MAIN session only, one active slot; no unattended work prompts; off by default, the host must set FLEET_HARNESSES_ON=pi-zai-unfenced and it stays off on the Mac",
+  role: "agent",
+  browserProfile: "not-applicable", // Pi has no MCP layer
+};
+
+// Adapter #2d — the DeepSeek seat, behind the SAME read fence as `pi-zai` (owner 2026-10-26: „[Zitat entfernt]“
+// , stage 2
+// of that decision, built 2026-10-26). The provider wiring is pi's own and is not re-invented: the
+// installed 1.0.2 ships the `deepseek` provider with both ids in its catalogue
+// (dist/providers/data/deepseek.json: deepseek-flash "DeepSeek V4.1 Flash" and deepseek-v4-pro, both
+// contextWindow 1000000), and reads the key from DEEPSEEK_API_KEY itself — so NO models.json is
+// written, unlike pi-zai's catalogue. The key is the second difference: this line never contains it
+// and never puts it on argv; the OUTER pane shell reads the key file into pi's environment while the
+// file itself stays closed inside the fence (`$(cat …)` runs outside bwrap, as in pi-zai).
+// The FENCE is the same builder as pi-zai's (piFencedBwrapLine/piFenceInputFor), not a second copy:
+// what makes it safe is measured once, and a copy is exactly what drifts.
+// It is a BUILDER like pi-zai, not a singleton seat like pi-unfenced: the owner wants it as a normal
+// Fleet session he can watch and write to, so lanes, branch sessions and unattended prompts stay on.
+const PI_DEEPSEEK_DEFAULT_MODEL = "deepseek-flash";
+const PI_DEEPSEEK_MODEL_RE = /^deepseek-(flash|v4-pro)$/;
+const PI_DEEPSEEK_MODEL_ERR = "one of: deepseek-flash, deepseek-v4-pro";
+// No apostrophe by construction: it sits inside a single-quoted shell word.
+const PI_DEEPSEEK_FENCE_FAILED = "pi-deepseek: pi was NOT started - its read fence (bwrap) is missing or failed its self-test. "
+  + "This pane is a plain shell, not an agent.";
+// The key guard. No catalogue is prepared here (see above), so this is the one thing the line must
+// check before pi starts: the key FILE exists and is not empty. Its CONTENTS reach pi only through the
+// environment, expanded by the outer shell.
+function piDeepseekSpawnGuard(): string {
+  const keyError = `pi-deepseek: missing or empty DeepSeek key file: ${PI_DEEPSEEK_KEY_FILE}`;
+  return `${PATH_EXPORT}if [ ! -s '${PI_DEEPSEEK_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `;
+}
+const PI_DEEPSEEK_HARNESS: Harness = {
+  id: "pi-deepseek",
+  spawnCmd: (o) => {
+    // o.model is one of the two ids modelRe admitted at SET time; absent = the default tier.
+    const model = o.model ?? PI_DEEPSEEK_DEFAULT_MODEL;
+    // `--no-approve` for pi-zai's measured reason: behind the fence's own HOME the real
+    // ~/.agents/skills looks project-local to Pi's ancestor scan.
+    let cmd = `pi --provider deepseek --model '${model}' --no-approve`;
+    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+    if (o.effort) cmd += ` --thinking ${o.effort}`;
+    const guard = piDeepseekSpawnGuard();
+    // The fence exists only as bwrap on Linux. The machine rule (model-register.ts#harnessOffReason)
+    // already keeps this seat off every other platform; when no fence can be built this line says so
+    // and starts NO pi — an unfenced DeepSeek pane is the one thing this adapter may never produce.
+    if (!piFenceBwrapFor(o)) {
+      console.error(`pi-deepseek: no bwrap fence on this host for ${o.cwd} - pi not started`);
+      return `${guard}printf '%s\\n' '${PI_DEEPSEEK_FENCE_FAILED}'; exec ${SHELL}`;
+    }
+    return piFencedBwrapLine({ prefix: "pi-deepseek", agentDir: PI_DEEPSEEK_AGENT_DIR, keyFile: PI_DEEPSEEK_KEY_FILE,
+      keyEnv: "DEEPSEEK_API_KEY", fenceFailed: PI_DEEPSEEK_FENCE_FAILED }, guard, o, cmd);
+  },
+  // Unsupported for the same reason as Pi: no host Claude transcript return channel, and Pi has no
+  // equivalent of the worker tier's Claude ToolProfile.
+  worker: () => null,
+  // Same Pi JSONL format, rooted in this seat's own process-local agent home.
+  context: { file: piDeepseekContextFile, used: readPiUsedTokens },
+  conversation: { file: piDeepseekContextFile, read: readPiSession },
+  pinsSession: true,
+  comms: PI_FENCED_COMMS,
+  composer: PI_COMPOSER,
+  // The same measured Trust-prompt seam as pi-zai — that adapter's comment carries the measurement
+  // (pi 0.85.0, 140×44); DeepSeek is pi on another provider and renders the same TUI, so the readiness
+  // answer cannot differ. Shared BY REFERENCE, so the two seams can never drift apart.
+  readiness: PI_ZAI_HARNESS.readiness,
+  hostCommits: false,
+  // TRUE for pi-zai's reason (the readiness seam above is the other half of the same decision): the
+  // Trust prompt keeps the pi process alive, so only the rendered pane can refuse it.
+  automatable: true,
+  allowsLanes: true,
+  singleton: false,
+  laneForm: null,
+  modelRe: PI_DEEPSEEK_MODEL_RE,
+  modelErr: PI_DEEPSEEK_MODEL_ERR,
+  // SAME EVIDENCE AS THE pi ADAPTER (pi 0.85.0 shipped usage.md — same TUI, another provider).
+  commands: [
+    { name: "/new", purpose: "Start a new session", confirm: true },
+    { name: "/compact", purpose: "Manually compact context, optionally with custom instructions", confirm: true },
+    { name: "/session", purpose: "Show session file, ID, messages, tokens, and cost" },
+  ],
+  models: modelsForHarness("pi-deepseek"),
+  // pi's own thinkingLevelMap for the two ids (flash: low/high/max, pro: high/max), so the three
+  // levels BOTH entries know are the ones offered and no chosen value is silently dropped.
+  effortLevels: ["low", "high", "max"],
+  supports: {
+    resume: true,
+    transcript: false,
+    model: true,
+    effort: true,
+    selfSchedule: false,
+    container: false,
+  },
+  note: "fixed provider deepseek/deepseek-flash (default, pi's \"DeepSeek V4.1 Flash\") or deepseek-v4-pro; key from ~/.config/fleet-deepseek/key via the environment only (never argv, never printed, and the key file stays unreadable inside the fence); read fence (bwrap, the one pi-zai uses): home and shared temp closed except the lane worktree, its git, the pi runtime, PATH tools and an own temp home; owner secrets, other sessions, other process environments and the live tmux socket denied; no copied CLAUDE.md/OWNER.md/.env in its lanes; network open; process-local agent directory leaves ~/.pi untouched; Linux/Workhorse only, there without an opt-in because the fence is the admission, and off on the Mac",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
@@ -2228,7 +2435,7 @@ const CODEX_HARNESS: Harness = {
 // prose and must have a positive answer. Neither moves per slot, and neither should.
 const HARNESS_AUTOMATION = process.env.FLEET_HARNESS_AUTOMATION === "1";
 
-const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
+const HARNESSES: readonly Harness[] = [CLAUDE_HARNESS, PI_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, PI_UNFENCED_HARNESS, CONTAINER_HARNESS, CODEX_HARNESS];
 // null/unknown → the default adapter. Unknown ids never reach persistence (the routes reject
 // them), so this fallback is for a hand-edited state file, and it fails toward the safe harness.
 const harnessOf = (id: string | null | undefined): Harness =>
@@ -7656,7 +7863,10 @@ async function linkLaneGraph(root: string, path: string): Promise<void> {
     console.log(`graph: lane link skipped for ${basename(path)} — ${e instanceof Error ? e.message : "threw"}`.slice(0, 240));
   }
 }
-const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS;
+// The fenced Pi seats get no copied scaffold: their fence refuses those files' CONTENT inside the cwd
+// anyway, so a copy would be a lie with no reader. `pi-deepseek` joins for the same reason pi-zai is
+// here — same fence, same closed files (owner 2026-10-26).
+const scaffoldFree = (h: Harness): boolean => h === PI_ZAI_HARNESS || h === PI_DEEPSEEK_HARNESS;
 // NO CLAUDE.md IN A WORKTREE (E9, owner 2026-10-23: Fleet stops supporting the hidden layer): neither a
 // rendering nor a copy of the source's gitignored one. A lane or branch session follows the repo's own
 // AGENTS.md, which Claude Code loads only while no CLAUDE.md sits beside it, and its session file.
@@ -25095,7 +25305,8 @@ function timelineSource(r: TimelineReceipt): TimelineSource | null {
       if (candidate && meta?.id === r.session && sameCwd(meta.cwd, r.cwd)) { file = candidate; cwd = meta.cwd; }
     } else {
       const o = { sessionId: r.session, cwd: r.cwd };
-      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o) : null;
+      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
+        : harness === "pi-deepseek" ? piDeepseekContextFile(o) : null;
       if (file) cwd = realpathLoose(r.cwd);
     }
     if (file) found.push({ file, cwd, harness, format: harness === "claude" ? "claude-jsonl"
@@ -48341,12 +48552,13 @@ const ctxCache = new Map<number, { key: string } & ContextTail>();
 // name off the spawn line and one only the harness knows, and collapsing those two is what made the
 // ledger's null unreadable.
 type ModelOrigin = "spawn" | "default" | "ambient";
-// Only the default adapter and the fixed pi-zai profile have a model Fleet can name when the slot
-// has no explicit pin: their spawn lines always pass their respective literal model. Every other
-// foreign harness's ambient model is unknown; borrowing either default would invent.
+// Only the default adapter and the fixed pi-zai/pi-deepseek profiles have a model Fleet can name when
+// the slot has no explicit pin: their spawn lines always pass their respective literal model. Every
+// other foreign harness's ambient model is unknown; borrowing either default would invent.
 function harnessDefaultModel(h: Harness): string | null {
   return h === CLAUDE_HARNESS ? DEFAULT_MODEL
-    : h === PI_ZAI_HARNESS ? "glm-5.3"
+    : h === PI_ZAI_HARNESS || h === PI_ZAI_UNFENCED_HARNESS ? PI_ZAI_DEFAULT_MODEL
+    : h === PI_DEEPSEEK_HARNESS ? PI_DEEPSEEK_DEFAULT_MODEL
     : null;
 }
 // The model a slot's records name, resolved AT WRITE TIME — a later reader cannot know which
@@ -48646,6 +48858,11 @@ function piContextFile(o: { cwd: string; sessionId: string }): string | null {
 // as before, while this adapter can never observe or mutate that global directory.
 function piZaiContextFile(o: { cwd: string; sessionId: string }): string | null {
   return isolatedPiContextFile(PI_ZAI_AGENT_DIR, o);
+}
+// pi-deepseek runs the same Pi, so the same format under its OWN agent home: a DeepSeek session's
+// conversations must not be read from (or written into) the GLM seat's directory.
+function piDeepseekContextFile(o: { cwd: string; sessionId: string }): string | null {
+  return isolatedPiContextFile(PI_DEEPSEEK_AGENT_DIR, o);
 }
 
 function isolatedPiContextFile(root: string, o: { cwd: string; sessionId: string }): string | null {
@@ -56785,7 +57002,7 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };

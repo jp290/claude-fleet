@@ -1,5 +1,5 @@
 // model-register.ts — the model policy, defaults, aliases and display windows for Fleet harnesses.
-export type ModelHarness = "claude" | "codex" | "pi-zai";
+export type ModelHarness = "claude" | "codex" | "pi-zai" | "pi-deepseek" | "pi-zai-unfenced";
 export type ModelStatus = "current" | "superseded";
 export type FleetWorkerRole = "summary" | "commitMsg" | "enhance" | "digest" | "review" | "merge" | "repair" | "cleanReview" | "card";
 export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | FleetWorkerRole
@@ -36,8 +36,42 @@ export const harnessAvailability = (id: string, resume = process.env.FLEET_HARNE
 // GLM not on the Mac, a local rule; the owner may lift it again without code). FLEET_HARNESSES_OFF (env, comma
 // list, default empty, restart). Read per call. The doors that start something refuse it (server.ts#harnessPausedError), GET
 // /api/harnesses publishes it as `hier`/`grund`; a founding plan for it still computes.
-export const harnessOffReason = (id: string, off = process.env.FLEET_HARNESSES_OFF ?? ""): string | null =>
-  id !== "" && off.split(",").map((x) => x.trim()).includes(id) ? "switched off on this machine (FLEET_HARNESSES_OFF)" : null;
+//
+// AND THE ONE HARNESS WHOSE DEFAULT IS THE OTHER WAY (owner 2026-10-26: „[Zitat entfernt]“
+// , and he takes the device risk for this one seat): `pi-zai-unfenced` is off
+// until the host names it in FLEET_HARNESSES_ON, and it stays off on every platform but the Workhorse's Linux. The risk is a
+// deliberate owner choice, so it may not arrive by an empty FLEET_HARNESSES_OFF; the second condition keeps other-provider
+// models on the Workhorse where they belong.
+//
+// `pi-deepseek` is the SAME platform rule with the opposite opt-in (owner 2026-10-26, stage 2 of the same decision): it runs
+// behind the very bwrap fence `pi-zai` uses, so on the Workhorse it is on WITHOUT a switch — the fence is the admission, not
+// a second word from the operator — and off on every other platform for the one reason above. Two shapes, one table, so the
+// Mac rule cannot be spelled twice and drift.
+type MachineRule =
+  | { kind: "opt-in"; onPlatform: string; reason: string }
+  | { kind: "platform-only"; onPlatform: string };
+const OFF_BY_DEFAULT: Readonly<Record<string, MachineRule>> = {
+  "pi-zai-unfenced": {
+    kind: "opt-in",
+    reason: "off by default: only after it is switched on for this machine (FLEET_HARNESSES_ON)",
+    onPlatform: "linux",
+  },
+  "pi-deepseek": { kind: "platform-only", onPlatform: "linux" },
+};
+export const harnessOffReason = (
+  id: string,
+  off = process.env.FLEET_HARNESSES_OFF ?? "",
+  on = process.env.FLEET_HARNESSES_ON ?? "",
+  platform: string = process.platform,
+): string | null => {
+  if (id === "") return null;
+  const listed = (value: string) => value.split(",").map((x) => x.trim()).includes(id);
+  if (listed(off)) return "switched off on this machine (FLEET_HARNESSES_OFF)";
+  const rule = OFF_BY_DEFAULT[id];
+  if (!rule) return null;
+  if (platform !== rule.onPlatform) return "not available on this machine: other providers' models run only on the Workhorse";
+  return rule.kind === "opt-in" && !listed(on) ? rule.reason : null;
+};
 
 type RoleDefault = { harness: ModelHarness; id: string; effort: string | null };
 const OPUS_WORKER = { harness: "claude", id: "claude-opus-5-5[1m]", effort: "high" } as const;
@@ -115,6 +149,15 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "codex", id: "gpt-5.3-codex-spark", status: "current" },
   { harness: "pi-zai", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
   { harness: "pi-zai", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  // The same two models on the unfenced GLM seat: the model list is a fact about the provider, not
+  // about the fence around it. Separate rows because the harness is separately choosable.
+  { harness: "pi-zai-unfenced", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-zai-unfenced", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  // The DeepSeek seat (owner 2026-10-26, stage 2): the ids and the 1M window are pi's OWN catalogue
+  // (`dist/providers/data/deepseek.json` of the installed 1.0.2 — „[Zitat entfernt]“ and
+  // "DeepSeek V4 Pro", both contextWindow 1000000), not this register's guesswork.
+  { harness: "pi-deepseek", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-deepseek", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
 ];
 
 export const MODEL_ALIASES: Readonly<Record<string, string>> = {

@@ -226,10 +226,11 @@ export async function run(): Promise<void> {
     check("harness catalogue: claude lists exactly the documented bare commands",
       JSON.stringify(names("claude")) === JSON.stringify(["/clear", "/compact", "/context", "/usage"]),
       JSON.stringify(names("claude")));
-    check("harness catalogue: the pi TUI lists exactly its documented bare commands — on pi, pi-zai and the pi-unfenced spread",
+    check("harness catalogue: the pi TUI lists exactly its documented bare commands — on pi, pi-zai, pi-deepseek and the pi-unfenced spread",
       names("pi").join(",") === "/new,/compact,/session" && names("pi-zai").join(",") === "/new,/compact,/session"
+        && names("pi-deepseek").join(",") === "/new,/compact,/session"
         && names("pi-unfenced").join(",") === "/new,/compact,/session",
-      JSON.stringify({ pi: names("pi"), zai: names("pi-zai"), unf: names("pi-unfenced") }));
+      JSON.stringify({ pi: names("pi"), zai: names("pi-zai"), deepseek: names("pi-deepseek"), unf: names("pi-unfenced") }));
     // the confirm flag is the safety property: the context-discarding commands must carry it, the
     // read-only ones must not — judged per NAME across every adapter that lists the command.
     const discarding = ["/clear", "/compact", "/new"];
@@ -11509,8 +11510,10 @@ async function runCodexPermissions(): Promise<void> {
     for (const harness of capability.harnesses.filter((h) => h.id !== "codex")) {
       const response = await post("/api/slots/16/open", { cwd, harness: harness.id, permissions: defaultProfile });
       const error = await response.json() as { error?: string };
-      check(`${harness.id}: explicit permissions are unsupported before spawn`, response.status === 400
-        && error.error === `harness ${harness.id} permissions unsupported` && (await row())?.openedAt === retained?.openedAt
+      // a harness that is off on this machine (model-register.ts#harnessOffReason, pi-offen 2026-10-26) refuses even earlier: also before spawn
+      const off = response.status === 409 && /^harness \S+: (off by default|switched off|not available)/.test(error.error ?? "");
+      check(`${harness.id}: explicit permissions are unsupported before spawn`, (off || response.status === 400
+        && error.error === `harness ${harness.id} permissions unsupported`) && (await row())?.openedAt === retained?.openedAt
         && args().length === n, JSON.stringify(error));
     }
     const different = await post("/api/slots/16/restart", { permissions: { sandbox: "read-only", approval: "never" } });

@@ -23,10 +23,13 @@ function freePort(): number {
 }
 
 // eigener Port, eigener tmux-Socket, nur Loopback, Zustand und Ledger in einem eigenen Verzeichnis
-// (FLEET_STATE_DIR): ginge doch ein Start los, träfe er nie die Live-Fleet
+// (FLEET_STATE_DIR): ginge doch ein Start los, träfe er nie die Live-Fleet.
+// FLEET_PI_ZAI_DENY_ROOTS ist ein SYNTHETISCHER Zaun-Wurzelpfad (die echten sind privat und stehen nur
+// in der .env des Wirts): ohne ihn baut kein Pi-Sitz hinter dem Zaun eine Startzeile, und der
+// pi-deepseek-Test unten könnte den Zaun nicht prüfen.
 const STATE_DIR = mkdtempSync(join(tmpdir(), "fleet-load-state-"));
 const isolation = { FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: `fleetload${process.pid}`,
-  FLEET_STATE_DIR: STATE_DIR };
+  FLEET_STATE_DIR: STATE_DIR, FLEET_PI_ZAI_DENY_ROOTS: `${STATE_DIR}/deny-test` };
 afterAll(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 let loadProvenSafe = false;
 
@@ -120,6 +123,141 @@ describe("paneApiError, im Prozess importiert", () => {
   });
 });
 
+// Owner 2026-10-26: die offene GLM-Sitz ist pi-zai ohne Lesezaun, aber mit derselben
+// Schlüssel- und Katalogvorbereitung. Der Test hält die zwei Zusagen der Startzeile fest:
+// der Schlüssel kommt über die Umgebung (nie über argv), und kein sandbox-exec/bwrap steht davor.
+describe("pi-zai-unfenced: die Startzeile", () => {
+  const base = {
+    sessionId: "sess-1", resume: false, model: null, effort: null, container: "", containerContext: "",
+    cwd: "/tmp/fleet-pi-zai-unfenced", browserMcp: false, context: null, permissions: null,
+    fleetCheckout: false, remoteName: null,
+  };
+
+  test("provider zai, das Standardmodell, der Schlüssel aus der Datei in die Umgebung, kein Zaun", async () => {
+    const { PI_ZAI_UNFENCED_HARNESS } = await load();
+    const line = PI_ZAI_UNFENCED_HARNESS.spawnCmd(base);
+    expect(line).toContain("pi --provider zai --model 'glm-5.3' --no-approve");
+    expect(line).toMatch(/ZAI_API_KEY="\$\(cat '[^']+'\)"/);
+    expect(line).toContain("zai-coding-plan.key");
+    expect(line).not.toContain("--api-key");
+    expect(line).not.toMatch(/ZAI_API_KEY="(?!\$\(cat ')/);
+    expect(line).toContain("PI_CODING_AGENT_DIR=");
+    expect(line).toContain("models.json");
+    expect(line).toContain('"glm-5.3-flash"');
+    expect(line).not.toContain("sandbox-exec");
+    expect(line).not.toContain("bwrap");
+    expect(line).not.toContain("FLEET_PZ_SB");
+  });
+
+  test("ein gewähltes Modell, die Session und der Effort landen auf der Zeile", async () => {
+    const { PI_ZAI_UNFENCED_HARNESS } = await load();
+    const line = PI_ZAI_UNFENCED_HARNESS.spawnCmd({ ...base, sessionId: "sess-2", model: "glm-5.3-flash", effort: "high" });
+    expect(line).toContain("--model 'glm-5.3-flash'");
+    expect(line).toContain("--session-id sess-2");
+    expect(line).toContain("--thinking high");
+    expect(line).not.toContain("sandbox-exec");
+    expect(line).not.toContain("bwrap");
+  });
+});
+
+// Owner 2026-10-26, Stufe 2: der DeepSeek-Sitz faehrt Pi auf einem anderen Anbieter, aber hinter
+// DEMSELBEN bwrap-Zaun wie pi-zai. Der Test haelt die vier Zusagen der Startzeile fest: Anbieter und
+// Modell sind gesetzt, der Schluessel kommt ueber die Umgebung (nie ueber argv), der Zaun ist da, und
+// die Schluesseldatei selbst wird NICHT in den Zaun gebunden.
+describe("pi-deepseek: die Startzeile", () => {
+  // Der bwrap-Pfad wird GENANNT, nicht vom Host gelesen (server.ts#Harness.spawnCmd#fenceBwrap):
+  // derselbe Test muss auf dem Linux-Workhorse UND auf dem Mac dieselbe Zeile pruefen. Der Name ist
+  // nur ein Wort in der Zeile — gebaut, nicht ausgefuehrt.
+  const BWRAP = "/usr/bin/bwrap";
+  const base = {
+    sessionId: "sess-d1", resume: false, model: null, effort: null, container: "", containerContext: "",
+    cwd: "/tmp/fleet-pi-deepseek", browserMcp: false, context: null, permissions: null,
+    fleetCheckout: false, remoteName: null, fenceBwrap: BWRAP as string | null,
+  };
+  // ein eigener cwd je Lauf, damit der Zaun fuer DIESEN Pfad gebaut wird; danach wieder weg
+  const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-deepseek-"));
+  afterAll(() => rmSync(cwd, { recursive: true, force: true }));
+  // der Erwartungswert ist der dokumentierte Standardpfad am Workhorse, abgeleitet aus HOME wie server.ts
+  const keyFile = `${process.env.HOME}/.config/fleet-deepseek/key`;
+  const agentDir = `${process.env.HOME}/.config/claude-fleet/pi-deepseek-agent`;
+
+  test("provider deepseek, deepseek-flash als Standard, der Schluessel aus der Datei in die Umgebung", async () => {
+    const { PI_DEEPSEEK_HARNESS } = await load();
+    const line = PI_DEEPSEEK_HARNESS.spawnCmd({ ...base, cwd });
+    expect(line).toContain("pi --provider deepseek --model 'deepseek-flash' --no-approve");
+    expect(line).toContain(`DEEPSEEK_API_KEY="$(cat '${keyFile}')"`);
+    // nie auf argv, nie ausgedruckt: der Schluessel ist nur diese eine Kommando-Substitution
+    expect(line).not.toContain("--api-key");
+    expect(line.match(/DEEPSEEK_API_KEY=/g)?.length).toBe(1);
+    expect(line).not.toMatch(/DEEPSEEK_API_KEY="(?!\$\(cat ')/);
+    // kein models.json: pi bringt den deepseek-Anbieter und beide Modelle selbst mit
+    expect(line).not.toContain("models.json");
+  });
+
+  test("der Zaun ist da (bwrap) und die Schluesseldatei ist NICHT hineingebunden", async () => {
+    const { PI_DEEPSEEK_HARNESS } = await load();
+    const line = PI_DEEPSEEK_HARNESS.spawnCmd({ ...base, cwd });
+    const fn = /fleet_pz\(\) \{ ([\s\S]*?) "\$@"; \};/.exec(line)?.[1] ?? "";
+    // der Zaun selbst: eigener Namespace, Netz geteilt, stirbt mit der Sitzung
+    expect(fn).toContain("--unshare-all");
+    expect(fn).toContain("--die-with-parent");
+    // ...fuer DIESEN Sitz gebaut: sein eigenes Agent-Verzeichnis ist drin, seine Schluesseldatei nicht
+    expect(fn).toContain(agentDir);
+    expect(fn).not.toContain(keyFile);
+    // ...und der Pfad steht nur in der AUSSEREN Shell: Existenzpruefung, deren Fehlersatz und das `cat`
+    // (ein Literal des Schluessels selbst kommt nirgends vor, weil ihn nur die Substitution liefert)
+    expect(line.split(keyFile).length - 1).toBe(3);
+  });
+
+  test("ein gewaehltes Modell, die Session und der Effort landen auf der Zeile", async () => {
+    const { PI_DEEPSEEK_HARNESS } = await load();
+    const line = PI_DEEPSEEK_HARNESS.spawnCmd({ ...base, cwd,
+      sessionId: "sess-d2", model: "deepseek-v4-pro", effort: "high" });
+    expect(line).toContain("--model 'deepseek-v4-pro'");
+    expect(line).toContain("--session-id sess-d2");
+    expect(line).toContain("--thinking high");
+  });
+
+  test("es ist DERSELBE Zaun wie pi-zai: die Argumente unterscheiden sich nur im Sitz", async () => {
+    const { PI_DEEPSEEK_HARNESS, PI_ZAI_HARNESS } = await load();
+    const zaiAgentDir = `${process.env.HOME}/.config/claude-fleet/pi-zai-agent`;
+    const fn = (line: string): string => /fleet_pz\(\) \{ ([\s\S]*?) "\$@"; \};/.exec(line)?.[1] ?? "";
+    const zai = fn(PI_ZAI_HARNESS.spawnCmd({ ...base, cwd }));
+    const deepseek = fn(PI_DEEPSEEK_HARNESS.spawnCmd({ ...base, cwd }));
+    // Sitz-eigen ist nur das Agent-Verzeichnis (und damit auth.json + die eigene Session-Bindung)
+    expect(deepseek.split(agentDir).join("<seat>")).toBe(zai.split(zaiAgentDir).join("<seat>"));
+    // ...und pi-zai selbst bleibt unveraendert: eigener Key, eigenes Verzeichnis
+    expect(zai).toContain("--unshare-all");
+    expect(PI_ZAI_HARNESS.spawnCmd({ ...base, cwd })).toContain(`ZAI_API_KEY="$(cat `);
+    expect(PI_ZAI_HARNESS.spawnCmd({ ...base, cwd })).toContain(zaiAgentDir);
+  });
+
+  test("er ist ein Bauer wie pi-zai: automatisierbar, Lanes und Branch-Sitzungen, kein Singleton", async () => {
+    const { PI_DEEPSEEK_HARNESS } = await load();
+    expect(PI_DEEPSEEK_HARNESS.automatable).toBe(true);
+    expect(PI_DEEPSEEK_HARNESS.allowsLanes).toBe(true);
+    expect(PI_DEEPSEEK_HARNESS.singleton).toBe(false);
+    expect(PI_DEEPSEEK_HARNESS.models).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(PI_DEEPSEEK_HARNESS.note).toContain("fence");
+  });
+
+  // Die andere Seite derselben Entscheidung, ebenfalls GENANNT statt gelesen: ohne Zaun startet die
+  // Zeile KEIN pi, sondern sagt es und laesst eine gewoehnliche Shell stehen. So muss es auf jedem
+  // Rechner ohne bwrap (dem Mac) aussehen, und so ist es hier auf jedem Host pruefbar.
+  test("ohne bwrap sagt die Zeile, dass kein pi startet, und startet keins", async () => {
+    const { PI_DEEPSEEK_HARNESS } = await load();
+    const line = PI_DEEPSEEK_HARNESS.spawnCmd({ ...base, cwd, fenceBwrap: null });
+    expect(line).toContain("pi-deepseek: pi was NOT started");
+    expect(line).toContain("fence (bwrap) is missing");
+    // kein pi auf der Zeile, kein Zaun, kein Schluessel: nur die Meldung und danach die Shell
+    expect(line).not.toContain("pi --provider deepseek");
+    expect(line).not.toContain("--unshare-all");
+    expect(line).not.toContain("fleet_pz");
+    expect(line).not.toContain("DEEPSEEK_API_KEY");
+    expect(line.endsWith(`exec ${process.env.SHELL ?? "/bin/sh"}`)).toBe(true);
+  });
+});
+
 describe("Route-Handler ohne Port: wer nicht hereindarf, kommt nicht herein", () => {
   async function request(path: string, headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
     const { serveOptions } = await load();
@@ -178,6 +316,31 @@ describe("Route-Handler ohne Port, mit Owner-Token", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { slots?: { id: number }[] };
     expect(body.slots?.map((s) => s.id)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
+  });
+
+  // Owner 2026-10-26, Stufe 2: der Katalog ist die eine Quelle, aus der das Brett die Harness waehlt.
+  // pi-deepseek muss dort mit seinen ZWEI Modellen, seiner Notiz und als hier verfuegbar stehen.
+  test("GET /api/harnesses nennt pi-deepseek mit beiden Modellen, Notiz und hier=true", async () => {
+    const { serveOptions, adoptTokens } = await load();
+    const owner = `test-harnesses-${process.pid}-${Date.now()}`;
+    process.env.FLEET_TOKEN = owner;
+    adoptTokens();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const res = await fetch.call(server, new Request(`http://127.0.0.1:${isolation.FLEET_PORT}/api/harnesses`,
+      { headers: { host: `127.0.0.1:${isolation.FLEET_PORT}`, authorization: `Bearer ${owner}` } }), server);
+    if (!res) throw new Error("/api/harnesses: der Handler gab keine Antwort");
+    expect(res.status).toBe(200);
+    const body = await res.json() as { harnesses?: Record<string, unknown>[] };
+    const ds = body.harnesses?.find((h) => h.id === "pi-deepseek");
+    expect(ds).toBeDefined();
+    expect(ds?.models).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(String(ds?.note)).toContain("~/.config/fleet-deepseek/key");
+    expect(ds?.hier).toBe(process.platform === "linux");
+    expect(ds?.automatable).toBe(true);
+    expect(ds?.allowsLanes).toBe(true);
+    expect(ds?.singleton).toBe(false);
   });
 });
 

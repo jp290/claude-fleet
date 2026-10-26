@@ -258,7 +258,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     const redirected = await scanModels({ home: join(home, "unused"), env: {
       CODEX_HOME: override, CLAUDE_CONFIG_DIR: join(home, ".claude"), FLEET_PI_ZAI_AGENT_DIR: pi,
     } });
-    deepStrictEqual(redirected.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai"]);
+    deepStrictEqual(redirected.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai", "pi-zai-unfenced", "pi-deepseek"]);
     deepStrictEqual(redirected.harnesses[1].available, ["codex-present"]);
     strictEqual(redirected.harnesses[0].status, "unknown");
     match(redirected.harnesses[0].reason ?? "", /stale cc catalogue$/);

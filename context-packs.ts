@@ -35,7 +35,7 @@ export type ContextPackTrigger = (typeof CONTEXT_PACK_TRIGGERS)[number];
 export const CONTEXT_PACK_HARDNESS = ["hard", "guidance"] as const;
 export type ContextPackHardness = (typeof CONTEXT_PACK_HARDNESS)[number];
 
-export const CONTEXT_PACK_HARNESSES = ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"] as const;
+export const CONTEXT_PACK_HARNESSES = ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"] as const;
 export type ContextPackHarness = (typeof CONTEXT_PACK_HARNESSES)[number];
 
 export const CONTEXT_PACK_MODES = ["read-only", "mutating", "monitoring"] as const;
@@ -160,6 +160,17 @@ export const CONTEXT_PACK_MCP_ANSCHLUSS: Readonly<Partial<Record<ContextPackHarn
   pi: { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): MCP-Server nur aus ~/.pi/agent/mcp.json oder .pi/mcp.json, kein Startflag; "
     + "ein Pack installiert nichts" },
   "pi-zai": { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): nur mcp.json, kein Startflag; pi-zai startet mit --no-approve "
+    + "und liest kein .pi/mcp.json des Projekts, sein Agent-Verzeichnis beschreibt ein Pack nicht" },
+  // Owner 2026-10-26: the open GLM seat is the same Pi/provider wiring as pi-zai without the fence,
+  // so Pi's MCP facts do not change with the fence either. Named on purpose: silence would only say
+  // "nicht belegt" and hide that this adapter was judged at all.
+  "pi-zai-unfenced": { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): nur mcp.json, kein Startflag; pi-zai-unfenced startet mit --no-approve "
+    + "und liest kein .pi/mcp.json des Projekts, sein Agent-Verzeichnis beschreibt ein Pack nicht" },
+  // Owner 2026-10-26, stage 2: pi-deepseek is pi on another provider BEHIND pi-zai's fence. Pi's MCP
+  // facts are a fact about pi (mcp.json, no start flag, --no-approve), not about the provider or the
+  // fence, so the answer is pi-zai's. Named rather than left silent: silence would only say "nicht
+  // belegt" and hide that this adapter was judged at all.
+  "pi-deepseek": { zustand: "unsupported", beleg: "pi mcp --help (pi 1.0.2): nur mcp.json, kein Startflag; pi-deepseek startet mit --no-approve "
     + "und liest kein .pi/mcp.json des Projekts, sein Agent-Verzeichnis beschreibt ein Pack nicht" },
 };
 export interface ContextPackVariante {

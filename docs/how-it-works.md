@@ -98,9 +98,12 @@ them for one lane.
 A harness is *how* an agent runs — not just which model. Each adapter (`server.ts` `Harness`)
 declares its spawn line, whether it can host a throwaway worker session, how to read its context
 usage, whether it pins a session id at spawn, which process names prove its agent is alive, and
-which pane screens silently eat a pasted prompt. Seven are registered today
-(`server.ts#HARNESSES`): the default Claude adapter, three Pi variants, an unfenced Pi, a
-containerised one, and Codex. `server.ts#harnessOf` resolves an id, and model and effort are
+which pane screens silently eat a pasted prompt. Eight are registered today
+(`server.ts#HARNESSES`): the default Claude adapter, five Pi adapters (plain, GLM, DeepSeek, unfenced
+GLM, unfenced plain), a containerised one, and Codex. The DeepSeek seat `pi-deepseek` runs Pi on
+DeepSeek behind the same bubblewrap fence as the GLM seat, so it is available on the Workhorse without
+a switch and stays off on the Mac. The unfenced GLM seat `pi-zai-unfenced` is off by default and only
+starts after an explicit opt-in (see `FLEET_HARNESSES_ON` below). `server.ts#harnessOf` resolves an id, and model and effort are
 validated against *that* adapter at set time, so a spawn line can never carry a value the adapter
 never admitted. Only adapters that declare themselves automatable may be started unattended, and
 even then only with `FLEET_HARNESS_AUTOMATION=1`. Design notes: `docs/harness-adapter.md`.
@@ -133,7 +136,11 @@ keep them out of the tree.
 
 Env worth knowing: `FLEET_HOST`, `FLEET_PORT`, `FLEET_SOCK`, `FLEET_TOKEN`, `FLEET_ALLOWED_HOSTS`,
 `FLEET_STATE_DIR`, `FLEET_CMD`, `FLEET_SEPARATE_LANE_SLOTS`, `FLEET_MAX_SESSIONS`,
-`FLEET_HARNESS_AUTOMATION`, `FLEET_VERIFY_CMD`, `FLEET_POSTLAND_AUDIT_CMD`, `FLEET_SHARE_HOSTS`.
+`FLEET_HARNESS_AUTOMATION`, `FLEET_HARNESSES_OFF`, `FLEET_HARNESSES_ON`, `FLEET_VERIFY_CMD`,
+`FLEET_POSTLAND_AUDIT_CMD`, `FLEET_SHARE_HOSTS`, `FLEET_PI_DEEPSEEK_KEY_FILE`, `FLEET_PI_DEEPSEEK_AGENT_DIR`.
+The two harness lists are comma lists of ids for THIS machine (restart needed): `FLEET_HARNESSES_OFF`
+always wins, and `FLEET_HARNESSES_ON` is only the explicit opt-in for the off-by-default
+`pi-zai-unfenced` seat on Linux (`pi-deepseek` needs none there: its fence is the admission).
 The dispatcher, on ice, reads `FLEET_DISPATCH_REPO` and `FLEET_DISPATCH_MAX_LANES` (default 3).
 
 ## Where the parts on ice live

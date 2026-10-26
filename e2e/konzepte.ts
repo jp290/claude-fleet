@@ -1216,8 +1216,10 @@ async function privatePackHandover(): Promise<void> {
     await Bun.sleep(500); // a Pi pane that was (wrongly) founded gets the time to hand its reader the paste
     const piRead = readdirSync(reads).filter((f) => readFileSync(`${reads}/${f}`, "utf8").includes('"tag":"pi"'));
     check("konzepte handover (pi harnesses): pi, pi-zai and pi-unfenced are each refused 409 harness-unsupported before the spawn, no path anywhere",
-      piHarnesses.length === 3 && piRead.length === 0 && piRows.every((r) => r.reason === "harness-unsupported" && r.open === 409
-        && String(r.error).includes(`pack ${SEED_ID} is omitted for this founding: harness-unsupported`) && r.stillFree && !r.leaked),
+      // pi-deepseek and pi-zai-unfenced joined with pi-offen (2026-10-26); a harness that is off on this machine is refused before the plan
+      ["pi", "pi-zai", "pi-unfenced"].every((h) => (piHarnesses as readonly string[]).includes(h)) && piRead.length === 0 && piRows.every((r) => r.reason === "harness-unsupported" && r.open === 409
+        && (String(r.error).includes(`pack ${SEED_ID} is omitted for this founding: harness-unsupported`)
+          || /^harness \S+: (off by default|switched off|not available)/.test(String(r.error))) && r.stillFree && !r.leaked),
       `${JSON.stringify(piRows)} piReads=${piRead.length}`);
 
     // ---- FOREIGN SOURCE: a repo manifest's private pack is never selected, its konzept never read

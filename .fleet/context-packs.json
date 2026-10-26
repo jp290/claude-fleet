@@ -10,7 +10,7 @@
       { "path": "docs/haltung-worker.md", "anchor": "## What we prefer, and why" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1625,
     "evidence": "tree-anchor",
@@ -28,7 +28,7 @@
       { "path": "docs/messungen/INDEX.md", "anchor": "# Index der Messnotizen" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 162000,
     "evidence": "tree-anchor",
@@ -46,7 +46,7 @@
       { "path": "docs/controller.md", "anchor": "## Two traits an orchestrator has paid for (measured 2026-10-02)" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2091,
     "evidence": "tree-anchor",
@@ -64,7 +64,7 @@
       { "path": "docs/controller.md", "anchor": "## Taking on a foreign repo as a Fleet project" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 8242,
     "evidence": "tree-anchor",
@@ -100,7 +100,7 @@
       { "path": "docs/haltung-auftraggeber.md", "anchor": "## How we write cards, and why" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 3024,
     "evidence": "tree-anchor",
@@ -147,7 +147,7 @@
       }
     },
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 6678,
     "evidence": "tree-anchor",
@@ -166,7 +166,7 @@
       { "path": "docs/pruefpraxis.md", "anchor": "## Checking practice — a report is a claim until it is backed" }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1934,
     "evidence": "tree-anchor",
@@ -184,7 +184,7 @@
       { "id": "setting-up-agents.text", "path": "docs/packs/setting-up-agents.md", "anchor": "# Setting up an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 6588,
     "evidence": "tree-anchor",
@@ -202,7 +202,7 @@
       { "id": "working-with-the-owner.text", "path": "docs/packs/working-with-the-owner.md", "anchor": "# Working with the owner", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2345,
     "evidence": "tree-anchor",
@@ -220,7 +220,7 @@
       { "id": "how-fleet-remembers.text", "path": "docs/packs/how-fleet-remembers.md", "anchor": "# How Fleet remembers", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 1901,
     "evidence": "tree-anchor",
@@ -238,7 +238,7 @@
       { "id": "who-it-is-for.text", "path": "docs/packs/who-it-is-for.md", "anchor": "# Who it is for", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2213,
     "evidence": "tree-anchor",
@@ -256,7 +256,7 @@
       { "id": "advanced-features.text", "path": "docs/packs/advanced-features.md", "anchor": "# Fleet's advanced features", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 13565,
     "evidence": "tree-anchor",
@@ -274,7 +274,7 @@
       { "id": "no-longer-humans-gentle.text", "path": "docs/packs/no-longer-humans-gentle.md", "anchor": "# Don't forget: you're no longer working with humans (gentle)", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2158,
     "evidence": "tree-anchor",
@@ -293,7 +293,7 @@
       { "id": "no-longer-humans-hard.text", "path": "docs/packs/no-longer-humans-hard.md", "anchor": "# Don't forget: you're no longer working with humans (hard)", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2151,
     "evidence": "tree-anchor",
@@ -311,7 +311,7 @@
       { "id": "your-seat-in-fleet.text", "path": "docs/packs/your-seat-in-fleet.md", "anchor": "# Your seat in Fleet", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 4572,
     "evidence": "tree-anchor",
@@ -329,7 +329,7 @@
       { "id": "building-an-agent.text", "path": "docs/packs/building-an-agent.md", "anchor": "# Building an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 9068,
     "evidence": "tree-anchor",
@@ -347,7 +347,7 @@
       { "id": "sharpening-an-order.text", "path": "docs/packs/sharpening-an-order.md", "anchor": "# Sharpening an order", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 5356,
     "evidence": "tree-anchor",
@@ -365,7 +365,7 @@
       { "id": "sharpen3.text", "path": "docs/skills/sharpen3.md", "anchor": "# sharpen3", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 2453,
     "evidence": "tree-anchor",
@@ -383,7 +383,7 @@
       { "id": "system-concept.text", "path": "docs/start/system-concept.md", "anchor": "# Claude Fleet", "sorte": "wissen", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 8234,
     "evidence": "tree-anchor",
@@ -402,7 +402,7 @@
       { "id": "running-fleet.text", "path": "docs/packs/running-fleet.md", "anchor": "# Running Fleet", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 18922,
     "evidence": "tree-anchor",
@@ -421,7 +421,7 @@
       { "id": "making-a-pack.text", "path": "docs/packs/making-a-pack.md", "anchor": "# Making a pack", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 10539,
     "evidence": "tree-anchor",
@@ -439,7 +439,7 @@
       { "id": "working-in-few-calls.text", "path": "docs/packs/working-in-few-calls.md", "anchor": "# Working in few calls", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 3325,
     "evidence": "tree-anchor",
@@ -457,7 +457,7 @@
       { "id": "made-with-love.text", "path": "docs/packs/made-with-love.md", "anchor": "# Made with love", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
-    "harnesses": ["claude", "pi", "pi-zai", "pi-unfenced", "container", "codex"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 4455,
     "evidence": "tree-anchor",

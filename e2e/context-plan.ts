@@ -787,14 +787,15 @@ function packMcpChecks(check: ContextPlanCheck): void {
     said.status === 0 && said.stdout === JSON.stringify({ mcpServers: { "computer-use": { command: "npx", args: ["--name", "it's"] } } }),
     `${said.status} ${said.stdout}`);
 
-  const evidenced: [string, string][] = [["codex", "codex --help (codex-cli 0.160.0)"], ["pi", "pi mcp --help (pi 1.0.2)"], ["pi-zai", "pi mcp --help (pi 1.0.2)"]];
+  const evidenced: [string, string][] = [["codex", "codex --help (codex-cli 0.160.0)"], ["pi", "pi mcp --help (pi 1.0.2)"], ["pi-zai", "pi mcp --help (pi 1.0.2)"],
+    ["pi-zai-unfenced", "pi mcp --help (pi 1.0.2)"], ["pi-deepseek", "pi mcp --help (pi 1.0.2)"]];
   for (const [harness, source] of evidenced) {
     const z = zusatzOf(harness);
     check(`pack mcp: ${harness} — unsupported with its CLI evidence, and nothing the spawn carries`,
       z?.an === true && z.mcp?.zustand === "unsupported" && z.mcp.beleg.startsWith(source) && !("mitgaebe" in z.mcp) && z.mcp.harness === harness,
       JSON.stringify(z?.mcp));
   }
-  for (const harness of CONTEXT_PACK_HARNESSES.filter((h) => !["claude", "codex", "pi", "pi-zai"].includes(h))) {
+  for (const harness of CONTEXT_PACK_HARNESSES.filter((h) => !["claude", "codex", "pi", "pi-zai", "pi-zai-unfenced", "pi-deepseek"].includes(h))) {
     const z = zusatzOf(harness);
     check(`pack mcp: ${harness} — not evidenced, so unsupported`,
       z?.mcp?.zustand === "unsupported" && z.mcp.beleg.startsWith("nicht belegt") && !("mitgaebe" in z.mcp), JSON.stringify(z?.mcp));
@@ -1010,8 +1011,8 @@ function privatePackChecks(check: ContextPlanCheck): void {
   const piRows = piHarnesses.map((harness) => ({ harness,
     lane: selectedFor(harness, ["always", "verification"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null,
     main: selectedFor(harness, ["always", "verification"], mainCaps).omitted.find((p) => p.id === "konzept-claude-fleet")?.why ?? null }));
-  check("private pack: every Pi harness (pi, pi-zai, pi-unfenced) omits konzept-claude-fleet as harness-unsupported, lane and MAIN",
-    piHarnesses.length === 3 && piRows.every((row) => row.lane === "harness-unsupported" && row.main === "harness-unsupported")
+  check("private pack: every Pi harness (pi, pi-zai, pi-deepseek, pi-zai-unfenced, pi-unfenced) omits konzept-claude-fleet as harness-unsupported, lane and MAIN",
+    piHarnesses.length === 5 && piRows.every((row) => row.lane === "harness-unsupported" && row.main === "harness-unsupported")
       && JSON.stringify(seed?.harnesses) === JSON.stringify(["claude", "codex"]), JSON.stringify(piRows));
   const boxed = selectedFor("container", ["always"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");
   const worker = selectedFor("claude", ["landing"], laneCaps).omitted.find((p) => p.id === "konzept-claude-fleet");

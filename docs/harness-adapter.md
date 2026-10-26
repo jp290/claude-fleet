@@ -491,9 +491,15 @@ ein Schreibfehler wird durch den bestehenden Persistenz-Logger gemeldet.
 
 ## Harness-Adapter
 
-Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-unfenced,
-container, codex; `pi-unfenced` ist serverseitig `automatable:false`, `allowsLanes:false`,
-`singleton:true` — genau EINE Main-Session, warnt im Picker vor unbeschränkten Rechten).
+Die Adapter-Liste ist `HARNESSES` in `server.ts` (aktuell claude, pi, pi-zai, pi-zai-unfenced,
+pi-unfenced, container, codex; `pi-zai-unfenced` und `pi-unfenced` sind serverseitig
+`automatable:false`, `allowsLanes:false`, `singleton:true` — genau EINE Main-Session, warnen im
+Picker vor unbeschränkten Rechten).
+
+**Schalter je Rechner.** `FLEET_HARNESSES_OFF` (Komma-Liste, Default leer) schaltet eine Harness auf
+DIESEM Rechner ab und gewinnt immer; `FLEET_HARNESSES_ON` ist die ausdrueckliche Gegenrichtung und
+heute nur der Opt-in fuer `pi-zai-unfenced` (Owner 2026-10-26), das ab Werk aus ist und auf dem Mac
+aus bleibt.
 
 ### `commands` — die sendbaren Slash-Kommandos im ⌘-Overlay (seit 2026-09-19)
 
@@ -1128,6 +1134,59 @@ gebucht als Audit-`send` mit `path:"rate-limit-resume"`; ein erneutes Limit hei�
 bleibt sichtbar. Der API-Stall-Pfad (`server.ts#tickApiStallResume`,
 `FLEET_API_STALL_RESUME`) tippt dagegen nie in ein Limit. Beide Pfade teilen nur den Pane-Sensor
 und `apiStall`; der bestehende Reset-Vertrag bleibt eigenständig.
+
+### `pi-deepseek`: Pi auf DeepSeek hinter demselben Zaun wie pi-zai (Stufe 2, 2026-10-26)
+
+Owner 2026-10-26: „[Zitat entfernt]“
+. Stufe 1 war der ungezäunte GLM-Sitz `pi-zai-unfenced`; Stufe 2 ist dieser Sitz: Pi auf
+Pis EIGENEM `deepseek`-Provider, hinter GENAU demselben Linux-Zaun, den `pi-zai` benutzt. Eine
+Task-Auswahl lautet `{"harness":"pi-deepseek"}` (Default `deepseek-flash`) oder
+`{"harness":"pi-deepseek","model":"deepseek-v4-pro"}`; jeder andere Name ist an jedem Request-Rand
+ein 400, der beide nennt (`bad model (one of: deepseek-flash, deepseek-v4-pro)`).
+
+*Kein eigener Katalog.* Anders als `pi-zai` schreibt dieser Sitz keine `models.json`: das installierte
+Pi 1.0.2 bringt den Anbieter `deepseek` und beide IDs selbst mit
+(`dist/providers/data/deepseek.json`: `deepseek-flash` = „DeepSeek V4.1 Flash“, `deepseek-v4-pro` =
+„DeepSeek V4 Pro“, beide `contextWindow` 1000000, `maxTokens` 384000). Der Spawn trägt
+`--provider deepseek --model '<id>' --no-approve`; `--no-approve` aus pi-zai's gemessenem Grund (hinter
+dem Zaun-HOME sieht Pis Ahnen-Suche das echte `~/.agents/skills` als projektlokal). Angebotene
+Denkstufen sind `low`, `high`, `max` — die drei, die BEIDE Katalogeinträge kennen.
+
+*Der Zaun.* Dieselbe Funktion wie bei pi-zai (`server.ts#piFencedBwrapLine` über
+`server/pi-zai-fence.ts#piZaiBwrapArgs`), nur mit eigenem Agent-Verzeichnis und eigener Key-Datei als
+Parameter — eine Kopie wäre genau das, was driftet. Was er durchlässt, ist deshalb wörtlich pi-zai's
+Liste: das eigene Agent-Verzeichnis (RW, `sessions/` durch ein leeres tmpfs ersetzt, nur die eigene
+Session zurückgebunden), der Worktree (RW), das eigene Temp-Home, Pis Laufzeit und die PATH-Werkzeuge
+(RO), `/usr` und eine kurze `/etc`-Liste (RO), das git-Verzeichnis der Lane (RO außer `objects/`, dem
+Admin-Verzeichnis und EINEM Branch); geschlossen bleiben Home, `/tmp`, fremde Worktrees, `~/.ssh`, der
+Key, `fleet.json`/`.env`, fremde Sessions, fremde Prozess-Umgebungen und der Live-tmux-Socket. Netz
+bleibt offen. Der Key verlässt die Pane-Shell nie: `DEEPSEEK_API_KEY="$(cat '<keyfile>')"` läuft
+AUSSERHALB von bwrap, die Datei ist im Zaun nicht gebunden (gepinnt in `server/load.test.ts`).
+Key-Datei ab Werk `~/.config/fleet-deepseek/key` (`FLEET_PI_DEEPSEEK_KEY_FILE`), Agent-Verzeichnis
+`~/.config/claude-fleet/pi-deepseek-agent` (`FLEET_PI_DEEPSEEK_AGENT_DIR`) — beide mit derselben
+Boot-Verweigerung wie die pi-zai-Pfade; `~/.pi` bleibt unberührt. Lässt sich kein Zaun bauen (oder ist
+kein bwrap da), startet **kein** pi: die Pane druckt `pi-deepseek: pi was NOT started - its read fence
+(bwrap) is missing or failed its self-test` und bleibt eine Shell.
+
+*Rechner-Regel.* Am Workhorse (Linux) ist der Sitz OHNE Einschalten verfügbar — der Zaun ist die
+Zulassung, nicht ein zweites Wort des Operators (`model-register.ts#harnessOffReason`,
+`kind:"platform-only"`). Auf jedem anderen Rechner ist er aus, mit pi-zai-unfenced's Satz „Modelle
+anderer Anbieter laufen nur auf dem Workhorse“; `FLEET_HARNESSES_OFF` schaltet ihn überall ab.
+
+*Ein Bauer, kein Singleton.* `automatable:true` (gekoppelt an dieselbe Readiness-Naht wie pi-zai — der
+Trust-Dialog hält den pi-Prozess am Leben, also kann nur die gerenderte Pane ihn abweisen; das Feld
+ist per Referenz geteilt, damit die zwei Nähte nicht auseinanderlaufen), `allowsLanes:true`,
+`singleton:false`, `laneForm:null` (Worktree wie pi-zai). Kontext- und Gesprächsdatei liest er aus
+SEINEM Agent-Verzeichnis (`server.ts#piDeepseekContextFile`), Lane-Kopien von `CLAUDE.md`/`OWNER.md`/
+`.env` bekommt er so wenig wie pi-zai (`server.ts#scaffoldFree`) — der Zaun verweigert ihren Inhalt
+noch dazu. Im Kontextplan steht er in der geschlossenen Harness-Liste (`context-packs.ts`) und plant
+damit seine eigenen Packs, nicht Claudes.
+
+*Offen:* der Pane-Sensor für Anbieter-Limits (`apiStall`, `ZAI_LIMIT_LINE_RE`) ist bis heute auf
+pi-zai/codex beschränkt; für DeepSeek fehlt die gemessene Fehlerzeilenform, also meldet dieser Sitz
+kein Nutzungslimit und keinen Resume. Der `/model`-Kurzbefehl im Board-Client kennt nur `pi-zai`
+(`src/client.ts`); `src/` bleibt in dieser Runde unberührt (zwei andere Branches schreiben das
+Startfenster um).
 
 ## Welches Modell läuft — die Rangfolge
 

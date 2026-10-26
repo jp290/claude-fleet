@@ -127,7 +127,8 @@ describe("was das Startfenster liest", () => {
     const zuletzt = (a: Answer | undefined, id: string) => (ok(a).agenten as { id: string; zuletzt: number | null }[]).find((x) => x.id === id)?.zuletzt;
     expect(typeof zuletzt(liste, "a")).toBe("number");
     expect(typeof zuletzt(liste, "repo")).toBe("number");
-    expect(zuletzt(liste, "orchestratorin")).toBeNull();
+    // ein fremdes Repo: die Orchestratorin fehlt ganz, statt mit „zuletzt: null“ dazustehen
+    expect((ok(liste).agenten as { id: string }[]).map((x) => x.id)).not.toContain("orchestratorin");
     expect(zuletzt(anderswo, "a")).toBeNull();
   }, LIFE_DEADLINE_MS * 2);
 

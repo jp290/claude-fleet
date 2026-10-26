@@ -13,9 +13,9 @@
 //
 // DER HASH deckt ab, was den Start formt: die Wahlen und die Agent-MD. Name, Kennung, Herkunft und Zeit sind Anzeige.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { rechteGedeckelt } from "../src/sitz";
 import { rechteAus } from "../session-rechte";
 import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
@@ -188,6 +188,18 @@ export const EINGEBAUTE: readonly AgentAnsicht[] = [
   eingebaut("repo", "Repo agent", {}, "no role: reads the AGENTS.md of the repo it starts in"),
   eingebaut("orchestratorin", "Orchestrator", { rolle: "orchestratorin" }, "the Orchestrator role (role card from Fleet's repo)"),
 ];
+
+// DIE ORCHESTRATORIN GEHÖRT FLEETS REPO: ihre Rolle, Richtung und Packs liegen in Fleets Baum. Ein fremdes Repo böte einen Sitz ohne ihre Texte an.
+// Erkannt wird das wie an den anderen Türen am Objektspeicher (`git rev-parse --git-common-dir`), nicht am Pfad: ein Worktree von Fleet ist Fleet,
+// eine Kopie ohne git ist es nicht. `fleetCommonDir` ist der Wert, den server.ts für sein eigenes Repo schon kennt.
+async function istFleetsRepo(cwd: string, fleetCommonDir: string | null): Promise<boolean> {
+  if (fleetCommonDir === null) return false;
+  const p = Bun.spawn(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { stdout: "pipe", stderr: "ignore" });
+  const out = (await new Response(p.stdout).text()).trim();
+  if (await p.exited !== 0 || !out) return false;
+  const kanon = (pfad: string): string => { try { return realpathSync(pfad); } catch { return resolve(pfad); } };
+  return kanon(out) === kanon(fleetCommonDir);
+}
 
 // DIE ABGELEITETEN aus dem Speicher des Fensters: je Profil mit Agent-MD und je Position einer gespeicherten Konstellation ein Agent, der auf sie
 // zeigt. Was er trägt, sind die Felder, die das Fenster für ihn an die Tür schickt; seine Agent-MD liest die Tür wie bisher aus dem Profil.
@@ -374,6 +386,9 @@ export interface AgentenServer {
   /** die Start-Historie und die eine Form eines Pfades, für `GET …?cwd=<repo>` */
   historie: () => Promise<readonly HistorieZeile[]>;
   ort: (p: string) => string;
+  /** der Objektspeicher von Fleets eigenem Repo (`git rev-parse --git-common-dir`); null ohne git. Eine Funktion, gelesen erst beim
+   *  Aufruf: e2e/lanes-lifecycle.ts übersetzt das Objekt in server.ts ohne die Konstante, an der es hängt. */
+  fleetCommonDir: () => string | null;
 }
 const antwort = (body: unknown, status = 200): Response => Response.json(body, { status });
 export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jetzt = Date.now): Promise<Response> {
@@ -386,8 +401,10 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
   if (!rest.length && req.method === "GET") {
     const cwd = url.searchParams.get("cwd");
     if (!cwd) return antwort({ agenten: liste });
-    const je = zuletztHier(liste, await q.historie(), cwd, q.ort);
-    return antwort({ agenten: liste.map((a) => ({ ...a, zuletzt: je.get(a.id) ?? null })) });
+    const hier = await istFleetsRepo(q.ort(cwd), q.fleetCommonDir());
+    const sichtbar = hier ? liste : liste.filter((a) => a.id !== "orchestratorin");
+    const je = zuletztHier(sichtbar, await q.historie(), cwd, q.ort);
+    return antwort({ agenten: sichtbar.map((a) => ({ ...a, zuletzt: je.get(a.id) ?? null })) });
   }
   if (!rest.length && req.method === "POST") {
     const body = await lies();

@@ -83,6 +83,11 @@ export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>)
   return { ok: true, pack: { id: b.id, useWhen: b.useWhen.trim(), text } };
 }
 
+/** THE OWNER'S PRIVATE PACK (owner 26.10.: the personal part of working-with-the-owner must not be published). The pack itself lives
+ *  in Fleet's state dir and is written by the Orchestratorin through POST /api/self/packs; no sentence of it stands in this tree. Here
+ *  only its id, so the Orchestratorin's start can find it when it exists. */
+export const PRIVATER_OWNER_PACK_ID = "working-with-this-owner";
+
 /** Schreibt den Pack, ganz oder gar nicht; `ersetzt`, wenn es ihn schon gab. */
 export function schreibEigenenPack(stateDir: string, pack: { id: string; useWhen: string; text: string }, von: string, am = Date.now()):
   { pack: EigenerPack; ersetzt: boolean } {

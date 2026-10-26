@@ -105,7 +105,7 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
   starts in its own setup, and the library comes only when it is chosen at the door (`server.ts#seatLibraryOn`). In a Claude seat the
   packs in `SEAT_BOX` stand verbatim in its start; every other one is a Claude Code skill, and its useWhen line is the
   description Claude matches, so write it as the moment. Give a pack `seat-start-any-repo` only if it holds in any
-  repository: a seat working on someone's support requests pays for every line about landing Fleet. Whether seats
+  repository: a seat working on someone's recipe collection pays for every line about landing Fleet. Whether seats
   open the skills: `bun server/bibliothek-messung.ts <transcripts>`.
   The orchestrator's start loads exactly five packs (`server/orchestrator-start.ts`); any other pack reaches her
   only through a line under "Read when you need it" in her role, which is the owner's text. Propose that line in

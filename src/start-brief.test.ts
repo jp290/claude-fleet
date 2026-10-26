@@ -125,7 +125,7 @@ describe("uebergabeHinweis", () => {
 
 // INFO → SETUP NACH EINER NACHFOLGE (POST /api/self/einrichten): dieselbe Vergleichsfunktion, die Vorgängerin an der Stelle von „normal“
 describe("what a successor has that its predecessor didn't", () => {
-  const ZWECK = "PURPOSE (written for you by your predecessor in this slot):\nDu bist der Anfrages-Agent.";
+  const ZWECK = "PURPOSE (written for you by your predecessor in this slot):\nDu bist der Rezept-Agent.";
   const mitZweck = (f: Fassung): Fassung => ({ teile: f.teile.map((t) => t.id !== "liest" ? t
     : { ...t, abschnitte: [...t.abschnitte, { id: "zweck", text: ZWECK }] }) });
   test("every line of a pack and a purpose it gave itself is a + line; what stayed the same has no row", () => {

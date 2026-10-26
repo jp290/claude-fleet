@@ -8,7 +8,7 @@ import { eigenePacksDir, eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack
 const dir = mkdtempSync(join(tmpdir(), "eigene-packs-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const REGISTER = new Set(["made-with-love"]);
-const gut = { id: "mein-agent", useWhen: "Wenn du an Anfrageen arbeitest.", text: "# Mein Agent\n\nText." };
+const gut = { id: "mein-agent", useWhen: "Wenn du an einer Rezeptsammlung arbeitest.", text: "# Mein Agent\n\nText." };
 
 describe("die Tür", () => {
   test("nimmt genau id, useWhen und text; eine Register-Id, eine zweite Zeile im useWhen oder ein Text ohne Titel nicht", () => {

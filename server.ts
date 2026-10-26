@@ -8749,6 +8749,7 @@ const agentenServer: AgentenServer = {
   },
   historie: () => liesHistorie(STATE_DIR, HISTORIE_MAX),
   ort: (p) => realpathLoose(resolve(expandCwd(p))),
+  fleetCommonDir: () => FLEET_GIT_COMMON,
 };
 // a SESSION on a board branch (POST /api/branches/open, and its self door): a session without a role (like "Nur Ordner")
 // in the branch's worktree, labelled with its Board-Name; a branch without a worktree is checked out first. It continues the
@@ -13469,7 +13470,7 @@ function scheduleSuccessionRetirement(s: Slot, pending: SuccessionRetirement): v
   }, Math.max(0, pending.at - Date.now()));
 }
 
-// THE LINE STAYS ON ITS SLOT (owner 2026-09-21, after the Anfrage line wandered from slot 2 to 6:
+// THE LINE STAYS ON ITS SLOT (owner 2026-09-21, after the recipe line wandered from slot 2 to 6:
 // „[Zitat entfernt]“). Until then
 // only the lane baton respawned in place; the generic and Program-MAIN rails opened the
 // FIRST FREE slot, let the predecessor live through MIGRATE_GRACE_MS and retired it afterwards — so
@@ -14808,7 +14809,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const harness = spawn.harness !== undefined ? spawn.harness : s.harness;
   // DIE ROLLE, IHR START UND IHRE FÜNF PACKS — gelesen aus dem Baum, in dem die Vorgängerin steht.
   // Keine Box und kein Ankerblock mehr: der Start ist genau die acht Dateien.
-  const orchStart = orchestrator ? readOrchestratorStartParts(predecessor.cwd) : null;
+  const orchStart = orchestrator ? readOrchestratorStartParts(predecessor.cwd, STATE_DIR) : null;
   const ritual = orchestrator && orchStart
     ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry, orchestratorStartImSystemprompt(harness))
     : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
@@ -21221,12 +21222,13 @@ function fassungDateiText(dateien: readonly { pfad: string; bytes: number }[]):
 // erste Startteil und steht deshalb als eigener Abschnitt vor der Rolle.
 function fassungStartDatei(datei: OrchestratorStartDatei | null, id: string, pfad: string, repoRoot: string): FassungAbschnittEingang {
   return datei
-    ? textAbschnitt(id, datei.pfad, datei.text, true, datei.bytes, [{ pfad: `${repoRoot}/${datei.pfad}`, bytes: datei.bytes }])
+    ? textAbschnitt(id, datei.pfad, datei.text, true, datei.bytes,
+      [{ pfad: datei.pfad.startsWith("/") ? datei.pfad : `${repoRoot}/${datei.pfad}`, bytes: datei.bytes }])
     : unknownAbschnitt(id, `${pfad} ist in diesem Baum nicht lesbar`, pfad);
 }
 
 function fassungOrchestratorRolle(repoRoot: string): FassungAbschnittEingang[] {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, STATE_DIR);
   return [
     fassungStartDatei(teile.direction, "richtung", ORCHESTRATOR_DIRECTION_PATH, repoRoot),
     fassungStartDatei(teile.rolle, "rolle", ORCHESTRATOR_ROLE_PATH, repoRoot),
@@ -21234,21 +21236,21 @@ function fassungOrchestratorRolle(repoRoot: string): FassungAbschnittEingang[] {
 }
 
 function fassungOrchestratorWissen(repoRoot: string): FassungAbschnittEingang[] {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, STATE_DIR);
   return [
     fassungStartDatei(teile.start, "wissen", ORCHESTRATOR_START_PATH, repoRoot),
-    ...teile.packs.map((pack, index) => fassungStartDatei(pack, "wissen", ORCHESTRATOR_PACK_PATHS[index]!, repoRoot)),
+    ...teile.packs.map((pack, index) => fassungStartDatei(pack, "wissen", pack?.pfad ?? ORCHESTRATOR_PACK_PATHS[index] ?? "", repoRoot)),
   ];
 }
 
 function fassungOrchestratorAufgabe(repoRoot: string): FassungAbschnittEingang[] {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, STATE_DIR);
   if (!teile.rolle) return [unknownAbschnitt("aufgabe", `${ORCHESTRATOR_ROLE_PATH} ist in diesem Baum nicht lesbar`, ORCHESTRATOR_ROLE_PATH)];
   return [textAbschnitt("aufgabe", `${ORCHESTRATOR_ROLE_PATH} (Rolle)`, orchestratorRoleSentence(teile.rolle.text), false)];
 }
 
 function fassungOrchestratorArbeitet(repoRoot: string): FassungAbschnittEingang[] {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, STATE_DIR);
   if (!teile.rolle) return [unknownAbschnitt("arbeitet", `${ORCHESTRATOR_ROLE_PATH} ist in diesem Baum nicht lesbar`, ORCHESTRATOR_ROLE_PATH)];
   const abschnitt = orchestratorWorkEnds(teile.rolle.text);
   return abschnitt
@@ -21259,7 +21261,7 @@ function fassungOrchestratorArbeitet(repoRoot: string): FassungAbschnittEingang[
 // DER PLAN ZEIGT DENSELBEN START WIE DIE FASSUNG: die acht Dateien, die server/orchestrator-start.ts
 // liest. Die Vorschau ist kein zweiter Text — sie rendert dieselben Bytes in derselben Ordnung.
 function orchestratorPlanSessionAgents(repoRoot: string): SessionAgents {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, STATE_DIR);
   const dateien = orchestratorStartDateien(teile);
   const text = renderOrchestratorStartParts(teile);
   const parts: SessionAgentsPart[] = dateien.map((datei) => ({
@@ -42734,7 +42736,7 @@ async function foundingSessionInput(fp: Pick<FoundingPlan, "repoRoot" | "head" |
   // DIE ORCHESTRATORIN LIEST IHRE ROLLE AUS docs/start/, NICHT AUS DER ALTEN KARTE.
   const roleText = position === "lane" ? { text: LANE_ROLE_CARD, path: "server.ts", anchor: "LANE_ROLE_CARD" }
     : position === "main" ? { text: MAIN_ROLE_CARD, path: "server.ts", anchor: "MAIN_ROLE_CARD" }
-    : { text: readOrchestratorStartParts(fp.repoRoot).rolle?.text ?? orchestratorRoleCard(harness),
+    : { text: readOrchestratorStartParts(fp.repoRoot, STATE_DIR).rolle?.text ?? orchestratorRoleCard(harness),
       path: ORCHESTRATOR_ROLE_PATH, anchor: "# Orchestrator" };
   const pointerLines = new Map<string, readonly string[]>();
   for (const pack of fp.plan.selected) if ("privateSourceId" in pack.sources)
@@ -44547,7 +44549,7 @@ function seatStartDatei(text: string): string {
 const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
 function orchestratorStartDatei(cwd: string): string {
   const habits = HABITS_PROMPT_ENABLED ? readPresent(HABITS_PROMPT_PATH) : null;
-  const text = [renderOrchestratorStartParts(readOrchestratorStartParts(cwd)),
+  const text = [renderOrchestratorStartParts(readOrchestratorStartParts(cwd, STATE_DIR)),
     habits?.ok && habits.bytes ? habits.bytes.toString("utf8") : null].filter(Boolean).join("\n\n");
   const pfad = `${ORCHESTRATOR_START_ROOT}/${sha256Of(text).slice(0, 32)}.md`;
   if (!existsSync(pfad)) {
@@ -44638,7 +44640,7 @@ async function deliverOrchestratorSpawnCard(s: Slot, acc?: AcceptedFoundingPlan)
     return { delivered: false, reason: `delivery held (${gate.gate}${gate.detail ? `: ${gate.detail}` : ""})` };
   const readiness = await waitForFoundingReadiness(s, stillCurrent);
   if (!readiness.ok) return { delivered: false, reason: readiness.reason };
-  const start = readOrchestratorStartParts(s.cwd!);
+  const start = readOrchestratorStartParts(s.cwd!, STATE_DIR);
   const brief = buildOrchestratorSpawnBrief(start, orchestratorStartImSystemprompt(s.harness));
   if (!stillCurrent()) return { delivered: false, reason: "the slot changed before the card was sent" };
   try {

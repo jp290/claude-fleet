@@ -147,8 +147,7 @@ none of them itself. For later lane cards the neighbour holds: `AGENTS.md` §Row
    a restart. A repo cap doesn't lift a program cap or a lack of free slots. A cap that is too small keeps dispatch
    waiting but doesn't stop a MAIN founding.
 
-5. **Prepare knowledge by home and reader.** The mapping in
-   [Project knowledge and deletion routes](messungen/2026-10-08-projektwissen-fremdrepo-schichten.md#ergebnis-vier-eindeutige-heimaten)
+5. **Prepare knowledge by home and reader.** The mapping by home and reader
    is a reasoned recommendation: decisions in the program record, working rules in the repo's `AGENTS.md`,
    explanatory understanding of the project in the private project concept, the operative selection as a pack
    pointer. For start knowledge, `server.ts#repoManifestContextPlan` checks the **target repo's manifest at the
@@ -334,7 +333,7 @@ The owner's setting for this occupancy goes before the Fleet default (`server.ts
 threshold and grants no extra authority to succeed: your own role card and succession rail hold, in particular the
 lane end of the harness. Codex compacts natively; this cache measurement gives no work stop and no succession there.
 
-The [usage measurement of 07.10.](messungen/2026-10-07-cache-lebensdauer-nachfolge.md) finds **about 60 minutes of
+The usage measurement of 07.10. finds **about 60 minutes of
 cache life** on this host in the main Claude conversation: 3 043 of 3 043 pauses between 5 and 60 minutes were hits;
 from 62 minutes on, 270 of 270 resumes were cold. Right at the edge: the last hit at 60.13, the first miss at 60.21
 minutes (25 pairs from 22 sessions in the 58–62 minute band). That is an observed transition zone, not a guaranteed

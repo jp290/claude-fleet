@@ -29,9 +29,9 @@ const als = (self: string, step: ReturnType<typeof post> | ReturnType<typeof get
 const offen = (a: Answer | undefined): void => {
   if (a?.status !== 200 && a?.status !== 201) throw new Error(`Öffnen schlug fehl: ${JSON.stringify(a)}`);
 };
-const PACK = { id: "mein-agent", useWhen: "Wenn du mit deinem Nutzer an seinen Anfrageen arbeitest.",
-  text: "# Mein Agent\n\nDu hilfst bei Anfrageen.\nJede Anfrage bekommt eine eigene Datei." };
-const ZWECK = "Du bist der Anfrages-Agent deines Nutzers.\nDu schreibst kurz und auf Deutsch.";
+const PACK = { id: "mein-agent", useWhen: "Wenn du mit deinem Nutzer an seiner Rezeptsammlung arbeitest.",
+  text: "# Mein Agent\n\nDu hilfst bei einer Rezeptsammlung.\nJedes Rezept bekommt eine eigene Datei." };
+const ZWECK = "Du bist der Rezept-Agent deines Nutzers.\nDu schreibst kurz und auf Deutsch.";
 const kurz = { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" };
 
 describe("eine Session baut ihre Nachfolgerin", () => {
@@ -52,7 +52,7 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     expect(pack?.body.pack).toMatchObject({ id: PACK.id, titel: "Mein Agent" });
     expect(register?.status).toBe(400);
     expect(gesetzt?.status).toBe(200);
-    expect(gesetzt?.body.zeilen).toEqual([`+ Pack ${PACK.id}`, "+ Zweck: Du bist der Anfrages-Agent deines Nutzers."]);
+    expect(gesetzt?.body.zeilen).toEqual([`+ Pack ${PACK.id}`, "+ Zweck: Du bist der Rezept-Agent deines Nutzers."]);
     expect(fremd?.status).toBe(400);
     expect(String(fremd?.body.error)).toContain("only adds text");
     expect(unbekannt?.status).toBe(400);
@@ -60,14 +60,14 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     // ein Neustart behält den Start dieser Belegung: nichts davon auf der Zeile
     expect(neustart?.status).toBeLessThan(300);
     expect(startzeile(f, f.repo)).not.toContain("PURPOSE (written for you by your predecessor");
-    expect(startzeile(f, f.repo)).not.toContain("Du hilfst bei Anfrageen.");
+    expect(startzeile(f, f.repo)).not.toContain("Du hilfst bei einer Rezeptsammlung.");
 
     const [nachfolge] = await life(f, [als(self, post("/api/self/succeed", {}))], kurz);
     expect(nachfolge?.status).toBeLessThan(600);
     const zeile = startzeile(f, f.repo);
     // Zeile und Startdatei, Zeile für Zeile
     for (const teil of ["PURPOSE (written for you by your predecessor in this slot):", ...ZWECK.split("\n"), `--- ${PACK.id} (`,
-      "Du hilfst bei Anfrageen.", "Jede Anfrage bekommt eine eigene Datei."]) expect(zeile).toContain(teil);
+      "Du hilfst bei einer Rezeptsammlung.", "Jedes Rezept bekommt eine eigene Datei."]) expect(zeile).toContain(teil);
 
     const [sessions, fassung, wieder] = await life(f, [get("/api/sessions"), get("/api/slots/1/fassung?anlass=laufend"),
       als(selfToken(f, 1), get("/api/self/einrichten"))]);
@@ -82,7 +82,7 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     expect(pz?.zeichen).toBe("+");
     expect(zz?.zeichen).toBe("+");
     expect(pz?.diff?.every((z) => z.z === "+")).toBe(true);
-    expect(pz?.diff?.map((z) => z.t)).toContain("Jede Anfrage bekommt eine eigene Datei.");
+    expect(pz?.diff?.map((z) => z.t)).toContain("Jedes Rezept bekommt eine eigene Datei.");
     expect(zz?.diff?.map((z) => z.t)).toEqual(["PURPOSE (written for you by your predecessor in this slot):", ...ZWECK.split("\n")]);
   }, LIFE_DEADLINE_MS * 4);
 

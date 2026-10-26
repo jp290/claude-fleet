@@ -2,6 +2,10 @@ node_modules/
 streams/
 # Fleets Bibliothek als Skills je Sitz (server.ts#SEAT_SKILLS_ROOT), im State-Ordner
 sitz-skills/
+# the private owner pack lives in Fleet's state dir (server/eigene-packs.ts), and on this machine
+# that state dir is the main checkout itself: this folder must never be committed by accident
+# (owner 2026-10-26).
+eigene-packs/
 fleet.json
 fleet.json.bak
 fleet.json.corrupt

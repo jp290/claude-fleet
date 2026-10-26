@@ -5820,7 +5820,7 @@ Scratch-Worktree hatte keins) und §11.2ab (Backspace-Burst).
 
 ### 11.2af Wocheninventur 2026-10-01 bis 2026-10-08 — erhaltene Belege, keine Flake-Rate
 
-Die [Messnotiz vom 08.10.](messungen/2026-10-08-flake-register-audits.md) wertet die
+Die Messnotiz vom 08.10. wertet die
 bestehenden Audit-, Helfer- und Trail-Belege aus; sie ersetzt weder diese Ledger noch §11.0b.
 Sie nennt jeden erhaltenen roten Checknamen mit Lauf-/Job-ID, Commit/Tree, ausloesender Lane,
 Einordnung und gegebenenfalls einem Kartenentwurf. Alle Zahlen sind **Untergrenzen**, keine
@@ -5882,7 +5882,7 @@ nicht als neue Familie gezaehlt. Wrapper-Rot ausserhalb des Fensters (`a8fec55a`
 (`0065d176`), Temp-/ENOSPC (`7b87ff1c`) und stummer Agent-Tod (`66b47e57`) sind in der Notiz
 benannte Grenzen, keine erfundenen Checknamen. Fuer diese Inventur wurde keine Suite gefahren.
 
-### 11.2ag Eine dreiunddreißigste Familie: der hold-until-Nachfolge-Check in `e2e/watch.ts` — der fake-pi schrieb seinen Zustand pro Byte (2026-10-19 registriert; Ursache in der [Messnotiz](messungen/2026-10-19-hold-until-nachfolge-wackler.md) belegt; sondenseitig REPARIERT in `e28b4b3fb`)
+### 11.2ag Eine dreiunddreißigste Familie: der hold-until-Nachfolge-Check in `e2e/watch.ts` — der fake-pi schrieb seinen Zustand pro Byte (2026-10-19 registriert; Ursache in der Messnotiz belegt; sondenseitig REPARIERT in `e28b4b3fb`)
 
 **Check:** „hold-until across MAIN succession: the successor's repeated hold re-arms a NEW Watch
 under its occupant, and its next repeat mints none". **Signatur:** `succeeded.ok` false, im Detail

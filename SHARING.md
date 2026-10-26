@@ -12,7 +12,7 @@ subscription and your rate-limit tier, which is the thing Anthropic's Consumer T
 names ("make your Account available to anyone else"). Watching is not that; typing is.
 A guest who wants something done says so in the comment thread, and you decide.
 
-## Quick start (e.g. a demo)
+## Quick start (e.g. a walkthrough for a colleague)
 
 1. In the dashboard sidebar, hover the session → click **⤴**.
 2. **create share link** → copy the link and the generated password.

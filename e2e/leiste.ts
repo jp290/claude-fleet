@@ -88,7 +88,7 @@ export const LEISTE_MUTANTS: readonly LeisteMutant[] = [
 
 type State = "voll" | "frei";
 const LABELS = ["Bauleitung Ausbau", "Einstellungen (K16)", "Funktions-Durchgang", "Nachfolge ohne Verlust", "Neue-Session-Ansicht (Entwurf)",
-  "Prüfung Nachfolge kalt", "Anfrage", "Leiste aufräumen", "Orchestrator", "Shell", "Sol", "steward", "Gespräch morgen", "Messung Kontext"];
+  "Prüfung Nachfolge kalt", "Rezeptsammlung", "Leiste aufräumen", "Orchestrator", "Shell", "Sol", "steward", "Gespräch morgen", "Messung Kontext"];
 const SHORT = 10; // „Shell“: a name that has room must show whole
 const ASKED = 12; // stands at Claude Code's permission question
 // the name boxes of the two fullest rows, in ems of their own font: slot 13 (two digits, ⎇+, a two-digit context) and

@@ -2,9 +2,10 @@
 // „[Zitat entfernt]“, außer ein Branch repariert es ausdrücklich (--repair). Und er urteilt über den Baum,
 // den main nach dem Merge hätte (Bauleitung 12.10.: Branch-Arbeit per Rebase/Cherry-Pick auf main,
 // ohne bau/neuaufbau).
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, hiddenLayerOf, mainVerdict, mergeBaseOf } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
@@ -309,15 +310,67 @@ describe("candidateOf: der Baum nach dem Merge", () => {
 });
 
 // Owner 22.10.: 993b4e90 bestand seinen Merge-Check und machte main erst im Audit rot (e2e/programs.ts);
-// gelesen aus der Geschichte dieses Repos, wie der Merge-Check den Kandidaten liest
+// was der Merge-Check daraus liest, prüfen wir an Commits, die dieser Test selbst baut — die Geschichte
+// dieses Repos wird im veröffentlichten Klon neu geschrieben, ihre Commits gibt es dort nicht.
 describe("bigUnitsOf: die großen Units eines Kandidaten aus git", () => {
-  test("993b4e90 auf seinem Vorgänger schuldet programs, aber nie dom", () => {
-    const s = bigUnitsOf("f6ab5749c", "993b4e90f");
+  const ROOT = join(import.meta.dir, "..");
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  // Der Kandidatenbaum braucht die Dateien, die e2e-isolated.sh staged, damit der Fußabdruck ableitbar ist.
+  // Kopiert wird der getrackte Arbeitsbaum (keine Geschichte); die Commits, um die es geht, entstehen hier.
+  const repo = (): { dir: string; g: (...a: string[]) => string; commit: (msg: string, change: () => void) => string } => {
+    const dir = mkdtempSync(`${tmpdir()}/mc-big-units-`);
+    dirs.push(dir);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    g("init", "-q", "-b", "main");
+    const listed = Bun.spawnSync(["git", "-C", ROOT, "ls-files", "-z"]);
+    if (listed.exitCode !== 0) throw new Error(`git ls-files: ${listed.stderr.toString()}`);
+    for (const path of listed.stdout.toString().split("\0").filter(Boolean)) {
+      const dst = join(dir, path);
+      mkdirSync(dirname(dst), { recursive: true });
+      writeFileSync(dst, readFileSync(join(ROOT, path)));
+    }
+    g("add", "-A");
+    g("commit", "-q", "-m", "base");
+    const commit = (msg: string, change: () => void): string => {
+      change();
+      g("add", "-A");
+      g("commit", "-q", "-m", msg);
+      return g("rev-parse", "HEAD");
+    };
+    return { dir, g, commit };
+  };
+  const append = (dir: string, path: string): void => {
+    const file = join(dir, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, (existsSync(file) ? readFileSync(file, "utf8") : "") + "\n");
+  };
+  test("ein Commit aus dem Fußabdruck von programs schuldet programs, aber nie dom", () => {
+    const { dir, g, commit } = repo();
+    const base = g("rev-parse", "HEAD");
+    const cand = commit("der gemessene Program-Commit, nachgebaut", () => {
+      for (const path of [".fleet/context-packs.json", "docs/packs/making-a-pack.md", "docs/packs/setting-up-agents.md",
+        "docs/packs/who-it-is-for.md", "docs/start/orchestrator.md", "server.ts", "server/fassung.test.ts",
+        "server/orchestrator-start.ts", "session-blocks.ts"]) append(dir, path);
+    });
+    const s = bigUnitsOf(base, cand, dir);
     expect(s.run).toEqual(["core", "core-tasks", "programs", "lanes", "watch"]);
     expect(s.why.programs).toContain("docs/packs/who-it-is-for.md");
+    expect(s.run).not.toContain("dom");
   });
-  test("ein reiner Doku-Commit schuldet keine (6db27d15: docs/messungen)", () => {
-    expect(bigUnitsOf("6db27d15c^", "6db27d15c").run).toEqual([]);
+  test("ein reiner Doku-Commit unter docs/messungen schuldet keine", () => {
+    const { dir, g, commit } = repo();
+    const base = g("rev-parse", "HEAD");
+    const cand = commit("docs(messungen): eine Notiz", () => {
+      const file = join(dir, "docs/messungen/notiz.md");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "# Notiz\n");
+    });
+    expect(bigUnitsOf(base, cand, dir).run).toEqual([]);
   });
   test("der Helfer bekommt die Units als Liste, „-“ für keine", () => {
     expect(bigUnitsArg([])).toBe("-");

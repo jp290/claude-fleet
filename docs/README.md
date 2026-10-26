@@ -97,7 +97,7 @@ One line per doc — its *purpose*, not its contents, so this index points witho
   design lane, and before founding one by hand.
 
 **Product working circles**
-- [GameDev-Einstieg](game-maker/README.md) — example-game und Fremdprojekt: datierte Bestandsaufnahme,
+- **GameDev-Einstieg** — example-game und Fremdprojekt: datierte Bestandsaufnahme,
   bereits erfolgte Reparaturen, offene Beweise und ein vorgeschlagener Anschlussplan für neue Sessions.
 - **`product-studio-working-circle.md`** — the active Product-Studio direction, its composed
   Game-Studio profile, the measured Robot Collector visual lesson, the communication prerequisite,

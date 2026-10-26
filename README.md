@@ -4,6 +4,8 @@
 
 *Set up an agent well. See exactly what it gets. Share it.*
 
+**Experimental.** Fleet is young and changes every day. More than code contributions, I'm looking for people to think it through with me: whether the ideas hold, what is missing, what is confusing. If that speaks to you, open an issue. I'd like to talk.
+
 ## What you can do with it
 
 - **Run your Claude Code as you know it**, in a dashboard that keeps every session alive in its own terminal, side by side, on your desktop and on your phone.
@@ -19,7 +21,7 @@ Fleet is young, and it is in the middle of a rebuild (October 2026).
 
 - **In use:** sessions and the dashboard, the start window and its start brief, context packs, branches with their own worktree, the merge check, land and post-land audit, deploy, sharing an agent as a file, the orchestrator, and the mailbox between sessions.
 - **On ice:** the task queue and its cards, the dispatcher, and Programs with their MAIN sessions. They worked. They rest while the new system takes shape, and their code is still here. [How it works inside](docs/how-it-works.md#where-the-parts-on-ice-live) shows where each part lives.
-- **Not yet:** tasks, runs and concepts don't travel in the shared file yet. Claude Code is the harness Fleet is built around; adapters for Codex and Pi exist.
+- **Not yet:** tasks, runs and concepts don't travel in the shared file yet. Claude Code is the harness Fleet is built around; adapters for Codex and Pi exist. An orchestrator for your own projects is coming; the built-in one is set up to work on Fleet itself.
 
 ## Quick start
 

@@ -6,12 +6,15 @@
 // Fassung rufen dieselbe Lesefunktion, damit „was du siehst“ und „was startet“ dieselben Bytes sind.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { liesEigenePacks, PRIVATER_OWNER_PACK_ID } from "./eigene-packs";
 
 /** Der erste Startteil: die Richtung, in der die Orchestratorin arbeitet. */
 export const ORCHESTRATOR_DIRECTION_PATH = "docs/start/direction.md";
 export const ORCHESTRATOR_ROLE_PATH = "docs/start/orchestrator.md";
 export const ORCHESTRATOR_START_PATH = "docs/start/system-concept.md";
-/** die fünf Packs, die mit dem Start kommen; `writing-for-agents` bleibt ein Verweis der Rolle */
+/** die fünf allgemeinen Packs aus dem Repo; `writing-for-agents` bleibt ein Verweis der Rolle. Der private Teil des Owners
+ *  (working-with-this-owner) liegt NICHT hier: die Orchestratorin schreibt ihn selbst durch POST /api/self/packs in Fleet's
+ *  Zustandsordner, und ihr Start liest ihn dort, wenn er existiert (owner 26.10.). */
 export const ORCHESTRATOR_PACK_PATHS = [
   "docs/packs/setting-up-agents.md",
   "docs/packs/working-with-the-owner.md",
@@ -32,7 +35,7 @@ export interface OrchestratorStart {
   readonly rolle: OrchestratorStartDatei;
   readonly start: OrchestratorStartDatei;
   readonly packs: readonly OrchestratorStartDatei[];
-  /** die Summe der acht Dateien — die Zahl, die der Owner mit `wc -c` gemessen hat */
+  /** die Summe aller Startdateien — die Zahl, die der Owner mit `wc -c` gemessen hat */
   readonly bytes: number;
 }
 
@@ -40,8 +43,10 @@ export interface OrchestratorStartTeile {
   readonly direction: OrchestratorStartDatei | null;
   readonly rolle: OrchestratorStartDatei | null;
   readonly start: OrchestratorStartDatei | null;
+  /** the five general packs, then the owner's private pack when it exists (never null for the private one) */
   readonly packs: readonly (OrchestratorStartDatei | null)[];
-  /** warum eine Datei fehlt; leer = alle sieben sind gelesen */
+  /** warum eine Datei fehlt; leer = direction, role, system concept and the five general packs are read. A missing private pack is
+   *  not a gap: without it the start is complete and says nothing is missing (owner 26.10.). */
   readonly fehlt: readonly string[];
 }
 
@@ -54,30 +59,40 @@ function lese(repoRoot: string, id: string, pfad: string): OrchestratorStartDate
   }
 }
 
-/** Die acht Texte in ihrer Ordnung, die fehlenden ausgelassen (für Fassung und Beleg). */
+/** Die Texte in ihrer Ordnung, die fehlenden ausgelassen (für Fassung und Beleg). */
 export function orchestratorStartDateien(teile: OrchestratorStartTeile): readonly OrchestratorStartDatei[] {
   return [teile.direction, teile.rolle, teile.start, ...teile.packs]
     .filter((datei): datei is OrchestratorStartDatei => datei !== null);
 }
 
-/** Die acht Texte einzeln, mit den fehlenden als `null` und ihrem Grund — nie eine leere Zeile. */
-export function readOrchestratorStartParts(repoRoot: string): OrchestratorStartTeile {
+/** DER PRIVATE PACK DES OWNERS, wenn er in Fleet's Zustand liegt (owner 26.10.: der persönliche Teil wird nicht veröffentlicht,
+ *  die Orchestratorin bekommt ihn aber weiter). Ein fehlender oder unlesbarer Pack ist keine Lücke und wird nicht als `fehlt` gemeldet. */
+function privaterOwnerPack(stateDir: string | null | undefined): OrchestratorStartDatei | null {
+  if (!stateDir) return null;
+  const pack = liesEigenePacks(stateDir).find((eigen) => eigen.id === PRIVATER_OWNER_PACK_ID);
+  return pack ? { id: "pack-owner", pfad: pack.pfad, text: pack.text, bytes: pack.bytes } : null;
+}
+
+/** Die Texte einzeln, mit den fehlenden als `null` und ihrem Grund — nie eine leere Zeile. `stateDir` adds the owner's private
+ *  pack when it exists there; without it the start is exactly the repo texts (owner 26.10.). */
+export function readOrchestratorStartParts(repoRoot: string, stateDir: string | null = null): OrchestratorStartTeile {
   const direction = lese(repoRoot, "direction", ORCHESTRATOR_DIRECTION_PATH);
   const rolle = lese(repoRoot, "rolle", ORCHESTRATOR_ROLE_PATH);
   const start = lese(repoRoot, "start", ORCHESTRATOR_START_PATH);
-  const packs = ORCHESTRATOR_PACK_PATHS.map((pfad, index) => lese(repoRoot, `pack-${index + 1}`, pfad));
+  const allgemein = ORCHESTRATOR_PACK_PATHS.map((pfad, index) => lese(repoRoot, `pack-${index + 1}`, pfad));
+  const privat = privaterOwnerPack(stateDir), packs = [...allgemein, ...(privat ? [privat] : [])];
   const fehlt: string[] = [];
   if (!direction) fehlt.push(ORCHESTRATOR_DIRECTION_PATH);
   if (!rolle) fehlt.push(ORCHESTRATOR_ROLE_PATH);
   if (!start) fehlt.push(ORCHESTRATOR_START_PATH);
-  for (const [index, pack] of packs.entries()) if (!pack) fehlt.push(ORCHESTRATOR_PACK_PATHS[index]!);
+  for (const [index, pack] of allgemein.entries()) if (!pack) fehlt.push(ORCHESTRATOR_PACK_PATHS[index]!);
   return { direction, rolle, start, packs, fehlt };
 }
 
-/** Die acht Texte ganz, oder der Grund, warum dieser Start nicht aus ihnen gebaut werden kann. */
-export function readOrchestratorStart(repoRoot: string):
+/** Die Texte ganz, oder der Grund, warum dieser Start nicht aus ihnen gebaut werden kann. */
+export function readOrchestratorStart(repoRoot: string, stateDir: string | null = null):
   { readonly ok: true; readonly value: OrchestratorStart } | { readonly ok: false; readonly error: string } {
-  const teile = readOrchestratorStartParts(repoRoot);
+  const teile = readOrchestratorStartParts(repoRoot, stateDir);
   if (!teile.direction || !teile.rolle || !teile.start || teile.packs.some((pack) => pack === null))
     return { ok: false, error: `der Start der Orchestratorin ist nicht vollständig: ${teile.fehlt.join(", ")}` };
   const packs = teile.packs as readonly OrchestratorStartDatei[];
@@ -85,7 +100,7 @@ export function readOrchestratorStart(repoRoot: string):
     bytes: [teile.direction, teile.rolle, teile.start, ...packs].reduce((sum, datei) => sum + datei.bytes, 0) } };
 }
 
-/** Der Text, den die Session bekommt: die acht Dateien in ihrer Ordnung, durch eine Leerzeile getrennt. */
+/** Der Text, den die Session bekommt: alle Startdateien in ihrer Ordnung, durch eine Leerzeile getrennt. */
 export function renderOrchestratorStart(start: OrchestratorStart): string {
   return [start.direction.text, start.rolle.text, start.start.text, ...start.packs.map((pack) => pack.text)].join("\n\n");
 }

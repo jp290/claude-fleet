@@ -1,7 +1,7 @@
 // EIN AGENT ALS EIN OBJEKT (server/agenten.ts): gespeichert mit Namen, kopiert mit „copy of“ und dem Hash des Originals, an der Tür ganz
 // genommen, geteilt mit „derived from“ und importiert nie in bypass. Rein bis auf den Speicher in einem Temp-Ordner.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,20 @@ import {
 const ordner: string[] = [];
 afterAll(() => { for (const o of ordner) rmSync(o, { recursive: true, force: true }); });
 const frisch = (): string => { const o = mkdtempSync(join(tmpdir(), "agenten-")); ordner.push(o); return o; };
+const gitIn = (cwd: string, ...args: string[]): string => {
+  const r = Bun.spawnSync(["git", "-C", cwd, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
+    GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  return r.stdout.toString().trim();
+};
+const gitRepo = (): string => {
+  const d = frisch();
+  gitIn(d, "init", "-q", "-b", "main");
+  writeFileSync(join(d, "README"), "fixture\n");
+  gitIn(d, "add", "README");
+  gitIn(d, "commit", "-q", "-m", "start");
+  return d;
+};
 const gut = () => null;
 const ALLE: readonly WahlFeld[] = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek", "notizbuch",
   "remote", "autoModeEnvironment", "schwelle", "profil", "sitz", "rolle"];
@@ -21,11 +35,11 @@ const ansicht = (eingang: unknown): AgentAnsicht => {
   return eigeneAnsicht(a);
 };
 const pruefer: AgentenServer["pruefe"] = (w) => w.model !== undefined && !/^claude-/.test(String(w.model)) ? "model must be a claude model" : null;
-const server = (dir: string, k15: unknown = null): AgentenServer => ({ dir, k15: async () => k15, pruefe: pruefer, slotWahlen: () => null,
-  historie: async () => [], ort: (p) => p });
-const rufe = async (dir: string, method: string, pfad: string, body?: unknown, k15: unknown = null) => {
+const server = (dir: string, k15: unknown = null, fleetCommonDir: string | null = null): AgentenServer => ({ dir, k15: async () => k15, pruefe: pruefer, slotWahlen: () => null,
+  historie: async () => [], ort: (p) => p, fleetCommonDir: () => fleetCommonDir });
+const rufe = async (dir: string, method: string, pfad: string, body?: unknown, k15: unknown = null, fleetCommonDir: string | null = null) => {
   const r = await agentenRoute(new Request(`http://x${pfad}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
-    new URL(`http://x${pfad}`), server(dir, k15));
+    new URL(`http://x${pfad}`), server(dir, k15, fleetCommonDir));
   return { status: r.status, body: await r.json() as Record<string, any> };
 };
 
@@ -213,6 +227,29 @@ describe("die Route", () => {
     const put = await rufe(dir, "PUT", `/api/agenten/${imp.body.agent.id}`, { wahlen: { effort: "low" } });
     expect(put.body.agent.importiert).toBeUndefined();
     expect(put.body.agent.abgeleitetVon).toBe("b".repeat(64));
+  });
+});
+
+describe("die Orchestratorin erscheint nur in Fleets eigenem Repo", () => {
+  test("eigenes Repo und sein Worktree ja; fremdes Repo und ein Ordner ohne git nein — der Repo-Agent und gespeicherte Agenten bleiben", async () => {
+    const fleet = gitRepo();
+    const common = gitIn(fleet, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const worktree = join(frisch(), "wt");
+    gitIn(fleet, "worktree", "add", "-q", "--detach", worktree);
+    const fremd = gitRepo(), ohneGit = frisch();
+    const dir = frisch();
+    schreibAgenten(dir, [ansicht({ id: "mein", name: "Mein", wahlen: { model: "claude-haiku-5-5" } })]);
+    const ids = async (cwd: string | null): Promise<string[]> => {
+      const pfad = cwd === null ? "/api/agenten" : `/api/agenten?cwd=${encodeURIComponent(cwd)}`;
+      const r = await rufe(dir, "GET", pfad, undefined, null, common);
+      expect(r.status).toBe(200);
+      return (r.body.agenten as { id: string }[]).map((a) => a.id);
+    };
+    expect(await ids(fleet)).toEqual(["repo", "orchestratorin", "mein"]);
+    expect(await ids(worktree)).toEqual(["repo", "orchestratorin", "mein"]);
+    expect(await ids(fremd)).toEqual(["repo", "mein"]);
+    expect(await ids(ohneGit)).toEqual(["repo", "mein"]);
+    expect(await ids(null)).toEqual(["repo", "orchestratorin", "mein"]);
   });
 });
 

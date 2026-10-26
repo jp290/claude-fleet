@@ -124,9 +124,9 @@ const datei = JSON.stringify(ex.json.datei, null, 2);
 if (dateiZiel) writeFileSync(dateiZiel, datei);
 const d = ex.json.datei as Record<string, unknown>;
 muss(Array.isArray(d.laeufe) && (d.laeufe as { fassung: string }[]).some((l) => l.fassung === aktivA), "der Lauf von A reist nicht mit");
-console.log(`Datei: ${datei.length} Zeichen · ${(d.laeufe as unknown[]).length} Lauf als Bericht · abgeleitetVon ${String(d.abgeleitetVon).slice(0, 12)} · persönlicher Text von A darin: ${datei.includes("PERSOENLICH-A") ? "JA" : "nein"} · Text von working-with-the-owner darin: ${datei.includes("He dictates.") ? "JA" : "nein"}`);
+console.log(`Datei: ${datei.length} Zeichen · ${(d.laeufe as unknown[]).length} Lauf als Bericht · abgeleitetVon ${String(d.abgeleitetVon).slice(0, 12)} · persönlicher Text von A darin: ${datei.includes("PERSOENLICH-A") ? "JA" : "nein"}`);
 muss(d.abgeleitetVon === aktivA, "abgeleitetVon ist nicht A's Fassung der Konstellation");
-muss(!datei.includes("PERSOENLICH-A") && !datei.includes("He dictates."), "die Datei enthält persönlichen Text");
+muss(!datei.includes("PERSOENLICH-A"), "die Datei enthält persönlichen Text");
 for (const h of (ex.json.hinweise as string[] | undefined) ?? []) console.log(`  Hinweis: ${h}`);
 // was A's Sitze dürfen, reist im Sitz-Block, und die Datei bleibt unter der Grenze, die der Import liest (k15-import.ts#MAX_DATEI_BYTES)
 const ps = d.positionen as { id: string; rechte?: unknown; sitz?: { darf: { rechte: unknown } } }[];

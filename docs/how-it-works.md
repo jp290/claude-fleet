@@ -139,8 +139,7 @@ The dispatcher, on ice, reads `FLEET_DISPATCH_REPO` and `FLEET_DISPATCH_MAX_LANE
 ## Where the parts on ice live
 
 These parts are on ice. They still compile, run their tests and hold pins in
-`e2e/pins.ts`. Line numbers are as of 22 October 2026 and drift with every change to `server.ts`;
-the symbol names do not.
+`e2e/pins.ts`. Each place is named by its symbol, which survives changes to server.ts.
 
 - **Task queue.** `server/types.ts#Task`, `#TASK_KINDS`;
   `server.ts#archiveTask`, `#releaseTask`, `#briefAndSend`;

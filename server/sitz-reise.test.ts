@@ -16,7 +16,7 @@ import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { rechteRegeln, type Rechte } from "../session-rechte";
 import { seatFassungAbschnitte, type SeatKnowledge } from "./sitz-wissen";
 
-const PERSOENLICH_TEXT = "# Working with the owner\n\nHe dictates. His messages are spoken, so some words come out by sound and need reading by sound.";
+const PERSOENLICH_TEXT = "# Working with the owner\n\nA private sentence this test writes, so no real owner text stands in the tree.";
 const BIBLIOTHEK: SeatKnowledge = { tree: "fleet", repoRoot: "/r", head: "c0ffee", packs: [
   { id: "who-it-is-for", useWhen: "Read this when you build work someone will use.", sources: [{ path: "docs/packs/who-it-is-for.md", anchor: "# Who it is for" }],
     text: "# Who it is for\n\nMost work that misses isn't wrong. It ends up where nobody meets it." },

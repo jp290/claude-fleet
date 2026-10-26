@@ -28,7 +28,8 @@ describe("das Band einer Runde", () => {
     const repo = join(TMP, "repo");
     Bun.spawnSync(["mkdir", "-p", repo]);
     sh(repo, "init", "-q", "-b", "main");
-    copyFileSync(join(import.meta.dir, "..", "testinstanz.sh"), join(repo, "testinstanz.sh"));
+    for (const file of ["testinstanz.sh", "testinstanz-agent.sh"])
+      copyFileSync(join(import.meta.dir, "..", file), join(repo, file));
     writeFileSync(join(repo, "README"), "eins\n");
     sh(repo, "add", "."); sh(repo, "commit", "-q", "-m", "start");
     for (const [b, file, text] of [["branch/a", "README", "A\n"], ["branch/b", "b.txt", "b\n"], ["branch/c", "README", "C\n"]]) {

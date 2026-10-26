@@ -66,8 +66,8 @@ It never says how to do the work.
 
 ## How seats start today
 
-- **A free session in its own folder:** `POST /api/slots/<n>/open` with cwd, label, model and effort. The
-  `CLAUDE.md` in that folder is its agent file.
+- **A free session in its own folder:** `POST /api/slots/<n>/open` with cwd, label, model and effort. Its purpose and its
+  packs go in at the door; they show as + lines in its start brief.
 - **A branch session with a task:** `POST /api/branches/open`, or `POST /api/self/branches/open` from a session.
   The opener and the branch session form a pair that may message each other. Open it with your own self token,
   never with the owner credential: a branch session opened the other way has no mailbox back to you, and you none

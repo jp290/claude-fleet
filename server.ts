@@ -259,7 +259,7 @@ import { eigenerModus, leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, umfeldOh
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
-import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatPacks, seatSkillFiles, seatSkillsDir,
+import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatKatalog, seatPacks, seatSkillFiles, seatSkillsDir,
   seatSkillsVerwaist, bibliothekQuelle, bibliothekGewaehlt, bibliothekWahlGeladen, packAuswahlFehlt, type BibliothekWahl, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
 import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
@@ -43010,7 +43010,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     if (bibliothek && "start" in bibliothek) {
       bytes.bibliothek = Buffer.byteLength(bibliothek.start.text);
       // ...and the packs sessions wrote (server/eigene-packs.ts): none comes by itself, the start window offers each as a stone
-      details.bibliothek = { text: bibliothek.start.text, packs: bibliothek.box, head: bibliothek.start.knowledge.head,
+      // ...and every pack this place can have, for the start window to offer one by one (server/sitz-wissen.ts#seatKatalog)
+      details.bibliothek = { text: bibliothek.start.text, packs: bibliothek.box, head: bibliothek.start.knowledge.head, katalog: seatKatalog(bibliothek.start.knowledge),
         eigene: liesEigenePacks(STATE_DIR).map((pack) => ({ id: pack.id, titel: pack.titel, useWhen: pack.useWhen, bytes: pack.bytes })),
         // ...and Fleet's packs to choose (trigger seat-choice): a stone each too, `statt` names the guide it takes the place of
         zurWahl: bibliothek.start.zurWahl.map((pack) => {

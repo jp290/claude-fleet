@@ -7428,7 +7428,7 @@ function repoHeaderRow(g: Stack, open: boolean): HTMLElement {
 // and a lane are chosen, agent, model and what she gets are still the owner's — the one-click lane had none of them
 function quickLaneChip(repo: string, parent?: LaneAnchor): HTMLElement {
   const q = el("span", "quicklane", "⎇+");
-  q.title = `Neue Lane in ${baseName(repo)} — Agent, Modell und was sie bekommt im Fenster „Neue Session“`;
+  q.title = parent ? `New session on a branch of its own, from this session's branch, in ${baseName(repo)}` : `New session in ${baseName(repo)}`;
   q.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo, ...(parent ? { parent } : {}) }); };
   return q;
 }

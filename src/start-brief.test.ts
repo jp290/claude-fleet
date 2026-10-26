@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anzeige, geaendert, gegenVorgaengerin, packDateien, regelDateien, startbrief, uebergabeHinweis, zeilenDiff, type Dazu, type Fassung } from "./start-brief";
+import { anzeige, fliessend, geaendert, gegenVorgaengerin, packDateien, regelDateien, startbrief, uebergabeHinweis, zeilenDiff, type Dazu, type Fassung } from "./start-brief";
 import { schwelleAbschnitt, type SchwelleFakten } from "../server/fassung-umfeld";
 
 const CLAUDE = "# Global Rules\n\n- Lead with the answer.\n- Report faithfully.";
@@ -11,30 +11,32 @@ const regeln = (mitEigenen: boolean) => {
   return { id: "projektregeln", quelle: d.map((x) => x.pfad).join("\n"), text: d.map((x, i) => `--- ${i + 1}/${d.length} ${x.pfad.split("/").pop()} ---\n${x.t}`).join("\n"),
     dateien: d.map(({ t: _t, ...x }) => x) };
 };
-const fassung = (o: { eigene?: boolean; packs?: string[]; rechte?: string; modell?: string }): Fassung => ({ teile: [
+const fassung = (o: { eigene?: boolean; packs?: string[]; rechte?: string; modell?: string; einstellungen?: string }): Fassung => ({ teile: [
   { id: "wer", abschnitte: [{ id: "modell", text: o.modell ?? "kein Modell gewählt" }] },
   { id: "liest", abschnitte: [{ id: "systemzusatz", text: "" }, regeln(o.eigene ?? true),
     ...(o.packs ?? []).map((p) => ({ id: "wissen", text: `--- ${p} (docs/packs/${p}.md · # ${p}) ---\n# ${p}\n\nRead this when …` })),
     { id: "gedaechtnis", quelle: "/Users/o/.claude/projects/-wf/memory", text: "- [a](a.md) — note", dateien: [{ pfad: "/Users/o/.claude/projects/-wf/memory/MEMORY.md", bytes: 20 }] }] },
-  { id: "darf", abschnitte: [{ id: "darf", text: o.rechte ?? "Keine Rechte gesetzt" }, { id: "mitgegeben", text: "nichts" }, { id: "hooks-eigene", text: "PreToolUse · Bash · block-no-verify.sh" }] },
+  { id: "darf", abschnitte: [{ id: "darf", text: o.rechte ?? "Keine Rechte gesetzt" }, ...(o.einstellungen ? [{ id: "einstellungen", text: o.einstellungen }] : []),
+    { id: "mitgegeben", text: "nichts" }, { id: "hooks-eigene", text: "PreToolUse · Bash · block-no-verify.sh" }] },
   { id: "arbeitet", abschnitte: [{ id: "plugins", text: "figma@claude-plugins-official · an" }, { id: "schwelle", text: "Übergabe ab 35 %" }] },
 ] });
 const dazu: Dazu = { repo: "/Users/o/example-app", gitNormal: "Current branch: main", gitJetzt: "Current branch: main", aufgabe: null, hooksAus: false, ccTokens: 40251 };
-const alle = (b: ReturnType<typeof startbrief>) => [...b.anweisungen, ...b.ersteNachricht, ...b.einstellungen].flatMap((x) => [x, ...(x.kinder ?? [])]);
+const alle = (b: ReturnType<typeof startbrief>) => [...b.anweisungen, ...b.ersteNachricht, ...b.wartend, ...b.einstellungen].flatMap((x) => [x, ...(x.kinder ?? [])]);
 
 describe("the start brief, file by file against claude by hand", () => {
   test("a repo pinned as /tmp/… owns its files the server names under /private/tmp/…", () => {
     const f = (repo: string): Fassung => ({ teile: [{ id: "liest", abschnitte: [{ id: "projektregeln", text: REPO_AGENTS,
       dateien: [{ pfad: `/private${repo}/AGENTS.md`, bytes: 40 }] }] }] });
     const b = startbrief(f("/tmp/wf/example-app"), f("/tmp/wf/example-app"), { ...dazu, repo: "/tmp/wf/example-app" });
-    expect(b.ersteNachricht.filter((x) => x.key.startsWith("regel:")).map((x) => [x.pfad, x.wer])).toEqual([["example-app/AGENTS.md", "This repo"]]);
+    expect(b.ersteNachricht.filter((x) => x.key.startsWith("regel:")).map((x) => [x.pfad, x.wer])).toEqual([["AGENTS.md", "This repo"]]);
   });
   test("with no choice nothing differs, and the files stand in reading order", () => {
     const b = startbrief(fassung({}), fassung({}), dazu);
     expect(geaendert(b)).toBe(0);
     expect(b.anweisungen.map((x) => x.key)).toEqual(["cc"]);
-    expect(b.ersteNachricht.map((x) => x.pfad)).toEqual(["~/.claude/CLAUDE.md", "~/AGENTS.md", "example-app/AGENTS.md",
-      "~/.claude/projects/…/memory/MEMORY.md", "git status", "first message", "skills, agents, plugins, connectors"]);
+    expect(b.ersteNachricht.map((x) => x.pfad)).toEqual(["~/.claude/CLAUDE.md", "~/AGENTS.md", "AGENTS.md", "Memory", "git status", "first message"]);
+    expect(b.ersteNachricht.find((x) => x.pfad === "Memory")!.datei).toBe("~/.claude/projects/…/memory/MEMORY.md");
+    expect(b.wartend.map((x) => x.pfad)).toEqual(["skills, agents, plugins, connectors"]);
   });
   test("leaving your rules out shows your CLAUDE.md word for word as − lines, and the repo's file unchanged", () => {
     const b = startbrief(fassung({ eigene: false }), fassung({}), dazu);
@@ -46,20 +48,40 @@ describe("the start brief, file by file against claude by hand", () => {
     const repo = alle(b).find((x) => x.key === "regel:/Users/o/example-app/AGENTS.md")!;
     expect([repo.zeichen, repo.wer]).toEqual([null, "This repo"]);
   });
-  test("Fleet's guides appear as texts of their own under From Fleet, each with + lines", () => {
+  test("each of Fleet's context packs stands on its own with every request, under its title, with + lines and no group around it", () => {
     const b = startbrief(fassung({ packs: ["who-it-is-for", "working-with-the-owner"] }), fassung({}), dazu);
-    const fleet = b.anweisungen.find((x) => x.key === "fleet")!;
-    expect(fleet.zeichen).toBe("+");
-    expect(fleet.kinder!.map((k) => [k.pfad, k.zeichen])).toEqual([["docs/packs/who-it-is-for.md", "+"], ["docs/packs/working-with-the-owner.md", "+"]]);
-    expect(fleet.kinder![0].diff![0]).toEqual({ z: "+", t: "# who-it-is-for" });
+    expect(b.anweisungen.map((x) => [x.key, x.pfad, x.datei ?? null, x.zeichen])).toEqual([["cc", "Claude Code's system prompt", null, null],
+      ["pack:who-it-is-for", "who-it-is-for", "docs/packs/who-it-is-for.md", "+"], ["pack:working-with-the-owner", "working-with-the-owner", "docs/packs/working-with-the-owner.md", "+"]]);
+    expect(b.anweisungen.some((x) => x.kinder)).toBe(false);
+    expect(b.anweisungen[1].diff![0]).toEqual({ z: "+", t: "# who-it-is-for" });
     expect(geaendert(b)).toBe(2);
+  });
+  test("when it fits: a rule file with paths, the lists by name, and each pack that waits as a skill under the title the library gives it", () => {
+    const pfadRegel = "---\npaths:\n  - \"**/*.ts\"\n---\n# TypeScript\n\n- strict types.";
+    const f = (skill: boolean): Fassung => ({ teile: [{ id: "liest", abschnitte: [
+      { id: "projektregeln", text: `--- 1/2 CLAUDE.md ---\n${CLAUDE}\n--- 2/2 typescript.md ---\n${pfadRegel}`,
+        dateien: [{ pfad: "/Users/o/.claude/CLAUDE.md", bytes: 60, eigentum: "owner" }, { pfad: "/Users/o/.claude/rules/typescript.md", bytes: 50, eigentum: "owner" }] },
+      ...(skill ? [{ id: "wissen", text: "- advanced-features: When you want a second computer." }] : [])] }] });
+    const b = startbrief(f(true), f(false), { ...dazu, pack: (id) => id === "advanced-features" ? { titel: "Fleet's advanced features", wann: null } : null });
+    expect(b.ersteNachricht.filter((x) => x.key.startsWith("regel:")).map((x) => x.pfad)).toEqual(["~/.claude/CLAUDE.md"]);
+    expect(b.wartend.map((x) => [x.pfad, x.wer, x.satz, x.zeichen])).toEqual([["~/.claude/rules/typescript.md", "Yours", "when it reads a matching file", null],
+      ["skills, agents, plugins, connectors", "Yours", "their names only; each loads when it fits", null],
+      ["Fleet's advanced features", "Fleet", "When you want a second computer.", "+"]]);
   });
   test("rights add their sentence to what Fleet appends; a changed model shows in the start line", () => {
     const b = startbrief(fassung({ rechte: "FLEET RIGHTS (level “build”)", modell: "claude-sonnet-5-5" }), fassung({}), dazu);
-    expect(b.anweisungen.find((x) => x.key === "fleet")!.kinder!.map((k) => k.key)).toEqual(["rechte"]);
+    expect(b.anweisungen.map((k) => k.key)).toEqual(["cc", "rechte"]);
     const line = b.einstellungen.find((x) => x.key === "line")!;
     expect(line.zeichen).toBe("~");
     expect(line.diff!.filter((z) => z.z !== " ").map((z) => z.z + z.t.trim())).toEqual(["−model           kein Modell gewählt", "+model           claude-sonnet-5-5"]);
+  });
+  test("a connector left out marks only the setting it adds, not the whole --settings line around it", () => {
+    const vorher = { claudeMdExcludes: ["~/.claude/CLAUDE.md"], autoMode: { environment: ["a long text that stays"] } };
+    const b = startbrief(fassung({ einstellungen: JSON.stringify({ ...vorher, permissions: { deny: ["mcp__claude_ai_Gmail"] } }) }),
+      fassung({ einstellungen: JSON.stringify(vorher) }), dazu);
+    const line = b.einstellungen.find((x) => x.key === "line")!;
+    expect(line.zeichen).toBe("~");
+    expect(line.diff!.filter((z) => z.z !== " ").map((z) => z.z + z.t.trim())).toEqual(['+permissions: {"deny":["mcp__claude_ai_Gmail"]}']);
   });
   test("hooks off makes what runs along a − part; a first task is a + part", () => {
     const b = startbrief(fassung({}), fassung({}), { ...dazu, hooksAus: true, aufgabe: "Fix the HUD." });
@@ -68,6 +90,11 @@ describe("the start brief, file by file against claude by hand", () => {
   });
 });
 describe("the pieces", () => {
+  test("a file reads as it was meant: a hand-wrapped paragraph and list item become one line each, code, headings and tables stay", () => {
+    const datei = "# Title\n\nFirst line of a paragraph\nthat goes on here.\n\n- An item that wraps\n  onto a second line.\n- Next item\n  - nested\n\n| a | b |\n| - | - |\n\n```\ncode\n  stays\n```\n---\nafter";
+    expect(fliessend(datei).split("\n")).toEqual(["# Title", "", "First line of a paragraph that goes on here.", "", "- An item that wraps onto a second line.",
+      "- Next item", "  - nested", "", "| a | b |", "| - | - |", "", "```", "code", "  stays", "```", "---", "after"]);
+  });
   test("a line diff keeps what is common and marks only what changed", () => {
     expect(zeilenDiff("a\nb\nc", "a\nx\nc").map((z) => z.z + z.t)).toEqual([" a", "−b", "+x", " c"]);
   });
@@ -76,9 +103,9 @@ describe("the pieces", () => {
       ["/Users/o/AGENTS.md", "# Home"], ["/Users/o/example-app/AGENTS.md", "# example-app"]]);
     expect(packDateien(fassung({ packs: ["a-b"] })).map((p) => [p.id, p.pfad, p.titel])).toEqual([["a-b", "docs/packs/a-b.md", "a-b"]]);
   });
-  test("a file is named as the window shows it: the repo's by its name, yours under ~/.claude wherever home is", () => {
+  test("a file is named as the window shows it: the repo's by its path in the repo, yours under ~/.claude wherever home is", () => {
     expect(anzeige("/tmp/ti/home/.claude/CLAUDE.md", "/tmp/wf/example-app", "owner")).toBe("~/.claude/CLAUDE.md");
-    expect(anzeige("/tmp/wf/example-app/AGENTS.md", "/tmp/wf/example-app")).toBe("example-app/AGENTS.md");
+    expect(anzeige("/tmp/wf/example-app/AGENTS.md", "/tmp/wf/example-app")).toBe("AGENTS.md");
     expect(anzeige("/Users/o/AGENTS.md", "/Users/o/example-app")).toBe("~/AGENTS.md");
   });
 });

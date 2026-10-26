@@ -64,8 +64,6 @@
 .k15sitz .sfbtns { display: flex; gap: 8px; padding: 10px 20px 20px; margin-top: auto; }
 .k15sitz .sfbtns button { flex: 1; border: 1px solid var(--sf-line); border-radius: 10px; padding: 10px; cursor: pointer; color: var(--sf-ink); text-align: center; }
 .k15sitz .sfbtns button:hover, .k15sitz .sfbtns button[aria-pressed="true"] { background: var(--sf-raised); border-color: #3a3a40; }
-.k15sitz .sfaufbau { align-self: flex-end; margin: -10px 20px 12px; color: var(--sf-ink3); font-size: 12px; cursor: pointer; }
-.k15sitz .sfaufbau:hover { color: var(--sf-ink2); }
 .k15sitz .sfdrop { display: flex; flex-direction: column; gap: 3px; border: 1px dashed #3a3a40; border-radius: 12px; padding: 16px; cursor: pointer; color: var(--sf-ink2); margin-top: 8px; }
 .k15sitz .sfdrop:hover, .k15sitz .sfdrop.ueber { border-color: #55555c; background: var(--sf-raised); }
 .k15sitz .sfdrop b { color: var(--sf-ink); font-size: 14.5px; }
@@ -73,8 +71,6 @@
 
 /* MIDDLE IN STEP 2: the session — who it is and Start, the banner, your Claude Code, Fleet on top */
 .k15sitz .sfsheet { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--sf-line) transparent; }
-.k15sitz .sfsheet.laedt .sfzone { opacity: .75; transition: opacity .2s; }
-.k15sitz .sfhood.laedt .sfbsec { opacity: .45; transition: opacity .2s; }
 .k15sitz .sfsin { max-width: 1060px; margin: 0 auto; padding: 4px 6px 14px; }
 .k15sitz .sfback { color: var(--sf-ink3); cursor: pointer; font-size: 13px; }
 .k15sitz .sfback:hover { color: var(--sf-ink2); }
@@ -149,25 +145,22 @@
 .k15sitz .sfpk select option { background: #18181b; color: var(--sf-ink); }
 .k15sitz .sfts { font-size: 12.5px; color: var(--sf-ink3); line-height: 1.4; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .k15sitz .sfwas { color: var(--sf-amber); font-size: 12px; }
-.k15sitz .sfxb { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 7px; color: var(--sf-ink3); cursor: pointer; font-size: 15px; line-height: 1; }
-.k15sitz .sfxb:hover { background: #26262b; color: var(--sf-ink); }
+/* a context pack's switch, where other stones have their × */
+.k15sitz .sfsw { position: absolute; top: 8px; right: 9px; width: 30px; height: 18px; border-radius: 9px; background: #26304a; cursor: pointer; transition: background .15s; }
+.k15sitz .sfsw > span { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #8a93a8; transition: transform .15s var(--sf-ease), background .15s; }
+.k15sitz .sfsw.on { background: var(--sf-fl); }
+.k15sitz .sfsw.on > span { transform: translateX(12px); background: #0d1220; }
+.k15sitz .sfsw:focus-visible { outline: 2px solid var(--sf-steel); outline-offset: 2px; }
+.k15sitz .sfsw:disabled { opacity: .45; cursor: default; }
+.k15sitz .sfzone.fl .sftile.chg { border-color: #5a4828; }
+.k15sitz .sfzone.fl .sftile.muted { background: transparent; }
+.k15sitz .sftile.sw .sftn { padding-right: 40px; }
+/* a pack's whole title, so two variants (… (gentle), … (hard)) differ where they differ */
+.k15sitz .sftile.sw .sftv { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.k15sitz .sftile.sw .sfts { -webkit-line-clamp: 3; }
 .k15sitz .sftask, .k15sitz .sfbranchname { margin-top: 4px; width: 100%; background: var(--sf-ground); border: 1px solid var(--sf-line); border-radius: 9px; padding: 8px 10px;
   color: var(--sf-ink); font: 14px var(--chat-sans); cursor: text; }
 .k15sitz .sftask { min-height: 56px; resize: vertical; }
-.k15sitz .sfghost { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 74px; padding: 9px 12px; border: 1px dashed #34343a; border-radius: 12px; cursor: pointer; text-align: left; }
-.k15sitz .sfghost:hover { border-style: solid; border-color: #3e3e44; background: var(--sf-surface); }
-.k15sitz .sfghost .sftn { color: var(--sf-ink2); font-weight: 600; font-size: 13.5px; }
-.k15sitz .sfadds { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
-.k15sitz .sfaddon { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 4px 12px 4px 9px; border: 1px dashed #2a3a5c; border-radius: 10px; cursor: pointer; color: var(--sf-ink2); }
-.k15sitz .sfaddon:hover { border-style: solid; background: #111a2c; }
-.k15sitz .sfaddon .sfpl { color: var(--sf-fl); font-size: 16px; line-height: 1; }
-.k15sitz .sfaddon b { font-weight: 600; font-size: 13px; color: var(--sf-ink); }
-.k15sitz .sfaddon span:last-child { color: var(--sf-ink3); font-size: 12px; white-space: nowrap; }
-.k15sitz .sfaddon.sfpack { display: flex; width: 100%; align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
-.k15sitz .sfaddon.sfpack .sfpkt { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
-.k15sitz .sfaddon.sfpack .sfpkt span { white-space: normal; }
-.k15sitz .sfaddon.sfpack > .sfpl, .k15sitz .sfaddon.sfpack > svg { flex: none; }
-.k15sitz .sfaddon .sfic { color: #7fa5ee; }
 /* an open block: how it works, what you can set; its words are on the right */
 .k15sitz .sfdrawer { grid-column: 2; margin-top: 10px; background: #151619; border: 1px solid #2c3036; border-radius: 12px; padding: 12px 16px 14px; animation: sffade .2s ease; }
 .k15sitz .sfzone.fl .sfdrawer { background: #10172a; border-color: #2a3b60; }
@@ -175,8 +168,6 @@
 .k15sitz .sfdh b { font-size: 14.5px; color: var(--sf-ink); }
 .k15sitz .sfdh span { color: var(--sf-ink3); font-size: 13px; flex: 1; }
 .k15sitz .sfcl { color: var(--sf-ink3); cursor: pointer; font-size: 15px; }
-.k15sitz .sfhow { margin-top: 8px; padding: 7px 11px; border-left: 2px solid #3a4250; background: #14161a; border-radius: 0 8px 8px 0; color: var(--sf-ink2); font-size: 13px; }
-.k15sitz .sfhow b { color: var(--sf-ink); font-weight: 600; margin-right: 6px; }
 .k15sitz .sfopts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .k15sitz .sfopt { text-align: left; border: 1px solid var(--sf-line); border-radius: 10px; padding: 6px 10px; cursor: pointer; max-width: 250px; }
 .k15sitz .sfopt b { display: block; font-weight: 600; font-size: 13px; color: var(--sf-ink); }
@@ -200,6 +191,10 @@
 .k15sitz .sfgit code { font-size: 12px; }
 .k15sitz .sfst { display: inline-block; width: 62px; color: var(--sf-ink3); font-size: 12px; }
 .k15sitz .sftoright { margin-top: 10px; color: var(--sf-steel); cursor: pointer; font-size: 13px; }
+/* the arrow from the open block to its parts in the start brief (src/start-fenster.ts#pfeil): drawn over the gap, never in the way of a click */
+.k15sitz .sfpfeil { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 30; overflow: visible; }
+.k15sitz .sfpfeil path { fill: none; stroke: #6f86a6; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.k15sitz .sfpfeil path.fl { stroke: var(--sf-fl); }
 .k15sitz .sfoffnote { color: var(--sf-ink3); font-size: 12.5px; margin-top: 8px; }
 
 /* RIGHT: the start brief as text — each part a file, its header and its words; what differs from claude by hand as − and + lines */
@@ -220,20 +215,15 @@
 .k15sitz .sfbsec h4 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; color: var(--sf-ink2); display: flex; align-items: baseline; gap: 8px; }
 .k15sitz .sfbsec h4 span { color: var(--sf-ink3); font-weight: 400; font-size: 12px; }
 .k15sitz .sfbk { border: 1px solid var(--sf-line2); border-radius: 9px; margin-top: 6px; overflow: hidden; background: #0b0b0d; transition: box-shadow .3s; }
-.k15sitz .sfbk-h { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 20px 12px; column-gap: 7px; row-gap: 1px; align-items: center; padding: 6px 9px 6px 8px; background: #131316;
-  border-left: 3px solid var(--sf-you); }
-.k15sitz .sfbk.o-cc > .sfbk-h { border-left-color: var(--sf-cc); }
-.k15sitz .sfbk.o-fleet > .sfbk-h { border-left-color: var(--sf-fl); }
+.k15sitz .sfbk-h { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 20px 12px; column-gap: 7px; row-gap: 1px; align-items: center; padding: 6px 9px 6px 11px; background: #131316; }
 .k15sitz .sfbk-h.can { cursor: pointer; }
 .k15sitz .sfbk-h.can:hover { background: #18181c; }
-.k15sitz .sfnum { width: 18px; height: 18px; border-radius: 9px; border: 1px solid #38383e; font-size: 10.5px; font-weight: 600; color: var(--sf-ink2); display: grid; place-items: center; }
 .k15sitz .sfbk-p { font: 600 12px var(--chat-mono); color: var(--sf-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .k15sitz .sfbk.grp > .sfbk-h .sfbk-p { font: 600 13px var(--chat-sans); }
 .k15sitz .sfbk-l { grid-column: 2 / -1; font-size: 12px; color: var(--sf-ink3); line-height: 1.35; }
 .k15sitz .sfog { font-weight: 600; margin-right: 5px; color: var(--sf-ink2); }
 .k15sitz .o-cc .sfog { color: var(--sf-cc2); }
 .k15sitz .o-fleet .sfog { color: var(--sf-fl2); }
-.k15sitz .sfbk-z { font-size: 11.5px; color: var(--sf-ink3); white-space: nowrap; }
 .k15sitz .sfdm { font: 700 12px/16px var(--chat-mono); color: var(--sf-amber); border: 1px solid #4a3a22; border-radius: 5px; height: 18px; width: 20px; text-align: center; display: inline-block; }
 .k15sitz .sfox { color: var(--sf-ink3); display: grid; place-items: center; }
 .k15sitz .sfox svg { width: 10px; height: 10px; transform: rotate(-90deg); transition: transform .2s var(--sf-ease); }
@@ -247,17 +237,68 @@
 .k15sitz .sfln.add .sft { color: #efe6d0; }
 .k15sitz .sfln.del { background: #141416; }
 .k15sitz .sfln.del .sft { color: #727278; text-decoration: line-through; text-decoration-color: #4c4c52; }
+/* a file as it reads (owner 25.10.: no torn lines): Markdown in a sans face, its paragraphs flowing (src/start-brief.ts#fliessend) */
+.k15sitz .sfmd { font: 12.5px/1.55 var(--chat-sans); color: #c9c9ce; padding: 6px 14px 8px; }
+.k15sitz .sfmd .mdp { margin: 0 0 .6em; overflow-wrap: anywhere; }
+.k15sitz .sfmd .mdh { font-weight: 650; color: var(--sf-ink); line-height: 1.3; margin: .9em 0 .4em; }
+.k15sitz .sfmd .mdh:first-child { margin-top: .2em; }
+.k15sitz .sfmd .mdh1 { font-size: 15px; } .k15sitz .sfmd .mdh2 { font-size: 13.5px; } .k15sitz .sfmd .mdh3, .k15sitz .sfmd .mdh4 { font-size: 12.5px; }
+.k15sitz .sfmd .mdul, .k15sitz .sfmd .mdol { margin: 0 0 .6em; padding-left: 1.3em; }
+.k15sitz .sfmd li { margin: .15em 0; } .k15sitz .sfmd li > .mdp { margin: 0; }
+.k15sitz .sfmd code { font: 11.5px var(--chat-mono); background: #18181c; border-radius: 4px; padding: 0 3px; }
+.k15sitz .sfmd pre { font: 11.5px/1.5 var(--chat-mono); background: #111114; border-radius: 6px; padding: 6px 8px; overflow: auto; }
+.k15sitz .sfmd .mdhr { border: 0; border-top: 1px solid var(--sf-line2); margin: .8em 0; }
+.k15sitz .sfmd .mdtable { border-collapse: collapse; margin: 0 0 .6em; } .k15sitz .sfmd .mdtable td, .k15sitz .sfmd .mdtable th { border: 1px solid var(--sf-line2); padding: 2px 6px; }
+.k15sitz .sfmd.weg { color: #7a7a80; }
+.k15sitz .sfmd .sfmore { margin: 2px 0 0; }
 .k15sitz .sfmore { display: block; margin: 1px 0 0 22px; color: var(--sf-steel); font: 12px var(--chat-sans); cursor: pointer; padding: 2px 0; }
 .k15sitz .sfbk.hl { box-shadow: 0 0 0 1px #5d6c82; }
 .k15sitz .sfbk.flash { animation: sfflash 1.6s ease; }
 @keyframes sfflash { 0%, 35% { box-shadow: 0 0 0 2px var(--sf-amber); } 100% { box-shadow: 0 0 0 1px #5d6c82; } }
 .k15sitz .sfkids { padding: 0 6px 6px 18px; background: #0c111d; }
-.k15sitz .sfkids .sfbk-h { grid-template-columns: minmax(0, 1fr) auto 20px 12px; }
+.k15sitz .sfkids .sfbk-h { grid-template-columns: minmax(0, 1fr) 20px 12px; }
 .k15sitz .sfkids .sfbk-l { grid-column: 1 / -1; }
-.k15sitz .sfnone, .k15sitz .sfclosing { display: flex; gap: 8px; align-items: flex-start; color: var(--sf-ink2); font-size: 12.5px; margin: 12px 2px 0; }
-.k15sitz .sfclosing { margin-top: 16px; padding: 9px 11px; border: 1px solid var(--sf-line2); border-radius: 10px; }
-.k15sitz .sfclosing ul { margin: 4px 0 0; padding-left: 16px; color: var(--sf-ink3); }
+.k15sitz .sfnone { display: flex; gap: 8px; align-items: flex-start; color: var(--sf-ink2); font-size: 12.5px; margin: 12px 2px 0; }
 .k15sitz .sfok { color: var(--sf-moss); font-weight: 700; flex: none; }
+/* EVERY PLACE ANSWERS ONE QUESTION (Soll 25.10., owner 26.10.): a tile's files with whose and when, a stone of Fleet on top with its name as its
+   value, the kinds of what it knows, the servers as a choice; on the right a part without number or size, its explanation when you point at it */
+.k15sitz .sftile.wide2 { grid-column: span 2; }
+.k15sitz .sffiles { margin-top: 6px; font-size: 12.5px; color: var(--sf-ink3); }
+.k15sitz .sffiles > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: baseline; line-height: 1.6; }
+.k15sitz .sffiles code { font: 12px var(--chat-mono); color: var(--sf-ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k15sitz .sffiles > div.out code { text-decoration: line-through; text-decoration-color: #48484e; color: var(--sf-ink3); }
+.k15sitz .sftile.stein .sfsn { padding-right: 40px; }
+.k15sitz .sftile.stein .sfts { -webkit-line-clamp: 3; }
+.k15sitz .sftile.stein .sfpk { display: inline-flex; padding-right: 10px; }
+.k15sitz .sftile.stein.muted .sfsn { color: var(--sf-ink2); font-weight: 600; font-size: 15.5px; }
+.k15sitz .sfvar { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; font-size: 11.5px; color: var(--sf-ink3); }
+.k15sitz .sfvar .sfseg { align-self: flex-start; margin-top: 2px; }
+.k15sitz .sfvar .sfseg button { font-size: 12px; padding: 1px 9px; }
+.k15sitz .sfart { font-size: 12.5px; color: var(--sf-ink3); margin: 10px 0 6px; }
+.k15sitz .sfprow > .sfart:first-child { margin-top: 8px; }
+.k15sitz .sfart b { color: var(--sf-ink2); font-weight: 600; margin-right: 7px; }
+.k15sitz .sfpaar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 10px; }
+.k15sitz .sfgedanke { font-size: 12.5px; color: var(--sf-ink3); margin: 12px 0 4px; line-height: 1.5; }
+.k15sitz .sfserver { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; max-width: 440px; }
+.k15sitz .sfcheck { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 7px; cursor: pointer; color: var(--sf-ink3); text-align: left; font-size: 13px; }
+.k15sitz .sfcheck:hover { background: #18213a; }
+.k15sitz .sfcheck:disabled { cursor: default; }
+.k15sitz .sfcheck b { font-weight: 500; color: var(--sf-ink2); }
+.k15sitz .sfcheck.on b { color: var(--sf-ink); }
+.k15sitz .sfcheck > span:last-child { margin-left: auto; font-size: 12px; }
+.k15sitz .sfbox { width: 15px; height: 15px; border-radius: 4px; border: 1px solid #3a4560; display: grid; place-items: center; font-size: 10px; flex: none; }
+.k15sitz .sfcheck.on .sfbox { background: var(--sf-fl); border-color: var(--sf-fl); color: #0d1220; }
+.k15sitz .sfoffnote code { font: 11.5px var(--chat-mono); background: #1b1e28; padding: 0 4px; border-radius: 4px; color: var(--sf-ink2); }
+.k15sitz .sfbk-h { grid-template-columns: minmax(0, 1fr) 20px 12px; }
+.k15sitz .sfbk-l { grid-column: 1 / -1; }
+.k15sitz .sfbk-p { font: 600 13px var(--chat-sans); }
+.k15sitz .sfbk-p.datei { font: 600 12px var(--chat-mono); }
+.k15sitz .sfbk-l .wh { display: none; }
+.k15sitz .sfbk:hover > .sfbk-h .wh, .k15sitz .sfbk.open > .sfbk-h .wh, .k15sitz .sfbk-h:focus-visible .wh { display: inline; }
+.k15sitz .sftok { font-size: 12.5px; font-weight: 400; color: var(--sf-ink3); }
+.k15sitz .sfall { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--sf-ink); background: #1a1b1f; border: 1px solid #2c2d33; border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+.k15sitz .sfall:hover { border-color: #44454c; }
+@media (max-width: 700px) { .k15sitz .sftile.wide2 { grid-column: 1 / -1; } .k15sitz .sfpaar { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .k15sitz * { transition: none !important; animation: none !important; } }
 
 /* an iPad: no repo sliver; the start brief opens over the session */

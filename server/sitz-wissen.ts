@@ -126,6 +126,32 @@ export function seatPacks(k: SeatKnowledge): { box: string[]; skills: string[]; 
     skillListe: skillsOf(k).map(skillZeile).join("\n") };
 }
 
+/** DER KATALOG FÜRS STARTFENSTER (Owner 25.10.: „[Zitat entfernt]“): je Pack, den
+ *  die Bibliothek diesem Sitz geben kann, sein Titel (die erste Überschrift seines Texts), wann er passt, seine Größe, sein Weg —
+ *  wörtlich im Start oder als Skill — und ob er ein Konzept ist (seine Quelle liegt unter docs/start/, wie Systemkonzept und Richtung)
+ *  oder ein Werkzeug, das die Session auf Bitte ausführt (seine Quelle liegt unter docs/skills/, wie sharpen3; Owner 25.10.: „[Zitat entfernt]“
+ *  ).
+ *  Ein eigener Pack steht nicht darin (der Plan nennt ihn unter `eigene`), einer ohne lesbaren Text auch nicht. Rein. */
+export interface KatalogPack {
+  readonly id: string; readonly titel: string; readonly useWhen: string | null; readonly bytes: number;
+  readonly weg: "start" | "skill"; readonly konzept: boolean; readonly werkzeug: boolean;
+  /** der erste Absatz unter dem Titel, in den Worten des Packs („Read this when …“): der Satz, den das Fenster zeigt; die useWhen-Zeile
+   *  steht im Register und ist für Claude geschrieben, oft auf Deutsch. null, wo kein kurzer Absatz folgt. */
+  readonly satz: string | null;
+}
+const ersterAbsatz = (text: string): string | null => {
+  const nach = text.split(/^#\s+.+$/m)[1];
+  const absatz = nach?.trim().split(/\n\s*\n/)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  return absatz && !/^[#\-*|>`]/.test(absatz) && absatz.length <= 280 ? absatz : null;
+};
+export function seatKatalog(k: SeatKnowledge): KatalogPack[] {
+  return [...boxOf(k), ...skillsOf(k)].filter((pack) => !pack.privat).map((pack) => ({
+    id: pack.id, titel: pack.text!.match(/^#\s+(.+?)\s*$/m)?.[1] ?? pack.id, useWhen: pack.useWhen,
+    bytes: new TextEncoder().encode(pack.text!).length, weg: isBox(pack) ? "start" as const : "skill" as const,
+    konzept: pack.sources.some((source) => source.path.startsWith("docs/start/")),
+    werkzeug: pack.sources.some((source) => source.path.startsWith("docs/skills/")), satz: ersterAbsatz(pack.text!) }));
+}
+
 /** Eine SKILL.md: Name = Pack-Id, Beschreibung = useWhen (JSON-Zeichenkette ist gültiges YAML), dann die Quelle und
  *  der Text am Kopf. */
 export function renderSkillFile(pack: SeatPack, head: string): string {

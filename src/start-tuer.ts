@@ -26,6 +26,8 @@ export type Auftrag =
       wahl?: Record<string, unknown>; agent?: string }
   | { tuer: "main"; program: string; cwd: string; dreier: Dreier }
   | { tuer: "branch"; repo: string; name: string; punkte: string[]; ziel: string; dreier: Dreier; bestehend?: string; gemacht?: string; rechte?: Rechte; profil?: string; aufgabe?: Aufgabe;
+      // the branch it starts from (POST /api/branches `base`): ⎇+ under a session starts from that session's branch
+      base?: string;
       // Fleets Bibliothek für diese Session (server.ts#seatLibraryOn); ohne Angabe entscheidet der Ort
       bibliothek?: boolean; sitz?: string; wahl?: Record<string, unknown>; agent?: string };
 // `bewegt`: die Antwort des Plans von jetzt (409 staleHash); `gemacht`: der Branch steht schon, nur seine Session startete nicht;
@@ -93,7 +95,7 @@ async function gruendeMain(a: Extract<Auftrag, { tuer: "main" }>): Promise<Antwo
 async function oeffneBranch(a: Extract<Auftrag, { tuer: "branch" }>): Promise<Antwort> {
   let branch = a.gemacht;
   if (!branch) {
-    const r = await post("/api/branches", { repo: a.repo, name: a.name, points: a.punkte, ...(a.bestehend ? { branch: a.bestehend } : {}) });
+    const r = await post("/api/branches", { repo: a.repo, name: a.name, points: a.punkte, ...(a.bestehend ? { branch: a.bestehend } : {}), ...(a.base ? { base: a.base } : {}) });
     const j = rec(await r.json().catch(() => null));
     const ex = rec(j?.existing);
     if (r.status === 409 && ex && typeof ex.branch === "string" && typeof ex.name === "string")

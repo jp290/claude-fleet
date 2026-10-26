@@ -18,6 +18,8 @@ export interface AnatomieTeil {
   readonly weg: string;
   readonly satz: string;
   readonly text?: string;
+  /** a MCP server's key as Claude Code names its tools (mcp__<key>__…): what weglassen.mcp takes, so the start window can leave one out */
+  readonly schluessel?: string;
   /** die Frage, die der Teil für den Agenten beantwortet (S14, session-blocks.ts#anatomieFrage); fehlt bei einem älteren Server */
   readonly frage?: SessionFrage;
 }
@@ -42,7 +44,8 @@ function teilVon(v: unknown): AnatomieTeil | null {
   const r = rec(v);
   if (!r || !str(r.name) || !zahlOderNull(r.bytes) || !istStand(r.stand) || !str(r.weg) || !str(r.satz)
     || (r.text !== undefined && !str(r.text)) || (r.frage !== undefined && !istFrage(r.frage))) return null;
-  return { name: r.name, bytes: r.bytes, stand: r.stand, weg: r.weg, satz: r.satz, ...(str(r.text) ? { text: r.text } : {}), ...(istFrage(r.frage) ? { frage: r.frage } : {}) };
+  return { name: r.name, bytes: r.bytes, stand: r.stand, weg: r.weg, satz: r.satz, ...(str(r.text) ? { text: r.text } : {}), ...(istFrage(r.frage) ? { frage: r.frage } : {}),
+    ...(str(r.schluessel) ? { schluessel: r.schluessel } : {}) };
 }
 function quelleVon(v: unknown): AnatomieQuelle | null | undefined {
   if (v === null) return null;

@@ -412,7 +412,7 @@ export function anatomieFuerRolle(quelle: { kandidat: Kandidat; a: Anatomie } | 
     const bytes = bytesVon(s.text) + s.werkzeuge.reduce((n, w) => n + bytesVon(`mcp__${k}__${w}`), 0);
     const w = mcpWeg(k);
     mcp.push(fleet.ohneMcp ? { name: mcpName(k, s), bytes, stand: "aus", weg: "--strict-mcp-config", satz: "Eine Text-Lane startet ohne MCP-Server.", text: t }
-      : { name: mcpName(k, s), bytes, stand: s.text ? "an" : "abruf", weg: w,
+      : { name: mcpName(k, s), schluessel: k, bytes, stand: s.text ? "an" : "abruf", weg: w,
         satz: `${w === "claude.ai-Anbindung" ? "kommt aus deinem claude.ai-Konto" : w === "Repo" ? "steht in .mcp.json des Repos" : w.startsWith("Plugin") ? `kommt mit dem ${w}` : "steht in deiner Claude-Konfiguration"}${s.werkzeuge.length ? `; ${s.werkzeuge.length} Werkzeuge auf Abruf` : ""}`, text: t });
   }
   for (const n of orte.repoMcp) if (![...server.keys()].includes(mcpSchluessel(n)))

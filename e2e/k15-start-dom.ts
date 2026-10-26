@@ -1,8 +1,11 @@
 // STARTING FROM THE START WINDOW IN A REAL BROWSER (owner 24.10., src/start-fenster.ts; the build: Neuaufbau K15 Runde 5, src/k15-start.ts,
 // src/start-tuer.ts). Owner 24.10.: a free slot opens the new start window — the repos and their agents, then the session with a banner
 // that says whether it starts as „[Zitat entfernt]“, and on the right the start brief: „[Zitat entfernt]“
-// , file by file with − and + lines against `claude` by hand. The build of the old window (lanes, a MAIN,
-// constellations) stays reachable over „Lanes, MAIN and constellations ›“ (AGENTS.md: switched off, not removed), and its claims stay.
+// , file by file with − and + lines against `claude` by hand. Since the Soll (25.10., owner's yes 26.10.) every
+// place answers one question: no banner while a start is as usual, Connectors a choice of the MCP servers, Plan first a choice of its own,
+// Fleet's stones tiles with a sentence and a switch, the start brief in four moments. The build of the old window leaves before the
+// release (owner 26.10.): its button „[Zitat entfernt]“ went, and with it the claims that reached the build from a free
+// place; ⎇+ and a repo's + still open it until Slot 2 takes it out.
 // The real client bundle (src/client.ts) and the window's own bundle (src/k15-entwurf.ts → /k15.js, with public/k15.css and
 // public/sitzung.css) behind a fixture origin answered over CDP Fetch (as e2e/konstellation.ts): /api/sessions names one running session in
 // slot 1 (an Orchestratorin in slot 2 where a case asks), /api/founding-plan answers per role with a hash that moves with the query and
@@ -31,34 +34,29 @@ export interface K15StartMutant {
 }
 
 export const K15_START_CLAIM = {
-  open: "a click on a free place of the left bar opens the start window (#shell-found.k15sitz) titled „New session · slot N“: the repos on the left with the place's repo chosen, its agents beside them with the repo's own agent first, and no element of the old start window (.fdgo, .fdkind) or of the build (.k15go) stands anywhere",
-  openPhone: "on the phone „Neue Session“ in the Sessions sheet opens the same start window; a tap on the repo's agent shows the session with Start and the start brief below it, nothing wider than the screen, and Start opens the session on the free place",
-  banner: "the repo's agent with nothing changed shows the green banner „Your normal Claude Code“, which names the handover note Fleet types at the Fassung's mark (40 %), and the start brief says nothing differs; Rules „Only this repo's“ turns it amber with „1 change from your normal Claude Code“ and the chip „− Your rules left out“; „Back to normal“ makes it green again and leaves nothing in the start brief marked",
-  brief: "with Rules „Only this repo's“ the start brief shows your ~/.claude/CLAUDE.md word for word as − lines (four, then „… 36 more lines“; a click on its head shows all 40), and the repo's own AGENTS.md and your ~/AGENTS.md unchanged; the Rules block says ~/AGENTS.md still comes in, from a folder above",
-  ohneCheck: "in a repo without a merge check, „+ Branch & land“ says its commits stay on their own branch and promises no land of its own; the switched-on block says it lands only when you say so, in one commit and without a check, because the repo has no ci/merge-check.ts",
+  open: "a click on a free place of the left bar opens the start window (#shell-found.k15sitz) titled „New session“: the repos on the left with the place's repo chosen, its agents beside them with the repo's own agent first, and no element of the old start window (.fdgo, .fdkind), of the build (.k15go) or its button („Lanes, MAIN and constellations ›“, .sfaufbau) stands anywhere",
+  openPhone: "on the phone „Neue Session“ in the Sessions sheet opens the same start window; a tap on the repo's agent shows the session with Start, its zones „Your Claude Code“ and „Fleet on top“ and the start brief below it, nothing wider than the screen, and Start opens the session on the free place",
+  banner: "the repo's agent with nothing changed shows no banner, and the start brief says it starts as claude here by hand, without filter or legend; Succession stands on at the Fassung's mark (40 %) with nothing to switch; Rules „Only this repo's“ brings the amber banner „1 change from your normal Claude Code“ with the chip „− Your rules left out“ and the brief's filter and legend; „Back to normal“ takes the banner away again and leaves nothing in the start brief marked",
+  brief: "with Rules „Only this repo's“ the start brief marks your ~/.claude/CLAUDE.md once as left out (−) and shows none of its lines while closed; a click on its head shows its text as Markdown, its hand-wrapped lines flowing into one paragraph, and „Show its 40 lines“ shows all 40 as − lines (owner 25.10.: one mark at a whole file, no torn lines); and the repo's own AGENTS.md and your ~/AGENTS.md unchanged; the Rule files tile lists your ~/.claude/CLAUDE.md as left out and ~/AGENTS.md as still read at the start",
+  ohneCheck: "in a repo without a merge check, the stone Branch & land says you bring its commits back yourself and promises no land of its own; switched on it says it lands only when you say so, unchecked, and its block says it lands in one commit and without a check, because the repo has no ci/merge-check.ts",
+  pfeil: "on a wide screen (1600 px) a click on Rule files opens it with one sentence of what it is, and one line runs from each of its files to that file's part in the start brief, ending there; closed, the lines go; at 1200 px, where the start brief opens over the session, the open block has no line and a link „Show it in the start brief ›“ instead",
   vorschau: "the start brief reads two previews from GET /api/founding-plan (role nur-ordner, anlass=neu): normal without any choice, and this choice with its fields under the door's names (Rules only → weglassen { claudeMd, rules }) and nothing else",
   start: "Start sends exactly one POST /api/slots/<free>/open: with Rules only { cwd, fassung, weglassen: { claudeMd, rules } }, with nothing changed { cwd, fassung } — fassung the fassungsHash of the preview that read this choice, and plan { hash, role: \"nur-ordner\" } beside it only when that plan says start.startbar",
-  rechte: "„+ Rights“ under Fleet on top sets „Builds“; „Looks only“ chosen in its block goes into the preview and the start as rechte { stufe: \"lesen\", an: [], aus: [] }, and the start brief shows its rights sentence as a + part under „From Fleet“",
+  packs: "under Fleet on top, „What it knows“ shows „Context packs“ with each pack of the library as a stone with a switch (Who it is for, Testing a build) and „Concepts“ with the concept (System concept), all off in your own setup; Who it is for switched on asks the preview for exactly that pack (bibliothek=who-it-is-for), the start brief adds it with every request as a + part of its own, no group around it, that reads, opened, as its Markdown („Who it is for“ as heading), the banner names „+ Context pack: Who it is for“, and Start sends bibliothek [\"who-it-is-for\"]; switched off again, nothing differs from normal",
+  rechte: "the stone Rights under Fleet on top, switched on, sets „Builds“; „Looks only“ chosen in its block goes into the preview and the start as rechte { stufe: \"lesen\", an: [], aus: [] }, and the start brief shows its rights sentence as a + part with every request, read as text when opened",
   agent: "a saved agent unchanged reads its preview with agent=<id> and starts with { cwd, fassung, agent } and none of its fields; changed in the window it says „not saved yet“ and reads and starts with its fields spelled out and no agent; „Save as agent…“ on the repo's agent posts /api/agenten { name, wahlen } with the choice and the name as typed, also when the model changed while it was typed; „Delete…“, asked once more, sends DELETE /api/agenten/<id> and goes back to the agents; the Orchestratorin starts with { cwd, plan: { hash, role: \"orchestratorin\" }, agent: \"orchestratorin\" } and no fassung",
-  druck: "a press is not lost when answers redraw the window while the button is held down: on the repo's agent in the start window the release opens its session, and on a constellation in the build, which still draws itself whole, the release chooses it",
-  ruhig: "a change of Rules and the preview that follows it change only what changed (owner 24.10.: no flicker): the window, its columns, the repo rows, the zones and every tile but Rules stay the same elements, and nothing changes in the repo column, in another tile or anywhere else; the changes stand in the banner, the Rules tile and its block, the zone's head sentence, the head with Start, and the start brief, where a block that reads the same afterwards is the same element; nothing that stays is moved (a move inserts it again, and it fades in); a second click on the Rules tile closes its block, and „+ Rights“ leaves the other additions the same elements",
+  druck: "a press is not lost when answers come while the button is held down: on the repo's agent in the start window the answer that comes during the press waits, nothing is drawn anew under the pointer until the release, and the release opens its session",
+  ruhig: "a change of Rules and the preview that follows it change only what changed (owner 24.10.: no flicker): the window, its columns, the repo rows, the zones and every tile but Rule files stay the same elements, and nothing changes in the repo column, in another tile or anywhere else; the changes stand in the banner that comes, the Rule files tile and its block, the head with Start, and the start brief, where a block that reads the same afterwards is the same element; nothing that stays is moved (a move inserts it again, and it fades in); a second click on the Rule files tile closes its block, and switching Rights on leaves the other stones the same elements",
   laden: "while the preview of a new choice is read, Start is blocked with „Reading what this session gets …“ and a press sends nothing, and the start brief says „Comparing …“ instead of „Nothing differs“ while the banner already names the change; once read, the brief shows the change and Start carries the fassungsHash of that read",
-  aufgabe: "„+ First task“ with a goal typed in two goes, the window redrawn between them, starts with exactly { cwd, fassung, goal } at /api/slots/<free>/open and the goal whole",
-  branchStart: "„+ Branch & land“ blocks Start until it has a name; with a name typed in two goes, Rights and a first task Start sends POST /api/branches { repo, name, points: [] }, then POST /api/branches/open { repo, branch, goal, rechte } and no /open",
-  ohneGit: "in a folder without git, and in a repo the branch doors don't take (dirinfo branches:false, no session works there yet), neither „+ Branch & land“ nor „+ Own notebook“ is offered, under Fleet on top or in the Workplace block, while the other additions are",
-  lane: "a lane from free place N sends exactly one POST /api/slots/N/open-worktree with { repo, branch: \"\", harness, model, effort, plan: { hash, role: \"lane\" } }: the triple is the role's standard from the plan (rollen[].standard), the hash that of the plan the window read with it, no bausteine without a switch",
-  wahl: "model and effort changed at the chosen session (its choice in column 3) stand in the plan the window reads and in the start's body, and the start carries the hash of that read",
-  quick: "⎇+ under a session sends POST /api/lanes with parent { slot, openedAt } and without slot; a position that is not a lane is blocked there, its sentence names ⎇+, and nothing is sent",
-  plus: "the + of a repo sends POST /api/lanes without slot and without parent",
-  orch: "the Orchestratorin starts with POST /api/slots/<free>/open { cwd, label: \"Orchestrator\", harness, model, effort, plan: { hash, role: \"orchestratorin\" }, fassung } (fassung the fassungsHash of the plan it read); with one running (a row with role orchestrator) the button is blocked, the sentence says „läuft schon auf Slot N“, and „Zu ihr“ closes the window, shows her slot and sends nothing",
-  ordner: "a session „Nur Ordner“ starts over /open without a plan while the plan says start.startbar:false, and the sentence names what that door gives anyway; with startbar:true it starts with its plan and without that sentence; both carry the fassungsHash of the plan read for its seat",
-  main: "a MAIN lists the active Programs, free first, a living MAIN not choosable; its start is POST /api/programs/<id>/bootstrap-main { cwd, harness, model, effort } without plan; existing:true stands as a sentence naming the living MAIN's slot, 409 and 503 with the server's words verbatim, nothing starts, the Programs are read again; Programs that cannot be read block with a sentence",
-  branch: "a Branch-Session (Konstellation „Eine Session“) is blocked without a name; Neu sends POST /api/branches { repo, name, points }, then POST /api/branches/open { repo, branch, goal }; a 409 with existing says so and offers „Zu …“, which opens that branch",
-  stale: "a 409 with staleHash starts nothing, the sentence says „Der Plan hat sich … bewegt“, and the next start carries the hash of the plan of now",
-  unreadable: "a plan that cannot be read (500, network, malformed) blocks the start with a sentence that says so, in the start window („The preview is not readable: …“) and in the build, and nothing is sent",
-  datei: "Lane 2 of the default constellation (its own file review-regeln.md) is blocked, the sentence names the file, and nothing is sent",
-  eine: "in a constellation of several sessions the button names the one that starts („Lane 1 starten“) and the sentence says only she starts",
-  zu: "after a successful start the window closes and the started slot is the one shown, from the start window and from the build",
+  aufgabe: "the stone First task switched on, with a goal typed in two goes, the window redrawn between them, starts with exactly { cwd, fassung, goal } at /api/slots/<free>/open and the goal whole",
+  branchStart: "the stone Branch & land switched on blocks Start until it has a name; with a name typed in two goes, Rights and a first task Start sends POST /api/branches { repo, name, points: [] }, then POST /api/branches/open { repo, branch, goal, rechte } and no /open",
+  ohneGit: "in a folder without git, and in a repo the branch doors don't take (dirinfo branches:false, no session works there yet), neither Branch & land nor Own notebook stands under Fleet on top, nor is a branch offered in the Workplace block, while the other stones are",
+  connectors: "Connectors shows the MCP servers Fleet measured at a session's start as a choice, each ticked with where it comes from (Gmail · claude.ai, playwright · plugin), and its block says that /mcp turns a server on or off later in the session; unticking Gmail reads the preview with weglassen { mcp: [\"claude_ai_Gmail\"] }, the tile says „1 of 2 servers“, the banner names „− Connectors: 1 left out“, and Start sends weglassen { mcp: [\"claude_ai_Gmail\"] }",
+  plan: "Plan first is a choice of its own beside Asks you (owner 25.10. 19:50): On reads the preview and starts with permissionMode \"plan\", the banner names „+ Plan first“, and Asks you offers four choices without „Only plans“",
+  quick: "⎇+ under a session opens the start window, not the build (orchestrator 26.10.: a session on a branch of its own, no lane): on the repo's agent Branch & land is on and blocks Start until it has a name; named, the sentence under Start says it starts from that session's branch, and Start sends POST /api/branches { repo, name, points: [], base: <that branch> }, then POST /api/branches/open, and never /api/lanes",
+  plus: "the + of a repo opens the start window, not the build, with that repo chosen; its own agent unchanged starts in the checkout with exactly { cwd, fassung } at /api/slots/<first free>/open, and never /api/lanes",
+  unreadable: "a plan that cannot be read (500, network, malformed) blocks the start in the start window with a sentence that says so („The preview is not readable: …“), and nothing is sent",
+  zu: "after a successful start from the start window the window closes and the started slot is the one shown",
 } as const;
 // the claims read on the phone; every other one at 1200
 const PHONE: ReadonlySet<string> = new Set([K15_START_CLAIM.openPhone]);
@@ -68,21 +66,35 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
   { name: "a free place opens nothing", claim: C.open, file: "src/client.ts",
     needle: "row.onclick = () => openK15Entwurf({ slot: s.id });", with: "row.onclick = () => undefined;" },
   { name: "a free place opens the build instead of the start window", claim: C.open, file: "src/k15-entwurf.ts",
-    needle: `ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau"`, with: `ansicht: "aufbau"` },
+    needle: `ansicht: eingang || h?.[1] === "sitzung" ? "sitzung" : "aufbau"`, with: `ansicht: "aufbau"` },
   { name: "the repo's own agent is not listed", claim: C.open, file: "src/start-fenster.ts",
     needle: "if (repoAg) liste.append(karteVon(repoAg));", with: "" },
   { name: "„Neue Session“ in the Sessions sheet opens nothing", claim: C.openPhone, file: "src/client.ts", width: 390,
     needle: `"Neue Session", () => { if (free) openK15Entwurf({ slot: free.id }); });`, with: `"Neue Session", () => undefined);` },
   { name: "a change never turns the banner amber", claim: C.banner, file: "src/start-fenster.ts",
-    needle: "} else if (!D.length) {", with: "} else if (true) {" },
+    needle: "if (!D.length) return null;", with: "return null;" },
   { name: "„Back to normal“ keeps the choice", claim: C.banner, file: "src/start-fenster.ts",
     needle: "if (istRepo(z.agent)) { z.wahl = normal(); z.offen = null;", with: "if (istRepo(z.agent)) { z.offen = null;" },
-  { name: "the banner keeps the handover note quiet", claim: C.banner, file: "src/start-fenster.ts",
-    needle: "const n = uebergabeHinweis(abschnitt(f, \"arbeitet\", \"schwelle\"));", with: "const n = null;" },
+  { name: "Succession is offered though the place hands over at its mark", claim: C.banner, file: "src/start-fenster.ts",
+    needle: "const mark = uebergabeHinweis(abschnitt(fn ?? fj, \"arbeitet\", \"schwelle\"));", with: "const mark = null;" },
+  { name: "a start as usual shows a banner", claim: C.banner, file: "src/start-fenster.ts",
+    needle: "if (!D.length) return null;", with: "if (!D.length) return b;" },
   { name: "„Back to normal“ leaves the start brief marked", claim: C.banner, file: "src/start-fenster.ts",
     needle: "z.offen = null; z.heiss = null; render(); }", with: "z.offen = null; aendere(s, D.map((d) => d.id)); }" },
-  { name: "„Only this repo's“ hides ~/AGENTS.md that still comes in", claim: C.brief, file: "src/start-fenster.ts",
-    needle: "regelDateien(a).filter((r) => r.eigentum !== \"owner\" && !imRepo(r.pfad, repo))", with: "regelDateien(a).filter(() => false)" },
+  { name: "the Rule files tile reads a file left out as read", claim: C.brief, file: "src/start-fenster.ts",
+    needle: "wann: !an ? \"left out\"", with: "wann: false ? \"left out\"" },
+  { name: "a pack's switch sends the library whole", claim: C.packs, file: "src/start-wahl.ts",
+    needle: "...(liste !== null ? { bibliothek: liste }", with: "...(liste !== null ? { bibliothek: true }" },
+  { name: "a pack switched on is not counted against the place", claim: C.packs, file: "src/start-wahl.ts",
+    needle: "if (!ort.standard.includes(id)) D.push(", with: "if (ort.standard.includes(id)) D.push(" },
+  { name: "the lines of an open tile point nowhere", claim: C.pfeil, file: "src/start-fenster.ts",
+    needle: "const t = hb.querySelector<HTMLElement>(`.sfbk[data-ob=\"${CSS.escape(r.dataset.ziel!)}\"]`), rr", with: "const t = null as HTMLElement | null, rr" },
+  { name: "a file's line ends at another part", claim: C.pfeil, file: "src/start-fenster.ts",
+    needle: "z.dataset.ziel = r.key;", with: "z.dataset.ziel = \"line\";" },
+  { name: "a file in the start brief keeps its hand-wrapped lines and tears in the narrow column", claim: C.brief, file: "src/start-fenster.ts",
+    needle: "mdInto(body, fliessend(text));", with: "mdInto(body, text);" },
+  { name: "a file wholly left out shows its lines while closed again", claim: C.brief, file: "src/start-fenster.ts",
+    needle: "if (ganz && b.diff && !(offen && z.roh.has(b.key))) {", with: "if (false) {" },
   { name: "Branch & land promises a land without a merge check", claim: C.ohneCheck, file: "src/start-fenster.ts",
     needle: "const landetNicht = (i: DirInfoResp | null): boolean => i?.mergeCheck === false;", with: "const landetNicht = (i: DirInfoResp | null): boolean => false;" },
   { name: "„Delete“ deletes nothing", claim: C.agent, file: "src/start-fenster.ts",
@@ -103,7 +115,9 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     with: "const alsAgent = (z: FensterStand): boolean => !!z.agent && z.fremd.length > 0;" },
   { name: "a changed agent does not say it is not saved", claim: C.agent, file: "src/start-fenster.ts",
     needle: "if (offen) l.append(el(\"b\", \"\", `${her ? \" · \" : \"\"}not saved yet`));", with: "" },
-  { name: "a redraw during a press swallows the click", claim: C.druck, file: "src/k15-entwurf.ts",
+  // a press has two guards: the redraw waits for the release, and a redraw keeps its elements (the morph, claim ruhig); either alone keeps
+  // the click, so the press claim watches the wait itself
+  { name: "an answer during a press is drawn under the pointer", claim: C.druck, file: "src/k15-entwurf.ts",
     needle: "if (gedrueckt) { aufgeschoben = true; return; }", with: "" },
   { name: "a redraw draws the whole window anew", claim: C.ruhig, file: "src/start-fenster.ts",
     needle: "const stage = alt instanceof HTMLElement && alt.classList.contains(\"sf\") ? (morph(alt, neu), alt) : (d.replaceChildren(neu), neu);",
@@ -133,56 +147,28 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
   { name: "Branch & land starts in the checkout", claim: C.branchStart, file: "src/start-fenster.ts",
     needle: "const r: Antwort = w.branch !== null", with: "const r: Antwort = false" },
   { name: "Branch & land is offered without git", claim: C.ohneGit, file: "src/start-fenster.ts",
-    needle: "&& (branchGeht(infoDa(s)) || (id !== \"branch\" && id !== \"notebook\")));", with: ");" },
+    needle: "    && (branchGeht(i) || (id !== \"branch\" && id !== \"notebook\"));", with: ";" },
   { name: "Branch & land is offered where the branch door refuses the repo", claim: C.ohneGit, file: "src/start-fenster.ts",
     needle: "const branchGeht = (i: DirInfoResp | null): boolean => i?.git === true && i.branches !== false;",
     with: "const branchGeht = (i: DirInfoResp | null): boolean => i?.git === true;" },
   { name: "the Workplace block offers a branch without git", claim: C.ohneGit, file: "src/start-fenster.ts",
     needle: "if (frei && branchGeht(i)) d.append(opts(", with: "if (frei) d.append(opts(" },
-  { name: "a lane from a free place goes to /api/lanes", claim: C.lane, file: "src/start-tuer.ts",
-    needle: "const url = a.slot !== undefined ? `/api/slots/${a.slot}/open-worktree` : \"/api/lanes\";", with: "const url = \"/api/lanes\";" },
-  { name: "the role's standard is not sent", claim: C.lane, file: "src/k15-zustand.ts",
-    needle: "const mit = (w: Wahl) => w.wert !== \"\" && (w.gesetzt || w.rolle === true);", with: "const mit = (w: Wahl) => w.wert !== \"\" && w.gesetzt;" },
-  { name: "a model or effort set at the session is ignored", claim: C.wahl, file: "src/k15-zustand.ts",
-    needle: "...(gesetzt(qa, passt) ? { position:", with: "...(false ? { position:" },
-  { name: "⎇+ loses its parent", claim: C.quick, file: "src/start-tuer.ts",
-    needle: "{ repo: a.repo, ...(a.parent ? { parent: a.parent } : {}), branch: \"\",", with: "{ repo: a.repo, branch: \"\"," },
-  { name: "⎇+ lets a MAIN start", claim: C.quick, file: "src/k15-start.ts",
-    needle: "if (plus?.parent && t !== \"lane\") return", with: "if (false) return" },
+  { name: "an unticked server stays in the start", claim: C.connectors, file: "src/start-wahl.ts",
+    needle: "if (w.mcpAus.length) o.mcp = [...w.mcpAus];", with: "" },
+  { name: "Connectors shows no choice of the servers", claim: C.connectors, file: "src/start-fenster.ts",
+    needle: "const sv = server(z.letzte?.n ?? z.letzte?.a), weg =", with: "const sv = [] as Server[], weg =" },
+  { name: "Plan first never reaches the door", claim: C.plan, file: "src/start-wahl.ts",
+    needle: "const modus = w.planFirst ? \"plan\" : w.permissionMode;", with: "const modus = w.permissionMode;" },
+  { name: "⎇+ opens the build again", claim: C.quick, file: "src/k15-entwurf.ts",
+    needle: `ansicht: eingang || h?.[1] === "sitzung" ? "sitzung" : "aufbau"`, with: `ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau"` },
+  { name: "⎇+ starts in the checkout instead of on a branch of its own", claim: C.quick, file: "src/start-fenster.ts",
+    needle: "if (abzweig(s) && !fremd.length && wahl.branch === null) wahl.branch = \"\";", with: "" },
+  { name: "⎇+ branches from the repo's main instead of the session's branch", claim: C.quick, file: "src/start-fenster.ts",
+    needle: "...(abzweig(s)?.branch ? { base: abzweig(s)!.branch! } : {})", with: "" },
   { name: "the + of a repo opens nothing", claim: C.plus, file: "src/board.ts",
     needle: "add.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo: R.repo }); };", with: "add.onclick = (e) => { e.stopPropagation(); };" },
-  { name: "the Orchestratorin starts without her label", claim: C.orch, file: "src/k15-start.ts",
-    needle: "...(p.rolle === \"orchestratorin\" ? { label: ORCH_LABEL } : {})", with: "...({})" },
-  { name: "a second Orchestratorin is not blocked", claim: C.orch, file: "src/k15-start.ts",
-    needle: "if (p.rolle === \"orchestratorin\" && orchLaeuft()) return", with: "if (false) return" },
-  { name: "„Zu ihr“ does not show her slot", claim: C.orch, file: "src/k15-start.ts",
-    needle: "zu.onclick = () => { s.shell.close(); zeigeSlot(o.id); };", with: "zu.onclick = () => { s.shell.close(); };" },
-  { name: "Nur Ordner waits for a plan its door cannot start", claim: C.ordner, file: "src/k15-start.ts",
-    needle: "const ohnePlan = (p: Profil, a: Answer): boolean => tuerVon(p) === \"open\" && p.rolle === \"nur-ordner\" && !a.start.startbar;",
-    with: "const ohnePlan = (p: Profil, a: Answer): boolean => false && tuerVon(p) === \"open\" && p.rolle === \"nur-ordner\" && !a.start.startbar;" },
-  { name: "the Programs are not sorted free first", claim: C.main, file: "src/start-tuer.ts",
-    needle: "zeilen.sort((a, b) => rang[a.zustand] - rang[b.zustand] || a.titel.localeCompare(b.titel));", with: "void rang;" },
-  { name: "after a MAIN's answer the Programs are not read again", claim: C.main, file: "src/k15-start.ts",
-    needle: "if (a.tuer === \"main\") void ladePrograms(s);", with: "" },
-  { name: "a Branch-Session starts without a name", claim: C.branch, file: "src/k15-start.ts",
-    needle: "if (!b.name.trim()) return \"Gib dem Branch einen Namen für das Board.\";", with: "" },
-  { name: "a 409 with existing is not recognised", claim: C.branch, file: "src/start-tuer.ts",
-    needle: "if (r.status === 409 && ex && typeof ex.branch === \"string\" && typeof ex.name === \"string\")", with: "if (false)" },
-  { name: "a moved plan is not read again", claim: C.stale, file: "src/k15-start.ts",
-    needle: "if (r.bewegt) s.plaene.clear();", with: "" },
-  { name: "an unreadable plan reads as loading", claim: C.unreadable, file: "src/k15-start.ts",
-    needle: "if (typeof l.plan === \"object\" && \"fehler\" in l.plan) return `Der Plan für diesen Start ist nicht lesbar: ${l.plan.fehler}`;", with: "" },
   { name: "an unreadable preview reads as loading in the start window", claim: C.unreadable, file: "src/start-fenster.ts",
     needle: "if (fehler) return `The preview is not readable: ${fehler}`;", with: "if (fehler) return \"Reading what this session gets …\";" },
-  // the line as 4f7acbefc left it: a seat's own file travels as its brief and an Agent-MD that comes anyway is not counted twice
-  { name: "a session's own file is not counted", claim: C.datei, file: "src/k15-start.ts",
-    needle: "if (q.datei && !alsSitz && !(agentMdKommt(s, p, q) && JSON.stringify(q.datei) === JSON.stringify(p.datei))) out.push(`die Datei ${q.datei.titel}`);", with: "" },
-  { name: "the button does not name the session", claim: C.eine, file: "src/k15-start.ts",
-    needle: "go.textContent = s.start.busy ? \"Startet …\" : z ? `${z.q.name} starten` : \"Starten\";", with: "go.textContent = s.start.busy ? \"Startet …\" : \"Starten\";" },
-  { name: "the sentence does not say only one starts", claim: C.eine, file: "src/k15-start.ts",
-    needle: "if (n > 1) return `Startet nur ${q.name}", with: "if (n > 1) return null; if (n > 1) return `Startet nur ${q.name}" },
-  { name: "the build stays open after a start", claim: C.zu, file: "src/k15-start.ts",
-    needle: "    s.shell.close();\n    zeigeSlot(r.slot);", with: "    zeigeSlot(r.slot);" },
   { name: "the start window stays open after a start", claim: C.zu, file: "src/start-fenster.ts",
     needle: "    s.shell.close();\n    zeigeSlot(r.slot);", with: "    zeigeSlot(r.slot);" },
 ];
@@ -208,6 +194,13 @@ const ROWS: { id: string; wort: string; funktion: string[]; noetig: boolean; rd:
   { id: "self-credential", wort: "Rückweg", funktion: ["rueckweg"], noetig: true, rd: ALL("an", "aus"), bytes: 0, frage: "umstaende" },
   { id: "context-anchors", wort: "Lesehinweise", funktion: ["orientierung"], noetig: false, rd: ALL("an", "aus"), bytes: 76, frage: "hintergrund" },
   { id: "native-agents", wort: "Lädt nativ", funktion: ["vertrag"], noetig: false, rd: ALL("an", "an"), bytes: 1000, frage: "hintergrund", fest: "Der Agent lädt den Ordner selbst." },
+  { id: "bibliothek", wort: "Bibliothek", funktion: ["orientierung"], noetig: false, rd: ALL("an", "aus"), bytes: 2400, frage: "howto" },
+];
+// FLEET'S LIBRARY as the plan's row names it (server/sitz-wissen.ts#seatKatalog): a pack in the start, one as a skill, a concept
+const PACK_KATALOG = [
+  { id: "who-it-is-for", titel: "Who it is for", useWhen: "Read this when you choose, brief or build work that someone will use.", bytes: 2400, weg: "start", konzept: false },
+  { id: "testinstanz-abnahme", titel: "Testing a build", useWhen: "When you build or accept something visible.", bytes: 3100, weg: "skill", konzept: false },
+  { id: "system-concept", titel: "System concept", useWhen: "When you need to know what Fleet is and where it goes.", bytes: 9000, weg: "skill", konzept: true },
 ];
 // the files Claude Code loads by itself in the fixture repo (native-agents' details): three of yours, two of the folder
 const NATIV = [[`${HOME}/.claude/CLAUDE.md`, 3000], [`${HOME}/.claude/rules/typescript.md`, 2000], [`${HOME}/AGENTS.md`, 2500],
@@ -258,6 +251,9 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
   const regeln = REGELN.filter((r) => !(weg.claudeMd && r.pfad.endsWith("/.claude/CLAUDE.md")) && !(weg.rules && r.pfad.includes("/.claude/rules/")));
   const stufe = w.rechte ? (JSON.parse(w.rechte) as { stufe: string }).stufe : null;
   const gewaehlt = ["model", "effort", "permissionMode", "tools", "notizbuch", "rechte", "bibliothek", "schwelle"].filter((k) => w[k] !== undefined);
+  // the library: whole (true), none (false) or exactly these packs, as the preview's query or a saved agent's list carries it
+  const bib = w.bibliothek, packsAn: string[] = bib === undefined || bib === "false" ? [] : bib === "true" ? PACK_KATALOG.map((x) => x.id)
+    : bib.startsWith("[") ? JSON.parse(bib) as string[] : bib.split(",");
   const a = (id: string, text: string, mehr: Record<string, unknown> = {}) => ({ id, quelle: null, bytes: new TextEncoder().encode(text).length, text, ...mehr });
   return { teile: [
     { id: "wer", abschnitte: [a("modell", w.model ?? "kein Modell gewählt"), a("effort", w.effort ?? "kein Effort gewählt")] },
@@ -265,7 +261,8 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
       ...(role === "orchestratorin" ? [a("rolle", "ROLLE Orchestratorin: plant die Arbeit, öffnet die Branches, bringt die Ergebnisse zurück.")] : []),
       a("projektregeln", regeln.map((r, i) => `--- ${i + 1}/${regeln.length} ${r.pfad.split("/").pop()} ---\n${fileText(r.pfad)}`).join("\n"),
         { dateien: regeln.map((r) => ({ pfad: r.pfad, bytes: fileText(r.pfad).length, ...(r.eigentum ? { eigentum: r.eigentum } : {}) })) }),
-      ...(w.bibliothek === "true" ? [a("wissen", "--- who-it-is-for (docs/packs/who-it-is-for.md · # Who it is for) ---\n# Who it is for\n\nRead this when …")] : []),
+      ...(packsAn.includes("who-it-is-for") ? [a("wissen", "--- who-it-is-for (docs/packs/who-it-is-for.md · # Who it is for) ---\n# Who it is for\n\nRead this when …")] : []),
+      ...packsAn.filter((id) => id !== "who-it-is-for").map((id) => a("wissen", `- ${id}: ${PACK_KATALOG.find((x) => x.id === id)?.useWhen ?? "…"}`)),
       ...(w.notizbuch === "aus" ? [] : [a("gedaechtnis", "- [Fixture](fixture.md) — a note", { quelle: `${HOME}/.claude/projects/-fixture-claude-fleet/memory`,
         dateien: [{ pfad: `${HOME}/.claude/projects/-fixture-claude-fleet/memory/MEMORY.md`, bytes: 32 }] })])] },
     { id: "darf", abschnitte: [...(role === "nur-ordner" ? [a("eigenes-setup", "Eigenes Setup: so wie von Hand.")] : []),
@@ -280,6 +277,13 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
       a("schwelle", `Übergabe ab ${w.schwelle ?? 40} % · fällig ab ${Number(w.schwelle ?? 40) + 5} % · an der Schwelle: Hinweis · Hinweis an`)] },
   ] };
 };
+// WHAT CLAUDE CODE SHOWED at a session's start, as the server measures it (server/claude-code-anatomie.ts): here only its MCP servers, one
+// from the claude.ai account and one a plugin brings, each with the key its tools carry (mcp__<key>__…)
+const CC_FIXTURE = { rolle: "generic", zeilen: [],
+  messung: { rolle: "generic", tokens: 20000, am: "2026-10-25", claude: "2.1.310", modell: "claude-opus-5-5", quelle: "fixture", gilt: true },
+  anatomie: { quelle: null, grund: null, gruppen: [{ id: "mcp", wort: "MCP-Server", satz: "aus dem claude.ai-Konto und Plugins", teile: [
+    { name: "claude.ai Gmail", schluessel: "claude_ai_Gmail", bytes: 120, stand: "abruf", weg: "claude.ai-Anbindung", satz: "kommt aus deinem claude.ai-Konto" },
+    { name: "playwright", schluessel: "plugin_playwright_playwright", bytes: 140, stand: "abruf", weg: "Plugin playwright", satz: "kommt mit dem Plugin playwright" }] }] } };
 // the fassungsHash of a preview read: it moves with every field of the query (the window's choice, the agent) and with the fixture's HEAD
 const fassungKey = (q: Record<string, string>, head: string): string =>
   hash(JSON.stringify([Object.entries(q).filter(([k]) => k !== "anlass").sort(([x], [y]) => x.localeCompare(y)), head]));
@@ -291,10 +295,12 @@ interface Fx {
   dirinfoHalt: boolean; planHalt: boolean;
   // the fixture repo is a git checkout; false: a plain folder. branches: the branch doors take it (a workplace repo)
   git: boolean; branches: boolean;
+  // the branch /api/dirinfo names for the fixture repo's checkout, where slot 1 works
+  zweig: string;
   occupied: Map<number, Record<string, unknown>>;
 }
 const fx0 = (): Fx => ({ head: "fixture-head", plan: "ok", ordnerStartbar: false, orch: false, move: false, programs: "ok", bootstrap: "ok",
-  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, git: true, branches: true, occupied: new Map() });
+  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, git: true, branches: true, zweig: "main", occupied: new Map() });
 
 export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   only: { widths?: readonly number[]; mutate?: K15StartMutant } = {}): Promise<K15StartDomResult[]> {
@@ -362,11 +368,13 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         quelle: r.id in sw ? "schalter" : "default", rollenDefault: r.rd[role] ?? "aus", harness: { gueltig: true, grund: null },
         schaltbar: r.fest ? { ja: false, grund: r.fest } : zu ? { ja: false, grund: "Nur Ordner liefert nur, was der Ordner selbst lädt." } : { ja: true },
         bytes: r.bytes, ersatzKandidaten: [], frage: r.frage,
-        ...(r.id === "native-agents" ? { details: { dateien: NATIV.map(([pfad, bytes]) => ({ pfad, bytes })), nachgeladen: [] } } : {}) };
+        ...(r.id === "native-agents" ? { details: { dateien: NATIV.map(([pfad, bytes]) => ({ pfad, bytes })), nachgeladen: [] } } : {}),
+        // only a session without a role has Fleet's library (server.ts#foundingSessionPlan)
+        ...(r.id === "bibliothek" && ordner ? { details: { packs: ["who-it-is-for"], katalog: PACK_KATALOG, eigene: [] } } : {}) };
     });
     const startbar = !ordner || fx.ordnerStartbar;
     return { head: fx.head, branch: "main", harness, plannedAt: 1000, selected: [], omitted: [], role,
-      fassung: fassungOf(q), fassungsHash: fassungKey(Object.fromEntries(q), fx.head),
+      fassung: fassungOf(q), fassungsHash: fassungKey(Object.fromEntries(q), fx.head), claudeCode: CC_FIXTURE,
       plan: { planHash: hash(planKey(q, fx.head)), planSatz: [ROLE_WORD[role], harness, q.get("model"), q.get("effort")].filter(Boolean).join(" · "),
         rolle: role, harness, modell: q.get("model"), effort: q.get("effort"),
         ort: { art: role === "lane" ? "worktree" : "repo", pfad: q.get("repo") ?? REPO, branch: "main", head: fx.head },
@@ -508,7 +516,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       if (p === "/api/dirs") return json(requestId, { path: "/fixture", parent: null, dirs: [], repos: [], git: false, pins: [] });
       // the fixture repo has no ci/merge-check.ts, as none of the owner's own repos (server.ts#hasMergeCheck)
       if (p === "/api/dirinfo" && fx.dirinfoHalt) return new Promise<void>((ok) => { haltend.push(() => { fx.dirinfoHalt = false; void serve(requestId, request).finally(() => ok()); }); });
-      if (p === "/api/dirinfo") return json(requestId, { path: u.searchParams.get("path"), exists: true, git: fx.git, branch: fx.git ? "main" : null, dirty: 0, orphans: [], mergeCheck: false, branches: fx.git && fx.branches });
+      if (p === "/api/dirinfo") return json(requestId, { path: u.searchParams.get("path"), exists: true, git: fx.git, branch: fx.git ? fx.zweig : null, dirty: 0, orphans: [], mergeCheck: false, branches: fx.git && fx.branches });
       if (p === "/api/programs") { programReads++; return fx.programs === "fail" ? json(requestId, { error: "fixture: programs refused" }, 500) : json(requestId, PROGRAMS); }
       if (p === "/api/branches") return json(requestId, { repos: [{ repo: REPO, integration: "main", others: [], othersTotal: 0, reasons: [], branches: [] }] });
       if (p === "/api/worktrees") return fx.board ? json(requestId, workplaces()) : json(requestId, { error: "fixture: not served" }, 404);
@@ -604,23 +612,11 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
     };
 
     const WIN = "document.querySelector('#shell-found')";
-    const GO = `${WIN}?.querySelector('.k15go')`;
-    const SATZ = `(${WIN}?.querySelector('.k15stsatz')?.textContent ?? null)`;
-    const konst = (name: string) => `[...document.querySelectorAll('#shell-found .k15konst')].find((b) => b.querySelector('.k15kn')?.textContent === ${JSON.stringify(name)})`;
-    const card = (id: string) => `${WIN}?.querySelector('.k15card[data-id="${id}"]')`;
-    const row = (k: string) => `[...document.querySelectorAll('#shell-found .k15c3 .k15z')].find((r) => r.querySelector('.k15zk')?.textContent === ${JSON.stringify(k)})?.querySelector('.k15sw')`;
-    const menu = (wert: string) => `document.querySelector('#shell-found .k15menu button[data-wert="${wert}"]')`;
-    // what the foot says and whether the button lets a start through
-    const foot = () => evaluate<{ go: string | null; disabled: boolean | null; satz: string | null; warn: boolean }>(`({ go: ${GO}?.textContent ?? null,
-      disabled: ${GO} ? ${GO}.disabled : null, satz: ${SATZ}, warn: !!${WIN}?.querySelector('.k15stsatz.warn') })`);
     const shown = () => evaluate<string | null>("document.querySelector('#comptarget')?.dataset.slot ?? null");
     const open = () => evaluate<boolean>(`!!${WIN}`);
     const starts = () => posts.filter((x) => START.test(x.url));
-    const reads = (role: string, d: { harness?: string; model?: string; effort?: string }) => planReads.filter((q) => q.role === role && q.repo === REPO
-      && q.harness === d.harness && q.model === d.model && q.effort === d.effort && q.bausteine === undefined);
     const hashFor = (role: string, d: { harness?: string; model?: string; effort?: string }, head = fx.head) =>
       hash(planKey(new URLSearchParams({ repo: REPO, role, ...d }), head));
-    const std = (role: string) => ({ harness: STD[role]!.harness, model: STD[role]!.modell, effort: STD[role]!.effort });
     // a start's body without its fassung when that is the fassungsHash of a plan the window read that passes `pred` (a start carries the
     // one of the plan it showed); null otherwise
     const ohneFassung = (body: unknown, pred: (q: Record<string, string>) => boolean): unknown => {
@@ -676,32 +672,27 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         if (!await wait(`!!${WIN}?.querySelector('.sf.s2 .sfgo')`, 10000)) throw new Error(`the agent ${id} did not open its session`);
         await idle();
       };
-      // …and the build (K15) over „Lanes, MAIN and constellations ›“
-      const zumAufbau = async () => {
-        await click(`${WIN}?.querySelector('.sfaufbau')`);
-        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("„Lanes, MAIN and constellations ›“ did not open the build");
-        await idle();
-      };
-      const fromFree = async () => { await fenster(); await zumAufbau(); };
       // THE START WINDOW'S HEAD: what the sentence under Start says, and whether Start lets a start through
       const SFGO = `${WIN}?.querySelector('.sfgo')`;
       const sfKopf = () => evaluate<{ go: string | null; disabled: boolean | null; hint: string | null; warn: boolean }>(`({ go: ${SFGO}?.textContent ?? null,
         disabled: ${SFGO} ? ${SFGO}.disabled : null, hint: ${WIN}?.querySelector('.sfhint')?.textContent ?? null, warn: !!${WIN}?.querySelector('.sfhint.warn') })`);
       const sfStart = async () => { await click(SFGO); await wait(`!${WIN}`, 6000); await idle(); return starts(); };
       // a block of „Your Claude Code“ or „Fleet on top“ opened by its name, then one of its options; a block Fleet adds
-      const block = async (id: string) => { await click(`${WIN}?.querySelector('.sftile[data-b="${id}"] .sftn')`); await idle(); };
+      const block = async (id: string) => { await click(`${WIN}?.querySelector('.sftile[data-b="${id}"] :is(.sftn, .sfsn)')`); await idle(); };
       const option = async (set: string) => { await click(`${WIN}?.querySelector('.sfopt[data-set="${set}"]')`); await idle(); };
-      const dazu = async (id: string) => { await click(`${WIN}?.querySelector('.sfaddon[data-add="${id}"]')`); await idle(); };
+      // a stone of Fleet on top switched on or off
+      const dazu = async (id: string) => { await click(`${WIN}?.querySelector('.sftile[data-b="${id}"] .sfsw')`); await idle(); };
       // the start brief opens over the session at this width
       const briefAuf = async () => {
         if (!await evaluate<boolean>(`!!${WIN}?.querySelector('.sfhood.show')`)) await click(`${WIN}?.querySelector('.sfbriefbtn')`);
         await wait(`!!${WIN}?.querySelector('.sfhood.show')`, 3000); await idle();
       };
       const briefZu = async () => { await click(`${WIN}?.querySelector('.sfhood .sfhclose')`); await wait(`!${WIN}?.querySelector('.sfhood.show')`, 3000); await idle(); };
-      const banner = () => evaluate<{ art: string; h3: string; p: string; chips: string[]; nichts: boolean; markiert: number }>(`(() => { const b = ${WIN}?.querySelector('.sfbanner');
+      const banner = () => evaluate<{ art: string; h3: string; p: string; chips: string[]; nichts: boolean; markiert: number; legende: boolean }>(`(() => { const b = ${WIN}?.querySelector('.sfbanner');
         return { art: b ? (['dev', 'fleet'].find((c) => b.classList.contains(c)) ?? 'ok') : 'none', h3: b?.querySelector('h3')?.textContent ?? '',
           p: b?.querySelector('p')?.textContent ?? '', chips: [...(b?.querySelectorAll('.sfdchip') ?? [])].map((c) => c.dataset.dev + ':' + c.textContent),
-          nichts: !!${WIN}?.querySelector('.sfhb .sfnone'), markiert: ${WIN}?.querySelectorAll('.sfhb .sfbk.hl').length ?? -1 }; })()`);
+          nichts: !!${WIN}?.querySelector('.sfhb .sfnone'), markiert: ${WIN}?.querySelectorAll('.sfhb .sfbk.hl').length ?? -1,
+          legende: !!${WIN}?.querySelector('.sfhh .sflegend') && !!${WIN}?.querySelector('.sfhh [data-only="1"]') }; })()`);
       // the start window's preview reads: role nur-ordner on the fixture repo, each with the fields beside repo, role and anlass
       const vorschauen = () => planReads.filter((q) => q.role === "nur-ordner" && q.repo === REPO && q.anlass === "neu")
         .map((q) => Object.fromEntries(Object.entries(q).filter(([k]) => !["repo", "role", "anlass"].includes(k))));
@@ -710,16 +701,6 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const q = vorschauen().filter(pred).pop();
         return q ? fassungKey({ repo: REPO, role: "nur-ordner", anlass: "neu", ...q }, fx.head) : null;
       };
-      // K15 at this width shows one column at a time: the constellation's own row leads to its build, a card to the session
-      const toSession = async (id: string) => {
-        await click(`${WIN}?.querySelector('.k15konst.on')`); await idle();
-        await click(card(id)); await idle();
-      };
-      const goReady = async () => { await idle(); return wait(`${GO} && !${GO}.disabled`, 8000); };
-      // a start that goes through: the press, the window gives way, every answer read; what was sent
-      const go = async () => { await click(GO); await wait(`!${WIN}`, 6000); await idle(); return starts(); };
-      // a press on a blocked start: what the foot said before it
-      const goBlocked = async () => { const f = await foot(); await click(GO); await idle(); return f; };
       const caseOf = async (name: string, run: () => Promise<void>) => {
         try { await run(); } catch (e) { if (e instanceof K15VerdictIn) throw e; facts[`${name}:error`] = e instanceof Error ? e.message : String(e); }
         if (artifacts) await shot(`k15-start-${width}-${name}`).catch(() => undefined);
@@ -738,11 +719,11 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           const ok = await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
           await idle();
           if (ok) await mitAgent("repo", "touch");
-          const blick = await evaluate<{ go: boolean; banner: boolean; brief: boolean; unter: boolean; repos: boolean; breit: number; schirm: number; old: number }>(`(() => {
+          const blick = await evaluate<{ go: boolean; zonen: boolean; brief: boolean; unter: boolean; repos: boolean; breit: number; schirm: number; old: number }>(`(() => {
             const sieht = (e) => !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0;
             const go = ${WIN}?.querySelector('.sfgo'), sheet = ${WIN}?.querySelector('.sfsheet'), hood = ${WIN}?.querySelector('.sfhood'), sf = ${WIN}?.querySelector('.sf');
             const r = go?.getBoundingClientRect();
-            return { go: sieht(go) && !!r && r.left >= 0 && r.right <= innerWidth, banner: sieht(${WIN}?.querySelector('.sfbanner')),
+            return { go: sieht(go) && !!r && r.left >= 0 && r.right <= innerWidth, zonen: sieht(${WIN}?.querySelector('.sfzone.cc')) && sieht(${WIN}?.querySelector('.sfzone.fl')),
               brief: sieht(hood) && !!hood.querySelector('.sfbk'), unter: !!sheet && !!hood && hood.getBoundingClientRect().top >= sheet.getBoundingClientRect().bottom - 1,
               repos: sieht(${WIN}?.querySelector('.sfrepos')), breit: Math.max(sf?.scrollWidth ?? 0, document.documentElement.scrollWidth), schirm: innerWidth,
               old: document.querySelectorAll('.fdgo, .fdkind, .k15go').length }; })()`);
@@ -752,7 +733,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           const s = starts();
           const z = { open: await open(), shown: await shown() };
           facts.openPhone = { ok, blick, posts: s, ...z, started };
-          verdicts[C.openPhone] = ok && blick.go && blick.banner && blick.brief && blick.unter && !blick.repos && blick.breit <= blick.schirm && blick.old === 0
+          verdicts[C.openPhone] = ok && blick.go && blick.zonen && blick.brief && blick.unter && !blick.repos && blick.breit <= blick.schirm && blick.old === 0
             && s.length === 1 && /^\/api\/slots\/\d+\/open$/.test(s[0]!.url) && (s[0]!.body as { cwd?: unknown }).cwd === REPO
             && started !== null && !z.open && z.shown === String(started);
         });
@@ -765,49 +746,54 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       const WEG = { claudeMd: true, rules: true };
       const nurWeg = (q: Record<string, string>) => Object.keys(q).join() === "weglassen" && canon(JSON.parse(q.weglassen!)) === canon(WEG);
       const startChecks: boolean[] = [];
-      let zuFenster = false;
       await caseOf("fenster", async () => {
         await fresh();
         await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
         const ok = await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
         await idle();
-        const seen = await evaluate<{ sitz: boolean; titel: string | null; repo: string | null; agenten: string[]; old: number; aufbau: number }>(`({
+        const seen = await evaluate<{ sitz: boolean; titel: string | null; repo: string | null; agenten: string[]; old: number; aufbau: number; knopf: number }>(`({
           sitz: !!document.querySelector('#shell-found.k15sitz .sf.s1'), titel: ${WIN}?.querySelector('.shellhead h2')?.textContent ?? null,
           repo: ${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo ?? null, agenten: [...(${WIN}?.querySelectorAll('.sfag') ?? [])].map((b) => b.dataset.agent),
-          old: document.querySelectorAll('.fdgo, .fdkind').length, aufbau: document.querySelectorAll('.k15go').length })`);
+          old: document.querySelectorAll('.fdgo, .fdkind').length, aufbau: document.querySelectorAll('.k15go').length,
+          knopf: document.querySelectorAll('.sfaufbau').length + [...document.querySelectorAll('#shell-found button')].filter((b) => b.textContent.includes('Lanes, MAIN')).length })`);
         facts.open = { ok, ...seen };
-        verdicts[C.open] = ok && seen.sitz && seen.titel === `New session · slot ${FREE}` && seen.repo === REPO && seen.agenten[0] === "repo"
-          && seen.agenten.includes("pruefer") && seen.old === 0 && seen.aufbau === 0;
+        verdicts[C.open] = ok && seen.sitz && seen.titel === "New session" && seen.repo === REPO && seen.agenten[0] === "repo"
+          && seen.agenten.includes("pruefer") && seen.old === 0 && seen.aufbau === 0 && seen.knopf === 0;
         await mitAgent("repo");
         const normal = await banner();
+        // Succession where the place already hands over at its mark: on, the mark its choice, nothing to switch
+        const nachfolge = await evaluate<{ schalter: boolean; wert: string }>(`(() => { const t = ${WIN}?.querySelector('.sftile[data-b="succession"]');
+          return { schalter: !t || !!t.querySelector('.sfsw'), wert: t?.querySelector('.sfpk')?.firstChild?.textContent ?? '' }; })()`);
         await block("rules");
         await option("rules:nein");
         const amber = await banner();
-        // the start brief: your CLAUDE.md as − lines, folded to four, then whole; the repo's AGENTS.md as it is
+        // the start brief: your CLAUDE.md one mark while closed, its text as Markdown when open, its lines one click behind; the repo's AGENTS.md as it is
         await briefAuf();
         const MD = `${WIN}?.querySelector('.sfbk[data-ob="regel:${HOME}/.claude/CLAUDE.md"]')`;
-        const datei = () => evaluate<{ chg: boolean; zeichen: string; del: string[]; plus: number; mehr: string | null; repo: boolean | null; home: boolean | null; satz: string }>(`(() => { const b = ${MD};
+        const datei = () => evaluate<{ chg: boolean; zeichen: string; del: string[]; plus: number; mehr: string | null; md: string[]; repo: boolean | null; home: boolean | null; liste: Record<string, string> }>(`(() => { const b = ${MD};
           const r = ${WIN}?.querySelector('.sfbk[data-ob="regel:${REPO}/AGENTS.md"]'), h = ${WIN}?.querySelector('.sfbk[data-ob="regel:${HOME}/AGENTS.md"]');
           return { chg: !!b?.classList.contains('chg'), zeichen: b?.querySelector('.sfbk-h .sfdm')?.textContent ?? '',
             del: [...(b?.querySelectorAll('.sfln.del .sft') ?? [])].map((x) => x.textContent), plus: b?.querySelectorAll('.sfln.add').length ?? -1,
-            mehr: b?.querySelector('.sfmore')?.textContent ?? null, repo: r ? r.classList.contains('chg') : null, home: h ? h.classList.contains('chg') : null,
-            satz: ${WIN}?.querySelector('.sftile[data-b="rules"] .sfts')?.textContent ?? '' }; })()`);
+            mehr: b?.querySelector('.sfmore')?.textContent ?? null, md: [...(b?.querySelectorAll('.sfmd .mdp') ?? [])].map((x) => x.textContent), repo: r ? r.classList.contains('chg') : null, home: h ? h.classList.contains('chg') : null,
+            liste: Object.fromEntries([...(${WIN}?.querySelectorAll('.sftile[data-b="rules"] .sffiles [data-ziel]') ?? [])].map((r) => [r.dataset.ziel, r.textContent])) }; })()`);
         const zu = await datei();
         await click(`${MD}?.querySelector('.sfbk-h')`); await idle();
         const auf = await datei();
+        await click(`${MD}?.querySelector('.sfmore')`); await idle();
+        const zeilenAuf = await datei();
         const soll = fileText(`${HOME}/.claude/CLAUDE.md`).split("\n");
-        facts.brief = { zu, auf };
-        verdicts[C.brief] = zu.chg && zu.zeichen === "−" && JSON.stringify(zu.del) === JSON.stringify(soll.slice(0, 4)) && zu.plus === 0
-          && zu.mehr === "… 36 more lines" && zu.repo === false && zu.home === false && JSON.stringify(auf.del) === JSON.stringify(soll)
-          && zu.satz === "Your ~/.claude rules stay out; /fixture/home/AGENTS.md still comes in, from a folder above.";
+        facts.brief = { zu, auf, zeilenAuf };
+        verdicts[C.brief] = zu.chg && zu.zeichen === "−" && zu.del.length === 0 && zu.plus === 0 && zu.mehr === null && zu.md.length === 0
+          && zu.repo === false && zu.home === false && JSON.stringify(auf.md) === JSON.stringify([soll.join(" ")]) && auf.del.length === 0
+          && auf.mehr === "Show its 40 lines" && JSON.stringify(zeilenAuf.del) === JSON.stringify(soll) && zeilenAuf.mehr === "Show as text"
+          && !!zu.liste[`regel:${HOME}/.claude/CLAUDE.md`]?.endsWith("left out") && !!zu.liste[`regel:${HOME}/AGENTS.md`]?.endsWith("read at the start");
         await briefZu();
         await click(`${WIN}?.querySelector('.sfbanner [data-normal="1"]')`); await idle();
         const zurueck = await banner();
-        facts.banner = { normal, amber, zurueck };
-        verdicts[C.banner] = normal.art === "ok" && normal.h3 === "Your normal Claude Code" && normal.nichts
-          && normal.p.includes("at 40 % of its context it types a note asking it to hand over") && zurueck.markiert === 0
+        facts.banner = { normal, nachfolge, amber, zurueck };
+        verdicts[C.banner] = normal.art === "none" && normal.nichts && !normal.legende && !nachfolge.schalter && nachfolge.wert === "At 40 %"
           && amber.art === "dev" && amber.h3 === "1 change from your normal Claude Code" && JSON.stringify(amber.chips) === JSON.stringify(["rules:−Your rules left out"])
-          && !amber.nichts && zurueck.art === "ok" && zurueck.h3 === "Your normal Claude Code" && zurueck.nichts;
+          && !amber.nichts && amber.legende && zurueck.art === "none" && zurueck.nichts && zurueck.markiert === 0 && !zurueck.legende;
         const gelesen = vorschauen();
         facts.vorschau = gelesen;
         verdicts[C.vorschau] = gelesen.some((q) => Object.keys(q).length === 0) && gelesen.some(nurWeg)
@@ -820,7 +806,8 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const z = { open: await open(), shown: await shown() };
         facts.startRegeln = { posts: s, expect: h, ...z, started };
         startChecks.push(h !== null && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, weglassen: WEG }));
-        zuFenster = s.length === 1 && started !== null && !z.open && z.shown === String(started);
+        facts.zu = { ...z, started };
+        verdicts[C.zu] = s.length === 1 && started !== null && !z.open && z.shown === String(started);
       });
       // the repo's agent with nothing changed, its plan startable
       await caseOf("start-normal", async () => {
@@ -848,8 +835,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const mit = (st: string) => (q: Record<string, string>) => Object.keys(q).join() === "rechte" && canon(JSON.parse(q.rechte!)) === canon({ stufe: st, an: [], aus: [] });
         const gelesen = { bauen: vorschauen().some(mit("bauen")), lesen: vorschauen().some(mit("lesen")) };
         await briefAuf();
-        const satz = await evaluate<{ zeichen: string; text: string } | null>(`(() => { const k = ${WIN}?.querySelector('.sfbk[data-ob="fleet"] .sfbk[data-ob="rechte"]');
-          return k ? { zeichen: k.querySelector('.sfdm')?.textContent ?? '', text: [...k.querySelectorAll('.sfln.add .sft')].map((x) => x.textContent).join(' ') } : null; })()`);
+        await click(`${WIN}?.querySelector('.sfbk[data-ob="rechte"] .sfbk-h')`); await idle();
+        const satz = await evaluate<{ zeichen: string; text: string } | null>(`(() => { const k = ${WIN}?.querySelector('.sfbk[data-ob="rechte"]');
+          return k ? { zeichen: k.querySelector('.sfdm')?.textContent ?? '', text: k.querySelector('.sfmd')?.textContent ?? '' } : null; })()`);
         await briefZu();
         const h = fassungDerVorschau(mit("lesen"));
         const s = await sfStart();
@@ -858,20 +846,136 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           && h !== null && s.length === 1 && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, rechte: { stufe: "lesen", an: [], aus: [] } });
       });
 
-      // „+ Branch & land“ in a repo without a merge check: its commits on their own branch, no land promised
+      // EACH CONTEXT PACK A STONE (owner 25.10.: „[Zitat entfernt]“): rows under Fleet on top, a switch each; one
+      // switched on goes into the preview, the start brief, the banner and the start as exactly that pack
+      await caseOf("packs", async () => {
+        await fresh();
+        await fenster();
+        await mitAgent("repo");
+        // each kind under „What it knows“ with the stones that follow its name
+        const reihen = () => evaluate<{ reihe: string; packs: { id: string; an: string | null }[] }[]>(`[...(${WIN}?.querySelectorAll('.sfzone.fl .sfpart') ?? [])]
+          .filter((p) => p.querySelector('.sfplabel')?.textContent === 'What it knows').flatMap((p) => [...p.querySelectorAll('.sfart')].map((a) => ({
+          reihe: a.querySelector('b')?.textContent ?? '', packs: [...(a.nextElementSibling?.querySelectorAll('.sftile[data-b^="pack:"]') ?? [])].map((t) => ({ id: t.dataset.b, an: t.querySelector('.sfsw')?.getAttribute('aria-checked') ?? null })) })))`);
+        const banner = () => evaluate<{ dev: boolean; chips: string[] }>(`(() => { const b = ${WIN}?.querySelector('.sfbanner');
+          return { dev: !!b?.classList.contains('dev'), chips: [...(b?.querySelectorAll('.sfdchip') ?? [])].map((c) => c.textContent) }; })()`);
+        const schalte = async (id: string) => { await click(`${WIN}?.querySelector('.sftile[data-b="pack:${id}"] .sfsw')`); await idle(); };
+        const vorher = await reihen();
+        await schalte("who-it-is-for");
+        const an = { reihen: await reihen(), banner: await banner() };
+        await schalte("who-it-is-for");
+        const wieder = await banner();
+        await schalte("who-it-is-for");
+        const nur = (q: Record<string, string>) => Object.keys(q).join() === "bibliothek" && q.bibliothek === "who-it-is-for";
+        const gelesen = vorschauen().some(nur);
+        await briefAuf();
+        await click(`${WIN}?.querySelector('.sfbk[data-ob="pack:who-it-is-for"] .sfbk-h')`); await idle();
+        const teil = await evaluate<{ zeichen: string; text: string; gruppe: boolean; moment: string } | null>(`(() => { const k = ${WIN}?.querySelector('.sfbk[data-ob="pack:who-it-is-for"]');
+          return k ? { zeichen: k.querySelector('.sfdm')?.textContent ?? '', text: k.querySelector('.sfmd .mdh')?.textContent ?? '', gruppe: !!k.parentElement?.closest('.sfbk'),
+            moment: k.closest('.sfbsec')?.dataset.key ?? '' } : null; })()`);
+        await briefZu();
+        const h = fassungDerVorschau(nur);
+        const st = await sfStart();
+        facts.packs = { vorher, an, wieder, gelesen, teil, posts: st, expect: h };
+        const reihe = (r: typeof vorher, wort: string) => r.find((x) => x.reihe === wort)?.packs ?? [];
+        verdicts[C.packs] = canon(reihe(vorher, "Context packs")) === canon([{ id: "pack:who-it-is-for", an: "false" }, { id: "pack:testinstanz-abnahme", an: "false" }])
+          && canon(reihe(vorher, "Concepts")) === canon([{ id: "pack:system-concept", an: "false" }])
+          && reihe(an.reihen, "Context packs")[0]?.an === "true" && an.banner.dev && canon(an.banner.chips) === canon(["+Context pack: Who it is for"])
+          && !wieder.dev && wieder.chips.length === 0 && gelesen && teil?.zeichen === "+" && teil.text === "Who it is for" && !teil.gruppe && teil.moment === "With every request"
+          && h !== null && st.length === 1 && canon(st[0]!.body) === canon({ cwd: REPO, fassung: h, bibliothek: ["who-it-is-for"] });
+      });
+
+      // CONNECTORS AS A CHOICE (owner 26.10., „[Zitat entfernt]“: the MCP servers at one place): the measured servers ticked, one unticked goes to
+      // the preview, the banner and the start as weglassen.mcp; the block says what holds later in the session
+      await caseOf("connectors", async () => {
+        await fresh();
+        await fenster();
+        await mitAgent("repo");
+        await click(`${WIN}?.querySelector('.sftile[data-b="connectors"] .sfopener')`); await idle();
+        const liste = () => evaluate<{ server: string[]; mcp: boolean; kachel: string }>(`({
+          server: [...(${WIN}?.querySelectorAll('.sfdrawer .sfcheck') ?? [])].map((b) => b.dataset.server + ':' + b.getAttribute('aria-checked') + ':' + (b.lastElementChild?.textContent ?? '')),
+          mcp: (${WIN}?.querySelector('.sfdrawer .sfoffnote')?.textContent ?? '').includes('/mcp turns a server on or off'),
+          kachel: ${WIN}?.querySelector('.sftile[data-b="connectors"] .sfopener')?.firstChild?.textContent ?? '' })`);
+        const vorher = await liste();
+        await click(`${WIN}?.querySelector('.sfcheck[data-server="claude_ai_Gmail"]')`); await idle();
+        const nachher = await liste(), b = await banner();
+        const MCP = (q: Record<string, string>) => Object.keys(q).join() === "weglassen" && canon(JSON.parse(q.weglassen!)) === canon({ mcp: ["claude_ai_Gmail"] });
+        await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
+        const gelesen = vorschauen().some(MCP), h = fassungDerVorschau(MCP);
+        const s = await sfStart();
+        facts.connectors = { vorher, nachher, banner: b.chips, gelesen, posts: s, expect: h };
+        verdicts[C.connectors] = canon(vorher.server) === canon(["claude_ai_Gmail:true:claude.ai", "plugin_playwright_playwright:true:plugin"]) && vorher.mcp
+          && vorher.kachel === "2 servers" && nachher.server[0] === "claude_ai_Gmail:false:claude.ai" && nachher.kachel === "1 of 2 servers"
+          && canon(b.chips) === canon(["connectors:−Connectors: 1 left out"]) && gelesen
+          && h !== null && s.length === 1 && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, weglassen: { mcp: ["claude_ai_Gmail"] } });
+      });
+
+      // PLAN FIRST, a choice of its own beside Asks you (owner 25.10. 19:50): Asks you offers four, Plan first goes as the plan mode
+      await caseOf("plan", async () => {
+        await fresh();
+        await fenster();
+        await mitAgent("repo");
+        const fragt = await evaluate<string[]>(`[...(${WIN}?.querySelector('select[data-k="permissions"]')?.options ?? [])].map((o) => o.value)`);
+        await evaluate(`(() => { const x = ${WIN}?.querySelector('select[data-k="plan"]'); x.value = 'an'; x.dispatchEvent(new Event('change')); })()`);
+        await idle();
+        const b = await banner();
+        const PLAN = (q: Record<string, string>) => Object.keys(q).join() === "permissionMode" && q.permissionMode === "plan";
+        await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
+        const gelesen = vorschauen().some(PLAN), h = fassungDerVorschau(PLAN);
+        const s = await sfStart();
+        facts.plan = { fragt, banner: b.chips, gelesen, posts: s, expect: h };
+        verdicts[C.plan] = canon(fragt) === canon(["", "manual", "acceptEdits", "auto", "dontAsk"]) && canon(b.chips) === canon(["plan:+Plan first"])
+          && gelesen && h !== null && s.length === 1 && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, permissionMode: "plan" });
+      });
+
+      // the stone Branch & land in a repo without a merge check: its commits on their own branch, no land promised
       await caseOf("ohne-check", async () => {
         await fresh();
         await fenster();
         await mitAgent("repo");
-        const knopf = await evaluate<string>(`${WIN}?.querySelector('.sfaddon[data-add="branch"]')?.textContent ?? ''`);
+        const knopf = await evaluate<string>(`${WIN}?.querySelector('.sftile[data-b="branch"] .sfts')?.textContent ?? ''`);
         await dazu("branch");
         const satz = await evaluate<string>(`${WIN}?.querySelector('.sftile[data-b="branch"] .sfts')?.textContent ?? ''`);
         await block("branch");
         const lade = await evaluate<string>(`${WIN}?.querySelector('.sfdrawer .sfgit')?.textContent ?? ''`);
         facts.ohneCheck = { knopf, satz, lade };
-        verdicts[C.ohneCheck] = knopf.endsWith("its commits, on their own branch") && !knopf.includes("then land")
+        verdicts[C.ohneCheck] = knopf.includes("you bring its commits back yourself") && !knopf.includes("brings its work back")
           && satz === "No merge check here: it lands only when you say so, unchecked."
           && lade.includes("only when you say so, in one commit and without a check: this repo has no merge check (ci/merge-check.ts)");
+      });
+
+      // THE ARROW (owner 25.10.: „[Zitat entfernt]“): wide, Rules opens with one sentence and an arrow
+      // to each of its parts in the start brief — its rule files and the start line, nothing else; closed, they go; at 1200 a link instead
+      await caseOf("pfeil", async () => {
+        await fresh();
+        await send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await fenster();
+        await mitAgent("repo");
+        await block("rules");
+        await wait(`(${WIN}?.querySelectorAll('svg.sfpfeil path:not(.tip)').length ?? 0) > 0`, 3000);
+        const lies = () => evaluate<{ satz: string; zweite: number; link: number; enden: string[]; teile: string[] }>(`(() => {
+          const w = ${WIN}, d = w?.querySelector('.sfdrawer'), hb = w?.querySelector('.sfhb')?.getBoundingClientRect();
+          const bks = [...(w?.querySelectorAll('.sfhb > .sfbsec > .sfbk') ?? [])];
+          // where each arrow ends: the start brief's part whose head sits there, a few pixels right of the arrow's tip
+          const enden = [...(w?.querySelectorAll('svg.sfpfeil path:not(.tip)') ?? [])].map((p) => {
+            const o = p.ownerSVGElement.getBoundingClientRect(), e = p.getAttribute('d').split(' ').pop().split(',').map(Number), x = e[0] + o.left, y = e[1] + o.top;
+            const hit = bks.find((b) => { const r = b.getBoundingClientRect(); return x < r.left && r.left - x <= 8 && y >= r.top && y <= r.bottom; });
+            return hit ? hit.dataset.ob : 'nowhere'; });
+          const sicht = (b) => { const r = b.getBoundingClientRect(); return hb && r.top >= hb.top && r.top + 20 <= hb.bottom; };
+          return { satz: d?.querySelector('.sfdh span')?.textContent ?? '', zweite: d ? d.querySelectorAll('.sfhow').length : -1, link: d ? d.querySelectorAll('.sftoright').length : -1,
+            enden, teile: bks.filter((b) => sicht(b) && b.dataset.ob.startsWith('regel:')).map((b) => b.dataset.ob) };
+        })()`);
+        const auf = await lies();
+        await click(`${WIN}?.querySelector('.sfdrawer .sfcl')`); await idle();
+        const zu = await lies();
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: phone });
+        await idle();
+        await block("rules");
+        const schmal = await lies();
+        facts.pfeil = { auf, zu: zu.enden, schmal: { enden: schmal.enden, link: schmal.link } };
+        const saetze = (auf.satz.match(/[.!?](\s|$)/g) ?? []).length;
+        verdicts[C.pfeil] = saetze === 1 && auf.zweite === 0 && auf.link === 0 && auf.teile.length >= 2
+          && auf.enden.length === auf.teile.length && auf.teile.every((t) => auf.enden.includes(t)) && auf.enden.every((e) => auf.teile.includes(e))
+          && zu.enden.length === 0 && schmal.enden.length === 0 && schmal.link === 1;
       });
 
       // a press that answers redraw under: the dirinfo answers wait, the button goes down on the repo's agent, they arrive, it comes up
@@ -883,30 +987,18 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         if (!at) throw new Error("the repo's agent holds no still point");
         await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
         await send("Input.dispatchMouseEvent", { type: "mousePressed", x: at.x, y: at.y, button: "left", clickCount: 1 });
+        // the morph would keep the click through a redraw as well (claim ruhig), so the release alone proves no wait: the held answer's
+        // folder facts must not stand in the repo column, and the pressed button must be the same element, until the release
+        await evaluate(`(() => { window.__ag = ${WIN}?.querySelector('.sf .sfag.repoag'); window.__vor = ${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? ''; })()`);
         const gehalten = haltend.length;
         for (const go of haltend.splice(0)) go();
         await settle(300);
+        const zwischen = await evaluate<{ gezeichnet: boolean; derselbe: boolean; vor: string; nach: string }>(`({ gezeichnet: (${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? '') !== window.__vor,
+          derselbe: !!window.__ag && window.__ag === ${WIN}?.querySelector('.sf .sfag.repoag'), vor: window.__vor, nach: ${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? '' })`);
         await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button: "left", clickCount: 1 });
         const auf = await wait(`!!${WIN}?.querySelector('.sf.s2 .sfgo')`, 4000);
-        // the build still draws itself whole on every answer: there only the lock keeps the press (src/k15-entwurf.ts#render)
-        await fresh({ dirinfoHalt: true });
-        await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
-        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000)) throw new Error("the start window did not open with the repo's agent");
-        await click(`${WIN}?.querySelector('.sfaufbau')`);
-        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("„Lanes, MAIN and constellations ›“ did not open the build");
-        const ziel = konst("Eine Session");
-        const vorher = await evaluate<boolean>(`!!${ziel}?.classList.contains('on')`);
-        const am = await pointOf(ziel);
-        if (!am) throw new Error("the constellation „Eine Session“ holds no still point");
-        await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: am.x, y: am.y });
-        await send("Input.dispatchMouseEvent", { type: "mousePressed", x: am.x, y: am.y, button: "left", clickCount: 1 });
-        const gehaltenAufbau = haltend.length;
-        for (const go of haltend.splice(0)) go();
-        await settle(300);
-        await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: am.x, y: am.y, button: "left", clickCount: 1 });
-        const gewaehlt = await wait(`!!${ziel}?.classList.contains('on')`, 4000);
-        facts.druck = { gehalten, auf, aufbau: { vorher, gehalten: gehaltenAufbau, gewaehlt } };
-        verdicts[C.druck] = gehalten > 0 && auf && !vorher && gehaltenAufbau > 0 && gewaehlt;
+        facts.druck = { gehalten, ...zwischen, auf };
+        verdicts[C.druck] = gehalten > 0 && !zwischen.gezeichnet && zwischen.derselbe && auf;
       });
 
       // a change of Rules, watched: what stays the same element, and where anything changed until the preview arrived
@@ -923,6 +1015,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           window.__obs = new MutationObserver((ms) => { for (const m of ms) {
             for (const x of m.removedNodes) if (x.nodeType === 1) window.__raus.push(x);
             const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+            if ([...m.addedNodes, ...m.removedNodes].some((x) => x.nodeType === 1 && x.matches('.sfbanner'))) { window.__rec.push('banner'); continue; }
             window.__rec.push(t.closest('.sfrepos') ? 'repos' : t.closest('.sftile[data-b="rules"]') ? 'rules' : t.closest('.sftile') ? 'tile:' + t.closest('.sftile').dataset.b
               : t.closest('.sfbanner') ? 'banner' : t.closest('.sfdrawer') ? 'drawer' : t.closest('.sfhero') ? 'hero' : t.closest('.sfhood') ? 'brief'
               : t.closest('.sfzh') ? 'zone-head'
@@ -942,7 +1035,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await block("rules");
         const zu = await evaluate<boolean>(`!${WIN}?.querySelector('.sfdrawer')`);
         // a Fleet tile that comes in front of the additions leaves them where they are
-        const adds = await evaluate<number>(`(window.__adds = [...${WIN}.querySelectorAll('.sfaddon:not([data-add="rights"])')]).length`);
+        const adds = await evaluate<number>(`(window.__adds = [...${WIN}.querySelectorAll('.sftile.stein:not([data-b="rights"])')]).length`);
         await dazu("rights");
         const addsWeg = await evaluate<number>("window.__adds.filter((e) => !e.isConnected).length");
         facts.ruhig = { ...r, zu, adds, addsWeg };
@@ -1035,7 +1128,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           await fresh(set);
           await fenster();
           await mitAgent("repo");
-          const adds = await evaluate<string[]>(`[...(${WIN}?.querySelectorAll('.sfaddon') ?? [])].map((b) => b.dataset.add ?? '')`);
+          const adds = await evaluate<string[]>(`[...(${WIN}?.querySelectorAll('.sfzone.fl .sftile.stein[data-b]') ?? [])].map((b) => b.dataset.b ?? '')`);
           await block("workplace");
           const platz = await evaluate<{ drawer: boolean; branch: boolean }>(`({ drawer: !!${WIN}?.querySelector('.sfdrawer'),
             branch: !!${WIN}?.querySelector('.sfopt[data-set="workplace:branch"]') })`);
@@ -1118,267 +1211,49 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         verdicts[C.agent] = agentChecks.length === 5 && agentChecks.every(Boolean);
       });
 
-      // THE BUILD over „Lanes, MAIN and constellations ›“: 13 · the button names the one; 2 · its lane start; 14 · the window gives way
-      await caseOf("lane", async () => {
-        await fresh();
-        await fromFree();
-        await goReady();
-        const f = await foot();
-        facts.eine = f;
-        verdicts[C.eine] = f.go === "Lane 1 starten" && f.disabled === false && !f.warn && !!f.satz?.startsWith("Startet nur Lane 1")
-          && f.satz.includes("mehrere Sessions als Einheit startet Fleet noch nicht");
-        const d = std("lane");
-        const h = hashFor("lane", d);
-        const read = reads("lane", d).length > 0;
-        const s = await go();
-        facts.lane = { read, posts: s, expectHash: h };
-        verdicts[C.lane] = read && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open-worktree`
-          && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
-        const z = { open: await open(), shown: await shown() };
-        facts.zu = { fenster: zuFenster, bau: { ...z, started } };
-        verdicts[C.zu] = zuFenster && s.length === 1 && started !== null && !z.open && z.shown === String(started);
-      });
-
-      // 3 · model and effort changed at the session
-      await caseOf("wahl", async () => {
-        await fresh();
-        await fromFree();
-        await toSession("l1");
-        await click(row("Modell")); await click(menu("claude-sonnet-5-5")); await idle();
-        await click(row("Effort")); await click(menu("low")); await idle();
-        const d = { harness: "claude", model: "claude-sonnet-5-5", effort: "low" };
-        const read = reads("lane", d).length > 0;
-        const h = hashFor("lane", d);
-        await goReady();
-        const s = await go();
-        facts.wahl = { read, posts: s, reads: planReads.slice(-4) };
-        verdicts[C.wahl] = read && s.length === 1 && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
-      });
-
-      // 4 · ⎇+ under the session in slot 1
+      // 4 · ⎇+ under the session in slot 1: the start window, a session on a branch of its own from slot 1's branch, never a lane
       await caseOf("quick", async () => {
-        await fresh();
+        await fresh({ zweig: "bau/uhr-alt" });
         await click(`document.querySelector('#slots .slot[data-slot="1"] .quicklane')`);
-        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("⎇+ did not open the window");
+        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag') || !!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("⎇+ opened no window");
         await idle();
-        await toSession("m");
-        const blocked = await goBlocked();
-        const sentBlocked = starts().length;
-        await click(`${WIN}?.querySelector('.k15crumbb')`); await idle();
-        await click(card("l1"));
-        await goReady();
-        const d = std("lane");
-        const h = hashFor("lane", d);
-        const s = await go();
-        facts.quick = { blocked, sentBlocked, posts: s };
-        verdicts[C.quick] = blocked.disabled === true && blocked.warn && !!blocked.satz?.includes("⎇+") && sentBlocked === 0
-          && s.length === 1 && s[0]!.url === "/api/lanes" && !("slot" in (s[0]!.body as object))
-          && canon(s[0]!.body) === canon({ repo: REPO, parent: { slot: 1, openedAt: 1000 }, branch: "", ...d, plan: { hash: h, role: "lane" } });
+        const aufbau = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15go')`);
+        if (aufbau) { facts.quick = { aufbau }; verdicts[C.quick] = false; return; }
+        await mitAgent("repo");
+        const ohne = await sfKopf();
+        await click(SFGO);
+        await settle(150);
+        const sentOhne = starts().length;
+        await type(`${WIN}?.querySelector('[data-feld="branch"]')`, "Uhr in der Statuszeile");
+        await idle();
+        await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
+        const mit = await sfKopf();
+        const s = await sfStart();
+        facts.quick = { aufbau, ohne, sentOhne, mit, posts: s };
+        verdicts[C.quick] = ohne.disabled === true && ohne.hint === "Give its branch a name for the board." && sentOhne === 0
+          && mit.hint === "On its own branch from bau/uhr-alt; Fleet opens it in a free slot." && canon(s) === canon([
+            { url: "/api/branches", body: { repo: REPO, name: "Uhr in der Statuszeile", points: [], base: "bau/uhr-alt" } },
+            { url: "/api/branches/open", body: { repo: REPO, branch: "bau/uhr-in-der-statuszeile" } }]);
       });
 
-      // 5 · the + in a repo's head of the git structure (K16: the Ranke's Projekte are gone)
+      // 5 · the + in a repo's head of the git structure (K16: the Ranke's Projekte are gone): the start window in that repo
       await caseOf("plus", async () => {
         await fresh({ board: true });
         const add = `document.querySelector('#boardbody .gs[data-repo="${REPO}"] .gsh .gsadd')`;
         if (!await wait(`!!${add}`, 10000)) throw new Error("the board never showed the repo's +: " + await evaluate<string>("document.querySelector('#boardbody')?.innerText.slice(0, 300) ?? 'no board'"));
         await click(add);
-        if (!await wait(`!!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("the repo's + did not open the window");
-        await goReady();
-        const d = std("lane");
-        const h = hashFor("lane", d);
-        const s = await go();
-        facts.plus = { posts: s };
-        verdicts[C.plus] = s.length === 1 && s[0]!.url === "/api/lanes" && canon(s[0]!.body) === canon({ repo: REPO, branch: "", ...d, plan: { hash: h, role: "lane" } });
-      });
-
-      // 6 · the Orchestratorin, then one already running
-      let orchStart = false;
-      await caseOf("orch", async () => {
-        await fresh();
-        await fromFree();
-        await toSession("o");
-        await goReady();
-        const d = std("orchestratorin");
-        const h = hashFor("orchestratorin", d);
-        const s = await go();
-        facts.orch = { posts: s };
-        orchStart = s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && canon(ohneFassung(s[0]!.body, (q) => q.role === "orchestratorin"
-          && q.harness === d.harness && q.model === d.model && q.effort === d.effort && !q.bausteine)) === canon({ cwd: REPO, label: "Orchestrator", ...d, plan: { hash: h, role: "orchestratorin" } });
-      });
-      await caseOf("orch-running", async () => {
-        await fresh({ orch: true });
-        await fromFree();
-        await toSession("o");
-        const f = await goBlocked();
-        const sent = starts().length;
-        await click(`[...document.querySelectorAll('#shell-found .k15start .k15ghost')].find((b) => b.textContent === 'Zu ihr auf Slot 2')`);
+        if (!await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag') || !!${WIN}?.querySelector('.k15go')`, 10000)) throw new Error("the repo's + opened no window");
         await idle();
-        const z = { open: await open(), shown: await shown() };
-        facts.orchRunning = { foot: f, sent, ...z, posts: starts() };
-        verdicts[C.orch] = orchStart && f.disabled === true && f.warn && f.satz === "Die Orchestratorin läuft schon auf Slot 2."
-          && sent === 0 && !z.open && z.shown === "2" && starts().length === 0;
-      });
-
-      // 7 · a session „Nur Ordner“, dragged in as a constellation, while its door cannot start the plan, then once it can
-      const dragIn = async () => {
-        const at = await evaluate<{ x: number; y: number }>(`(() => { const r = ${WIN}.querySelector('.shelldetail').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-        const data = { items: [], files: [ordnerJson], dragOperationsMask: 1 };
-        for (const t of ["dragEnter", "dragOver", "drop"]) await send("Input.dispatchDragEvent", { type: t, x: at.x, y: at.y, data });
-        await idle();
-        if (!await wait(`${WIN}?.querySelector('.k15konst.on .k15kn')?.textContent === 'Nur Ordner'`, 4000))
-          throw new Error("the dragged constellation did not land: " + await evaluate<string>(`${WIN}?.querySelector('.k15toast')?.textContent ?? 'no sentence'`));
-      };
-      let ordnerOhne: { foot: unknown; posts: unknown } | null = null, ordnerOhneOk = false;
-      await caseOf("ordner", async () => {
-        await fresh();
-        await fromFree();
-        await dragIn();
-        await goReady();
-        const f = await foot();
-        const s = await go();
-        ordnerOhne = { foot: f, posts: s };
-        ordnerOhneOk = f.disabled === false && !f.warn
-          && f.satz === `Startet ohne Plan über die bestehende Tür; sie gibt heute trotzdem ${ORDNER_TROTZDEM} mit. ${LAUF_NEU}`
-          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && alsSitz(s[0]!.body)
-          && canon(ohneSitz(ohneFassung(s[0]!.body, fuerSitz(s[0]!.body)))) === canon({ cwd: REPO });
-      });
-      await caseOf("ordner-startbar", async () => {
-        await fresh({ ordnerStartbar: true });
-        await fromFree();
-        await dragIn();
-        await goReady();
-        const f = await foot();
-        const h = hashFor("nur-ordner", {});
-        const s = await go();
-        facts.ordner = { ohne: ordnerOhne, mit: { foot: f, posts: s } };
-        verdicts[C.ordner] = ordnerOhneOk && f.disabled === false && !(f.satz ?? "").includes("ohne Plan")
-          && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open` && alsSitz(s[0]!.body)
-          && canon(ohneSitz(ohneFassung(s[0]!.body, fuerSitz(s[0]!.body)))) === canon({ cwd: REPO, plan: { hash: h, role: "nur-ordner" } });
-      });
-
-      // 8 · a MAIN: the Programs, the start, the three answers that found nothing, Programs that cannot be read
-      const progs = () => evaluate<[string, boolean, string, string | null][]>(`[...document.querySelectorAll('#shell-found .k15stopt[data-program]')].map((b) =>
-        [b.dataset.program, b.disabled, b.querySelector('.k15stsub')?.textContent ?? '', b.getAttribute('aria-checked')])`);
-      const mainChecks: boolean[] = [];
-      await caseOf("main", async () => {
-        await fresh();
-        await fromFree();
-        await toSession("m");
-        await wait("document.querySelectorAll('#shell-found .k15stopt[data-program]').length === 5", 4000);
-        await idle();
-        const listed = await progs();
-        const inaktiv = await evaluate<boolean>(`[...document.querySelectorAll('#shell-found .k15start .k15hinweis')].some((x) => x.textContent.startsWith('1 weitere nicht aktiv'))`);
-        await click(`document.querySelector('#shell-found .k15stopt[data-program="p-live"]')`);
-        const still = (await progs()).find((x) => x[0] === "p-free")?.[3] === "true";
-        await goReady();
-        const d = std("main");
-        const s = await go();
-        facts.main = { listed, inaktiv, still, posts: s };
-        mainChecks.push(JSON.stringify(listed) === JSON.stringify([
-          ["p-free", false, "ohne MAIN", "true"], ["p-stale", false, "alte MAIN weg (Slot 5) — wird ersetzt", "false"], ["p-live", true, "MAIN läuft auf Slot 1", "false"],
-          ["p-founding", true, "Belegung unbekannt", "false"], ["p-unknown", true, "Belegung unbekannt", "false"]])
-          && inaktiv && still && s.length === 1 && s[0]!.url === "/api/programs/p-free/bootstrap-main"
-          && canon(s[0]!.body) === canon({ cwd: REPO, ...d }) && (await shown()) === "2");
-      });
-      const NOTHING: Record<"existing" | "refuse" | "pending", string> = {
-        existing: "Das Program hat schon eine lebende MAIN auf Slot 1. Nichts wurde gegründet.",
-        refuse: "Abgelehnt (409): cannot bootstrap Program-MAIN for a complete program",
-        pending: `Abgelehnt (503): Program-MAIN founding recovery is pending; retry did not open another slot {"availability":"unknown","recovery":"pending","affected":{"attemptId":"${"a".repeat(32)}","slot":4,"openedAt":4000}}`,
-      };
-      for (const mode of ["existing", "refuse", "pending"] as const) {
-        await caseOf(`main-${mode}`, async () => {
-          await fresh({ bootstrap: mode });
-          await fromFree();
-          await toSession("m");
-          await wait("document.querySelectorAll('#shell-found .k15stopt[data-program]').length === 5", 4000);
-          await goReady();
-          const before = programReads;
-          await click(GO);
-          await wait(`!!${WIN}?.querySelector('.k15stsatz.warn')`, 6000);
-          await idle();
-          const f = await foot();
-          const s = starts();
-          facts[`main-${mode}`] = { foot: f, posts: s, programReads: [before, programReads] };
-          mainChecks.push(f.satz === NOTHING[mode] && f.warn && await open() && (await shown()) === "1" && programReads === before + 1
-            && s.length === 1 && s[0]!.url === "/api/programs/p-free/bootstrap-main" && fx.occupied.size === 0);
-        });
-      }
-      await caseOf("main-unreadable", async () => {
-        await fresh({ programs: "fail" });
-        await fromFree();
-        await toSession("m");
-        const f = await goBlocked();
-        const listed = await progs();
-        facts["main-unreadable"] = { foot: f, listed, posts: starts() };
-        mainChecks.push(f.disabled === true && f.warn && f.satz === "Die Programs sind nicht lesbar (Antwort 500). Ohne sie wird keine MAIN gegründet."
-          && listed.length === 0 && starts().length === 0);
-      });
-      verdicts[C.main] = mainChecks.length === 5 && mainChecks.every(Boolean);
-      facts.mainChecks = mainChecks;
-
-      // 9 · a Branch-Session: no name, Neu, then a name another branch already carries
-      const toBranch = async () => { await click(konst("Eine Session")); await idle(); await click(card("s")); await idle(); };
-      const fill = async () => {
-        await type(`${WIN}?.querySelector('[data-feld="start-name"]')`, "Uhr in der Statuszeile");
-        await type(`${WIN}?.querySelector('[data-feld="start-ziel"]')`, "Die Uhr steht rechts.");
-        await type(`${WIN}?.querySelector('[data-feld="start-punkte"]')`, "Uhr zeigen\nSekunden weglassen");
-        await idle();
-      };
-      const branchChecks: boolean[] = [];
-      await caseOf("branch", async () => {
-        await fresh();
-        await fromFree();
-        await toBranch();
-        const ohne = await goBlocked();
-        const sentOhne = starts().length;
-        await fill();
-        const mit = await foot();
-        const s = await go();
-        facts.branch = { ohne, sentOhne, mit, posts: s };
-        branchChecks.push(ohne.disabled === true && ohne.warn && ohne.satz === "Gib dem Branch einen Namen für das Board." && sentOhne === 0
-          && mit.disabled === false && canon(s) === canon([
-            { url: "/api/branches", body: { repo: REPO, name: "Uhr in der Statuszeile", points: ["Uhr zeigen", "Sekunden weglassen"] } },
-            { url: "/api/branches/open", body: { repo: REPO, branch: "bau/uhr-in-der-statuszeile", goal: "Die Uhr steht rechts." } }])
-          && (await shown()) === "2");
-      });
-      await caseOf("branch-exists", async () => {
-        await fresh({ branchExists: true });
-        await fromFree();
-        await toBranch();
-        await fill();
-        await click(GO);
-        await wait(`!!${WIN}?.querySelector('.k15stsatz.warn')`, 6000); await idle();
-        const f = await foot();
-        const zu = await evaluate<string | null>(`[...document.querySelectorAll('#shell-found .k15start .k15ghost')].find((b) => b.textContent.startsWith('Zu „'))?.textContent ?? null`);
-        const sent = starts().length;
-        await click(`[...document.querySelectorAll('#shell-found .k15start .k15ghost')].find((b) => b.textContent.startsWith('Zu „'))`);
-        await wait(`!${WIN}`, 6000); await idle();
-        const s = starts();
-        facts.branchExists = { foot: f, zu, sent, posts: s };
-        branchChecks.push(f.warn && f.satz === "Den Namen „Uhr in der Statuszeile“ trägt in diesem Repo schon bau/uhr-alt." && zu === "Zu „Uhr in der Statuszeile“ (bau/uhr-alt) — dort weiterarbeiten"
-          && sent === 1 && s.length === 2 && canon(s[1]) === canon({ url: "/api/branches/open", body: { repo: REPO, branch: "bau/uhr-alt", goal: "Die Uhr steht rechts." } })
-          && (await shown()) === "2");
-      });
-      verdicts[C.branch] = branchChecks.length === 2 && branchChecks.every(Boolean);
-
-      // 10 · the plan moved between the preview and the start
-      await caseOf("stale", async () => {
-        await fresh({ move: true });
-        await fromFree();
-        await goReady();
-        const d = std("lane");
-        const before = hashFor("lane", d, "fixture-head");
-        await click(GO);
-        await wait(`(${SATZ} ?? '').includes('bewegt')`, 6000);
-        const f = await foot();
-        const between = { open: await open(), occupied: fx.occupied.size };
-        await goReady();
-        const after = hashFor("lane", d, "fixture-head-moved");
-        const s = await go();
-        facts.stale = { foot: f, between, posts: s, before, after };
-        verdicts[C.stale] = f.warn && !!f.satz?.startsWith("Der Plan hat sich seit der Vorschau bewegt — nichts gestartet.") && between.open && between.occupied === 0
-          && s.length === 2 && (s[0]!.body as { plan?: { hash?: string } }).plan?.hash === before
-          && (s[1]!.body as { plan?: { hash?: string } }).plan?.hash === after && before !== after;
+        const aufbau = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15go')`);
+        if (aufbau) { facts.plus = { aufbau }; verdicts[C.plus] = false; return; }
+        const repo = await evaluate<string | null>(`${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo ?? null`);
+        await mitAgent("repo");
+        await wait(`${SFGO} && !${SFGO}.disabled`, 6000);
+        const h = fassungDerVorschau((q) => Object.keys(q).length === 0);
+        const s = await sfStart();
+        // the first place without a session: slot 1 works, and the fixture's others are free
+        facts.plus = { aufbau, repo, expect: h, posts: s };
+        verdicts[C.plus] = repo === REPO && h !== null && s.length === 1 && s[0]!.url === "/api/slots/2/open" && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h });
       });
 
       // 11 · a plan that cannot be read
@@ -1393,26 +1268,12 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           const leer = await evaluate<string>(`${WIN}?.querySelector('.sfsheet .sfleer')?.textContent ?? ''`);
           await click(SFGO); await idle();
           const sentFenster = starts().length;
-          await click(`${WIN}?.querySelector('.sfback')`);
-          await wait(`!!${WIN}?.querySelector('.sf .sfaufbau')`, 6000); await idle();
-          await zumAufbau();
-          const f = await goBlocked();
-          facts[`plan-${mode}`] = { kopf, leer, sentFenster, foot: f, posts: starts() };
+          facts[`plan-${mode}`] = { kopf, leer, sentFenster };
           unreadable.push(kopf.disabled === true && kopf.warn && !!kopf.hint?.startsWith("The preview is not readable:") && leer.startsWith("The preview is not readable:")
-            && sentFenster === 0 && f.disabled === true && f.warn && !!f.satz?.startsWith("Der Plan für diesen Start ist nicht lesbar:") && starts().length === 0);
+            && sentFenster === 0);
         });
       }
       verdicts[C.unreadable] = unreadable.length === 3 && unreadable.every(Boolean);
-
-      // 12 · Lane 2 with her own file
-      await caseOf("datei", async () => {
-        await fresh();
-        await fromFree();
-        await toSession("l2");
-        const f = await goBlocked();
-        facts.datei = { foot: f, posts: starts() };
-        verdicts[C.datei] = f.disabled === true && f.warn && !!f.satz?.includes("die Datei review-regeln.md") && starts().length === 0;
-      });
 
       results.push({ width, height, claims, facts });
     }

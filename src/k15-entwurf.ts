@@ -77,9 +77,9 @@ export function openK15Entwurf(eingang?: Eingang): void {
     pins: null, infos: new Map(), repoMenu: false, ordner: null,
     fassungen: new Map(), packs: [], bearbeite: null, bearbeiteText: null, packEdit: null, ablauf: null, warnAm: 0, speicher: "laedt", konstGespeichert: new Map(),
     eingang: eingang ?? null, start: startStand0(),
-    // DAS STARTFENSTER (src/start-fenster.ts, Owner 24.10.) ist der Einstieg vom freien Platz und vom Handy; ein Repo-+, ⎇+ und die alten
-    // Adressen #k15… öffnen den Aufbau
-    ansicht: (eingang && "slot" in eingang) || h?.[1] === "sitzung" ? "sitzung" : "aufbau", sitz: fensterStand0() };
+    // DAS STARTFENSTER (src/start-fenster.ts, Owner 24.10.) ist der Einstieg vom freien Platz, vom Handy, vom + eines Repos und von ⎇+
+    // (Orchestratorin 26.10.: ⎇+ startet eine Session auf eigenem Branch, keine Lane); nur die alten Adressen #k15… öffnen den Aufbau
+    ansicht: eingang || h?.[1] === "sitzung" ? "sitzung" : "aufbau", sitz: fensterStand0() };
   setzeS(s);
   ladeEigenes(s);
   beimZeichnen(render);

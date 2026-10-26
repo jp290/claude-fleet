@@ -4230,7 +4230,7 @@ function gitBlock(R: WorkplaceRepo, wts: WtInfo | null, standOf: Map<string, Wor
   const add = el("button", "rk-btn quiet ib gsadd") as HTMLButtonElement;
   add.type = "button";
   add.appendChild(icon("plus"));
-  add.title = "New session in this repo — a lane, a branch session or another role";
+  add.title = "New session in this repo";
   add.setAttribute("aria-label", add.title);
   add.onclick = (e) => { e.stopPropagation(); openK15Entwurf({ repo: R.repo }); };
   const gear = el("button", `rk-btn quiet ib gsgear${gsSetOpen ? " on" : ""}`) as HTMLButtonElement;

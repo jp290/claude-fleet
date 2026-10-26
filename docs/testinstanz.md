@@ -207,8 +207,7 @@ ihn über „Repo hinzufügen“. Ohne `--in` entsteht ein frisches Repo, in dem
 
 ## Echte Sitze — `up --real-seats`
 
-Owner 22.10.: „[Zitat entfernt]“
- Ohne den Schalter startet eine Testinstanz nie ein Modell: `FLEET_CMD=true`, und
+Owner 22.10.: „[Zitat entfernt]“ Ohne den Schalter startet eine Testinstanz nie ein Modell: `FLEET_CMD=true`, und
 unter ihrem eigenen HOME ist `claude` nirgends angemeldet. Mit dem Schalter:
 
     FLEET_TI_MODEL=claude-haiku-5-5 ./testinstanz.sh up mixed --real-seats [--ttl <min>]

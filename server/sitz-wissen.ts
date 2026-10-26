@@ -83,6 +83,8 @@ export interface SeatPack {
   readonly zurWahl?: true;
   /** sein Feld `statt`: wer ihn wählt, bekommt diesen Pack nicht */
   readonly statt?: string;
+  /** wer ihn diesem Start gab (die Vorgängerin über POST /api/self/einrichten), für die + Zeile mit Autor */
+  readonly autor?: string;
 }
 
 export interface SeatKnowledge {
@@ -110,7 +112,7 @@ const headOf = (k: SeatKnowledge): string => {
     skills.length ? `As skills, open one when its description fits your moment (Skill tool): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
     .filter(Boolean).join(" ");
 };
-const boxBlock = (pack: SeatPack): string => `--- ${pack.id} (${quelleOf(pack)}) ---\n${pack.text}`;
+const boxBlock = (pack: SeatPack): string => `--- ${pack.id} (${quelleOf(pack)}${pack.autor ? ` · author: ${pack.autor}` : ""}) ---\n${pack.text}`;
 
 /** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt. */
 export function renderSeatStart(k: SeatKnowledge): string {
@@ -218,7 +220,8 @@ export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge):
  *  auch wenn die Liste ihn trägt: das Startfenster schickt die Standardpacks mit. Rein. */
 export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null, dazu: readonly string[] = [], an = true): SeatKnowledge {
   const ids = Array.isArray(wahl) ? new Set(wahl) : null, extra = new Set(dazu);
-  const da = k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat && !pack.zurWahl));
+  const da = k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat && !pack.zurWahl))
+    .map((pack) => extra.has(pack.id) ? { ...pack, autor: "your predecessor in this slot" } : pack);
   const weg = new Set(da.flatMap((pack) => pack.statt ? [pack.statt] : []));
   return { ...k, packs: da.filter((pack) => !weg.has(pack.id)) };
 }
@@ -228,9 +231,16 @@ export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null
  *  Grund. `skillsDir` ist der Ordner, den der Start mit `--add-dir` bekommt; null vor dem Start (er gehört der Belegung). `nichtWirksam`: warum der Start-Block in der
  *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. */
 export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string): FassungAbschnittEingang[] {
-  if (!claude)
+  if (!claude) {
+    // Ein Harness ohne Fleets Systemprompt bekommt die Steine seiner Vorgängerin im Übergabebrief, nicht als Start-Block
+    // (Owner 2026-10-26: „[Zitat entfernt]“).
+    // Die Fassung zeigt sie trotzdem hier, damit Info → Setup dieselbe + Zeile mit Autor hat wie bei Claude Code.
+    const steine = k.packs.filter((pack) => pack.autor !== undefined && pack.text !== null);
     return [unknownAbschnitt("wissen", "dieser Harness liest weder Start-Block noch Skills; Fleets Packs leiht er über "
-      + `GET /api/self/context/<id> aus (${k.packs.map((pack) => pack.id).join(", ") || "keiner passt"})`)];
+      + `GET /api/self/context/<id> aus (${k.packs.map((pack) => pack.id).join(", ") || "keiner passt"})`),
+    ...steine.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
+      boxBlock(pack), true, undefined, undefined, `im Übergabebrief: ${pack.autor}`))];
+  }
   const box = boxOf(k), skills = skillsOf(k);
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"

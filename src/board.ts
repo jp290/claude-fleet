@@ -1597,8 +1597,7 @@ export async function renderBoard() {
     }
     // 4 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
     // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts). It
-    // stands above the notepad and History (owner 2026-10-09: „[Zitat entfernt]“
-    // )
+    // stands above the notepad and History (owner 2026-10-09: „[Zitat entfernt]“)
     const msec = moreSection(c);
     nodes.push(msec);
     // 5 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn

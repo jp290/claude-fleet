@@ -3,11 +3,12 @@
 // zeigt jede neue Zeile als + gegenüber der Vorgängerin (src/start-brief.ts#gegenVorgaengerin). Gemessen an der Zeile, mit der tmux die Pane
 // startete, an GET /api/sessions und an der Fassung derselben Session. Die Fixture ist ein fremdes Repo, also eigenes Setup (Bibliothek aus).
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { gegenVorgaengerin, type Fassung } from "../src/start-brief";
 import { type Answer, branchTestkit, type Fixture, get, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
 
-const { SOCKETS, fixture, life, cleanup } = branchTestkit();
+const { SOCKETS, BIN, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
 
 function startzeile(f: Fixture, cwd: string): string {
@@ -97,4 +98,39 @@ describe("eine Session baut ihre Nachfolgerin", () => {
     const [lane] = await life(f, [als(self, post("/api/self/einrichten", { purpose: ZWECK }))]);
     expect(lane?.status).toBe(409);
   }, LIFE_DEADLINE_MS * 2);
+});
+
+// EIN HARNESS OHNE FLEETS SYSTEMPROMPT (Owner 26.10.: „[Zitat entfernt]“):
+// der Zweck und der Pack der Vorgängerin erreichen die Nachfolgerin im Übergabebrief, je Stein eine + Zeile mit Autor.
+describe("einrichten auf einem Harness ohne Fleets Systemprompt", () => {
+  test("eine pi-Sitz richtet sich ein; die Nachfolgerin liest Zweck und Pack als + Zeilen mit Autor im Brief", async () => {
+    const f = fixture();
+    // Der Ersatz-pi muss auf beiden Plattformen als „pi“ gelesen werden (server.ts#paneAgentAt): Linux nimmt den
+    // Skriptnamen, macOS den Namen des Interpreter-Links. Ein Link namens pi-bash gibt beiden den Anfang „pi“.
+    symlinkSync("/bin/bash", join(BIN, "pi-bash"));
+    writeFileSync(join(BIN, "pi"), `#!${join(BIN, "pi-bash")}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+    const PACK = { id: "mein-pi-agent", useWhen: "Wenn du für mich arbeitest.", text: "# Mein Pi Agent\n\nLies die README vor dem ersten Schritt." };
+    const ZWECK = "Du arbeitest für mich, nicht für Fleet.";
+    const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, harness: "pi" })]);
+    offen(opened);
+    const self = selfToken(f, 1);
+    const [pack, gesetzt] = await life(f, [als(self, post("/api/self/packs", PACK)),
+      als(self, post("/api/self/einrichten", { purpose: ZWECK, packs: [PACK.id, "fleet-doors"] }))]);
+    expect(pack?.status).toBe(200);
+    expect(gesetzt?.status).toBe(200);
+    expect(gesetzt?.body.zeilen).toEqual([`+ Pack ${PACK.id}`, "+ Pack fleet-doors", "+ Zweck: Du arbeitest für mich, nicht für Fleet."]);
+    const [nachfolge, hist] = await life(f, [als(self, post("/api/self/succeed", {})), get("/api/slots/1/history")], kurz);
+    expect(nachfolge?.status).toBeLessThan(300);
+    const brief = (hist?.body.history as { text: string }[] | undefined)?.at(-1)?.text ?? "";
+    for (const teil of ["YOUR PREDECESSOR'S STONES", `+ purpose (author: your predecessor in this slot)`, ZWECK,
+      `+ context pack ${PACK.id} (author: your predecessor in this slot)`, PACK.text,
+      "+ context pack fleet-doors (author: your predecessor in this slot)", "# Fleet's doors", "POST /api/self/einrichten"]) expect(brief).toContain(teil);
+    // ...und die Fassung zeigt denselben Stein mit Autor, damit Info → Setup die + Zeile hat
+    const [fassung] = await life(f, [get("/api/slots/1/fassung?anlass=laufend")]);
+    const wissen = ((fassung?.body.teile as { id: string; abschnitte: { id: string; text: string | null }[] }[] | undefined) ?? [])
+      .find((t) => t.id === "liest")?.abschnitte.filter((a) => a.id === "wissen") ?? [];
+    expect(wissen.some((a) => a.text?.includes(`author: your predecessor in this slot`))).toBe(true);
+    expect(wissen.some((a) => a.text?.includes(PACK.text))).toBe(true);
+    expect(wissen.some((a) => a.text?.includes("# Fleet's doors"))).toBe(true);
+  }, LIFE_DEADLINE_MS * 4);
 });

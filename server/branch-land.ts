@@ -1,6 +1,5 @@
 // Neuaufbau K5 S3 + rechts-7 Punkt 5 · DAS LAND EINER CHARGE, ein Kern für zwei Türen. Die Owner-Tür
-// POST /api/branches/land und die Self-Tür POST /api/self/branches/land (Owner Z132, 18.10.: „[Zitat entfernt]“
-// ; Z87: „[Zitat entfernt]“)
+// POST /api/branches/land und die Self-Tür POST /api/self/branches/land (Owner Z132, 18.10.: „[Zitat entfernt]“; Z87: „[Zitat entfernt]“)
 // prüfen dasselbe und bewegen main auf demselben Weg. Die Self-Tür verlangt dazu das „passt“ des Owners auf
 // genau dieser Spitze und einen brauchbaren Merge-Check; „ohne Merge-Check“ gibt es nur an der Owner-Tür.
 //

@@ -81,7 +81,7 @@ export async function run(ctx: Ctx): Promise<void> {
     await post(`/api/slots/${rv.slot}/kill`, {});
   }
 
-  // --- context delivery ("deliver context, not tools", 2026-07-29): the most-changed files that
+  // --- context delivery ("[Zitat entfernt]", 2026-07-29): the most-changed files that
   // existed BEFORE the lane touched them ride the prompt in full; everything the server declines
   // to include is NAMED. Asserted against the prompt the stand-in actually received — the only
   // place the built prompt is observable. Four cases, each a distinct guard:

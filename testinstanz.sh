@@ -79,8 +79,7 @@ ti_owned() {
   [ -n "$TI_BIRTH" ] && [ "$TI_BIRTH" = "$(LC_ALL=C ps -p "$TI_PID" -o lstart= 2>/dev/null | sed 's/^ *//;s/ *$//')" ] || return 1
   [ "$(lsof -nP -a -p "$TI_PID" -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null)" = "$TI_PID" ]
 }
-# REAL SEATS (owner 22.10.: „[Zitat entfernt]“
-# ). `up --real-seats` records realSeats=1; the server then runs FLEET_CMD=claude with
+# REAL SEATS (owner 22.10.: „[Zitat entfernt]“). `up --real-seats` records realSeats=1; the server then runs FLEET_CMD=claude with
 # FLEET_NO_BYPASS=1 (no role in bypass, server/session-start.ts#startAspects), and $DIR/bin/claude is ti_real_wrapper's
 # script: the fixture seats `up` planted stay idle stand-ins, a seat opened after `up` execs the real claude under the
 # owner's HOME (the instance's own HOME is logged in nowhere — that is why no model ever starts without the switch).

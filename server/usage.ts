@@ -1,6 +1,5 @@
-// DAS CLAUDE-KONTINGENT (Neuaufbau K16 E1, docs/neuaufbau/befunde/18-einstellungen.md §2). Owner 15.10.: „[Zitat entfernt]“
-//  Bis hier kannte Fleet nur das Codex-Kontingent (codex-quota.ts); für Claude stand
-// „no measured subscription sensor“.
+// DAS CLAUDE-KONTINGENT (Neuaufbau K16 E1, docs/neuaufbau/befunde/18-einstellungen.md §2). Owner 15.10.: „[Zitat entfernt]“ Bis hier kannte Fleet nur das Codex-Kontingent (codex-quota.ts); für Claude stand
+// „[Zitat entfernt]“.
 //
 // Die Quelle ist Claude Codes eigenes rate_limit_event aus `claude -p --output-format stream-json`, gemessen 15.10. auf
 // 2.1.300: five_hour 0.12 / seven_day 0.06 mit resetsAt, dieselben Werte wie die Statuszeile (rate_limits, ganze

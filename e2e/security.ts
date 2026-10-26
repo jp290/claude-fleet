@@ -147,8 +147,7 @@ const PRE_AUTH_ROUTES = [
   // must be plain sessions, never a lane, a MAIN or herself. An edge frees only the send check in sendMessageFor, nothing
   // else: no read of foreign mail, no reply right, no land, deploy or owner authority. GET shows a session only its own edges.
   String.raw`~ /^\/api\/self\/kanten(?:\/([0-9a-f]{16}))?$/`,
-  // A SESSION LANDS ITS OWN BRANCH (rechts-7 P5, owner Z132 18.10.: „[Zitat entfernt]“
-  // ; Mangel 121) — it moves the integration branch. What bounds it: the principal is the token's slot, and repo and
+  // A SESSION LANDS ITS OWN BRANCH (rechts-7 P5, owner Z132 18.10.: „[Zitat entfernt]“; Mangel 121) — it moves the integration branch. What bounds it: the principal is the token's slot, and repo and
   // branch come from that session's own checkout (ownBranchOf: its linked worktree of a workplace repo; a main checkout, a
   // detached head or no repo is a 404); a body naming another branch is a 403. The land runs the owner door's core
   // (server/branch-land.ts#landCharge) with `own`: a board branch only, the owner's „[Zitat entfernt]“ on exactly its tip (a commit

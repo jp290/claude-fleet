@@ -948,8 +948,7 @@ schon ohne einen übergeben. Frisch ist also kein Uhr-Alter, sondern „[Zitat e
 drei Stunden alte Übergabe über einer seitdem ruhenden Pane ist frisch, eine zehn Minuten alte vor
 30 000 Zeichen Arbeit nicht. Ein unlesbarer Rest ist nie frisch. Der Hinweis der Standard-Program-
 MAIN nennt die stehende Übergabe jetzt ebenfalls als Alternative.
-**Nur unterhalb der Obergrenze** (K9 S3b; Bauleitung 14.10. für den Owner nach Mangel 65: „[Zitat entfernt]“
-): Unterhalb kommt
+**Nur unterhalb der Obergrenze** (K9 S3b; Bauleitung 14.10. für den Owner nach Mangel 65: „[Zitat entfernt]“): Unterhalb kommt
 der Hinweis erneut, sobald der Füllstand seit dem letzten um 5 Punkte gestiegen ist. Weil der erste
 frühestens an der Basis kommt und die Obergrenze 5 darüber liegt, ist das die Obergrenze selbst. Dort kommt
 der Hinweis trotz frischer Übergabe, und nach ihm die gewählte Handlung, die neue Session über dieselbe

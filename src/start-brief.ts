@@ -117,13 +117,15 @@ export function regelDateien(a: Abschnitt | undefined): { pfad: string; text: st
   }
   return out;
 }
-// FLEET'S GUIDES of liest.wissen: markers „--- id (path · # Title) ---“, one or more sections
-export function packDateien(f: Fassung | null): { id: string; pfad: string; titel: string; text: string }[] {
-  const out: { id: string; pfad: string; titel: string; text: string }[] = [];
+// FLEET'S GUIDES of liest.wissen: markers „--- id (path · # Title) ---“, one or more sections. A stone a predecessor
+// gave (POST /api/self/einrichten) carries its author after the title, so the brief can name it either way.
+export function packDateien(f: Fassung | null): { id: string; pfad: string; titel: string; autor: string | null; text: string }[] {
+  const out: { id: string; pfad: string; titel: string; autor: string | null; text: string }[] = [];
   for (const a of abschnitte(f, "liest", "wissen")) {
     if (!a.text) continue;
-    const t = a.text.split(/^--- (\S+) \((.+?) · #\s*(.*)\) ---$/m);
-    for (let k = 1; k + 3 < t.length; k += 4) out.push({ id: t[k], pfad: t[k + 1], titel: t[k + 2], text: t[k + 3].replace(/^\n/, "").replace(/\n+$/, "") });
+    const t = a.text.split(/^--- (\S+) \((.+?) · #\s*(.*?)(?: · author: (.+?))?\) ---$/m);
+    for (let k = 1; k + 4 < t.length; k += 5) out.push({ id: t[k], pfad: t[k + 1], titel: t[k + 2], autor: t[k + 3] ?? null,
+      text: t[k + 4].replace(/^\n/, "").replace(/\n+$/, "") });
   }
   return out;
 }
@@ -159,22 +161,23 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
     bytes: null, text: `Claude Code's own instructions, the description of each tool it may use, and its environment.\nFleet doesn't write this text and can't show it word for word${x.ccTokens ? `; it was measured at about ${Math.round(x.ccTokens / 1000)}k tokens` : ""}.`,
     diff: null, zeichen: null, bausteine: ["skills"] });
   // ② from Fleet: what --append-system-prompt carries, each text a part of its own (no group head: the left names each one too)
-  const fleetText = (key: string, pfad: string, satz: string, neu: string | null, alt: string | null, bs: string[], datei?: string) => {
+  const fleetText = (key: string, pfad: string, satz: string, neu: string | null, alt: string | null, bs: string[], datei?: string, wer = "Fleet") => {
     if (neu === null && alt === null) return;
-    anweisungen.push(vergleiche({ key, herkunft: "fleet", pfad, wer: "Fleet", satz, bausteine: bs, ...(datei ? { datei } : {}) }, neu, alt));
+    anweisungen.push(vergleiche({ key, herkunft: "fleet", pfad, wer, satz, bausteine: bs, ...(datei ? { datei } : {}) }, neu, alt));
   };
   fleetText("zusatz", "appended text", "what Fleet adds to its instructions in this place", text1(jetzt, "liest", "systemzusatz"), text1(normal, "liest", "systemzusatz"), ["skills", "permissions"]);
   fleetText("rolle", "its role card", "what its role tells it", text1(jetzt, "liest", "rolle"), text1(normal, "liest", "rolle"), ["role"]);
   fleetText("eigenes", "its agent file", "what it is for, in your words", text1(jetzt, "liest", "eigenes"), text1(normal, "liest", "eigenes"), ["purpose"]);
   // the purpose a predecessor wrote for it (POST /api/self/einrichten): its own text, beside the owner's
-  fleetText("zweck", "its purpose", "what it is for, written by the session before it", text1(jetzt, "liest", "zweck"), text1(normal, "liest", "zweck"), ["purpose"]);
+  fleetText("zweck", "its purpose", "what it is for, written by the session before it", text1(jetzt, "liest", "zweck"), text1(normal, "liest", "zweck"), ["purpose"], undefined, "Your predecessor");
   // the rights sentence: appended only when rights are set; without, the Fassung says what holds instead
   const rj = text1(jetzt, "darf", "darf"), rn = text1(normal, "darf", "darf");
   if (rj !== rn) fleetText("rechte", "Rights", "what it may change", rj, null, ["rights"]);
   const pj = packDateien(jetzt), pn = packDateien(normal);
   for (const id of vereint(pn, pj, (p) => p.id)) {
     const a = pj.find((p) => p.id === id), b = pn.find((p) => p.id === id), p = (a ?? b)!;
-    fleetText(`pack:${id}`, x.pack?.(id)?.titel ?? (p.titel || id), PACK_SATZ[id] ?? x.pack?.(id)?.wann ?? "", a?.text ?? null, b?.text ?? null, [`pack:${id}`], p.pfad);
+    fleetText(`pack:${id}`, x.pack?.(id)?.titel ?? (p.titel || id), PACK_SATZ[id] ?? x.pack?.(id)?.wann ?? "", a?.text ?? null, b?.text ?? null, [`pack:${id}`], p.pfad,
+      p.autor ? "Your predecessor" : "Fleet");
   }
   // ③ the rule files: at the start, or when a matching file is read
   const rj2 = regelDateien(abschnitte(jetzt, "liest", "projektregeln")[0]), rn2 = regelDateien(abschnitte(normal, "liest", "projektregeln")[0]);

@@ -11929,9 +11929,7 @@ dropFile.addEventListener("change", () => {
 
 // --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
 initBoard();
-// THE TESTINSTANZEN CARD IS GONE (owner 2026-10-08: „[Zitat entfernt]“
-// 
-// ): every worktree's test instance stands at its row under Arbeitsorte, with Öffnen
+// THE TESTINSTANZEN CARD IS GONE (owner 2026-10-08: „[Zitat entfernt]“): every worktree's test instance stands at its row under Arbeitsorte, with Öffnen
 // and Stoppen there (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md).
 initQueue();
 initAttention();

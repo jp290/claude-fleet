@@ -331,7 +331,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 9068,
+    "estimatedBytes": 9222,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -460,6 +460,24 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 4455,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "fleet-doors",
+    "useWhen": "When you work through Fleet with your self token: which door does what, and what opens it.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-choice"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "fleet-doors.text", "path": "docs/packs/fleet-doors.md", "anchor": "# Fleet's doors", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 14487,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

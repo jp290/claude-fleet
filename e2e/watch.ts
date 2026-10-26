@@ -7753,8 +7753,7 @@ export async function run(): Promise<void> {
     const codexSid = "e2e0feed-0000-4000-8000-000000000106";
     for (const [id, sid] of [...ids, [piId, piSid] as const, [codexId, codexSid] as const])
       if (state?.slots?.[String(id)]) state.slots[String(id)]!.sessionId = sid;
-    // K9 S3b (Bauleitung 14.10. for the owner, Mangel 65: „[Zitat entfernt]“
-    // ): the main carries a FRESH standing handover — its
+    // K9 S3b (Bauleitung 14.10. for the owner, Mangel 65: „[Zitat entfernt]“): the main carries a FRESH standing handover — its
     // transcript below holds usage only, so nothing after `at` would be lost — and at its cap the hint comes all
     // the same. Mutation: silence on any fresh handover again (server.ts#tickMigrate) → the main gets none.
     const mainRow = state?.slots?.[String(mainId)];
@@ -7970,8 +7969,7 @@ export async function run(): Promise<void> {
       // the EFFECTIVE threshold and the nudge that was actually delivered, on one row because the
       // second is only ever news about the first. BREAKS IF: the reader prints the raw env instead
       // of the rail's own armed number, or counts a nudge from another conversation.
-      // ONE NUDGE per conversation (K16 Runde C, owner 16.10. 19:3x: „[Zitat entfernt]“
-      // ): the one it was sent is the whole budget
+      // ONE NUDGE per conversation (K16 Runde C, owner 16.10. 19:3x: „[Zitat entfernt]“): the one it was sent is the whole budget
       check("succession facts: an armed lane reports its own 44 and the one nudge it was sent, with its time — and no further one",
         laneSucc?.thresholdPct === 44 && laneSucc.thresholdOff === null && laneSucc.nudges === 1
           && laneSucc.nudgedAt !== null && laneSucc.gaveUp === true && laneSucc.maxNudges === 1,

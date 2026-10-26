@@ -14,7 +14,7 @@ import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./serv
 import { halteFassung, halteVorgaengerin, holeFassung, holeVorgaengerin, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
-import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeZeile, selbstDerNachfolge, slotSelbstGeladen, zweckBlock, type SlotSelbst } from "./server/selbst-einrichten";
+import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { dateiFuer, geschwister, leerePlaetze, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
@@ -1206,8 +1206,7 @@ const PI_ZAI_KEY_FILE = (() => {
     throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
   return path.replace(/\/+$/, "");
 })();
-// The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“
-// ) owns its own agent home and its own key file, and the
+// The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“) owns its own agent home and its own key file, and the
 // same two boot checks as pi-zai's: both paths enter single-quoted shell words, and a location the
 // operator named must not silently become another one. The key file's DEFAULT is the owner's path on
 // the Workhorse, spelled here because Fleet may only ever name it, never read or print it.
@@ -1641,8 +1640,7 @@ const PI_ZAI_HARNESS: Harness = {
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
 
-// Adapter #2c — the owner's open GLM seat on the Workhorse (owner 2026-10-26: „[Zitat entfernt]“
-// , and he takes the
+// Adapter #2c — the owner's open GLM seat on the Workhorse (owner 2026-10-26: „[Zitat entfernt]“, and he takes the
 // risk to its files, network and /dev for this one conversation). It is the SAME provider wiring as `pi-zai` —
 // provider zai, the two GLM ids, the key file read into the pane environment, the process-local
 // agent directory and its catalogue — without the read fence: pi runs with the owner's own reach
@@ -1697,8 +1695,7 @@ const PI_ZAI_UNFENCED_HARNESS: Harness = {
   browserProfile: "not-applicable", // Pi has no MCP layer
 };
 
-// Adapter #2d — the DeepSeek seat, behind the SAME read fence as `pi-zai` (owner 2026-10-26: „[Zitat entfernt]“
-// , stage 2
+// Adapter #2d — the DeepSeek seat, behind the SAME read fence as `pi-zai` (owner 2026-10-26: „[Zitat entfernt]“, stage 2
 // of that decision, built 2026-10-26). The provider wiring is pi's own and is not re-invented: the
 // installed 1.0.2 ships the `deepseek` provider with both ids in its catalogue
 // (dist/providers/data/deepseek.json: deepseek-flash "DeepSeek V4.1 Flash" and deepseek-v4-pro, both
@@ -10776,7 +10773,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   tools: readonly string[] | null = null,
   // the agent the door opened it from (server/agenten.ts#agentAnDerTuer), null = none
   agent: AgentBezug | null = null,
-  // what the seat gave itself for this start (server/selbst-einrichten.ts): only a succession carries it; claude only
+  // what the seat gave itself for this start (server/selbst-einrichten.ts): only a succession carries it, on every harness
   selbst: SlotSelbst | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
@@ -10910,7 +10907,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.weglassen = h.id === "claude" ? weglassen : null; // ...nor what it left out of ~/.claude
   s.autoModeEnvironment = h.id === "claude" ? autoModeEnvironment : null; // ...nor its choice of the classifier's environment
   s.tools = h.id === "claude" ? tools : null; // ...nor its choice of built-in tools
-  s.selbst = h.id === "claude" ? selbst : null; // ...nor what the previous occupant gave itself
+  s.selbst = selbst; // ...nor what the previous occupant gave itself (a non-Claude successor reads it in its brief)
   s.agent = agent; // ...nor the agent it was opened from
   s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
   s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
@@ -14979,6 +14976,30 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
   }
 }
 
+// DIE STEINE DER VORGÄNGERIN FÜR EINEN HARNESS OHNE FLEETS SYSTEMPROMPT (Owner 2026-10-26: „[Zitat entfernt]“). Der Zweck und die Packs werden aus Fleets eigenem Baum gelesen, nicht aus dem Ordner
+// des Sitzes; fehlt ein Text, sagt der Brief es, statt den Stein still zu verlieren.
+async function nachfolgeSteineFuer(carried: SlotSelbst | null, cwd: string, harness: string | null): Promise<string | null> {
+  if (!carried) return null;
+  const { jetzt } = carried;
+  const steine: NachfolgeStein[] = [];
+  if (jetzt.zweck !== null) steine.push({ id: null, text: zweckBlock(jetzt.zweck) });
+  if (jetzt.packs.length) {
+    let knowledge: SeatKnowledge | null = null;
+    try { knowledge = (await seatKnowledgeFor(cwd, harness)).knowledge; }
+    catch (e) { logError("succession:selbst-packs", e); }
+    for (const id of jetzt.packs) {
+      const pack = knowledge?.packs.find((p) => p.id === id);
+      if (!pack?.text) {
+        steine.push({ id, text: `(context pack ${id} could not be read from Fleet's tree at ${knowledge?.head.slice(0, 12) ?? "an unknown commit"} — read it later with GET /api/self/context/${id})` });
+        continue;
+      }
+      const quelle = pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
+      steine.push({ id, text: `--- ${id} (${quelle}) ---\n${pack.text}` });
+    }
+  }
+  return nachfolgeSteineBlock(steine);
+}
+
 // THE GENERIC RAIL, shared by the two doors that may take it: the session's own
 // POST /api/self/succeed (handleSelfSucceed, after its rail classification) and the owner's
 // POST /api/slots/:id/succeed (handleOwnerSucceed), which hands over WITHOUT a turn of the
@@ -15023,14 +15044,18 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const ritual = orchestrator && orchStart
     ? buildOrchestratorSuccessionBrief(orchStart, draft.lineageId, lineageFacts, carry, orchestratorStartImSystemprompt(harness))
     : await buildSuccessionBrief(predecessor.cwd, carry, lineageFacts);
-  // WHAT THE PREDECESSOR GAVE IT (POST /api/self/einrichten): its next start becomes the successor's, claude only; the brief names
-  // what is new, and the predecessor's held Fassung stays beside the successor's for Info → Setup's + lines (start-fassung.ts#vorher)
-  const carriedSelbst = harnessOf(harness).id === "claude" ? selbstDerNachfolge(s.selbst) : null;
+  // WHAT THE PREDECESSOR GAVE IT (POST /api/self/einrichten): its next start becomes the successor's on EVERY harness
+  // (Owner 2026-10-26). Claude Code carries it in its system prompt addition; a harness without one gets the same stones in its
+  // succession brief, each as one + line that names its author. The predecessor's held Fassung stays beside the successor's
+  // for Info → Setup's + lines (start-fassung.ts#vorher).
+  const carriedSelbst = selbstDerNachfolge(s.selbst);
   const vorher = holeFassung(STATE_DIR, s.id, predecessorIdentity.openedAt)?.fassung ?? null;
-  const selbstZeile = nachfolgeZeile(carriedSelbst);
+  const claudeZiel = harnessOf(harness).id === "claude";
+  const selbstZeile = claudeZiel ? nachfolgeZeile(carriedSelbst) : null;
+  const steineBlock = claudeZiel ? null : await nachfolgeSteineFuer(carriedSelbst, predecessor.cwd, harness);
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
-  const mitSelbst = selbstZeile ? `${ritual}\n\n${selbstZeile}` : ritual;
+  const mitSelbst = [ritual, selbstZeile, steineBlock].filter(Boolean).join("\n\n");
   const brief = opts.appendix === null ? mitSelbst : `${mitSelbst}\n\n${opts.appendix}`;
   // the predecessor's box; another agent takes it along only where it has one (as switchLaneHarness carries it)
   const box: BoxPin = harnessOf(harness).id === harnessOf(s.harness).id || harnessOf(harness).supports.container
@@ -21632,7 +21657,7 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     if (!an && !dazu.length)
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, claude ? dazu : [], an);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an);
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
@@ -21984,9 +22009,11 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
         ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
-    // the purpose its predecessor wrote (Slot.selbst): a row only where the start carries it
-    ...(s.selbst?.jetzt.zweck && harnessFamilie(spawnPick.harness) === "claude"
-      ? [textAbschnitt("zweck", "Slot.selbst (von der Vorgängerin geschrieben, POST /api/self/einrichten)", zweckBlock(s.selbst.jetzt.zweck), true)] : []),
+    // the purpose its predecessor wrote (Slot.selbst): in Claude Code's system prompt, on every other harness in the succession brief
+    ...(s.selbst?.jetzt.zweck
+      ? [textAbschnitt("zweck", harnessFamilie(spawnPick.harness) === "claude"
+        ? "Slot.selbst (von der Vorgängerin geschrieben, POST /api/self/einrichten)"
+        : "Slot.selbst (von der Vorgängerin geschrieben, im Übergabebrief)", zweckBlock(s.selbst.jetzt.zweck), true)] : []),
   ];
   const umfeld = fassungUmfeld(cwd, spawnPick.harness, fleetBaum !== null);
   const claudeCode = harnessFamilie(spawnPick.harness) === "claude" && s.cwd
@@ -26409,7 +26436,7 @@ const REVIEW_CMD = process.env.FLEET_REVIEW_CMD ?? null;
 const REVIEW_TIMEOUT_MS = 180_000;
 const REVIEW_DIFF_CAP = 60_000; // per diff section — the prompt carries at most two
 
-// The reviewer's context files — "deliver context, not tools" (owner decision 2026-07-29).
+// The reviewer's context files — "[Zitat entfernt]" (owner decision 2026-07-29).
 // Measured need over 66 outcome review rows: 46% of findings carried basis:"inferred" and 32
 // notes were some form of "did not check code outside the diff" — the reviewer was starving for
 // SURROUNDINGS, not for capabilities. So the current full content of the most-changed files rides
@@ -28721,7 +28748,7 @@ async function tickKeepCache(): Promise<void> {
 // THE SUCCESSION LINE, small enough for the 2 s poll. The brief (GET /api/slots/:id/brief) has
 // carried these three numbers since f93293b9, but only the RIGHT COLUMN reads it and only for the
 // one open session — so the bar has never been able to say which session of a line a row is
-// ("hier fehlt das band wo die succession-session reihe angezeigt wird", owner 2026-09-20).
+// ("[Zitat entfernt]", owner 2026-09-20).
 //
 // WHAT IT COSTS, because this poll has a measured budget (14 KiB, ~1 300 B of headroom, pinned in
 // e2e/tasks.ts): unconditional this would be ~40 B × 16 rows ≈ 640 B — half the headroom for a
@@ -28952,8 +28979,7 @@ async function tickMigrate(): Promise<void> {
       // asked after the delivery gate, so the transcript is read only for a hint that would go out.
       // NOT FOR A LANE: its standing handover is the stand its MAIN reads (handleSelfHandover), no
       // door hands a lane over on it, so it must not silence the lane's own hint.
-      // ONLY BELOW THE CAP (Bauleitung 14.10. for the owner, after Mangel 65: „[Zitat entfernt]“
-      // ): below it the hint returns
+      // ONLY BELOW THE CAP (Bauleitung 14.10. for the owner, after Mangel 65: „[Zitat entfernt]“): below it the hint returns
       // once the fill rose 5 points since the last one — the first comes at the base at the earliest and the
       // cap lies CAP_GAP_PCT = 5 above it, so that point IS the cap. There the hint comes, and the chosen act after it.
       if (!lane && facts.fillPct < facts.threshold.capPct && await standingHandoverFresh(s)) continue;
@@ -47029,7 +47055,7 @@ if (existsSync(file)) {
         s.permissionMode = pmw.ok && hOf.id === "claude" ? pmw.wahl : null;
         const wgl = weglassenDerTuer((v as { weglassen?: unknown }).weglassen);
         s.weglassen = wgl.ok && hOf.id === "claude" ? wgl.wahl : null;
-        s.selbst = hOf.id === "claude" ? slotSelbstGeladen((v as { selbst?: unknown }).selbst) : null;
+        s.selbst = slotSelbstGeladen((v as { selbst?: unknown }).selbst);
         const ame = (v as { autoModeEnvironment?: unknown }).autoModeEnvironment;
         s.autoModeEnvironment = typeof ame === "boolean" && hOf.id === "claude" ? ame : null;
         const tls = toolsDerTuer((v as { tools?: unknown }).tools);
@@ -51923,7 +51949,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     }
     // WHAT A SEAT GIVES ITS SUCCESSOR ON TOP (Slot.selbst, server/selbst-einrichten.ts; owner 24.10. über Slot 6: without his click, as long
     // as it shows afterwards): packs and a purpose, only text. Set for its own slot, in force with its succession; a restart keeps the
-    // start it has. Rights, model, hooks and MCP have no field here — those stay the owner's.
+    // start it has. Rights, model, hooks and MCP have no field here — those stay the owner's. Since 2026-10-26 on every harness:
+    // Claude Code carries it in its system prompt, a harness without one in the succession brief (owner: „[Zitat entfernt]“).
     if (url.pathname === "/api/self/einrichten" && (req.method === "POST" || req.method === "GET")) {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
@@ -51933,7 +51960,6 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         naechster: { purpose: (x?.naechster ?? x?.jetzt ?? leer).zweck, packs: (x?.naechster ?? x?.jetzt ?? leer).packs },
         zeilen: einrichtenZeilen(x?.jetzt ?? leer, x?.naechster ?? x?.jetzt ?? leer), gilt: "bei deiner Übergabe (POST /api/self/succeed); ein Neustart behält deinen Start" });
       if (req.method === "GET") return json(ansicht(s.selbst));
-      if (harnessOf(s.harness).id !== "claude") return json({ error: "einrichten is Claude Code's — its purpose and packs go into Claude Code's system prompt" }, 409);
       if (s.worktree) return json({ error: "a lane is set up by its card — einrichten is for a seat of its own" }, 409);
       if (!isSeat(s)) return json({ error: "a seat with a standing role (MAIN, Orchestratorin, steward) gets its start from that role — einrichten is for a seat without one" }, 409);
       const er = einrichtenDerTuer(await readJson(req), s.selbst);

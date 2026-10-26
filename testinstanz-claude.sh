@@ -5,8 +5,7 @@
 #   TI_D            the instance directory          TI_REAL_CLAUDE  the real claude binary
 #   TI_OWNER_HOME   the HOME claude is logged in at  TI_SEATS        the machine's seat registry (one <pid>.seat each)
 #   TI_SEAT_CAP     real seats on this machine       TI_EXPIRES      the instance's expiresAt (epoch seconds)
-# Owner 22.10.: „[Zitat entfernt]“
-#  Every refusal is one sentence in the pane and exit 1, so the pane falls to its shell and the board
+# Owner 22.10.: „[Zitat entfernt]“ Every refusal is one sentence in the pane and exit 1, so the pane falls to its shell and the board
 # reads the slot as having no agent — nothing is started behind it.
 no() { printf '%s\n' "$1"; exit 1; }
 idle() { exec "$TI_D/bin/claude-agent" -e "setInterval(() => {}, 1 << 30)"; }

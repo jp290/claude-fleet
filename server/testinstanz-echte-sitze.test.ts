@@ -1,5 +1,4 @@
-// Owner 22.10.: „[Zitat entfernt]“
-//  testinstanz-claude.sh is the `claude` such an instance puts first on every pane's PATH; here it runs
+// Owner 22.10.: „[Zitat entfernt]“ testinstanz-claude.sh is the `claude` such an instance puts first on every pane's PATH; here it runs
 // against a fake real claude that records what it was started with, so no model is ever reached.
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";

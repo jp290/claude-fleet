@@ -5043,8 +5043,7 @@ async function runThresholdAct(): Promise<void> {
   const pTyped = await typed(P);
   const pRecorded = existsSync(rec(P)) ? readFileSync(rec(P), "utf8") : "";
   const pBrief = await briefOf(P.slot, pNew);
-  // K9 S3b-2, the owner's sentence via the Bauleitung: „[Zitat entfernt]“
-  //  — and the act hands over the standing handover where one stands
+  // K9 S3b-2, the owner's sentence via the Bauleitung: „[Zitat entfernt]“ — and the act hands over the standing handover where one stands
   check("new session at the threshold, chosen: P with its own choice „succeed“ gets the hint naming the act, then — resting — a new occupant on the same slot whose brief hands over P's standing handover; the old pane got nothing but that one hint",
     !!pNew && pNew !== P.openedAt && pTyped.length === 1 && pTyped[0]!.text.startsWith(HINT)
       && pTyped[0]!.text.includes("Hand over yourself") && pTyped[0]!.text.includes("Fleet opens a new session itself")

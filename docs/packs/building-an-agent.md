@@ -76,8 +76,9 @@ fact about this repository in the repository's rules.
 
    Only text goes through this door: a purpose and context packs. Rights, model, hooks and MCP servers are never yours to
    give yourself; when the agent needs one of them, the person sets it in the start window. Only a seat without a
-   standing role uses this door, and only in Claude Code. A restart keeps your start; only the succession brings the
-   new one.
+   standing role uses this door, on any harness. A restart keeps your start; only the succession brings the new one.
+   Claude Code reads the stones in its system prompt addition; a harness without one reads them in its succession
+   brief, each as one + line that names its author.
 5. **The successor is the new agent.** It reads the stones you gave it, and its brief names them. On the board it
    carries a sign ("gave itself 2 stones"), and Info → Setup shows each new line as + against you, the same way the
    start window compares a start with plain `claude`. The person works with it. What is still missing becomes the

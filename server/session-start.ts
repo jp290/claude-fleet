@@ -17,9 +17,8 @@ import { AUTOMODE_ENVIRONMENT } from "./automode-environment";
 export type ClaudeStartRole = "lane" | "main" | "orchestrator" | "generic";
 export type ClaudePermissionMode = "auto" | "bypassPermissions";
 
-// Lane, Bau and MAIN run in auto (Bauleitung 15.10.). The Orchestratorin runs in bypass (owner 20.10.: „[Zitat entfernt]“
-// ): the classifier blocked her setting up and
-// reviewing a build seat as „Create Unsafe Agents“, down to a grep. The worker tier keeps
+// Lane, Bau and MAIN run in auto (Bauleitung 15.10.). The Orchestratorin runs in bypass (owner 20.10.: „[Zitat entfernt]“): the classifier blocked her setting up and
+// reviewing a build seat as „[Zitat entfernt]“, down to a grep. The worker tier keeps
 // `--permission-mode dontAsk` with its allowlist on its own line (server.ts CLAUDE_HARNESS.worker).
 export const PERMISSION_MODE: Readonly<Record<ClaudeStartRole, ClaudePermissionMode>> = {
   lane: "auto", main: "auto", orchestrator: "bypassPermissions", generic: "auto",

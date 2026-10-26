@@ -31,6 +31,23 @@ const leer = (x: SelbstStart): boolean => !x.packs.length && x.zweck === null;
 /** Der Block im Systemzusatz. Er sagt, wer ihn schrieb: nicht der Owner, sondern die Vorgängerin. */
 export const zweckBlock = (zweck: string): string => `PURPOSE (written for you by your predecessor in this slot):\n${zweck}`;
 
+/** Der Autor jeder + Zeile, die eine Vorgängerin ihrem Nachfolger gibt (Owner 2026-10-26: „[Zitat entfernt]“). */
+export const NACHFOLGE_AUTOR = "your predecessor in this slot";
+
+/** Ein Stein, wie die Nachfolgerin ihn im Brief bekommt: `id` null = der Zweck, sonst der Pack. */
+export interface NachfolgeStein { readonly id: string | null; readonly text: string }
+
+/** Der Block für einen Harness ohne Fleets Systemprompt: je Stein EINE + Zeile mit ihrem Autor, danach ihr Text.
+ *  So erreicht die Nachfolgerin auf jedem Harness, was ihre Vorgängerin ihr gab, und der Brief zeigt es als + Zeile. */
+export function nachfolgeSteineBlock(steine: readonly NachfolgeStein[]): string | null {
+  if (!steine.length) return null;
+  const zeilen = steine.flatMap((stein) => [
+    `+ ${stein.id === null ? "purpose" : `context pack ${stein.id}`} (author: ${NACHFOLGE_AUTOR})`,
+    stein.text,
+  ]);
+  return ["YOUR PREDECESSOR'S STONES (POST /api/self/einrichten): one + line per stone, its text follows.", ...zeilen].join("\n");
+}
+
 /** DIE TÜR: `purpose` (Text oder null) und `packs` (Ids), beide optional; ein fehlendes Feld bleibt, wie es für die Nachfolgerin steht.
  *  Ob jede Id ein Pack ist, den dieser Sitz bekommen kann, prüft der Server (packAuswahlFehlt). */
 export function einrichtenDerTuer(body: unknown, s: SlotSelbst | null):

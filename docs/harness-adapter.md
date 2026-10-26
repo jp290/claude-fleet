@@ -1137,8 +1137,7 @@ und `apiStall`; der bestehende Reset-Vertrag bleibt eigenständig.
 
 ### `pi-deepseek`: Pi auf DeepSeek hinter demselben Zaun wie pi-zai (Stufe 2, 2026-10-26)
 
-Owner 2026-10-26: „[Zitat entfernt]“
-. Stufe 1 war der ungezäunte GLM-Sitz `pi-zai-unfenced`; Stufe 2 ist dieser Sitz: Pi auf
+Owner 2026-10-26: „[Zitat entfernt]“. Stufe 1 war der ungezäunte GLM-Sitz `pi-zai-unfenced`; Stufe 2 ist dieser Sitz: Pi auf
 Pis EIGENEM `deepseek`-Provider, hinter GENAU demselben Linux-Zaun, den `pi-zai` benutzt. Eine
 Task-Auswahl lautet `{"harness":"pi-deepseek"}` (Default `deepseek-flash`) oder
 `{"harness":"pi-deepseek","model":"deepseek-v4-pro"}`; jeder andere Name ist an jedem Request-Rand

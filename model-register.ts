@@ -37,8 +37,7 @@ export const harnessAvailability = (id: string, resume = process.env.FLEET_HARNE
 // list, default empty, restart). Read per call. The doors that start something refuse it (server.ts#harnessPausedError), GET
 // /api/harnesses publishes it as `hier`/`grund`; a founding plan for it still computes.
 //
-// AND THE ONE HARNESS WHOSE DEFAULT IS THE OTHER WAY (owner 2026-10-26: „[Zitat entfernt]“
-// , and he takes the device risk for this one seat): `pi-zai-unfenced` is off
+// AND THE ONE HARNESS WHOSE DEFAULT IS THE OTHER WAY (owner 2026-10-26: „[Zitat entfernt]“, and he takes the device risk for this one seat): `pi-zai-unfenced` is off
 // until the host names it in FLEET_HARNESSES_ON, and it stays off on every platform but the Workhorse's Linux. The risk is a
 // deliberate owner choice, so it may not arrive by an empty FLEET_HARNESSES_OFF; the second condition keeps other-provider
 // models on the Workhorse where they belong.

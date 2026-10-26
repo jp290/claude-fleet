@@ -89,6 +89,15 @@ describe("die Datei trägt den Sitz ganz", () => {
     expect(JSON.stringify(weiter.datei).includes("Mein eigener Owner")).toBe(false);
     expect((weiter.datei.abgeleitetVon as string)).toBe(fassungsHash(form(imp.k, [...PROFILE0, ...imp.neueProfile])));
   });
+  test("ein eigener Pack dieser Maschine reist nicht mit, auch nicht im Start, und der Hinweis sagt es", async () => {
+    const eigen: SeatKnowledge = { ...BIBLIOTHEK, packs: [...BIBLIOTHEK.packs, { id: "working-with-this-owner", useWhen: "Read this when you talk with this owner.",
+      sources: [{ path: "/state/eigene-packs/working-with-this-owner.md", anchor: "# Working with this owner" }], text: "# Working with this owner\n\nEin eigener Satz dieser Maschine.",
+      weg: "start" as const, privat: true as const }] };
+    const d = await dateiFuer(form(K, PROFILE), quellen({ bibliothek: async () => eigen }));
+    if (typeof d === "string") throw new Error(d);
+    expect(JSON.stringify(d.datei).includes("Ein eigener Satz dieser Maschine")).toBe(false);
+    expect(d.hinweise.some((h) => h.includes("working-with-this-owner ist ein eigener Pack dieser Maschine"))).toBe(true);
+  });
   test("steckt persönlicher Text in einem teilbaren Pack, gibt es keine Datei", async () => {
     const schief: SeatKnowledge = { ...BIBLIOTHEK, packs: BIBLIOTHEK.packs.map((p) => p.id === "who-it-is-for" ? { ...p, text: `${p.text}\n\n${PERSOENLICH_TEXT}` } : p) };
     const d = await dateiFuer(form(K, PROFILE), quellen({ bibliothek: async () => schief }));

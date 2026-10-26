@@ -66,8 +66,9 @@ export function liesEigenePacks(stateDir: string): EigenerPack[] {
 }
 
 /** DER PACK AN DER TÜR (POST /api/self/packs): genau id, useWhen, text. `register` sind die Ids aus Fleets Register: ein eigener Pack
- *  schattet keinen von dort. Rein. */
-export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>):
+ *  schattet keinen von dort. Den privaten Pack des Owners schreibt nur die Orchestratorin (`orchestratorin`): er steht in ihrem Start,
+ *  und sie läuft ohne Classifier, also wäre er sonst eine Tür jeder Session in ihren Start (Slot 1, 26.10.). Rein. */
+export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>, orchestratorin = false):
   { ok: true; pack: { id: string; useWhen: string; text: string } } | { ok: false; error: string } {
   const b = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
   if (!b) return { ok: false, error: 'expected { "id", "useWhen", "text" }' };
@@ -75,6 +76,7 @@ export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>)
   if (fremd.length) return { ok: false, error: `a pack is only text — the door reads id, useWhen, text, not ${fremd.join(", ")}` };
   if (typeof b.id !== "string" || !PACK_ID.test(b.id)) return { ok: false, error: "id must be lowercase letters, digits and hyphens (at most 80)" };
   if (register.has(b.id)) return { ok: false, error: `„${b.id}“ is a pack of Fleet's register — give yours its own id` };
+  if (b.id === PRIVATER_OWNER_PACK_ID && !orchestratorin) return { ok: false, error: `„${b.id}“ is the owner's private pack — only the Orchestratorin writes it` };
   if (typeof b.useWhen !== "string" || !b.useWhen.trim() || b.useWhen.length > USE_WHEN_MAX || /[\r\n]/.test(b.useWhen))
     return { ok: false, error: `useWhen must be one line of at most ${USE_WHEN_MAX} characters: the moment to read it` };
   if (typeof b.text !== "string" || !titelVon(b.text)) return { ok: false, error: "text must begin with its title line `# …`" };

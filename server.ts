@@ -51697,7 +51697,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
-      const pk = eigenerPackDerTuer(await readJson(req), registerIds());
+      const pk = eigenerPackDerTuer(await readJson(req), registerIds(), positionRole(s) === "orchestrator");
       if (!pk.ok) return json({ error: pk.error }, 400);
       if (s.openedAt !== p.openedAt) return json({ error: "this slot has another occupant now" }, 409);
       const { pack, ersetzt } = schreibEigenenPack(STATE_DIR, pk.pack, `Slot ${s.id}`);

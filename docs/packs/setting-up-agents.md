@@ -92,7 +92,7 @@ size of a brief or a start window is not its context.
 
 ## Two examples
 
-- **One agent.** A free session whose whole setup is a `CLAUDE.md` of under 1 KB in its own folder, with no role
+- **One agent.** A free session whose whole setup is a purpose of a few sentences, given at the door, with no role
   card. It starts with far fewer tokens than a seat with a role.
 - **Two seats.** A builder and a checker for a server change. The builder is a model from another provider, working
   in rounds through pi. The checker is a Claude seat on the machine that holds the real transcripts, the only one

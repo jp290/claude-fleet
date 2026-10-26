@@ -3,7 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eigenePacksDir, eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./eigene-packs";
+import { eigenePacksDir, eigenerPackDerTuer, liesEigenePacks, PRIVATER_OWNER_PACK_ID, schreibEigenenPack } from "./eigene-packs";
 
 const dir = mkdtempSync(join(tmpdir(), "eigene-packs-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -16,6 +16,11 @@ describe("die Tür", () => {
     for (const schlecht of [{ ...gut, id: "made-with-love" }, { ...gut, useWhen: "a\nb" }, { ...gut, useWhen: "x".repeat(121) },
       { ...gut, text: "kein Titel" }, { ...gut, id: "Gross" }, { ...gut, mcp: { name: "x" } }, { ...gut, text: `# T\n${"x".repeat(64_001)}` }])
       expect(eigenerPackDerTuer(schlecht, REGISTER).ok).toBe(false);
+  });
+  test("den privaten Pack des Owners schreibt nur die Orchestratorin, denn er steht in ihrem Start", () => {
+    const privat = { ...gut, id: PRIVATER_OWNER_PACK_ID };
+    expect(eigenerPackDerTuer(privat, REGISTER).ok).toBe(false);
+    expect(eigenerPackDerTuer(privat, REGISTER, true)).toEqual({ ok: true, pack: privat });
   });
 });
 

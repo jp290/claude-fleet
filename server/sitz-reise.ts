@@ -253,6 +253,8 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
         for (const pk of k.packs) {
           const weg = wege.box.includes(pk.id) ? "start" as const : wege.skills.includes(pk.id) ? "skill" as const : null;
           if (!weg || pk.text === null) continue;
+          // ein eigener Pack dieser Maschine reist nicht mit: geteilt wird, was im Register steht (Slot 1, 26.10.)
+          if (pk.privat) { hinweise.push(`${name}: ${pk.id} ist ein eigener Pack dieser Maschine und bleibt daheim`); continue; }
           const quellen = pk.sources.map((s) => ({ pfad: s.path, anker: s.anchor }));
           if (istPersoenlich(pk.id)) persoenlich.push({ id: pk.id, weg, quellen, wofuer: pk.useWhen, text: null });
           else liest.push({ id: pk.id, weg, quellen, wofuer: pk.useWhen, text: pk.text });
@@ -286,7 +288,7 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
   const text = JSON.stringify(datei);
   const k = await liesBibliothek();
   const persoenlicheTexte = [
-    ...(typeof k === "string" ? [] : k.packs.filter((pk) => istPersoenlich(pk.id) && pk.text !== null).map((pk) => pk.text as string)),
+    ...(typeof k === "string" ? [] : k.packs.filter((pk) => (istPersoenlich(pk.id) || pk.privat) && pk.text !== null).map((pk) => pk.text as string)),
     ...positionen.flatMap((p) => { const s = p?.sitz === undefined ? null : sitzAus(p.sitz); return s && typeof s !== "string" ? s.persoenlich.flatMap((x) => x.text ? [x.text] : []) : []; }),
   ];
   const fund = persoenlichIn(text, persoenlicheTexte);

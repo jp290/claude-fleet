@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { abweichungen, gleich, normal, packsAktiv, schaltePack, tuer, vorschau, wahlAus, wahlenVon } from "./start-wahl";
+import { abweichungen, dreier, gleich, normal, packsAktiv, schaltePack, tuer, vorschau, wahlAus, wahlenVon } from "./start-wahl";
 
 describe("the choices of the start window, read by the doors", () => {
   test("normal sends nothing: the session starts like claude by hand", () => {
@@ -52,9 +52,9 @@ describe("a saved agent and the window's choice", () => {
       tools: ["Read", "Edit"], notizbuch: "branch", rechte: { stufe: "bauen", an: [], aus: [] }, bibliothek: true, schwelle: 45 });
     expect(wahlAus(f)).toEqual({ wahl: w, fremd: [] });
   });
-  test("a role, a profile or another harness is not the window's to set: the agent starts whole", () => {
+  test("a role, a profile or a weglassen shape the window cannot show: the agent starts whole", () => {
     expect(wahlAus({ rolle: "orchestratorin" }).fremd).toEqual(["rolle"]);
-    expect(wahlAus({ harness: "pi", model: "deepseek-flash" }).fremd).toEqual(["harness"]);
+    expect(wahlAus({ harness: "pi", model: "deepseek-flash" }).fremd).toEqual([]);
     expect(wahlAus({ weglassen: { claudeMd: true } }).fremd).toEqual(["weglassen"]);
     expect(wahlAus({ harness: "claude" }).fremd).toEqual([]);
   });
@@ -62,6 +62,29 @@ describe("a saved agent and the window's choice", () => {
     expect(wahlenVon({ ...normal(), aufgabe: "Fix it.", branch: "fix" })).toEqual({});
     expect(gleich(normal(), { ...normal(), aufgabe: "Fix it.", branch: "fix" })).toBe(true);
     expect(gleich(normal(), { ...normal(), hooks: false })).toBe(false);
+  });
+});
+
+describe("the harness the window offers (GET /api/harnesses)", () => {
+  test("another harness goes to the preview and to the start with its own model and effort", () => {
+    const w = { ...normal(), harness: "pi-deepseek", model: "deepseek-v4-pro", effort: "high" };
+    expect(vorschau(w)).toEqual({ harness: "pi-deepseek", model: "deepseek-v4-pro", effort: "high" });
+    expect(dreier(w)).toEqual({ harness: "pi-deepseek", model: "deepseek-v4-pro", effort: "high" });
+    expect(abweichungen(w, (x) => x)).toEqual([{ id: "harness", zeichen: "~", wort: "Harness: Pi-deepseek" },
+      { id: "model", zeichen: "~", wort: "Model: deepseek-v4-pro, high effort" }]);
+  });
+  test("Claude Code is the empty choice, at the door and in a saved agent", () => {
+    expect(vorschau({ ...normal(), harness: "claude" })).toEqual({});
+    expect(dreier({ ...normal(), harness: "claude" })).toEqual({});
+    expect(wahlAus({ harness: "claude" }).wahl.harness).toBeNull();
+    expect(wahlenVon({ ...normal(), harness: "claude" })).toEqual({});
+  });
+  test("a saved agent's harness comes back as the window's own choice, unchanged", () => {
+    const w = { ...normal(), harness: "pi-deepseek", model: "deepseek-flash", effort: "low" };
+    expect(wahlenVon(w)).toEqual({ harness: "pi-deepseek", model: "deepseek-flash", effort: "low" });
+    expect(wahlAus(wahlenVon(w))).toEqual({ wahl: w, fremd: [] });
+    expect(gleich(w, { ...normal(), harness: "pi-deepseek", model: "deepseek-flash", effort: "low" })).toBe(true);
+    expect(gleich(w, normal())).toBe(false);
   });
 });
 

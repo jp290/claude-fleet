@@ -1,7 +1,7 @@
 // K15 · der Agent einer Position (src/k15-agent.ts; Runde 4, Owner Z62 und Auftrag Punkt 2: „[Zitat entfernt]“
 // ; „[Zitat entfernt]“)
 import { describe, expect, test } from "bun:test";
-import { agentOptionen, agentWort, effortVon, katalogAus, modelleVon, passtEffort, passtModell, standardAgent } from "./k15-agent";
+import { agentOptionen, agentWort, effortVon, harnessOptionen, katalogAus, modelleVon, passtEffort, passtModell, standardAgent } from "./k15-agent";
 
 // die Form von GET /api/harnesses (server.ts), gekürzt auf die Felder, die das Fenster liest; die Modellnamen sind erfunden, echte IDs stehen
 // nur im Register (e2e/pins.ts „model register“)
@@ -88,5 +88,20 @@ describe("die Agenten zur Wahl", () => {
   });
   test("Claude Code heißt so, die übrigen wie im Startfenster", () => {
     expect([agentWort("claude"), agentWort("codex"), agentWort("pi-zai"), agentWort("")]).toEqual(["Claude Code", "Codex", "Pi-zai", ""]);
+  });
+});
+
+describe("die Harnesses zur Wahl im Startfenster", () => {
+  test("der Standard fehlt (er ist die leere Wahl), jeder andere, der hier startet, steht darin", () => {
+    expect(harnessOptionen(K, null).map((x) => x.wert)).toEqual(["pi", "pi-ox", "pi-unfenced", "codex"]);
+    expect(harnessOptionen(K, null).find((x) => x.wert === "claude")).toBeUndefined();
+  });
+  test("der gesetzte bleibt stehen, auch wenn dieser Rechner ihn nicht startet, und sagt warum", () => {
+    const piZai = harnessOptionen(K, "pi-zai").find((x) => x.wert === "pi-zai");
+    expect(piZai).toEqual({ wert: "pi-zai", wort: "Pi-zai", aus: "only on another machine", grund: "switched off on this machine (FLEET_HARNESSES_OFF)" });
+    expect(harnessOptionen(K, "pi-zai").map((x) => x.wert)).not.toContain("fern");
+  });
+  test("ein gesetzter, den der Katalog nicht kennt, kommt mit seinem Namen dazu", () => {
+    expect(harnessOptionen(K, "container").find((x) => x.wert === "container")).toEqual({ wert: "container", wort: "Container" });
   });
 });

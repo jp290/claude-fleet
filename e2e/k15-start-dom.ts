@@ -40,6 +40,7 @@ export const K15_START_CLAIM = {
   ohneCheck: "in a repo without a merge check, the stone Branch & land says you bring its commits back yourself and promises no land of its own; switched on it says it lands only when you say so, unchecked, and its block says it lands in one commit and without a check, because the repo has no ci/merge-check.ts",
   pfeil: "on a wide screen (1600 px) a click on Rule files opens it with one sentence of what it is, and one line runs from each of its files to that file's part in the start brief, ending there; closed, the lines go; at 1200 px, where the start brief opens over the session, the open block has no line and a link „Show it in the start brief ›“ instead",
   vorschau: "the start brief reads two previews from GET /api/founding-plan (role nur-ordner, anlass=neu): normal without any choice, and this choice with its fields under the door's names (Rules only → weglassen { claudeMd, rules }) and nothing else",
+  harness: "under Who it is the Harness block offers Claude Code as the standard and every other harness GET /api/harnesses says starts here (Codex); choosing Codex makes the zone's title Codex, takes away the blocks only Claude Code reads (Rule files, Skills & tools, Connectors, Asks you, Plan first, Hooks), offers exactly Codex's models and effort levels, reads the preview with harness=codex and, once chosen, the model and effort, names „~ Harness: Codex“ in the banner, and Start sends harness \"codex\" with that model and effort and none of Claude Code's settings",
   start: "Start sends exactly one POST /api/slots/<free>/open: with Rules only { cwd, fassung, weglassen: { claudeMd, rules } }, with nothing changed { cwd, fassung } — fassung the fassungsHash of the preview that read this choice, and plan { hash, role: \"nur-ordner\" } beside it only when that plan says start.startbar",
   packs: "under Fleet on top, „What it knows“ shows „Context packs“ with each pack of the library as a stone with a switch (Who it is for, Testing a build) and „Concepts“ with the concept (System concept), all off in your own setup; Who it is for switched on asks the preview for exactly that pack (bibliothek=who-it-is-for), the start brief adds it with every request as a + part of its own, no group around it, that reads, opened, as its Markdown („Who it is for“ as heading), the banner names „+ Context pack: Who it is for“, and Start sends bibliothek [\"who-it-is-for\"]; switched off again, nothing differs from normal",
   rechte: "the stone Rights under Fleet on top, switched on, sets „Builds“; „Looks only“ chosen in its block goes into the preview and the start as rechte { stufe: \"lesen\", an: [], aus: [] }, and the start brief shows its rights sentence as a + part with every request, read as text when opened",
@@ -101,6 +102,8 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
   { name: "the preview ignores the choice", claim: C.vorschau, file: "src/start-fenster.ts",
     needle: "const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id } : vorschau(z.wahl)).toString();",
     with: "const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id } : {}).toString();" },
+  { name: "the start drops the chosen harness", claim: C.harness, file: "src/start-wahl.ts",
+    needle: "return { ...(h ? { harness: h } : {}), ...(w.model", with: "return { ...(false ? { harness: h } : {}), ...(w.model" },
   { name: "the start drops the choice", claim: C.start, file: "src/start-fenster.ts",
     needle: "const wahl = ganz ? {} : felder;", with: "const wahl = ganz ? {} : {};" },
   { name: "the start carries no fassungsHash", claim: C.start, file: "src/start-fenster.ts",
@@ -815,6 +818,48 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         startChecks.push(h !== null && s.length === 1 && s[0]!.url === `/api/slots/${FREE}/open`
           && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, plan: { hash: hashFor("nur-ordner", {}), role: "nur-ordner" } }));
         verdicts[C.start] = startChecks.length === 2 && startChecks.every(Boolean);
+      });
+
+      // THE HARNESS ITSELF (owner 26.10.): under Who it is, the Harness block carries Claude Code as the standard and every other
+      // harness GET /api/harnesses says starts here; choosing Codex brings Codex's models and effort, and the start carries exactly it
+      await caseOf("harness", async () => {
+        await fresh();
+        await fenster();
+        await mitAgent("repo");
+        const zone = () => evaluate<{ titel: string; who: string[]; claudeNur: string[]; har: string[] }>(`(() => {
+          const w = ${WIN}, teil = [...(w?.querySelectorAll('.sfzone.cc .sfpart') ?? [])].find((p) => p.querySelector('.sfplabel')?.textContent === 'Who it is');
+          return { titel: w?.querySelector('.sfzone.cc .sfzh h3')?.textContent ?? '',
+            who: [...(teil?.querySelectorAll('.sftile') ?? [])].map((t) => t.dataset.b),
+            claudeNur: ['rules', 'skills', 'connectors', 'permissions', 'plan', 'hooks', 'rights', 'notebook', 'succession'].filter((id) => !!w?.querySelector('.sftile[data-b="' + id + '"]')),
+            har: [...(w?.querySelector('select[data-k="harness"]')?.options ?? [])].map((o) => o.value + '=' + o.textContent) }; })()`);
+        const banner = () => evaluate<{ dev: boolean; chips: string[] }>(`(() => { const b = ${WIN}?.querySelector('.sfbanner');
+          return { dev: !!b?.classList.contains('dev'), chips: [...(b?.querySelectorAll('.sfdchip') ?? [])].map((c) => c.textContent) }; })()`);
+        const vorher = await zone();
+        // the pill the window draws is a real select: set it and let it change, as a hand does
+        await evaluate(`(() => { const x = ${WIN}?.querySelector('select[data-k="harness"]'); x.value = 'codex'; x.dispatchEvent(new Event('change')); })()`);
+        await idle();
+        const nachher = await zone(), erst = await banner();
+        // its models and effort levels are the catalogue's for Codex, and the choice goes into the preview with the harness
+        await block("model");
+        const modelle = await evaluate<string[]>(`[...(${WIN}?.querySelectorAll('.sftile[data-b="model"] select[data-k="model"] option') ?? [])].map((o) => o.value)`);
+        const stufen = await evaluate<string[]>(`[...(${WIN}?.querySelectorAll('.sfdrawer .sfseg [data-effort]') ?? [])].map((b) => b.dataset.effort)`);
+        await option("model:gpt-5.5");
+        await click(`${WIN}?.querySelector('.sfdrawer .sfseg [data-effort="high"]')`);
+        await idle();
+        const gelesen = vorschauen().filter((q) => q.harness === "codex");
+        const mit = (q: Record<string, string>) => JSON.stringify(q) === JSON.stringify({ harness: "codex", model: "gpt-5.5", effort: "high" });
+        const h = fassungDerVorschau(mit);
+        const s = await sfStart();
+        const pruef = { a: vorher.titel === "Your Claude Code", b: JSON.stringify(vorher.who) === JSON.stringify(["harness", "model"]),
+          c: vorher.claudeNur.length === 9, d: JSON.stringify(vorher.har) === JSON.stringify(["=Claude Code", "codex=Codex"]),
+          e: nachher.titel === "Codex", f: JSON.stringify(nachher.who) === JSON.stringify(["harness", "model"]), g: nachher.claudeNur.length === 0,
+          h: JSON.stringify(nachher.har) === JSON.stringify(["=Claude Code", "codex=Codex"]), i: erst.dev,
+          j: JSON.stringify(erst.chips) === JSON.stringify(["~Harness: Codex"]), k: JSON.stringify(modelle) === JSON.stringify(["", "gpt-5.5"]),
+          l: JSON.stringify(stufen) === JSON.stringify(["", "low", "medium", "high"]), m: gelesen.some((q) => JSON.stringify(q) === JSON.stringify({ harness: "codex" })),
+          n: gelesen.some(mit), o: h !== null, p: s.length === 1, q: s[0]?.url === `/api/slots/${FREE}/open`,
+          r: s[0] ? canon(s[0].body) === canon({ cwd: REPO, fassung: h, harness: "codex", model: "gpt-5.5", effort: "high" }) : false };
+        facts.harness = { pruef, vorher, nachher, erst, modelle, stufen, gelesen, posts: s, expect: h, body: s[0]?.body };
+        verdicts[C.harness] = Object.values(pruef).every(Boolean);
       });
 
       // „+ Rights“ from Fleet on top: Builds, then Looks only in its block; the preview, the start brief and the start carry it

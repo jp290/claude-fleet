@@ -2,8 +2,12 @@
 // preview door and the start door read it, and what differs from normal. Normal is the empty choice: the door sets nothing, and the
 // session starts like `claude` in that folder (server/eigenes-setup.ts#EIGENES_SETUP_MINIMUM). The field names are the doors'
 // (server.ts#startVonAdresse for the preview, the open and branch doors for the start).
+import { agentWort } from "./k15-agent";
 export type Stufe = "lesen" | "bauen" | "landen" | "deployen";
 export interface Wahl {
+  // the harness it starts on (GET /api/harnesses), by the server's id; null = the default adapter (Claude Code), which the door keeps as "no
+  // harness chosen" (server.ts#harnessIdOf). Model and effort are judged BY this harness, so a choice of another one clears them
+  harness: string | null;
   model: string | null; effort: string | null; permissionMode: string | null;
   // PLAN FIRST (owner 25.10. 19:50: „[Zitat entfernt]“ a switch of its own beside „[Zitat entfernt]“): it starts in Claude Code's plan mode, and the
   // door reads it as permissionMode "plan"; Asks you keeps its own choice
@@ -34,7 +38,7 @@ export interface Wahl {
   notizbuch: boolean;
   schwelle: number | null;
 }
-export const NORMAL: Readonly<Wahl> = Object.freeze({ model: null, effort: null, permissionMode: null, planFirst: false, eigeneRegeln: true, gedaechtnis: true,
+export const NORMAL: Readonly<Wahl> = Object.freeze({ harness: null, model: null, effort: null, permissionMode: null, planFirst: false, eigeneRegeln: true, gedaechtnis: true,
   hooks: true, pluginsAus: [], agentenAus: [], mcpAus: [], tools: null, aufgabe: null, bibliothek: false, rechte: null, packs: null, branch: null, notizbuch: false,
   schwelle: null });
 export const normal = (): Wahl => ({ ...NORMAL, pluginsAus: [], agentenAus: [], mcpAus: [] });
@@ -82,11 +86,19 @@ function felder(w: Wahl, mitBranch: boolean): Record<string, unknown> {
 // THE PREVIEW: the query fields of GET /api/founding-plan (server.ts#startVonAdresse) for this choice; a branch's notebook has no
 // preview here (the door needs the branch's own worktree), so it stays out of it
 export function vorschau(w: Wahl): Record<string, string> {
-  const f = felder(w, false), q: Record<string, string> = {};
+  const f = felder(w, false), q: Record<string, string> = {}, h = harnessWahl(w);
+  if (h) q.harness = h;
   if (w.model) q.model = w.model;
   if (w.effort) q.effort = w.effort;
   for (const [k, v] of Object.entries(f)) q[k] = typeof v === "string" ? v : Array.isArray(v) ? v.join(",") : JSON.stringify(v);
   return q;
+}
+// THE THREE BESIDE THE CHOICE, AS BOTH START DOORS TAKE THEM (src/start-tuer.ts#Dreier: /api/slots/:id/open and /api/branches/open): the
+// harness first — it is what the model and the effort are judged by —, then what only it can hold. A start that showed another harness
+// than this would be a start of another agent, so the window sends exactly what its picker shows
+export function dreier(w: Wahl): { harness?: string; model?: string; effort?: string } {
+  const h = harnessWahl(w);
+  return { ...(h ? { harness: h } : {}), ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}) };
 }
 // THE START: the body fields beside cwd/plan/fassung, for the open door or the branch door
 export function tuer(w: Wahl): Record<string, unknown> {
@@ -127,6 +139,9 @@ export interface Abweichung { id: string; zeichen: "+" | "−" | "~"; wort: stri
 export function abweichungen(w: Wahl, modellWort: (id: string) => string = (x) => x,
   ort: { standard: readonly string[]; wort: (id: string) => string } = { standard: [], wort: (x) => x }): Abweichung[] {
   const D: Abweichung[] = [];
+  // another harness is another program, not a setting of Claude Code: it stands first among the changes (src/k15-agent.ts#agentWort)
+  const h = harnessWahl(w);
+  if (h) D.push({ id: "harness", zeichen: "~", wort: `Harness: ${agentWort(h)}` });
   if (w.model || w.effort) D.push({ id: "model", zeichen: "~", wort: `Model: ${w.model ? modellWort(w.model) : "your default"}${w.effort ? `, ${w.effort} effort` : ""}` });
   if (!w.eigeneRegeln) D.push({ id: "rules", zeichen: "−", wort: "Your rules left out" });
   if (!w.gedaechtnis) D.push({ id: "memory", zeichen: "−", wort: "Memory off" });
@@ -155,22 +170,27 @@ export const TOOLS: readonly string[] = ["Artifact", "SendFeedback", "Workflow",
 const TOOL_ZAHL = TOOLS.length;
 
 // A SAVED AGENT (server/agenten.ts) carries its choices under the doors' names. What the window can set comes back as a Wahl; what it
-// can't (a role, a profile, a seat of the old window, another harness, an agent file) stays in `fremd`, and such an agent starts whole,
-// by its id. A task is never part of an agent: it comes at the door.
+// can't (a role, a profile, a seat of the old window, an agent file, an imported file's extras) stays in `fremd`, and such an agent
+// starts whole, by its id. A task is never part of an agent: it comes at the door.
 export function wahlenVon(w: Wahl): Record<string, unknown> {
-  return { ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}), ...felder(w, true) };
+  const h = harnessWahl(w);
+  return { ...(h ? { harness: h } : {}), ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}), ...felder(w, true) };
 }
+// was der Standard ist: die Tür hält "no harness chosen" als eins, nicht als zwei, die auseinanderlaufen (server.ts#harnessIdOf)
+const STD_HARNESS = "claude";
+// the harness as a choice: the standard adapter is no choice at all
+const harnessWahl = (w: Wahl): string | null => !w.harness || w.harness === STD_HARNESS ? null : w.harness;
 const STUFE_IDS: readonly string[] = STUFEN.map((s) => s.id);
 const texte = (v: unknown): string[] | null => Array.isArray(v) && v.every((x) => typeof x === "string") ? [...v] as string[] : null;
 export function wahlAus(wahlen: Record<string, unknown>): { wahl: Wahl; fremd: string[] } {
   const w = normal(), fremd: string[] = [];
   for (const [k, v] of Object.entries(wahlen)) {
     if (v === undefined || v === null) continue;
-    if (k === "model" && typeof v === "string") w.model = v;
+    if (k === "harness" && typeof v === "string") w.harness = !v || v === STD_HARNESS ? null : v;
+    else if (k === "model" && typeof v === "string") w.model = v;
     else if (k === "effort" && typeof v === "string") w.effort = v;
     else if (k === "permissionMode" && v === "plan") w.planFirst = true;
     else if (k === "permissionMode" && typeof v === "string") w.permissionMode = v;
-    else if (k === "harness" && v === "claude") continue;
     else if (k === "tools" && texte(v)) w.tools = texte(v);
     // true: the library whole, as an agent saved before 25.10. carries it; false: no packs at all, wherever it starts
     else if (k === "bibliothek" && v === true) w.bibliothek = true;

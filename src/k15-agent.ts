@@ -70,3 +70,13 @@ export function agentOptionen(k: Katalog, lane: boolean): AgentOption[] {
     return { wert: a.id, wort: agentWort(a.id), ...(nein ? { aus: nein.wort, grund: nein.grund } : {}) };
   });
 }
+// DIE HARNESSES ZUR WAHL IM STARTFENSTER: der Standard steht als eigene Zeile im Fenster und fehlt hier; jeder andere, der hier startet,
+// steht darin. Der gesetzte bleibt stehen, auch wenn dieser Rechner ihn nicht mehr startet, damit eine gespeicherte Wahl nicht still ein
+// anderer Agent wird. Ein gesetzter, den der Katalog gar nicht kennt, kommt mit seinem Namen dazu.
+export function harnessOptionen(k: Katalog, gesetzt: string | null): AgentOption[] {
+  const std = standardAgent(k);
+  const out = k.agenten.filter((a) => a.id !== std && (a.aus === null || a.id === gesetzt))
+    .map((a) => ({ wert: a.id, wort: agentWort(a.id), ...(a.aus ? { aus: a.aus.wort, grund: a.aus.grund } : {}) }));
+  if (gesetzt && gesetzt !== std && !k.agenten.some((a) => a.id === gesetzt)) out.push({ wert: gesetzt, wort: agentWort(gesetzt) });
+  return out;
+}

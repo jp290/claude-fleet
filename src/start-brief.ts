@@ -217,7 +217,7 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
     try { const o: unknown = JSON.parse(z); if (o && typeof o === "object" && !Array.isArray(o)) return Object.entries(o).map(([k, v]) => `${k}: ${JSON.stringify(v)}`); } catch { /* not JSON: the line as it is */ }
     return [z];
   };
-  const linie = (f: Fassung | null) => ([["model", "wer", "modell"], ["effort", "wer", "effort"], ["permission mode", "darf", "modus"], ["tools", "darf", "werkzeuge"],
+  const linie = (f: Fassung | null) => ([["harness", "wer", "harness"], ["model", "wer", "modell"], ["effort", "wer", "effort"], ["permission mode", "darf", "modus"], ["tools", "darf", "werkzeuge"],
     ["--settings", "darf", "einstellungen"], ["MCP", "darf", "mcp"], ["chosen here", "darf", "mitgegeben"], ["left out", "darf", "weggelassen"]] as const)
     .flatMap(([w, t, id]) => { const v = text1(f, t, id); return v === null ? [] : zeilen(v).flatMap((z) => w === "--settings" ? jeSchluessel(z) : [z]).map((z, i) => `${i ? " ".repeat(16) : w.padEnd(16)}${z}`); }).join("\n");
   einstellungen.push(vergleiche({ key: "line", herkunft: "cc", pfad: "Model and permissions", wer: "Claude Code", satz: "how Fleet starts claude: flags and settings, no text",

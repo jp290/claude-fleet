@@ -9,7 +9,7 @@ import { icon, type IconName } from "./icons";
 import { S, antwort, hole, info, oeffneOrdner, planUrl, render, repoZeilen, tilde, type St } from "./k15-zustand";
 import type { PlanRolle } from "./k15-entwurf-modell";
 import { repoMenue } from "./k15-repo";
-import { agentVon } from "./k15-agent";
+import { agentVon, agentWort, effortVon, harnessOptionen, modelleVon, standardAgent } from "./k15-agent";
 import { modelLabel, modelName } from "./modelname";
 import type { Answer } from "./founding";
 import type { Antwort } from "./start-tuer";
@@ -17,7 +17,7 @@ import type { DirInfoResp } from "./client";
 import { morph } from "./dom-morph";
 import { mdInto } from "./md";
 import { anzeige, fliessend, geaendert, imRepo, nurBeiPfaden, regelDateien, startbrief, uebergabeHinweis, zeilen, type Block, type Fassung } from "./start-brief";
-import { FRAGT, MODI, STUFEN, TOOLS, abweichungen, gleich, normal, packsAktiv, schaltePack as schalte, setzePacks, tuer, vorschau, wahlAus, wahlenVon, type Wahl } from "./start-wahl";
+import { FRAGT, MODI, STUFEN, TOOLS, abweichungen, dreier, gleich, normal, packsAktiv, schaltePack as schalte, setzePacks, tuer, vorschau, wahlAus, wahlenVon, type Wahl } from "./start-wahl";
 import { anatomieVon } from "./k15-anatomie";
 
 // an agent as GET /api/agenten lists it (server/agenten.ts#AgentAnsicht), with `zuletzt` for this repo
@@ -447,7 +447,8 @@ function held(s: St, p: ReturnType<typeof plaene>): HTMLElement {
   const a = z.agent, repo = s.repo ? baseName(s.repo) : "";
   // under the name only what the agent is for; whether it starts as your normal Claude Code is the banner's to say, its parts the tiles'
   const wozu = typeof a?.wahlen.rolle === "string" ? "Plans the work, opens the branches and brings back the results." : a?.agentMd?.titel ?? null;
-  links.append(el("div", "sfpurpose", wozu ?? "Your Claude Code with what Fleet adds on top."));
+  links.append(el("div", "sfpurpose", wozu ?? (z.wahl.harness === null ? "Your Claude Code with what Fleet adds on top."
+    : `${agentWort(z.wahl.harness)} with what Fleet adds on top.`)));
   const her = a?.importiert || a?.abgeleitetVon ? `Imported from a file · derived from ${(a.abgeleitetVon ?? a.hash).slice(0, 12)}. It brings its choices; your rules, skills and connectors stay yours.`
     : a?.kopieVon ? `Copy of ${a.kopieVon.name === "Agent des Repos" || a.kopieVon.name === "Repo agent" ? "the repo's agent" : a.kopieVon.name} · ${a.hash.slice(0, 12)}` : null;
   const offen = ungesichert(z);
@@ -498,8 +499,9 @@ function blocker(s: St, a: Answer | null, fehler: string | null = null, laedt = 
   if (!s.repo) return "Pick where it works, on the left.";
   if (fehler) return `The preview is not readable: ${fehler}`;
   if (!a || laedt) return "Reading what this session gets …";
-  const cc = s.katalog ? agentVon(s.katalog, "claude") : null;
-  if (cc?.aus) return `Claude Code doesn't start here: ${cc.aus.grund}.`;
+  const gewaehlt = z.wahl.harness ?? (s.katalog ? standardAgent(s.katalog) : null) ?? "claude";
+  const cc = s.katalog ? agentVon(s.katalog, gewaehlt) : null;
+  if (cc?.aus) return `${agentWort(gewaehlt)} doesn't start here: ${cc.aus.grund}.`;
   if (z.wahl.branch !== null && !z.wahl.branch.trim()) return "Give its branch a name for the board.";
   if (z.wahl.branch === null && freierPlatz(s) === null) return "No free slot in the bar.";
   return null;
@@ -557,6 +559,7 @@ interface Kachel { id: string; name: string; icon: IconName; wert: Node | string
 // WHAT EACH BLOCK GIVES THE AGENT, short (owner 26.10. on soll.html: „[Zitat entfernt]“
 // ), in words a newcomer reads without Fleet's own (cold read 26.10.: owner, seat, successor, land stopped him)
 const GIBT: Readonly<Record<string, string>> = {
+  harness: "The program it runs in, with the models and effort it offers.",
   model: "The model that thinks, and how much it can hold.",
   memory: "Remembers what earlier sessions in this folder noted.",
   rules: "Your rules and this repo's, followed in every session.",
@@ -588,7 +591,8 @@ const VARIANTE_SATZ: Readonly<Record<string, string>> = { "no-longer-humans-gent
 // AN OPEN BLOCK SAYS ONE THING (owner 25.10.: „[Zitat entfernt]“): how it works, in one sentence;
 // the controls follow, and the arrow shows where it stands in the start brief
 const HOW: Readonly<Record<string, string>> = {
-  model: "The Claude model it runs on, and how long it thinks.",
+  harness: "The program the session is started in; its model and effort follow it.",
+  model: "The model it runs on, and how long it thinks.",
   rules: "Files you and this repo wrote for every session; each is read at its moment.",
   memory: "What earlier sessions in this folder noted; it reads the index at its start.",
   skills: "It sees only their names, and loads one when it fits.",
@@ -603,10 +607,10 @@ const HOW: Readonly<Record<string, string>> = {
   branch: "It works on a new branch beside your checkout, and its commits land when you say so.",
   succession: "When its context reaches this mark, Fleet tells it to hand over to a fresh session.",
 };
-const NAME: Readonly<Record<string, string>> = { model: "Model", rules: "Rule files", memory: "Memory", skills: "Skills & tools", connectors: "Connectors",
+const NAME: Readonly<Record<string, string>> = { harness: "Harness", model: "Model", rules: "Rule files", memory: "Memory", skills: "Skills & tools", connectors: "Connectors",
   permissions: "Asks you", plan: "Plan first", workplace: "Workplace", hooks: "Hooks", task: "First task", rights: "Rights", branch: "Branch & land",
   notebook: "Own notebook", succession: "Succession" };
-const ICON: Readonly<Record<string, IconName>> = { model: "gear", rules: "file", memory: "history", skills: "list", connectors: "link", permissions: "shield",
+const ICON: Readonly<Record<string, IconName>> = { harness: "terminal", model: "gear", rules: "file", memory: "history", skills: "list", connectors: "link", permissions: "shield",
   plan: "receipt", workplace: "folder", hooks: "regler", task: "flag", rights: "keys", branch: "branch", notebook: "pencil", succession: "reload" };
 const SCHWELLEN = [35, 40, 45, 60, 75];
 const howVon = (id: string): string => HOW[id] ?? "";
@@ -626,12 +630,15 @@ function waehler(id: string, opts: [string | null, string][], jetzt: string | nu
   return pk;
 }
 const fest = (t: string): HTMLElement => el("span", "sftv", t);
-// Claude Code's models from the server's register (GET /api/harnesses): the superseded ones out, one row per name as a person reads it
-function modelle(s: St, wirk: string | null = null): [string | null, string][] {
-  const k = s.katalog, a = k ? agentVon(k, "claude") : undefined, da = new Set<string>(), out: [string | null, string][] = [[null, wirk ? `${modelLabel(wirk)} · as set here` : "Your default"]];
-  for (const m of a?.models ?? []) {
+// THE MODELS OF THE CHOSEN HARNESS from the server's register (GET /api/harnesses): the superseded ones out, one row per name as a person
+// reads it; the first row is no choice — the harness's own default, or what this place sets where the harness is the standard one
+function modelle(s: St, harness: string | null, wirk: string | null = null): [string | null, string][] {
+  const k = s.katalog, std = k ? standardAgent(k) : null, id = harness ?? std ?? "claude", da = new Set<string>();
+  const fremd = harness !== null && harness !== std;
+  const out: [string | null, string][] = [[null, wirk ? `${modelLabel(wirk)} · as set here` : fremd ? "Its default" : "Your default"]];
+  for (const m of k ? modelleVon(k, id) : []) {
     const wort = modelLabel(m);
-    if (k?.abgeloest.has(`claude|${m}`) || da.has(wort)) continue;
+    if (da.has(wort)) continue;
     da.add(wort);
     out.push([m, wort]);
   }
@@ -700,6 +707,14 @@ const WEG: Readonly<Record<string, (w: Wahl) => void>> = {
   succession: (w) => { w.schwelle = null; },
 };
 
+// WHAT ONLY CLAUDE CODE HOLDS (server/rechte.ts#rechteDerTuer, server.ts#permissionsOf and the succession band): a session on another
+// harness reads none of it and the door would refuse it. Leaving Claude Code puts them back to normal, so a start on pi never carries a
+// rule set for a program that cannot read it; Fleet's own choices (packs, branch, first task) stay
+function nurClaudeAus(w: Wahl): void {
+  w.eigeneRegeln = true; w.gedaechtnis = true; w.hooks = true; w.pluginsAus = []; w.agentenAus = []; w.mcpAus = []; w.tools = null;
+  w.permissionMode = null; w.planFirst = false; w.rechte = null; w.notizbuch = false; w.schwelle = null;
+}
+
 function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
   const z = s.sitz, w = z.wahl, K = new Map<string, Kachel>();
   const gehalten = z.fremd.length > 0, eigen = eigenesSetup(fj), repo = s.repo ?? "";
@@ -707,12 +722,31 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
   // a choice of this start; an agent that starts whole shows what it carries
   const wahl = (id: string, opts: [string | null, string][], jetzt: string | null, setze: (v: string | null) => void, zeig?: string): Node =>
     gehalten ? fest(zeig ?? opts.find(([v]) => v === jetzt)?.[1] ?? String(jetzt)) : waehler(id, opts, jetzt, (v) => { setze(v); aendere(s, [id]); }, zeig);
-  // YOUR CLAUDE CODE; where the window sets nothing, what holds here (fn: this place without a choice)
+  // YOUR CLAUDE CODE OR THE HARNESS THAT TOOK ITS PLACE; where the window sets nothing, what holds here (fn: this place without a choice)
   const wm = wirkModell(fj), wmn = wirkModell(fn), wp = wirkModus(fj), wpn = wirkModus(fn);
-  const modell = w.model ?? wm;
-  K.set("model", { id: "model", name: NAME.model, icon: ICON.model, gehalten,
-    wert: gehalten ? fest(modell ? modelLabel(modell) : "Your default") : waehler("model", modelle(s, wmn), w.model, (v) => { w.model = v; aendere(s, ["model"]); }),
-    satz: GIBT.model, war: neben(!!(w.model || w.effort), [...(w.effort ? [`${w.effort} effort`] : []), wmn ? `normally ${modelName(wmn)}` : "normally your default"].join(" · ")) });
+  const std = s.katalog ? standardAgent(s.katalog) : null, gewaehlt = w.harness ?? std ?? "claude", istStd = w.harness === null;
+  const agent = s.katalog ? agentVon(s.katalog, gewaehlt) : undefined;
+  // THE HARNESS ITSELF (owner 26.10.: the start window offers Claude Code, pi-deepseek, pi-zai and the others GET /api/harnesses lists):
+  // the standard adapter is the empty choice, every other harness that starts here is one; a saved choice this machine no longer starts
+  // stays in the list. Model and effort belong to it, so a change of harness clears them
+  K.set("harness", { id: "harness", name: NAME.harness, icon: ICON.harness, gehalten, war: neben(!!w.harness, `normally ${agentWort(std ?? "claude")}`),
+    // the names alone keep the pill short enough for the phone's two columns; a saved harness this machine no longer starts says why in the
+    // tile's one sentence, and Start refuses it through the blocker
+    satz: agent?.aus ? `${agent.aus.wort}: ${agent.aus.grund}.` : GIBT.harness,
+    wert: gehalten || !s.katalog ? fest(agentWort(gewaehlt)) : waehler("harness", [[null, agentWort(std ?? "claude")], ...harnessOptionen(s.katalog, gewaehlt)
+      .map((o): [string, string] => [o.wert, o.wort])], w.harness, (v) => {
+      if (v !== null) nurClaudeAus(w);
+      w.harness = v; w.model = null; w.effort = null;
+      aendere(s, ["harness", "model"]);
+    }) });
+  // THE MODEL OF THAT HARNESS: the place's own model only where the harness is the standard one; another harness brings its list
+  const modell = w.model ?? (istStd ? wm : null), ohneModell = !!agent && !agent.modell;
+  const modellFest = fest(modell ? modelLabel(modell) : istStd ? "Your default" : "Its default");
+  const modellWahl = waehler("model", modelle(s, w.harness, istStd ? wmn : null), w.model, (v) => { w.model = v; aendere(s, ["model"]); });
+  const warModell = [...(w.effort ? [`${w.effort} effort`] : []), istStd ? wmn ? `normally ${modelName(wmn)}` : "normally your default"
+    : w.model ? "instead of its default" : ""].filter(Boolean).join(" · ");
+  K.set("model", { id: "model", name: NAME.model, icon: ICON.model, gehalten, satz: GIBT.model,
+    wert: ohneModell ? fest("Fixed by the harness") : gehalten ? modellFest : modellWahl, war: neben(!!(w.model || w.effort), warModell) });
   if (w.notizbuch && w.branch !== null) K.set("memory", { id: "memory", name: NAME.memory, icon: ICON.memory, leise: true, wert: fest("Replaced by its own notebook"), satz: "Its own notebook takes its place." });
   else {
     const n = notizen(fn ?? fj);
@@ -866,12 +900,17 @@ const art = (name: string, satz: string): HTMLElement => { const a = el("div", "
 
 function zoneCC(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
   const K = kacheln(s, fj, fn), zone = el("div", "sfzone cc"), zh = el("div", "sfzh"), h = el("h3", "");
-  h.append(el("span", "sfmk cc"), "Your Claude Code");
+  const w = s.sitz.wahl, std = s.katalog ? standardAgent(s.katalog) : null, claude = w.harness === null;
+  h.append(el("span", "sfmk cc"), claude ? "Your Claude Code" : agentWort(w.harness ?? std ?? "claude"));
   // the trust sentence once, here (Soll 3 and 7)
   zh.append(h, el("span", "", "What it already has. A choice here changes only this start, never your files."));
   zone.append(zh);
-  const TEILE: [string, string[]][] = [["Who it is", ["model"]], ["What it knows", ["memory", "rules"]], ["What it may do", ["skills", "connectors", "permissions"]],
-    ["How it works", ["workplace", "plan", "hooks"]]];
+  // only Claude Code reads your rule files, skills, connectors, hooks and permission modes; another harness brings its own program, and
+  // the window offers what it really takes (model and effort from the catalogue) instead of switches the door would refuse
+  const TEILE: [string, string[]][] = claude
+    ? [["Who it is", ["harness", "model"]], ["What it knows", ["memory", "rules"]], ["What it may do", ["skills", "connectors", "permissions"]],
+      ["How it works", ["workplace", "plan", "hooks"]]]
+    : [["Who it is", ["harness", "model"]], ["How it works", ["workplace"]]];
   for (const [wort, ids] of TEILE) zone.append(teil(s, wort, [reihe(s, K, ids)], ids, K, fj, fn));
   return zone;
 }
@@ -884,9 +923,11 @@ function zoneFleet(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
   // a skill Fleet gives is a tool it runs when you ask, not knowledge (owner 25.10.: „[Zitat entfernt]“)
   const wissen = packs.filter((id) => !von(id)?.konzept && !von(id)?.werkzeug), konzepte = packs.filter((id) => von(id)?.konzept), werkzeuge = packs.filter((id) => von(id)?.werkzeug);
   // an agent that starts whole shows only what it carries, and takes a task beside it (a role none); a branch needs git and a repo the
-  // branch doors take
+  // branch doors take; rights, its own notebook and the succession band are Claude Code's alone (server/rechte.ts#rechteDerTuer,
+  // server.ts#setSchwelle)
+  const claude = z.wahl.harness === null;
   const da = (id: string) => (!z.fremd.length || K.get(id)?.schalter?.an || (id === "task" && !rolleVon(z.agent)))
-    && (branchGeht(i) || (id !== "branch" && id !== "notebook"));
+    && (branchGeht(i) || (id !== "branch" && id !== "notebook")) && (claude || !["rights", "notebook", "succession"].includes(id));
   const zone = el("div", "sfzone fl"), zh = el("div", "sfzh"), h = el("h3", "");
   h.append(el("span", "sfmk fl"), "Fleet on top");
   zh.append(h, el("span", "", "What Fleet adds. Switch on what helps."));
@@ -932,11 +973,12 @@ function lade(s: St, id: string, k: Kachel | undefined, fj: Fassung, fn: Fassung
     return c;
   };
   if (frei && id === "model") {
-    d.append(opts(modelle(s, wirkModell(fn ?? fj)).map(([v, wort]) => ({ v, wort })), w.model, (v) => { w.model = v; aendere(s, ["model"]); }));
-    const cc = s.katalog ? agentVon(s.katalog, "claude") : undefined;
-    if (cc?.effortLevels.length) {
+    const std = s.katalog ? standardAgent(s.katalog) : null, gewaehlt = w.harness ?? std ?? "claude", istStd = w.harness === null;
+    const ea = s.katalog ? agentVon(s.katalog, gewaehlt) : undefined, stufen = s.katalog ? effortVon(s.katalog, gewaehlt) : [];
+    d.append(opts(modelle(s, w.harness, istStd ? wirkModell(fn ?? fj) : null).map(([v, wort]) => ({ v, wort })), w.model, (v) => { w.model = v; aendere(s, ["model"]); }));
+    if (ea?.effort && stufen.length) {
       const seg = el("span", "sfseg");
-      for (const e of [null, ...cc.effortLevels]) { const b = knopf(w.effort === e ? "on" : "", [e ?? "your default"], () => { w.effort = e; aendere(s, ["model"]); }); b.dataset.effort = e ?? ""; seg.append(b); }
+      for (const e of [null, ...stufen]) { const b = knopf(w.effort === e ? "on" : "", [e ?? (istStd ? "your default" : "its default")], () => { w.effort = e; aendere(s, ["model"]); }); b.dataset.effort = e ?? ""; seg.append(b); }
       d.append(art2("How long it thinks", "", seg));
     }
   }
@@ -1268,13 +1310,13 @@ async function los(s: St): Promise<void> {
   const ganz = alsAgent(z), ziel = w.aufgabe?.trim() ?? "", rolle = rolleVon(z.agent);
   const { goal: _g, ...felder } = tuer(w);
   const wahl = ganz ? {} : felder;
-  const dreier = ganz ? {} : { ...(w.model ? { model: w.model } : {}), ...(w.effort ? { effort: w.effort } : {}) };
+  const dreierWahl = ganz ? {} : dreier(w);
   const agent = ganz ? { agent: z.agent!.id } : {};
   const slot = freierPlatz(s);
   const r: Antwort = w.branch !== null
-    ? await starte({ tuer: "branch", repo: s.repo, name: w.branch.trim(), punkte: [], ziel, dreier, wahl, ...agent, ...(abzweig(s)?.branch ? { base: abzweig(s)!.branch! } : {}) })
+    ? await starte({ tuer: "branch", repo: s.repo, name: w.branch.trim(), punkte: [], ziel, dreier: dreierWahl, wahl, ...agent, ...(abzweig(s)?.branch ? { base: abzweig(s)!.branch! } : {}) })
     : slot === null ? { ok: false, fehler: "No free slot in the bar." }
-    : await starte({ tuer: "open", cwd: s.repo, slot, dreier, plan: a.start.startbar ? { hash: a.plan.planHash, role: rolle ?? "nur-ordner" } : null,
+    : await starte({ tuer: "open", cwd: s.repo, slot, dreier: dreierWahl, plan: a.start.startbar ? { hash: a.plan.planHash, role: rolle ?? "nur-ordner" } : null,
       // a role's door writes its label and card itself: its Fassung is not the preview's of its plan, so it carries no hash to check
       ...(a.fassungsHash && !rolle ? { fassung: a.fassungsHash } : {}), wahl: { ...wahl, ...(ziel ? { goal: ziel } : {}) }, ...agent });
   if (S !== s) return;

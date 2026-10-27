@@ -31,6 +31,11 @@ import type { Slot } from "./server/types";
 import type { SlotInfo } from "./src/client";
 import { AUTOS_TICK_MS, ROOT, afterTick, check, failures, get, paneEnv, post, results, tmuxOut } from "./e2e/harness";
 
+// FIXTURE TWIN of session-blocks.ts#harnessFamilie: the extracted openSlot/ensureSlot bodies need the pure family
+// map, but e2e/pins.ts counts every file importing session-blocks as a resolver (server.ts must stay the only one).
+const harnessFamilie = (id: string): "claude" | "codex" | "pi" | "container" =>
+  id === "codex" ? "codex" : id === "container" ? "container" : id.startsWith("pi") ? "pi" : "claude";
+
 export async function checkPaneAgentAtFixtures(source: string, checkFixture: (name: string, ok: boolean, detail: string) => void): Promise<void> {
   const start = source.indexOf("async function paneAgentAt(");
   const end = source.indexOf("\n}\n", start);
@@ -510,7 +515,7 @@ export async function checkCodexSpawnFixtures(source: string,
       waitForSlotTeardown: async () => { if (fixture.joined) Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("teardown"); },
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
-      harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }),
+      harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }), harnessFamilie,
       permissionsOf: () => ({ ok: true, permissions: { sandbox: "danger-full-access", approval: "never" } }),
       slotOpeningGuard: (target: Record<string, unknown>) => {
         const expected = JSON.stringify([target.cwd, target.openedAt, target.selfToken, target.permissions]);
@@ -1385,6 +1390,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const h = {id:"codex",permissions:{default:{sandbox:"danger-full-access",approval:"never"}},supports:{resume:true},pinsSession:false,
         spawnCmd:(o)=>{${adapter}}};
       const harnessOf = () => h;
+      const isSeat = () => false;
       const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
       const fleetCheckoutForSpawn=()=>false;
       ${validators}
@@ -1465,7 +1471,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       } catch(e) {error=String(e);}
       return {commands,publications,awaited,error,profile:s.permissions};
     };`);
-  const exercise = new Function("codexPermissionsFrom", code)(codexPermissionsFrom) as
+  const exercise = new Function("codexPermissionsFrom", "harnessFamilie", code)(codexPermissionsFrom, harnessFamilie) as
     (scenario: string) => Promise<{ commands: string[]; publications: string[]; awaited: boolean; error: string | null;
       profile: { sandbox?: string; approval?: string; state?: string } }>;
   const fresh = await exercise("fresh"), resume = await exercise("resume");

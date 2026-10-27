@@ -12,6 +12,11 @@ import { KONZEPT_ROOT_ENV } from "../konzept-ledger";
 import { appendEventStrict, readLedger } from "../server/persist";
 import type { ContextPlanCheck } from "./context-plan";
 
+// FIXTURE TWIN of session-blocks.ts#harnessFamilie: the borrow probe needs the pi fallback's condition, but
+// e2e/pins.ts keeps session-blocks imports to server.ts (a second importer reads as a second resolver).
+const harnessFamilie = (id: string): "claude" | "codex" | "pi" | "container" =>
+  id === "codex" ? "codex" : id === "container" ? "container" : id.startsWith("pi") ? "pi" : "claude";
+
 export async function run(check: ContextPlanCheck): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "fleet-context-borrow-"));
   const sourceRoot = resolve(import.meta.dir, "..");
@@ -162,6 +167,9 @@ export async function run(check: ContextPlanCheck): Promise<void> {
       MEMORY_RECEIPTS_MAX: 20, SERVER_BOOT_AT: 1, privatePackResolutions: new WeakMap(), KONZEPT_ROOT: null,
       // the probe's occupant is a lane: never a seat without a standing role (server.ts#isSeat, server/sitz-wissen.ts)
       isSeat: () => false,
+      // the pi fallback in contextBorrowRoute reads Fleet's seat sheet; this fixture has no Fleet library, so it stays
+      // on the lane's own catalogue (the fallback catches this and continues, exactly as on a machine without the library)
+      harnessFamilie, seatKnowledgeFor: async () => { throw new Error("fixture has no Fleet library"); },
     };
     const functions = [fn("secretEq", auth), fn("resolveSelfPrincipal", auth), ...["sessionIdMatchOf", "mainUnboundError", "boundProgramsForMain", "mainBindingOf", "ownProgramsPhrase", "boundProgramForMain", "waveRowsOf",
       "memoryScopeFor", "contextCatalogFor", "contextBorrowRoute", "contextLedgersFor", "memorySourcesView", "treeListingAt", "showAtHead", "repoManifestContextPlan",

@@ -1373,10 +1373,14 @@ export default function (pi) {
         writeFileSync(`${wt}/common/worktrees/lane-x/commondir`, "../..\n");
         writeFileSync(`${wt}/common/worktrees/lane-x/HEAD`, "ref: refs/heads/main\n");
         const g = piZaiGitOf(`${wt}/cwd`, "fleet/lane-x");
+        const gBoard = piZaiGitOf(`${wt}/cwd`, "branch/board-x");
+        const gMain = piZaiGitOf(`${wt}/cwd`, "main");
         const gNone = piZaiGitOf(`${wt}/cwd`, null);
         const p = g ? piZaiFenceProfile({ ...fx, git: g }) ?? "" : "";
         const headParts = {
           recordRef: g?.ref === "refs/heads/fleet/lane-x" && g.common === `${wt}/common`,
+          boardRef: gBoard?.ref === "refs/heads/branch/board-x",
+          mainRecordNoRef: gMain !== null && gMain.ref === null,
           noRecordNoRef: gNone !== null && gNone.ref === null,
           mainNowhere: p.includes(`(literal "${wt}/common/refs/heads/fleet/lane-x")`) && !p.includes("refs/heads/main"),
         };
@@ -1462,9 +1466,9 @@ export default function (pi) {
       pin(`${RULE_BW} control: the unfenced script reaches every probe, so a refusal behind the fence means something`,
         BW_PROTECTED.every((k) => bw.control[k] === true) && BW_ALLOWED.every((k) => bw.control[k] === true),
         `unreached: ${fmt([...BW_PROTECTED, ...BW_ALLOWED].filter((k) => bw.control[k] !== true))}`);
-      pin(`${RULE_BW} refuses T1-T3 and the writes: owner secrets, key, fleet.json/.env, home, other worktree, deny root, foreign session, scaffold .env, foreign environ, live tmux socket, main ref, git hook`,
+      pin(`${RULE_BW} refuses T1-T3 and the writes: owner secrets, key, fleet.json/.env, home, other worktree, deny root, foreign session, scaffold .env, foreign environ, live tmux socket, main and foreign refs, git hook`,
         leaks(bw.fenced).length === 0, `leaks: ${fmt(leaks(bw.fenced))}`);
-      pin(`${RULE_BW} lets the pane work: a file in the worktree, a PATH tool, a write in the worktree, the own session dir, a commit on the own branch`,
+      pin(`${RULE_BW} lets the pane work: a file in the worktree, a PATH tool, a write in the worktree, the own session dir, the own ref and its reflog, a commit on the own branch`,
         broken(bw.fenced).length === 0, `refused: ${fmt(broken(bw.fenced))}`);
       pin(`${RULE_BW} mutant: no fence at all - the probe reports leaks (detector can fail)`,
         leaks(bw.noFence).length === BW_PROTECTED.length, `leaks: ${fmt(leaks(bw.noFence))}`);

@@ -13,7 +13,8 @@ const ARGV = join(TMP, "argv");
 mkdirSync(ARGV);
 writeFileSync(join(BIN, "pi"), `#!/bin/sh\nf="${ARGV}/slot-$FLEET_SELF_SLOT"\npwd > "$f.tmp"\n`
   + `for a in "$@"; do printf '%s\\0' "$a" >> "$f.tmp"; done\nmv "$f.tmp" "$f"\nexec sleep 600\n`, { mode: 0o755 });
-type SlotRecord = { selfToken?: string; openedAt?: number; agentMd?: { getippt?: boolean; text?: string } };
+type SlotRecord = { selfToken?: string; openedAt?: number; agentMd?: { getippt?: boolean; text?: string };
+  worktree?: unknown; boardBranch?: { repo: string; branch: string } | null };
 const recordOf = (f: ReturnType<typeof fixture>, slot: number): SlotRecord =>
   (persisted(f).slots as Record<string, SlotRecord> | undefined)?.[String(slot)] ?? {};
 const startOf = async (slot: number): Promise<{ cwd: string; args: string[] }> => {
@@ -57,6 +58,21 @@ describe("ein pi-Sitz bekommt Zweck und gewählte Packs als Start-Datei", () => 
     expect(text).not.toContain("DEEPSEEK_API_KEY");
     expect(text).not.toContain("ZAI_API_KEY");
     expect(text).not.toContain("api-key");
+  }, LIFE_DEADLINE_MS * 2);
+
+  test("ein pi-Sitz auf einem Board-Branch hält seinen Branch am Slot, nicht im worktree-Feld", async () => {
+    const f = fixture();
+    const [made, opened] = await life(f, [post("/api/branches", { repo: f.repo, name: "Board Pi" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/board-pi", harness: "pi" }), "save"]);
+    expect([made?.status, opened?.status]).toEqual([201, 200]);
+    const branch = String(made?.body.branch);
+    const slot = Number(opened?.body.slot);
+    const rec = recordOf(f, slot);
+    expect(rec.worktree ?? null).toBeNull();
+    expect(rec.boardBranch).toEqual({ repo: f.repo, branch });
+    // der Branch überlebt einen Neustart: der Slot liest ihn aus fleet.json, nicht aus HEAD
+    await life(f, ["save"]);
+    expect(recordOf(f, slot).boardBranch).toEqual({ repo: f.repo, branch });
   }, LIFE_DEADLINE_MS * 2);
 
   test("die Vorschau des Startfensters zeigt für pi Zweck und fleet-doors als Wissen", async () => {

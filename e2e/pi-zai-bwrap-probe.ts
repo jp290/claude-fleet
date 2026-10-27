@@ -32,8 +32,8 @@ export interface BwrapProbe {
 
 // protected = the fence must refuse it; allowed = the pane's work, the fence must let it through
 export const PROTECTED = ["ssh", "key", "fleetjson", "envfile", "zshrc", "otherwt", "denyroot", "foreignsession", "scaffoldenv",
-  "foreignenviron", "tmuxlive", "homewrite", "mainref", "hook"] as const;
-export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "gitcommit"] as const;
+  "foreignenviron", "tmuxlive", "homewrite", "mainref", "foreignref", "hook"] as const;
+export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "ownref", "gitcommit"] as const;
 
 function probeScript(f: Fx): string {
   const r = (name: string, path: string): string => `if grep -aq ${NEEDLE} '${path}' 2>/dev/null; then echo '${name}=1'; else echo '${name}=0'; fi`;
@@ -46,10 +46,12 @@ function probeScript(f: Fx): string {
     `if tmux -S '${f.tmuxSock}' list-sessions >/dev/null 2>&1; then echo 'tmuxlive=1'; else echo 'tmuxlive=0'; fi`,
     `if echo x > '${f.home}/pwn' 2>/dev/null; then echo 'homewrite=1'; else echo 'homewrite=0'; fi`,
     `if git -C '${f.cwd}' update-ref refs/heads/main HEAD 2>/dev/null; then echo 'mainref=1'; else echo 'mainref=0'; fi`,
+    `if git -C '${f.cwd}' update-ref refs/heads/branch/foreign HEAD 2>/dev/null; then echo 'foreignref=1'; else echo 'foreignref=0'; fi`,
     `if echo x > '${f.main}/.git/hooks/pre-commit' 2>/dev/null; then echo 'hook=1'; else echo 'hook=0'; fi`,
     r("cwdfile", `${f.cwd}/work.txt`), r("tool", `${f.home}/.local/bin/tool`),
     `if echo x > '${f.cwd}/w2' 2>/dev/null; then echo 'cwdwrite=1'; else echo 'cwdwrite=0'; fi`,
     `if echo x > '${f.agent}/sessions/${piSessionSlug(f.cwd)}/own' 2>/dev/null; then echo 'ownsession=1'; else echo 'ownsession=0'; fi`,
+    `if git -C '${f.cwd}' update-ref refs/heads/branch/pz-board HEAD 2>/dev/null; then echo 'ownref=1'; else echo 'ownref=0'; fi`,
     `if git -C '${f.cwd}' -c user.email=a@b -c user.name=n commit -q --allow-empty -m lane 2>/dev/null; then echo 'gitcommit=1'; else echo 'gitcommit=0'; fi`,
   ].join("\n");
 }
@@ -90,11 +92,13 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
     const sh = (cmd: string[], cwdOf = root): void => { const r = spawnSync(cmd[0]!, cmd.slice(1), { cwd: cwdOf, encoding: "utf8" }); if (r.status !== 0) throw new Error(`${cmd.join(" ")}: ${r.stderr}`); };
     sh(["git", "init", "-q", "-b", "main", main]);
     sh(["git", "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "--allow-empty", "-m", "init"], main);
-    sh(["git", "worktree", "add", "-q", "-b", "fleet/lane-x", cwd], main);
+    // a foreign ref in the own branch's namespace exists BEFORE the fence: it must stay unwritable while the own one moves
+    sh(["git", "-C", main, "branch", "branch/foreign"]);
+    sh(["git", "worktree", "add", "-q", "-b", "branch/pz-board", cwd], main);
     put(`${cwd}/work.txt`); sh(["git", "add", "work.txt"], cwd);
     sh(["git", "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "-m", "lane work"], cwd); // HEAD != main
     put(scaffold);
-    const g = piZaiGitOf(cwd, "fleet/lane-x");
+    const g = piZaiGitOf(cwd, "branch/pz-board");
     const own = piZaiTmpFor(realpathSync(tmpdir()), cwd);
     ownDir = own;
     mkdirSync(`${own}/home`, { recursive: true }); mkdirSync(`${own}/tmp`, { recursive: true });
@@ -126,8 +130,10 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
     // Every run that can move something is followed by its restore: main back to its first commit, the
     // two writes removed. CONTROL first - the unfenced script must reach every probe.
     const mainFirst = spawnSync("git", ["-C", main, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
+    const foreignFirst = spawnSync("git", ["-C", main, "rev-parse", "refs/heads/branch/foreign"], { encoding: "utf8" }).stdout.trim();
     const restore = (): void => {
       sh(["git", "-C", main, "update-ref", "refs/heads/main", mainFirst]);
+      sh(["git", "-C", main, "update-ref", "refs/heads/branch/foreign", foreignFirst]);
       rmSync(`${home}/pwn`, { force: true }); rmSync(`${main}/.git/hooks/pre-commit`, { force: true });
     };
     const control = run(null); restore();

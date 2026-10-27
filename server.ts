@@ -3033,6 +3033,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   mission: null,
   awaiting: null,
   worktree: null,
+  boardBranch: null,
   model: null,
   harness: null,
   container: null,
@@ -6283,7 +6284,7 @@ function stateSnapshot(): string {
     sessionId: string | null; sessionIdLearned: { id: string; at: number } | null;
     codexPaneSpawnedAt: number | null; codexRecoveryState: CodexRecoveryState | null;
     codexDisconnectSeenAt: number | null;
-    worktree: LaneRef | null; model: string | null;
+    worktree: LaneRef | null; boardBranch?: { repo: string; branch: string } | null; model: string | null;
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
@@ -6293,7 +6294,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, ...(s.boardBranch ? { boardBranch: s.boardBranch } : {}), model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9087,7 +9088,8 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
       if (sd.notizbuch) await saeSitzNotizbuch(path, agentMd, sd.notizbuch);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
         null, rc.remote, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, agentMd,
-        null, bib.wahl, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent);
+        null, bib.wahl, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, null,
+        { repo: ro.repo, branch: body.branch });
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
@@ -10628,7 +10630,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           effort: occupant.effort, cwd: occupant.cwd, ...boxFor(occupant),
           // the MCP profile is a LANE property only: a MAIN or plain session keeps its ambient MCPs
           browserMcp: !s.worktree || occupant.browser, context: occupant.context, permissions: po.permissions, fleetCheckout,
-          webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? null, projectDocMaxBytes,
+          webSearch: h.id === "codex" && occupant.webSearch, laneBranch: s.worktree?.branch ?? s.boardBranch?.branch ?? null, projectDocMaxBytes,
           // THE FOUNDING'S MCP SERVERS, the same persisted list on open, heal, restart and wake (Slot.packMcp)
           packMcp: s.packMcp,
           // the role's skill/agent list cut (SESSION_LIST_CUT), read at every spawn like the label
@@ -10797,7 +10799,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // the agent the door opened it from (server/agenten.ts#agentAnDerTuer), null = none
   agent: AgentBezug | null = null,
   // what the seat gave itself for this start (server/selbst-einrichten.ts): only a succession carries it, on every harness
-  selbst: SlotSelbst | null = null): Promise<SlotOpenResult> {
+  selbst: SlotSelbst | null = null,
+  // the board branch this NON-lane session is opened on (POST /api/branches/open), from the door's own record;
+  // a fence may write exactly this ref, so it is never read back from the worktree's HEAD
+  boardBranch: { repo: string; branch: string } | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -10915,6 +10920,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // intention must never read as this one's (it is the anchor staleness is judged against)
   // set BEFORE ensureSlot spawns the pane: the slot's row must be whole before the session starts.
   s.worktree = worktree;
+  s.boardBranch = boardBranch; // the door's record for a non-lane branch session, null on every other open
   s.model = model; // same reason — slotCmd bakes it at spawn; a recycled slot never inherits one
   s.harness = harness; // ...and this one decides WHICH BINARY the pane runs, so inheriting it
   s.effort = effort;   // would silently spawn the previous occupant's agent for a new session
@@ -11194,6 +11200,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   mergeInflight.delete(s.id); mergeStart.delete(s.id);
   parkMergeVerdict(s.id, false);
   s.worktree = null;
+  s.boardBranch = null;
   s.model = null;
   s.harness = null;
   s.effort = null;
@@ -15113,7 +15120,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst),
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, s.boardBranch ?? null),
       async () => {});
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -22128,7 +22135,7 @@ const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => 
   const claude = harnessOf(eingang.harness).id === "claude";
   const pi = harnessFamilie(eingang.harness ?? "claude") === "pi";
   const openedAt = Date.now();
-  return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt, awaiting: null, successionRetirement: null, mission: null, worktree: null,
+  return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt, awaiting: null, successionRetirement: null, mission: null, worktree: null, boardBranch: null,
     model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: claude && eingang.remote === true,
     rechte: claude ? eingang.rechte : null, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
     autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, zustellung: null, lauf: null,
@@ -47208,6 +47215,13 @@ if (existsSync(file)) {
             // hand a kept lane back to the auto-close on the first restart.
             ...(typeof (wt as { keptAt?: unknown }).keptAt === "number" ? { keptAt: (wt as { keptAt: number }).keptAt } : {}) };
         }
+        // the board branch of a NON-lane session, from Fleet's door record — never from the worktree's HEAD; a
+        // hand-edited state row may not buy the main ref or a malformed one
+        const bb = (v as { boardBranch?: unknown }).boardBranch;
+        s.boardBranch = typeof bb === "object" && bb !== null
+          && typeof (bb as { repo?: unknown }).repo === "string" && typeof (bb as { branch?: unknown }).branch === "string"
+          && (bb as { branch: string }).branch !== "main" && !(bb as { branch: string }).branch.split("/").includes("..")
+          ? { repo: (bb as { repo: string }).repo, branch: (bb as { branch: string }).branch } : null;
         if ((v as { webSearch?: unknown }).webSearch === true && hOf.id === "codex" && s.worktree) s.webSearch = true;
       }
     }

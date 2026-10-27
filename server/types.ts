@@ -2081,6 +2081,10 @@ interface Slot {
   // cwd as a git worktree ("lane") — land/cleanup only ever touches tagged slots. `base` is a
   // branch NAME (it must track the tip); `baseSha` is the immutable fork COMMIT captured at
   // create/attach time — optional, because lanes forked before it existed have none.
+  // THE BOARD BRANCH OF A NON-LANE SESSION (POST /api/branches/open): the door's own record, kept
+  // beside `worktree` rather than in it, because `worktree` means "lane" to every role/lifecycle
+  // reader. It is what a fenced pi seat may write as its one git ref; null = no board branch.
+  boardBranch?: { repo: string; branch: string } | null;
   model: string | null; // per-slot claude model (--model at spawn); null = FLEET_CMD default
   harness: string | null; // which agent this session runs (HARNESSES). null = the default adapter,
   // i.e. FLEET_CMD — which is what every slot predating this field is, so null must never be

@@ -63,16 +63,17 @@ export function parsePiZaiDenyRoots(raw: string | undefined): string[] | null {
 // (spawn lines are built synchronously), never by running git. null = .git is a directory inside
 // cwd (a clone lane, a main session) or no repository at all: the cwd opening already covers it.
 // The writable branch is NOT read from the worktree: `<admin>/HEAD` sits in the admin dir the fence
-// opens for writing, so a lane could re-aim it at refs/heads/main and the NEXT spawn would grant that
-// ref. It comes from Fleet's own lane record (server.ts: the slot's worktree.branch) instead; no
-// record (a pi-zai session in a worktree Fleet did not make) = no branch write at all. The pointers
-// this function DOES follow (`.git`, `commondir`) are in the fence's never-write set.
+// opens for writing, so a session could re-aim it at refs/heads/main and the NEXT spawn would grant
+// that ref. It comes from Fleet's own record instead — a lane's `worktree.branch`, or the
+// `boardBranch.branch` a board session was opened on (server.ts#openBoardBranch) — and no record
+// (a pi-zai session in a worktree Fleet did not make) = no branch write at all. The pointers this
+// function DOES follow (`.git`, `commondir`) are in the fence's never-write set.
 export interface PiZaiGit {
   common: string;  // the shared git dir, read-only but for objects/ and the own branch
   admin: string;   // this worktree's own admin dir, writable but for the files that point git elsewhere
-  ref: string | null; // "refs/heads/<Fleet's lane branch>"; null = no lane record, no branch write
+  ref: string | null; // "refs/heads/<Fleet's own branch>"; null = no record, no branch write
 }
-export function piZaiGitOf(realCwd: string, laneBranch: string | null): PiZaiGit | null {
+export function piZaiGitOf(realCwd: string, fleetBranch: string | null): PiZaiGit | null {
   try {
     if (statSync(`${realCwd}/.git`).isDirectory()) return null;
     const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(`${realCwd}/.git`, "utf8"));
@@ -80,7 +81,9 @@ export function piZaiGitOf(realCwd: string, laneBranch: string | null): PiZaiGit
     const admin = realpathSync(isAbsolute(m[1]) ? m[1] : resolve(realCwd, m[1]));
     const commonRaw = readFileSync(`${admin}/commondir`, "utf8").trim();
     const common = realpathSync(isAbsolute(commonRaw) ? commonRaw : resolve(admin, commonRaw));
-    return { common, admin, ref: laneBranch ? `refs/heads/${laneBranch}` : null };
+    // main is never a writable branch, even if a hand-edited record names it
+    const branch = fleetBranch && fleetBranch !== "main" ? fleetBranch : null;
+    return { common, admin, ref: branch ? `refs/heads/${branch}` : null };
   } catch { return null; }
 }
 

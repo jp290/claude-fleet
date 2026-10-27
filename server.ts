@@ -8712,7 +8712,7 @@ async function mergeCheckRows(repo: string): Promise<unknown[]> {
 // THE MERGE CHECK OF A CHARGE, in the background: <repo>/ci/merge-check.ts where the repo brings one (Fleet's), else the
 // owner's check command (server/pruefbefehl-lauf.ts). Both write their row to merge-checks.jsonl; GET /api/branches says
 // running, then green or red. The owner's door and the session's own (/api/self/branches/check) start it the same way.
-async function startBranchCheck(repo: string, branch: string): Promise<{ status: number; body: Record<string, unknown> }> {
+async function startBranchCheck(repo: string, branch: string, repair = false): Promise<{ status: number; body: Record<string, unknown> }> {
   const record = findBranch(branchBook, repo, branch);
   if (!record?.name || !(await branchExists(repo, branch))) return { status: 404, body: { error: `${branch} is no board branch here` } };
   const cmd = ownMergeCheck(repo) ? null : confirmedCheck(repoChecks, repo);
@@ -8720,6 +8720,11 @@ async function startBranchCheck(repo: string, branch: string): Promise<{ status:
     return { status: 400, body: { error: repoChecks[repo]?.proposal
       ? `this repo has no check command yet — „${repoChecks[repo]!.proposal!.cmd}“ waits for the owner's „Use it“ on the board`
       : "this repo has no check command — set one on the board (the repo's gear, „Check command“)" } };
+  // REPARATUR NUR AM EIGENEN MERGE-CHECK: `--repair` heißt „dieser Branch behebt das rote main“, und nur
+  // Fleets Merge-Check liest den Audit-Stand und belegt es (ci/repair-proof.ts). Ein Repo mit eigenem
+  // Prüfbefehl hat weder das eine noch das andere — dort wäre die Flagge eine leere Behauptung.
+  if (repair && cmd !== null)
+    return { status: 409, body: { error: "repair belongs to Fleet's own merge check — this repo is checked by its own command, which knows no red main" } };
   const key = `${repo}\n${branch}`;
   if (branchCheckRuns.has(key)) return { status: 409, body: { error: "the check of this branch is already running" } };
   const tip = (await gitRead(repo, "rev-parse", `refs/heads/${branch}`)).out;
@@ -8728,11 +8733,11 @@ async function startBranchCheck(repo: string, branch: string): Promise<{ status:
   const base = chargeBase(record, main);
   if (!base || !main) return { status: 400, body: { error: "cannot resolve the repo's integration branch" } };
   branchCheckRuns.set(key, { tip, startedAt: Date.now() });
-  const argv = cmd === null ? [process.execPath, `${repo}/ci/merge-check.ts`, branch, "--base", base]
+  const argv = cmd === null ? [process.execPath, `${repo}/ci/merge-check.ts`, branch, "--base", base, ...(repair ? ["--repair"] : [])]
     : [process.execPath, PRUEFBEFEHL_LAUF_PATH, JSON.stringify({ repo, branch, base, main, cmd })];
   const run = Bun.spawn(argv, { cwd: repo, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   void run.exited.then(() => { branchCheckRuns.delete(key); workplacesCache = null; });
-  return { status: 202, body: { ok: true, tip, base, ...(cmd !== null ? { cmd } : {}) } };
+  return { status: 202, body: { ok: true, tip, base, ...(repair ? { repair: true } : {}), ...(cmd !== null ? { cmd } : {}) } };
 }
 async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base: string | null): Promise<BranchCheckView | null> {
   if (!hasMergeCheck(repo)) return null;
@@ -52175,6 +52180,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const body = await readJson(req);
         if (body?.branch !== undefined && body.branch !== own.branch)
           return json({ error: `this session checks only its own branch ${own.branch}, not ${String(body.branch)}` }, 403);
+        // REPARATUR IST DIE OWNER-TÜR (Karte cb1edfe3, Grenze der Workhorse-Orchestratorin, 27.10.): ein
+        // Sitz erklärt seinen Branch nicht selbst zum Reparateur eines roten main — der Beleg hin oder her,
+        // die Entscheidung, dass ein Land auf rotem main laufen darf, bleibt beim Owner.
+        if (body?.repair === true)
+          return json({ error: "repair is the owner's door — a session starts its check without it; the owner starts it with POST /api/branches/check { repair: true }" }, 409);
         const started = await startBranchCheck(own.repo, own.branch);
         return json(started.body, started.status);
       }
@@ -54474,7 +54484,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!body || typeof body.branch !== "string") return json({ error: "expected { repo, branch }" }, 400);
       const ro = await branchRepoOf(body.repo);
       if (!ro.ok) return json({ error: ro.error }, 400);
-      const started = await startBranchCheck(ro.repo, body.branch);
+      const started = await startBranchCheck(ro.repo, body.branch, body.repair === true);
       return json(started.body, started.status);
     }
     // A REPO'S CHECK COMMAND (server/pruefbefehl.ts), set at the board: from now on it is the repo's merge check, land

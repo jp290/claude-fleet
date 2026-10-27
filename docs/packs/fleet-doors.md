@@ -38,7 +38,7 @@ the reason, never a silent drop.
 | `GET /api/self/kanten` | See the edges you are in. | self token |
 | `POST /api/self/watch` | Subscribe your own slot to one server-generated completion fact. | self token, non-lane (the steward may watch) |
 | `POST /api/self/autos` · `DELETE /api/self/autos/<id>` | Schedule one prompt for yourself, or take your schedule back. | self token, for your own slot only |
-| `GET /api/self/branch` · `POST /api/self/branches/check` · `POST /api/self/repo-check` | Read your own branch and its check, run the check, propose the repo's command. | self token, own branch and own repo only |
+| `GET /api/self/branch` · `POST /api/self/branches/check` · `POST /api/self/repo-check` | Read your own branch and its check, run the check, propose the repo's command. | self token, own branch and own repo only; the check never runs as a repair (`repair: true` answers 409 — a land on a red main is the owner's door) |
 | `POST /api/self/branches/land` | Land your own branch after the person's "Looks good" and a green check. | self token, own branch; both conditions are checked |
 | `POST /api/self/branches` · `POST /api/self/branches/open` | Open a board branch, or a session on one. | self token, non-lane, non-steward, in your own repo; the child is never wider than you |
 | `POST /api/self/packs` | Write a private context pack of your own, valid at once. | self token; an id from Fleet's register is refused, and the owner's private pack is the Orchestratorin's |

@@ -104,12 +104,13 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
     }
     const moved = await d.advanceIntegration(repo, main, sha);
     if (moved) return refuse(409, `main wurde nicht bewegt: ${moved.error}`);
-    const landed = recordLand(d.book(), repo, branch, { sha, at: Date.now(), tip, base, subject, points: doneSinceLastLand(record), passt, checked, form });
+    const landed = recordLand(d.book(), repo, branch, { sha, at: Date.now(), tip, base, subject, points: doneSinceLastLand(record), passt, checked, form,
+      ...(use?.row.repair === true ? { repair: true as const } : {}) });
     if (landed.ok) d.setBook(landed.book);
     await d.saveStateNow();
     await d.afterLand(repo, main, branch, sha);
     const deploy = d.deployNote(repo);
-    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, checked, form, ...(deploy ? { deploy } : {}) } };
+    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, checked, form, ...(use?.row.repair === true ? { repair: true } : {}), ...(deploy ? { deploy } : {}) } };
   } finally {
     d.landing.delete(repo);
   }

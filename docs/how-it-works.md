@@ -32,7 +32,8 @@ its land, and `server.ts#removeWorktreeSafe` is the only way a lane's tree goes 
 
 **Branch.** How work enters Fleet today. `POST /api/branches/open` (`server.ts#openBoardBranch`)
 creates a branch and its worktree and starts a session there with the goal as its first message.
-`POST /api/branches/check` runs the repo's own `ci/merge-check.ts` on it, and
+`POST /api/branches/check` runs the repo's own `ci/merge-check.ts` on it (with `repair: true`, the owner's
+door only, it runs as a repair of a red main — and the check proves it, `ci/repair-proof.ts`), and
 `POST /api/branches/land` (`server/branch-land.ts#landCharge`) puts the branch's commits onto the
 integration branch as one commit. A session may land its own branch only after the owner approved
 that exact tip and with a usable merge check.

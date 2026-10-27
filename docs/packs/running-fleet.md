@@ -29,10 +29,15 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   commit on top. If the charge conflicts with main, merging main in does not help the check (it skips the merge):
   rebuild the charge as a merge of the landed tip with main, plus one commit on top that carries the finished tree.
   The land squashes anyway.
-- **A red main lands only a repair.** While the last audit is red, the land door refuses every check that wasn't
-  run with `--repair`, even a green one, and the board door `POST /api/branches/check` has no such flag. The branch
-  that carries the fix is checked by hand: `bun ci/merge-check.ts <branch> --base main --repair`; every other branch
-  waits for the next green audit.
+- **A red main lands only a proved repair.** While the last audit is red, the land door refuses every check that
+  wasn't run as a repair, even a green one. The owner's door starts one as a repair:
+  `POST /api/branches/check { repo, branch, repair: true }`. The check then has to prove it, and the proof is its
+  own: it reads the red audit's failing checks (`post-land-audits.jsonl`, `fails`) and looks in the candidate tree
+  for the files that name those checks literally (`ci/repair-proof.ts`). A branch that changes other files is not
+  a repair — its row says `repair: false` and why, and it stays unmergeable. A fix on the product side (a page, a
+  door) proves itself only when it touches the file that names the check as well; otherwise the owner judges the
+  audit himself. `bun ci/merge-check.ts <branch> --base main --repair` is the same check by hand. Every other
+  branch waits for the next green audit, and a landed repair carries `repair` in its land record.
 - **The board door runs the checkout's runner, not the branch's.** `POST /api/branches/check` starts
   `<repo>/ci/merge-check.ts` from the checkout the body names. A branch that changes the runner is checked from its
   own worktree, `bun ci/merge-check.ts <branch> --base main`, or its first check runs the old runner.

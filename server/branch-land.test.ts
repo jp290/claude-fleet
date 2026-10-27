@@ -33,7 +33,9 @@ function checkedFixture(): Fixture {
   return f;
 }
 // a green merge check of the branch's tip against main, its candidate built commit by commit as ci/merge-check.ts does
-function plantGreen(f: Fixture, branch: string): { tip: string; tree: string } {
+// `extra` überschreibt Felder der Zeile — so pflanzt ein Test auch das Rot eines roten main (`mergeable: false, why: …`)
+// oder ein belegtes repair (`repair: true`), genau wie decide() es schreibt.
+function plantGreen(f: Fixture, branch: string, extra: Record<string, unknown> = {}): { tip: string; tree: string } {
   const tip = sh(f.repo, "rev-parse", branch), main = sh(f.repo, "rev-parse", "main");
   const commits = sh(f.repo, "rev-list", "--reverse", "--no-merges", tip, "^main").split("\n").filter(Boolean);
   let cur = main;
@@ -41,7 +43,7 @@ function plantGreen(f: Fixture, branch: string): { tip: string; tree: string } {
     cur = sh(f.repo, "commit-tree", sh(f.repo, "merge-tree", "--write-tree", "--merge-base", `${c}^`, cur, c).split("\n")[0]!, "-p", cur, "-m", "kandidat");
   const tree = sh(f.repo, "rev-parse", `${cur}^{tree}`);
   appendFileSync(join(sh(f.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"), "merge-checks.jsonl"),
-    `${JSON.stringify({ at: Date.now(), branch, base: "main", tip, main, candidate: cur, tree, commits, verdict: "green", mergeable: true, why: "main grün" })}\n`);
+    `${JSON.stringify({ at: Date.now(), branch, base: "main", tip, main, candidate: cur, tree, commits, verdict: "green", mergeable: true, why: "main grün", ...extra })}\n`);
   return { tip, tree };
 }
 
@@ -102,5 +104,37 @@ describe("Eine Session landet ihren eigenen Branch selbst, nach „passt“ und 
     expect(String(refused?.body.error)).toContain("a session lands its branch only after a green check");
     expect(byOwner).toMatchObject({ status: 200, body: { ok: true, passt: true, checked: false } });
     expect(sh(f.repo, "rev-parse", "main^")).toBe(main0);
+  }, LIFE_DEADLINE_MS * 3);
+});
+
+// Karte cb1edfe3 (27.10.): solange main rot ist, meldet jeder Merge-Check „nicht mergebar“ — auch der
+// Branch, der es repariert. Der Owner startet den Check dann mit repair:true, und der Check BELEGT die
+// Reparatur selbst (ci/repair-proof.ts). Was hier am Land geprüft wird: die belegte Zeile darf landen,
+// die unbelegte wartet weiter, und das Land trägt die Flagge, damit man später sieht, wie es dazu kam.
+describe("Ein rotes main: nur ein belegter Reparatur-Branch landet", () => {
+  const RED = "main ist rot: Audit 50fe45d9 vom 2026-10-26T21:38:58.871Z";
+  test("die belegte Reparatur landet und trägt repair an ihrem Eintrag; der normale Branch wartet weiter", async () => {
+    const f = checkedFixture();
+    const [rep, normal] = await life(f, [post("/api/branches", { repo: f.repo, name: "Repariert" }),
+      post("/api/branches", { repo: f.repo, name: "Normal" })]);
+    commitIn(String(rep?.body.path), "r.txt", "Reparatur");
+    commitIn(String(normal?.body.path), "n.txt", "normale Arbeit");
+    // der normale: grün gefahren, aber das rote main bleibt — so schreibt decide() es ohne Beleg
+    plantGreen(f, "branch/normal", { mergeable: false, why: `${RED}; nicht als Reparatur belegt: kein Quelltext nennt diese Prüfung` });
+    // ...der reparierende: mergebar, weil der Check den Beleg gefunden hat
+    const proof = "der Branch behebt den roten Audit 50fe45d9: 1 rote Prüfung, belegt in 1 Datei(en), jede davon im Diff (e2e/slots.ts)";
+    plantGreen(f, "branch/repariert", { repair: true, repairWhy: proof, mainState: RED, why: `${RED}; --repair: ${proof}` });
+    const main0 = sh(f.repo, "rev-parse", "main");
+    const [waits] = await life(f, [post("/api/branches/land", { repo: f.repo, branch: "branch/normal", subject: "Normal: Charge" })]);
+    expect(waits?.status).toBe(409);
+    expect(String(waits?.body.error)).toContain("nicht als Reparatur belegt");
+    expect(sh(f.repo, "rev-parse", "main")).toBe(main0);
+    const [landed] = await life(f, [post("/api/branches/land", { repo: f.repo, branch: "branch/repariert", subject: "Repariert: Charge" })]);
+    expect(landed).toMatchObject({ status: 200, body: { ok: true, checked: true, repair: true } });
+    expect(sh(f.repo, "rev-parse", "main")).not.toBe(main0);
+    // die Land-Zeile nennt es: welche Länder trotz rotem main liefen, ist später eine Frage an fleet.json
+    const books = persisted(f).branches as { branch: string; lands: { subject: string; repair?: boolean }[] }[];
+    expect(books.find((b) => b.branch === "branch/repariert")?.lands.at(-1)).toMatchObject({ subject: "Repariert: Charge", repair: true });
+    expect(books.find((b) => b.branch === "branch/normal")?.lands).toEqual([]);
   }, LIFE_DEADLINE_MS * 3);
 });

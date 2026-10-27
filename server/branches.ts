@@ -26,6 +26,10 @@ export interface BranchSeen { at: number; head: string; via: SeenVia }
 // `form` "commits": main sprang auf den Kandidaten des Merge-Checks, `sha` ist dessen Spitze; fehlt = ein Commit.
 export type LandForm = "squash" | "commits";
 export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean;
+  // der Land lief auf einem ROTEN main, weil der Branch es belegt behebt (ci/repair-proof.ts,
+  // server/branch-land.ts): der Grund steht im Merge-Check und in der Land-Zeile, damit man später
+  // sieht, welche Länder trotz rotem main liefen. Fehlt das Feld, war main nicht rot.
+  repair?: boolean;
   form?: LandForm }
 // Neuaufbau K13 · wer den Branch über die Tür geöffnet hat: der Sitz (Slot und Ordner) der Session, die
 // /api/branches/open mit ihrem Self-Token neben dem Owner-Bearer rief. Eine Nachfolge behält Slot und
@@ -188,7 +192,10 @@ export function chargeMessage(subject: string, o: { branch: string; tip: string;
 // genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen. Ihre
 // `commits` sind die, die der Kandidat trägt: Was der Owner sieht und was gemergt wird, zählt sie, nicht
 // die Basis von jetzt, die als Ref-Name seit dem Check gewandert sein kann.
-export interface MergeCheckRow { tip: string; base: string; main: string; candidate: string; tree: string; at: number; commits: string[] }
+export interface MergeCheckRow { tip: string; base: string; main: string; candidate: string; tree: string; at: number; commits: string[];
+  // der Branch behebt damit ein rotes main, und der Check hat es belegt (ci/repair-proof.ts):
+  // nur dann durfte er auf rotem main „mergebar“ sagen, und das Land schreibt es an seinen Eintrag
+  repair: boolean }
 export function usableCheck(rows: readonly unknown[], want: { branch: string; base: string; tip: string; main: string }):
   { ok: true; row: MergeCheckRow } | { ok: false; why: string } {
   const mine = rows.filter((x): x is Record<string, unknown> => !!x && typeof x === "object"
@@ -203,7 +210,7 @@ export function usableCheck(rows: readonly unknown[], want: { branch: string; ba
   if (!Array.isArray(commits) || !commits.every((c): c is string => str(c) && SHA_RE.test(c)))
     return { ok: false, why: "die Merge-Check-Zeile nennt die geprüften Commits nicht — neu prüfen" };
   return { ok: true, row: { tip: want.tip, base: want.base, main: want.main, candidate: last.candidate, tree: last.tree, at: last.at,
-    commits: [...commits] } };
+    commits: [...commits], repair: last.repair === true } };
 }
 
 // WAS EINE ZEILE AM BRANCH SAGT: ein Lauf, der vor dem Urteil endete (exit 3 — kein Helfer, der Kandidat kam nicht

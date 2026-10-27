@@ -279,6 +279,55 @@ describe("Charge mergen mit Merge-Check: genau der geprüfte Baum", () => {
     }
     expect(rowsOf(view!, f.repo).branches[0]?.check).toEqual({ state: "red", at: expect.any(Number), why: "Attrappe" });
   }, LIFE_DEADLINE_MS * 2);
+
+  // Karte cb1edfe3 (27.10.): ein Branch, der ein rotes main behebt, braucht „--repair“ — und die Tür, die es
+  // weiterreichen darf, ist die des Owners. Die Attrappe schreibt ihre Argumente, so wird aus „[Zitat entfernt]“
+  //  ein gelesener Fakt statt einer Annahme.
+  test("die Owner-Tür bittet um die Reparatur (--repair), die Self-Tür nie — sie antwortet 409", async () => {
+    const f = checkedFixture();
+    writeFileSync(join(f.repo, "ci/merge-check.ts"),
+      "import { appendFileSync } from \"node:fs\";\n"
+      + "const argv = process.argv.slice(2);\n"
+      + "appendFileSync(\"argv.jsonl\", JSON.stringify(argv) + \"\\n\");\n"
+      + "const [branch, , base] = argv;\n"
+      + "const git = (...a: string[]) => Bun.spawnSync([\"git\", ...a]).stdout.toString().trim();\n"
+      + "appendFileSync(`${git(\"rev-parse\", \"--path-format=absolute\", \"--git-common-dir\")}/merge-checks.jsonl`, JSON.stringify({ at: Date.now(), branch, base, tip: git(\"rev-parse\", branch!), main: git(\"rev-parse\", \"main\"), verdict: \"red\", mergeable: false, why: \"Attrappe\" }) + \"\\n\");\n");
+    sh(f.repo, "add", "ci/merge-check.ts");
+    sh(f.repo, "commit", "-q", "-m", "Attrappe schreibt ihre Argumente");
+    const [madeA, madeB] = await life(f, [post("/api/branches", { repo: f.repo, name: "Repariert" }),
+      post("/api/branches", { repo: f.repo, name: "Normal" })]);
+    commitIn(String(madeA?.body.path), "r.txt", "Reparatur");
+    const tipB = commitIn(String(madeB?.body.path), "n.txt", "normale Arbeit");
+    const [withRepair, without] = await life(f, [
+      post("/api/branches/check", { repo: f.repo, branch: "branch/repariert", repair: true }),
+      post("/api/branches/check", { repo: f.repo, branch: "branch/normal" })]);
+    expect(withRepair).toMatchObject({ status: 202, body: { repair: true } });
+    expect(without?.status).toBe(202);
+    expect(without?.body.repair).toBeUndefined();
+    // beide Attrappen haben geschrieben: je eine Zeile, und nur die Reparatur trägt --repair
+    const lines = await (async () => {
+      for (let i = 0; i < 60; i++) {
+        const text = existsSync(join(f.repo, "argv.jsonl")) ? readFileSync(join(f.repo, "argv.jsonl"), "utf8").trim() : "";
+        const got = text ? text.split("\n").map((l) => JSON.parse(l) as string[]) : [];
+        if (got.length >= 2) return got;
+        await Bun.sleep(100);
+      }
+      return [] as string[][];
+    })();
+    expect(lines.find((l) => l[0] === "branch/repariert")).toEqual(["branch/repariert", "--base", "main", "--repair"]);
+    expect(lines.find((l) => l[0] === "branch/normal")).toEqual(["branch/normal", "--base", "main"]);
+    // ...und die Self-Tür bekommt die Reparatur gar nicht erst: sie schweigt nicht, sie sagt nein
+    const opened = await life(f, [post("/api/branches/open", { repo: f.repo, branch: "branch/normal" })]);
+    const self = String((persisted(f).slots as Record<string, { selfToken?: string }> | undefined)?.[String(opened[0]?.body.slot)]?.selfToken ?? "");
+    expect(self).not.toBe("");
+    const [refused] = await life(f, [{ ...post("/api/self/branches/check", { repair: true }), token: null, self }]);
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.error)).toContain("owner's door");
+    // kein dritter Lauf: die Tür hat den Check nicht gestartet, also steht keine neue Zeile da
+    const after = existsSync(join(f.repo, "argv.jsonl")) ? readFileSync(join(f.repo, "argv.jsonl"), "utf8").trim().split("\n") : [];
+    expect(after.length).toBe(2);
+    expect(tipB).toHaveLength(40);
+  }, LIFE_DEADLINE_MS * 2);
 });
 
 describe("ein Land überdauert den Neustart", () => {

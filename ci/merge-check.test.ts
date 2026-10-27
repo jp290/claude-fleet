@@ -3,11 +3,11 @@
 // den main nach dem Merge hätte (Bauleitung 12.10.: Branch-Arbeit per Rebase/Cherry-Pick auf main,
 // ohne bau/neuaufbau).
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, helperEnv, helperOf, helperRun, hiddenLayerOf, mainVerdict,
-  mergeBaseOf, mergeCheck, pushCandidate, runOnHelper } from "./merge-check";
+import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, diffPaths, helperEnv, helperOf, helperRun, hiddenLayerOf,
+  mainAuditOf, mainVerdict, mergeBaseOf, mergeCheck, namesInTree, pushCandidate, runOnHelper } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -76,6 +76,71 @@ describe("decide: mergebar?", () => {
     expect(d.mergeable).toBe(true);
     expect(d.code).toBe(0);
     expect(d.why).toContain("--repair");
+  });
+  // Karte cb1edfe3 (27.10.): die Flagge allein genügt nicht — ohne Beleg bleibt es beim Nein, und der
+  // Satz sagt, woran es fehlt. Mit Beleg nennt die Zeile, was der Branch behebt.
+  test("ohne Beleg bleibt grün auf rotem main verweigert, und der Grund nennt den fehlenden Beleg", () => {
+    expect(decide("green", red, false, "nicht als Reparatur belegt: kein Quelltext nennt diese Prüfung"))
+      .toEqual({ mergeable: false, code: 2, why: "main ist rot; nicht als Reparatur belegt: kein Quelltext nennt diese Prüfung" });
+  });
+  test("mit Beleg trägt der Grund den Beleg statt des alten Satzes", () => {
+    const d = decide("green", red, true, "der Branch behebt den roten Audit mmmmmmmm: 1 rote Prüfung");
+    expect(d.mergeable).toBe(true);
+    expect(d.why).toContain("behebt den roten Audit mmmmmmmm");
+    expect(d.why).toContain("--repair");
+  });
+});
+
+describe("mainAuditOf: welche Zeile hält main rot, und was nennt sie?", () => {
+  test("die jüngste gemessene rote Zeile kommt mit — sie trägt die `fails`, aus denen sich die Reparatur belegt", () => {
+    const got = mainAuditOf([row(1, "green", "m1"), { ...row(2, "red", "m2"), fails: ["a: b"] }], onMain);
+    expect(got.red).toBe(true);
+    expect(got.row).toMatchObject({ result: "red", mainSha: "m2", fails: ["a: b"] });
+  });
+  test("grün, beurteilt oder gar nicht gemessen: keine rote Zeile", () => {
+    expect(mainAuditOf([row(1, "green", "m1")], onMain).row).toBeNull();
+    expect(mainAuditOf([row(2, "red", "m2", "stale-test")], onMain).row).toBeNull();
+    expect(mainAuditOf([], onMain).row).toBeNull();
+  });
+});
+
+// DER BELEG SELBST, an einem Wegwerf-Repo: gesucht wird der Satz einer Prüfung, gefunden wird die
+// Datei, die ihn ausgibt; ein Satz, den niemand trägt, findet nichts. Und der Diff ist der, den der
+// Branch gegen main macht.
+describe("namesInTree und diffPaths: der Beleg der Reparatur-Tür", () => {
+  const repo = (): { dir: string; g: (...a: string[]) => string } => {
+    const dir = mkdtempSync(`${tmpdir()}/mc-repair-`);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    g("init", "-q", "-b", "main");
+    mkdirSync(`${dir}/e2e`);
+    mkdirSync(`${dir}/docs`);
+    writeFileSync(`${dir}/e2e/slots.ts`, `claims["the words are as large as Info's — the drawing is not scaled"] = true;\n`);
+    writeFileSync(`${dir}/docs/notiz.md`, `zitiert: the words are as large as Info's — the drawing is not scaled\n`);
+    g("add", "-A");
+    g("commit", "-q", "-m", "baum");
+    return { dir, g };
+  };
+  test("die Datei, die den Satz ausgibt, wird gefunden — die Doku, die ihn zitiert, nicht", () => {
+    const { dir, g } = repo();
+    try {
+      expect(namesInTree(g("rev-parse", "HEAD"), "the words are as large as Info's", dir)).toEqual(["e2e/slots.ts"]);
+      expect(namesInTree(g("rev-parse", "HEAD"), "ein Satz, den kein Quelltext trägt", dir)).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("diffPaths nennt die Dateien, die der Branch gegen main ändert", () => {
+    const { dir, g } = repo();
+    try {
+      const main = g("rev-parse", "HEAD");
+      g("checkout", "-q", "-b", "arbeit");
+      writeFileSync(`${dir}/e2e/slots.ts`, `claims["the words are as large as Info's — the drawing is not scaled"] = false;\n`);
+      g("add", "-A");
+      g("commit", "-q", "-m", "reparatur");
+      expect(diffPaths(main, "arbeit", dir)).toEqual(["e2e/slots.ts"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
@@ -567,4 +632,98 @@ describe("jeder Abbruch vor dem Urteil steht in merge-checks.jsonl", () => {
     expect(String(row.why)).toContain("sh exit 7");
     expect(existsSync(join(p.dir, "ci", "repo.git"))).toBe(true);
   });
+});
+
+// DIE REPARATUR EINES ROTEN main, am ganzen Check (Karte cb1edfe3, 27.10.): --repair verlangt, der Check
+// belegt. Das Audit kommt hier aus einem `ctl.sh`, das der Test in den Arbeitsbaum legt (der echte liest
+// `/api/post-land-audits`), der Runner ist eine Attrappe, die „green“ sagt, und die rote Prüfung nennt
+// einen Satz, den eine Datei des Baums wörtlich trägt.
+describe("die Reparatur eines roten main: belegt oder nicht", () => {
+  const CLAIM = "the words in the structure's rectangles have Info's size — the drawing is not scaled";
+  const NAME = `arbeitsorte DOM 1200x900 lane: ${CLAIM}`;
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  function repo(): { dir: string; g: (...a: string[]) => string; rows: () => Record<string, unknown>[]; audit: (rows: unknown[]) => void;
+    runner: string } {
+    const dir = mkdtempSync(join(tmpdir(), "mc-repair-e2e-"));
+    dirs.push(dir);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    g("init", "-q", "-b", "main");
+    mkdirSync(join(dir, "e2e"));
+    writeFileSync(join(dir, "e2e/probe.ts"), `claims["${CLAIM}"] = true;\n`);
+    writeFileSync(join(dir, "a.txt"), "1\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "main");
+    g("checkout", "-q", "-b", "bau/repariert");
+    writeFileSync(join(dir, "e2e/probe.ts"), `claims["${CLAIM}"] = false;\n`);
+    g("add", "-A");
+    g("commit", "-q", "-m", "reparatur");
+    g("checkout", "-q", "main");
+    g("checkout", "-q", "-b", "bau/normal");
+    writeFileSync(join(dir, "other.txt"), "x\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "andere datei");
+    g("checkout", "-q", "main");
+    g("remote", "add", "hub", join(dir, "helfer.git"));
+    // ERST NACH den Commits: der Audit-Stand kommt aus einem ./ctl.sh im Arbeitsbaum (der echte liest
+    // /api/post-land-audits), und der Runner ist eine Attrappe. Beide bleiben ungetrackt, sonst nähme sie
+    // ein Branch-Commit mit und der Rücksprung auf main ließe sie verschwinden.
+    writeFileSync(join(dir, "ctl.sh"), "#!/bin/sh\ncat \"$(dirname \"$0\")/audits.json\"\n");
+    chmodSync(join(dir, "ctl.sh"), 0o755);
+    const audit = (rows: unknown[]): void => { writeFileSync(join(dir, "audits.json"), JSON.stringify({ audits: rows })); };
+    audit([{ at: 1793110000000, result: "red", mainSha: g("rev-parse", "main"), fails: [NAME] }]);
+    const runner = join(dir, "green.sh");
+    writeFileSync(runner, "#!/bin/sh\necho 'merge-check green 12'\n");
+    const rows = (): Record<string, unknown>[] => readFileSync(join(dir, ".git", "merge-checks.jsonl"), "utf8").split("\n")
+      .filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    return { dir, g, rows, audit, runner };
+  }
+
+  test("der Branch ändert die Datei, die die rote Prüfung nennt: mergebar, und die Zeile trägt den Beleg", async () => {
+    const p = repo();
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", repair: true, runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(r.code).toBe(0);
+    expect(r.row).toMatchObject({ verdict: "green", mergeable: true, repair: true, repairAsked: true });
+    expect(String(r.row.why)).toContain("behebt den roten Audit");
+    expect(String(r.row.why)).toContain("e2e/probe.ts");
+    expect(r.row.repairProof).toMatchObject({ red: 1, files: ["e2e/probe.ts"],
+      needles: [{ files: ["e2e/probe.ts"], touched: true }] });
+    // die Notiz an der Spitze sagt es auch
+    const note = p.g("notes", "--ref=merge-check", "show", "bau/repariert");
+    expect(note).toContain("repair:");
+  }, 60_000);
+
+  test("der Branch ändert woanders: nicht mergebar, und die Zeile sagt, woran der Beleg fehlt", async () => {
+    const p = repo();
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/normal", base: "main", repair: true, runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(r.code).toBe(2);
+    expect(r.row).toMatchObject({ verdict: "green", mergeable: false, repair: false, repairAsked: true });
+    expect(String(r.row.why)).toContain("nicht als Reparatur belegt");
+    expect(String(r.row.why)).toContain("berührt keine dieser Dateien (e2e/probe.ts)");
+    expect(r.row.repairProof).toMatchObject({ red: 1, needles: [{ touched: false }] });
+  }, 60_000);
+
+  test("ohne --repair bleibt es beim alten Nein, auch für den Branch, der die Datei ändert", async () => {
+    const p = repo();
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(r.code).toBe(2);
+    expect(r.row).toMatchObject({ verdict: "green", mergeable: false, repair: false });
+    expect(r.row.repairAsked).toBeUndefined();
+    expect(r.row.repairProof).toBeUndefined();
+    expect(String(r.row.why)).toBe("main ist rot: Audit " + String(p.g("rev-parse", "main")).slice(0, 8) + " vom " + new Date(1793110000000).toISOString());
+  }, 60_000);
+
+  test("ein grünes main braucht keine Reparatur: die Flagge wird nicht zum Beleg", async () => {
+    const p = repo();
+    p.audit([{ at: 1793110000000, result: "green", mainSha: p.g("rev-parse", "main") }]);
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", repair: true, runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(r.code).toBe(0);
+    expect(r.row).toMatchObject({ verdict: "green", mergeable: true, repair: false, repairAsked: true });
+    expect(String(r.row.repairWhy)).toContain("nicht bekannt rot");
+    expect(r.row.repairProof).toBeUndefined();
+  }, 60_000);
 });

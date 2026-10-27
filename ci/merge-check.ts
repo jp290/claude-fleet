@@ -22,6 +22,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { ADJUDICATION_CLEARS_RED } from "../server/adjudication";
 import { BIG_UNITS, bigUnitsFor, bigUnitsLine, type BigUnitSelection } from "./big-units";
+import { repairProofOf, type RepairProof } from "./repair-proof";
 
 const RUNNER = join(import.meta.dir, "merge-check-run.sh");
 const REPO_DIR = join(import.meta.dir, "..");
@@ -162,7 +163,10 @@ export function helperOf(hubUrl: string | null | undefined, env: Record<string, 
 // Bekannt rot heißt: die jüngste gemessene Audit-Zeile (grün oder rot) auf einem Stand von main ist
 // rot, und kein Urteil hebt sie auf — dieselben Urteile wie im Server (server/adjudication.ts: flake,
 // stale-test, unknowable). Nicht lesbar heißt nicht grün.
-function mainState(main: string, dir = REPO_DIR): MainState {
+// `row` ist die Zeile, die main rot HÄLT (null, wenn main nicht rot ist): sie trägt die `fails`, aus
+// denen die Reparatur-Tür den Beleg liest (ci/repair-proof.ts).
+type MainReading = MainState & { row: Record<string, unknown> | null };
+function mainState(main: string, dir = REPO_DIR): MainReading {
   // ein Repo ohne ctl.sh (ein Testbaum) ist „nicht lesbar“, nicht „grün“ — und darf den Lauf nicht werfen
   let r: ReturnType<typeof Bun.spawnSync> | null = null;
   try { r = Bun.spawnSync(["./ctl.sh", "get", "/api/post-land-audits?limit=50", "--json"], { cwd: dir }); } catch { r = null; }
@@ -174,25 +178,44 @@ function mainState(main: string, dir = REPO_DIR): MainState {
     if (!Array.isArray(rows)) throw new Error("keine audits");
     audits = rows as Record<string, unknown>[];
   } catch {
-    return { red: true, why: "Audit-Stand von main nicht lesbar (./ctl.sh get /api/post-land-audits)" };
+    return { red: true, row: null, why: "Audit-Stand von main nicht lesbar (./ctl.sh get /api/post-land-audits)" };
   }
-  return mainVerdict(audits, (sha) => git(["merge-base", "--is-ancestor", sha, main], undefined, dir).ok);
+  return mainAuditOf(audits, (sha) => git(["merge-base", "--is-ancestor", sha, main], undefined, dir).ok);
 }
-export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: (sha: string) => boolean): MainState {
+export function mainAuditOf(audits: readonly Record<string, unknown>[], onMain: (sha: string) => boolean): MainReading {
   const measured = audits
     .filter((a) => (a.result === "green" || a.result === "red") && typeof a.mainSha === "string" && onMain(a.mainSha))
     .sort((a, b) => Number(b.at) - Number(a.at));
   const last = measured[0];
-  if (!last) return { red: true, why: "kein gemessener Audit auf einem Stand von main unter den letzten 50" };
+  if (!last) return { red: true, row: null, why: "kein gemessener Audit auf einem Stand von main unter den letzten 50" };
   const adj = last.adjudication as { verdict?: string } | string | null | undefined;
   const verdict = typeof adj === "string" ? adj : adj?.verdict;
   const at = new Date(Number(last.at)).toISOString();
   const sha = String(last.mainSha).slice(0, 8);
   if (last.result === "red" && !(ADJUDICATION_CLEARS_RED as readonly (string | undefined)[]).includes(verdict))
-    return { red: true, why: `main ist rot: Audit ${sha} vom ${at}${verdict ? ` (Urteil ${verdict})` : ""}` };
-  return { red: false, why: `main grün: Audit ${sha} vom ${at}${verdict ? ` (rot, Urteil ${verdict})` : ""}` };
+    return { red: true, row: last, why: `main ist rot: Audit ${sha} vom ${at}${verdict ? ` (Urteil ${verdict})` : ""}` };
+  return { red: false, row: null, why: `main grün: Audit ${sha} vom ${at}${verdict ? ` (rot, Urteil ${verdict})` : ""}` };
+}
+export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: (sha: string) => boolean): MainState {
+  const { red, why } = mainAuditOf(audits, onMain);
+  return { red, why };
 }
 
+// DIE DATEIEN, DIE EINE PRÜFUNG NENNT — der Beleg der Reparatur-Tür. `git grep -F` im Kandidatenbaum,
+// über den QUELLTEXT: eine Messnotiz, die den Satz einer Prüfung zitiert, belegt keine Reparatur.
+const REPAIR_SCOPE = ["*.ts", "*.tsx", "*.js", "*.mjs", "*.css", "*.html"] as const;
+export function namesInTree(sha: string, needle: string, dir = REPO_DIR): string[] {
+  const r = Bun.spawnSync(["git", "-C", dir, "grep", "-l", "-F", "-z", "-e", needle, sha, "--", ...REPAIR_SCOPE]);
+  // 1 = kein Treffer, alles andere = nicht lesbar. Beides heißt: keine Datei nennt diese Prüfung.
+  if (r.exitCode !== 0) return [];
+  // `-z`: Einträge sind NUL-getrennt und tragen den Rev vor dem Pfad
+  return r.stdout.toString().split("\0").filter(Boolean).map((l) => l.replace(/^[^:]*:/, ""));
+}
+// was der Branch gegen main ändert — dieselbe Sicht, aus der bigUnitsOf seine Units ableitet
+export function diffPaths(from: string, to: string, dir = REPO_DIR): string[] {
+  const r = git(["diff", "--name-only", "--no-renames", from, to], undefined, dir);
+  return r.ok ? r.out.split("\n").filter(Boolean) : [];
+}
 // die großen Units, die der Kandidat schuldet: der Diff main..Kandidat gegen den Kandidaten-Baum. Die
 // .ts- und .sh-Dateien kommen in einem `cat-file --batch` (ein git je Datei kostete am vollen Mac 20 s)
 export function bigUnitsOf(main: string, cand: string, dir = REPO_DIR): BigUnitSelection {
@@ -292,14 +315,17 @@ function noteText(row: Record<string, unknown>): string {
     + (row.candidateForm === "ein-schritt" ? ` in einem Schritt (Basis ${String(row.mergeBase).slice(0, 8)})` : "") + `\n${String(row.why ?? "")}`
     + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
     + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : "")
-    + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : "");
+    + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : "")
+    // repariert ein Branch ein rotes main, steht es an der Spitze — und woran es belegt ist; ein
+    // verlangtes, aber nicht belegtes repair steht mit seinem Grund da, damit niemand es für vergessen hält
+    + (row.repair === true ? `\nrepair: ${String(row.repairWhy ?? "")}` : row.repairAsked === true ? `\nkein repair: ${String(row.repairWhy ?? "")}` : "");
 }
 
 export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Record<string, unknown> }> {
   const repo = a.repo ?? REPO_DIR;
   const env = a.env ?? process.env;
   const t0 = Date.now();
-  const row: Record<string, unknown> = { at: t0, branch: a.branch, base: a.base, repair: a.repair === true };
+  const row: Record<string, unknown> = { at: t0, branch: a.branch, base: a.base, repair: false, ...(a.repair === true ? { repairAsked: true } : {}) };
   const finish = (verdict: string, mergeable: boolean, why: string, code: number): { code: number; row: Record<string, unknown> } => {
     Object.assign(row, { verdict, mergeable, why, exit: code, ms: Date.now() - t0 });
     try {
@@ -332,6 +358,19 @@ export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Reco
     if (!pushCandidate(helper, cand.sha, repo)) return finish("error", false, `Kandidat ließ sich nicht zum ${where} schieben`, 3);
     const state = mainState(mainSha, repo);
     row.mainState = state.why;
+    // DIE REPARATUR EINES ROTEN main (Karte cb1edfe3, 27.10.): die Owner-Tür bittet darum (--repair), und der
+    // Check BELEGT sie selbst — aus den `fails` der roten Audit-Zeile und den Dateien, die diese Prüfungen im
+    // Kandidatenbaum wörtlich nennen (ci/repair-proof.ts). Ohne Beleg läuft der Check ohne repair, und die
+    // Zeile sagt, woran es fehlt; was der Aufrufer behauptet, zählt dabei nicht.
+    let proof: RepairProof | null = null;
+    if (a.repair === true) {
+      const seen = new Map<string, string[]>();
+      proof = repairProofOf({ row: state.red ? state.row : null, diff: diffPaths(mainSha, cand.sha, repo),
+        namesIn: (needle) => { const hit = seen.get(needle) ?? namesInTree(cand.sha, needle, repo); seen.set(needle, hit); return hit; } });
+      Object.assign(row, { repair: proof.ok, repairWhy: proof.why, ...(proof.checks.length ? { repairProof: {
+        red: proof.red, files: proof.files,
+        needles: [...new Map(proof.checks.map((c) => [c.needle, c])).values()].map((c) => ({ text: c.needle.slice(0, 160), files: c.files, touched: c.touched })) } } : {}) });
+    }
     const big = bigUnitsOf(mainSha, cand.sha, repo);
     Object.assign(row, { bigUnits: big.run, bigUnitsWhy: big.why, bigUnitsLine: bigUnitsLine(big) });
 
@@ -357,7 +396,7 @@ export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Reco
       run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
     if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (${helper.kind === "ssh" ? "ssh" : "sh"} exit ${run.exit})`, 3);
     const verdict = runLine[1] === "green" ? "green" : "red";
-    const d = decide(verdict, state, a.repair === true);
+    const d = decide(verdict, state, proof?.ok === true, proof ? proof.why : undefined);
     return finish(verdict, d.mergeable,
       verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
   } catch (e) {
@@ -396,11 +435,13 @@ export function hiddenLayerOf(sha: string, dir = REPO_DIR): string[] {
   return found;
 }
 
-// Rot ist nie mergebar; grün bei rotem main nur mit --repair
-export function decide(run: "green" | "red", main: MainState, repair: boolean): { mergeable: boolean; code: number; why: string } {
+// Rot ist nie mergebar; grün bei rotem main nur mit belegtem repair
+// `repairNote` ist der Beleg-Satz der Reparatur-Tür (ci/repair-proof.ts) — bei „nein“ sagt er, woran es
+// fehlt, bei „ja“, was der Branch behebt. Fehlt er, bleibt der Text wie vor dem 27.10.
+export function decide(run: "green" | "red", main: MainState, repair: boolean, repairNote?: string): { mergeable: boolean; code: number; why: string } {
   if (run === "red") return { mergeable: false, code: 1, why: "rot" };
-  if (main.red && !repair) return { mergeable: false, code: 2, why: main.why };
-  return { mergeable: true, code: 0, why: main.red ? `${main.why}; --repair: der Branch repariert es` : main.why };
+  if (main.red && !repair) return { mergeable: false, code: 2, why: repairNote ? `${main.why}; ${repairNote}` : main.why };
+  return { mergeable: true, code: 0, why: main.red ? `${main.why}; --repair: ${repairNote ?? "der Branch repariert es"}` : main.why };
 }
 
 if (import.meta.main) process.exit(await main());

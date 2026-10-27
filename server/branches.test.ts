@@ -255,8 +255,15 @@ describe("Merge-Check-Zeile: nur genau dieser Tip, diese Basis, dieser main", ()
   const row = (o: Record<string, unknown> = {}) => ({ at, branch: "bau/x", base: "main", tip: T, main: M, candidate: C, tree: TR,
     commits: [K1, T], verdict: "green", mergeable: true, why: "main grün", ...o });
   test("grün auf diesem Tip gegen diese Basis bei diesem main: verwendbar, mit Kandidat, Baum und den geprüften Commits", () => {
-    expect(usableCheck([row()], want)).toEqual({ ok: true, row: { tip: T, base: "main", main: M, candidate: C, tree: TR, at, commits: [K1, T] } });
+    expect(usableCheck([row()], want)).toEqual({ ok: true, row: { tip: T, base: "main", main: M, candidate: C, tree: TR, at, commits: [K1, T], repair: false } });
     expect(usableCheck([row({ commits: [] })], want)).toMatchObject({ ok: true, row: { commits: [] } });
+  });
+  // ein Land auf rotem main darf nur laufen, wenn der Check die Reparatur belegt hat (Karte cb1edfe3):
+  // das Land trägt die Flagge an seinen Eintrag, damit man später sieht, wie es dazu kam
+  test("eine Zeile mit belegtem repair trägt die Flagge; eine ohne Beleg ist nicht mergebar und sagt warum", () => {
+    expect(usableCheck([row({ repair: true })], want)).toMatchObject({ ok: true, row: { repair: true } });
+    expect(usableCheck([row({ repair: false, mergeable: false, why: "main ist rot; nicht als Reparatur belegt: kein Quelltext nennt diese Prüfung" })], want))
+      .toEqual({ ok: false, why: expect.stringContaining("nicht als Reparatur belegt") });
   });
   // was der Owner sieht, wird gemergt: die Liste der Zeile ist die einzige, die zum Baum des Kandidaten passt
   test("eine Zeile ohne die Liste ihrer Commits, oder mit einer kaputten, ist nicht verwendbar", () => {

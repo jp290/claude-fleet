@@ -22,6 +22,7 @@ import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-regis
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 import { timelineWireFixture } from "./timeline-ui";
+import { ownPx, zoomOf } from "./zoom";
 import { viewFolder } from "../server/live-state";
 
 // A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
@@ -8693,9 +8694,12 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
     Object.assign(slots[1], { awaiting: "main" });
     Object.assign(slots[2], { cwd: "/fixture/gamma", repo: "/fixture/gamma", label: "Gamma", openedAt: 3000, lastOutput: 0 });
     type Glyph = { cls: string; title: string; ink: string; w: number; h: number } | null;
+    // THE BAR IS ZOOMED WITH THE WINDOW (src/rails.ts): its 8 × 8 state glyph is 6.4 in window px at 1200,
+    // so the gauge asks the host the element sits in for its zoom and the claim counts the bar's own px
     const glyphAt = (sel: string) => evaluate<Glyph>(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null;
+      const zoom = ${zoomOf("e.closest('#side, #boardbody') ?? document.body")};
       const r = e.getBoundingClientRect();
-      return { cls: e.className, title: e.title, ink: getComputedStyle(e).backgroundColor, w: r.width, h: r.height }; })()`);
+      return { cls: e.className, title: e.title, ink: getComputedStyle(e).backgroundColor, w: r.width / zoom, h: r.height / zoom }; })()`);
     const inkOf = (v: string) => evaluate<string>(`(() => { const t = document.createElement('i'); t.style.color = 'var(${v})';
       document.body.appendChild(t); const c = getComputedStyle(t).color; t.remove(); return c; })()`);
     {
@@ -12582,13 +12586,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const t = (e) => e ? e.innerText.replace(/\\s+/g, ' ').trim() : null;
           const tip = (e) => e?.querySelector(':scope > title')?.textContent ?? null;
           const info = parseFloat(getComputedStyle(document.querySelector('#boardbody')).fontSize);
-          return { info, quiet: [...git.querySelectorAll(':scope > .gsquiet')].map((b) => ({ text: t(b), exp: b.getAttribute('aria-expanded') })),
+          // the column's zoom (e2e/zoom.ts): the drawing's px are measured in WINDOW px, Info's font-size
+          // is the stylesheet's — gsRead divides the one by the other before the claim compares them
+          const zoom = ${zoomOf("document.querySelector('#boardbody')")};
+          return { info, zoom, quiet: [...git.querySelectorAll(':scope > .gsquiet')].map((b) => ({ text: t(b), exp: b.getAttribute('aria-expanded') })),
             repos: [...git.querySelectorAll(':scope > .gs')].map((g) => { const s = g.querySelector('svg.gss:not(.gslg)'); const k = s ? s.getBoundingClientRect().width / s.viewBox.baseVal.width : null;
               const m = g.querySelector('.gsm');
               return { repo: g.dataset.repo, open: g.classList.contains('open'), name: g.querySelector('.gsn')?.textContent ?? null, fold: g.querySelector('.gsf')?.getAttribute('aria-expanded') ?? null,
                 side: t(g.querySelector('.gsside')), ib: g.querySelectorAll('.gsh .rk-btn.ib:not(.gsadd):not(.gsgear)').length,
                 heads: s ? [...s.querySelectorAll(':scope > g.gsr')].map((h) => ({ key: h.dataset.head, cls: h.getAttribute('class'), text: h.querySelector('text')?.textContent ?? null, texts: h.querySelectorAll('text').length, title: tip(h),
-                  aria: h.getAttribute('aria-label'), exp: h.getAttribute('aria-expanded'), px: Math.round(parseFloat(getComputedStyle(h.querySelector('text')).fontSize) * k * 100) / 100,
+                  aria: h.getAttribute('aria-label'), exp: h.getAttribute('aria-expanded'), px: parseFloat(getComputedStyle(h.querySelector('text')).fontSize) * k,
                   x: Number(h.querySelector('rect').getAttribute('x')), y: Number(h.querySelector('text').getAttribute('y')) - 4, w: Number(h.querySelector('rect').getAttribute('width')) })) : [],
                 circles: s ? [...s.querySelectorAll(':scope > g.gsk')].map((c) => ({ slot: c.dataset.slot, at: c.dataset.at, on: c.classList.contains('on'), aria: c.getAttribute('aria-label'),
                   r: Number(c.querySelector('circle').getAttribute('r')), x: Number(c.querySelector('circle').getAttribute('cx')), y: Number(c.querySelector('circle').getAttribute('cy')) })) : [],
@@ -12611,13 +12618,16 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           menu: { head: string | null; cap: string | null; words: string[]; on: string[]; step2: string | null; text: string | null; buttons: string[];
             ahead: { text: string | null; nextLf: boolean } | null; ti: boolean } | null;
           card: string[] | null; text: string };
-        type GsRead = { info: number; quiet: { text: string; exp: string | null }[]; repos: GsRepoRead[] };
+        type GsRead = { info: number; zoom: number; quiet: { text: string; exp: string | null }[]; repos: GsRepoRead[] };
         const gsRead = async (): Promise<GsRead> => {
           const g = await evaluate<GsRead | null>(GS_READ);
           if (!g) throw new Error("arbeitsorte DOM probe: no git structure (.rk-git) in #boardbody");
+          // THE COLUMN'S OWN PX (e2e/zoom.ts): a head's text is drawn at fontSize × the drawing's scale in
+          // WINDOW px; the claim counts it against Info's font-size, so the column's zoom comes out first
+          for (const r of g.repos) for (const h of r.heads) h.px = Math.round(ownPx(h.px, g.zoom) * 100) / 100;
           return g;
         };
-        let g: GsRead = st === "leer" ? { info: 0, quiet: [], repos: [] } : await gsRead();
+        let g: GsRead = st === "leer" ? { info: 0, zoom: 1, quiet: [], repos: [] } : await gsRead();
         const fleetGs = () => g.repos.find((x) => x.repo === REPO);
         facts.gs = g.repos.map((x) => ({ ...x, text: x.text.slice(0, 300) }));
         facts.gsQuiet = g.quiet;
@@ -12772,7 +12782,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if (st !== "leer") claims[`${tag}only the focused session's project stands — claude-fleet's structure open, no other project, no row of quiet ones`] =
             g.repos.length === 1 && fl.open && fl.fold === "true" && g.quiet.length === 0;
           // THE TEXT HAS INFO'S SIZE (Bauleitung e105c447, round 3b): a rectangle's words are as large as Info's, never scaled
-          facts.gsPx = { info: g.info, px: [...new Set(fl.heads.map((h) => h.px))] };
+          facts.gsPx = { info: g.info, zoom: g.zoom, px: [...new Set(fl.heads.map((h) => h.px))] };
           claims[`${tag}the words in the structure's rectangles have Info's size — the drawing is not scaled`] =
             fl.heads.length > 0 && fl.heads.every((h) => Math.abs(h.px - g.info) < 0.05);
           // THE LEGEND IS A QUIET LINE (owner Z87 c: „[Zitat entfernt]“): under the structure, no i in the head
@@ -13067,6 +13077,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
         // statement a DOM claim, every click judged by the request it sent.
         {
           const INFO = `(() => { const body = document.querySelector('#boardbody'); if (!body) return null;
+            // the column's zoom (e2e/zoom.ts): what lives inside it is measured in WINDOW px, the claims count the px
+            // the stylesheet draws — info() divides a tab's height by this before the claim compares it to 28
+            const zoom = ${zoomOf("document.querySelector('#boardbody')")};
             const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom), w: Math.round(r.width), h: Math.round(r.height) }; };
             const txt = (e) => e ? e.innerText.replace(/\\s+/g, ' ').trim() : null;
             const sess = body.querySelector('.bhead'), work = body.querySelector('.bchanges'), pop = body.querySelector('.bpop'), ueb = body.querySelector('.bueb');
@@ -13075,7 +13088,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               .filter((b) => !b.closest('.btabbody') && !b.closest('.bpop') && b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden' && !b.hidden);
             const ranke = body.querySelector('.ranke');
             return {
-              title: document.querySelector('#boardtitle')?.textContent ?? null,
+              zoom, title: document.querySelector('#boardtitle')?.textContent ?? null,
               shellInfo: [...document.querySelectorAll('#shell-board *')].some((e) => !e.children.length && e.textContent.trim() === 'Info'),
               kids: [...body.children].map((k) => k.className),
               sess: sess ? { name: txt(sess.querySelector('.bheadname')), glyphs: [...sess.querySelectorAll('.bheadtop > .bib')].map((b) => ({ label: b.getAttribute('aria-label'), title: b.title, text: b.textContent.trim() })),
@@ -13133,6 +13146,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             hist: { rows: number; files: number; folds: number; more: string | null } | null;
             foot: { head: string | null; files: number; more: string | null } | null;
             tabs: { key: string; open: boolean; title: string | null; sum: string | null; x: string | null; body: string; h: number }[];
+            zoom: number;
             meter: { btn: string | null; open: string | null; inHead: boolean; rows: string[] | null; cnt: string | null; lock: string | null }; oldMeter: boolean;
             alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null; place: string | null; holder: string | null; state: string | null;
               stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
@@ -13143,6 +13157,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const info = async (): Promise<Info> => {
             const x = await evaluate<Info | null>(INFO);
             if (!x) throw new Error("info DOM probe: no #boardbody");
+            // THE COLUMN'S OWN PX (e2e/zoom.ts): a fold the stylesheet draws at 28 px is 22.4 in window px at
+            // a 0.8 column — the claim asks for the stylesheet's number, so the zoom comes out of the height first
+            for (const t of x.tabs) t.h = Math.round(ownPx(t.h, x.zoom));
             return x;
           };
           const it = `info ${st}: `;
@@ -13153,7 +13170,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const ownLanded = st === "land";
           let n = await info();
           facts.headFit = n.headFit;
-          facts.info = { land: [n.landBottom, n.vh], kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
+          facts.info = { land: [n.landBottom, n.vh], zoom: n.zoom, kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.h, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
           // THE HEAD ON ONE LINE, OR ITS SIDE WHOLE UNDER THE NAME (owner 2026-10-08, src/gitstruktur.ts#GS_CSS): round 7's gear made
           // the busiest side (remote, „[Zitat entfernt]“, gear, +) wider than 1200's column beside the name — it wraps, never cut

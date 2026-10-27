@@ -5,7 +5,7 @@
 // 22.4, und der Text der Zeichnung 9.6 gegen Infos 12 — auf jedem Rechner, nicht auf einem.
 import { describe, expect, test } from "bun:test";
 import { railScale } from "../src/rails";
-import { ownPx, zoomOf } from "../e2e/zoom";
+import { SNAP_PX, ownPx, zoomOf } from "../e2e/zoom";
 
 describe("eine Länge aus einer gezoomten Spalte", () => {
   test("die DOM-Rigs stehen bei 1200 px auf dem Anteil 0.8 der Leiste", () => {
@@ -32,6 +32,33 @@ describe("eine Länge aus einer gezoomten Spalte", () => {
     expect(gauge(doc, host)).toBeCloseTo(0.8, 9);
     expect(removed).toBe(true); // die Sonde räumt sich selbst weg
     expect(gauge(doc, null)).toBe(1); // kein Host: kein Zoom
+  });
+
+  test("nimmt die Rundung des Fensters und bleibt dabei scharf", () => {
+    // was das Fenster für den 8 × 8-Punkt der Leiste bei 1200 px meldet: 6.390625 statt 6.4 (Layout-Einheit 1/64)
+    const glyph = ownPx(6.390625, 0.8);
+    expect(glyph).toBeCloseTo(7.98828125, 9);
+    expect(Math.abs(glyph - 8) <= SNAP_PX).toBe(true);
+    // ein wirklich anders gezeichneter Punkt bleibt rot: 7 px und 9 px sind je eine ganze Zahl daneben
+    expect(Math.abs(ownPx(5.6, 0.8) - 8) <= SNAP_PX).toBe(false);
+    expect(Math.abs(ownPx(7.2, 0.8) - 8) <= SNAP_PX).toBe(false);
+  });
+
+  test("eine Blocklinie zählt, wie die Seite sie malt", () => {
+    // Chromium zeichnet keine Haarline dünner als ein Geräte-px: 1 px in einer 0.8-Spalte wird mit 1.25 benutzt,
+    // mal dem Zoom ist das das eine px, das ein Mensch sieht; das eigene border-top: 0 der Checks bleibt 0
+    const painted = (width: number, zoom: number) => Math.round(width * zoom * 100) / 100;
+    expect(painted(1.25, 0.8)).toBe(1);
+    expect(painted(0, 0.8)).toBe(0);
+    expect(painted(2.5, 0.8)).toBe(2); // eine geänderte, dickere Linie bleibt sichtbar — die Umrechnung versteckt nichts
+  });
+
+  test("ein Popover misst seine Breite in den px der Spalte", () => {
+    // das Menü zeichnet 210 px; bei 1200 sind das 168 Fenster-px, und die 200 der Gestaltung sind Spalten-px
+    const fits = (width: number, zoom: number) => width / zoom >= 200;
+    expect(fits(168, 0.8)).toBe(true);
+    expect(fits(177, 0.8)).toBe(true);
+    expect(fits(168, 1)).toBe(false); // roh gelesen fiele dasselbe Menü durch — das war der Fehler
   });
 
   test("lässt die Prüfung scharf: eine wirklich skalierte Zeichnung bleibt rot", () => {

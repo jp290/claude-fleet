@@ -22,3 +22,12 @@ export const zoomOf = (expr: string): string => `(() => { const host = ${expr}; 
 
 /** A length the page reported in window px, as the px the stylesheet drew — the column's own px. */
 export const ownPx = (length: number, zoom: number): number => length / (zoom > 0 ? zoom : 1);
+
+/**
+ * How far two lengths in a column's own px may sit apart and still be the same drawn length.
+ * The window snaps a zoomed rect to its layout unit (1/64 px) before getBoundingClientRect reports it — the bar's
+ * 8 px glyph comes back as 6.390625, not 6.4 — and dividing by the smallest zoom (RAIL_MIN 0.8) widens that to
+ * 0.0195 px at most. 0.05 is two and a half of that: it takes the rounding and keeps the edge, because a glyph drawn
+ * at 7 or 9 px is a whole px off (ci/zoom.test.ts holds both sides).
+ */
+export const SNAP_PX = 0.05;

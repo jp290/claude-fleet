@@ -21870,7 +21870,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     ]),
     darf: !claude ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
       : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-        "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf, ...umfeld.darf],
+        "No rights set — the harness's own rules apply; what is locked stays with the owner.", true), ...fleet.darf, ...umfeld.darf],
     arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, steward: false, eigen: null,
       wahl: fleetChoiceOf(art), warmFleet: art === "orchestrator" || art === "program-main", eigenesSetup: eigen }), ...umfeld.arbeitet],
     claudeCode: o.claudeCode ?? null,
@@ -22087,7 +22087,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
       : [s.rechte ? textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)
         : textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-          "Keine Rechte gesetzt — es gelten die Regeln des Harness; Gesperrtes bleibt für den Owner.", true), ...fleet.darf, ...umfeld.darf],
+          "No rights set — the harness's own rules apply; what is locked stays with the owner.", true), ...fleet.darf, ...umfeld.darf],
     arbeitet: [...fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s, eigen), ...umfeld.arbeitet],
     claudeCode, agent: s.agent ? { ...s.agent, satz: agentHerkunftSatz(s.agent) } : null,
   });

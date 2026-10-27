@@ -75,7 +75,9 @@ function render(): void {
   if (!s) return;
   if (gedrueckt) { aufgeschoben = true; return; }
   if (!s.repo) s.repo = repos()[0] ?? null;
-  s.shell.root.classList.add("k15sitz");
+  // once, not on every redraw: the same class written again is still an attribute mutation of the window itself (the
+  // owner's „[Zitat entfernt]“ claim, e2e/k15-start-dom.ts#ruhig, saw it as a change beside the ones the click caused)
+  if (!s.shell.root.classList.contains("k15sitz")) s.shell.root.classList.add("k15sitz");
   s.shell.root.querySelector(".k15menu")?.remove();
   s.shell.root.querySelector(".k15repomenu")?.remove();
   zeichneStart(s);

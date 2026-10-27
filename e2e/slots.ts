@@ -22,7 +22,7 @@ import { MODEL_DEFAULTS, MODEL_REGISTER, modelsForHarness } from "../model-regis
 import { modelLabel } from "../src/modelname";
 import { laneTitleOf, shortTitle } from "../src/suitemeter";
 import { timelineWireFixture } from "./timeline-ui";
-import { ownPx, zoomOf } from "./zoom";
+import { SNAP_PX, ownPx, zoomOf } from "./zoom";
 import { viewFolder } from "../server/live-state";
 
 // A section that stops srv and kills the last pane ends the suite's tmux server; the next restartSrv
@@ -8717,8 +8717,10 @@ export async function runPhoneIslandDom(sourceRoot: string, artifacts?: string):
       claims[ownerClaim] = !!owner && owner.cls === "act wait owner" && owner.title.startsWith("waiting for you") && owner.ink === qWait;
       detail[ownerClaim] = { owner, qWait };
       claims["wait · a session without awaiting keeps its freshness glyph (Gamma rests)"] = !!none && none.cls === "act rest";
+      // the window snaps the zoomed rect to its layout unit before reporting it: the 8 px box comes back as 6.390625
+      // and reads 7.98828125 in the bar's own px — the rounding SNAP_PX names, never a different size
       claims["wait · the waiting glyph sits in the same 8 × 8 box as every other state"] =
-        [owner, main, none].every((g) => !!g && g.w === 8 && g.h === 8);
+        [owner, main, none].every((g) => !!g && Math.abs(g.w - 8) <= SNAP_PX && Math.abs(g.h - 8) <= SNAP_PX);
       await shot("1200-wartet");
       missing.length = 0;
       results.push({ width: 1200, height: 900, claims, facts, detail });
@@ -12383,6 +12385,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
     };
     // everything a claim reads, in one pass over the DOM
     const READ = `(() => { const sec = document.querySelector('#boardbody .ranke'); if (!sec) return null;
+      // the column's zoom (e2e/zoom.ts): a block's rule is read in WINDOW px, the way the page paints it. Chromium draws
+      // no hairline thinner than one device px, so a 1 px border-top in a 0.8 column is used at 1.25 there (floor: 1/zoom);
+      // times the zoom that is the 1 px a person sees, and the Checks block's own border-top: 0 stays 0
+      const zoom = ${zoomOf("document.querySelector('#boardbody')")};
       const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.left), r: Math.round(r.right), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }; };
       const vis = (e) => !!e && getComputedStyle(e).visibility !== 'hidden' && e.getBoundingClientRect().width > 0;
       const col = (e, p) => e ? getComputedStyle(e)[p] : null;
@@ -12423,7 +12429,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
       return { index: kids.indexOf(sec), before: kids.slice(0, kids.indexOf(sec)).map((k) => k.className), next: kids[kids.indexOf(sec) + 1]?.className ?? null,
         head: sec.querySelector('h3')?.textContent ?? null,
         blocks: [...sec.querySelectorAll(':scope > .rkblock')].map((b) => ({ cls: b.className, title: b.querySelector(':scope > .rkbh .rkbt')?.textContent ?? null, shown: b.getClientRects().length > 0,
-          rule: getComputedStyle(b).borderTopWidth })),
+          rule: Math.round(parseFloat(getComputedStyle(b).borderTopWidth) * zoom * 100) / 100 + 'px' })),
         rows, lines, text: sec.innerText, svgPaths: sec.querySelectorAll('.rk > svg path').length, inkPaths: sec.querySelectorAll('.rk > svg path.i').length,
         backs: [...sec.querySelectorAll('.rk > svg path.back')].map((p) => ({ cls: p.getAttribute('class'), for: p.dataset.for ?? null, y: Number(/^M[\\d.]+ ([\\d.]+)/.exec(p.getAttribute('d') ?? '')?.[1] ?? -1),
           x0: p.closest('.rk').getBoundingClientRect().left + Number(/H([\\d.]+)$/.exec(p.getAttribute('d') ?? '')?.[1] ?? NaN) })),
@@ -13385,8 +13391,10 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           }
           // --- the three popovers: at their button on the desktop, a sheet from the bottom on the phone
           // the phone's sheet spans Info's own window (a side sheet over the session) and sits on its bottom edge
-          const sheetOk = (b: { x: number; r: number; b: number; w: number } | undefined) => !!b && (phone
-            ? !!n.boardBox && Math.abs(b.x - n.boardBox.x) <= 1 && Math.abs(b.r - n.boardBox.r) <= 1 && Math.abs(b.b - n.vh) <= 2 : b.w >= 200);
+          // the box is measured in WINDOW px; the popover's 200 px design width is the column's own (e2e/zoom.ts)
+          const sheetOk = (b: { x: number; r: number; b: number; w: number } | undefined, zoom: number) => !!b && (phone
+            ? !!n.boardBox && Math.abs(b.x - n.boardBox.x) <= 1 && Math.abs(b.r - n.boardBox.r) <= 1 && Math.abs(b.b - n.vh) <= 2
+            : b.w / (zoom > 0 ? zoom : 1) >= 200);
           if (st === "uebergabe" || st === "main") {
             // THE „HANDOVER“ BLOCK (K16 uebergabe-b, src/handover.ts): which line stands in which state, the writes behind its
             // controls and the fit are e2e/uebergabe.ts; here only that the Context switch opens it in place — no /brief (K9
@@ -13421,7 +13429,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             claims[`${it}⋯ beside Land lane: Shelve · Park for review, on screen`] = n.pop?.kind === "land"
               && JSON.stringify(items.slice(0, 2).map((x) => x.t)) === JSON.stringify(["Shelve", "Park for review"])
               && items.length === 2 && n.pop.seps === 0
-              && items.slice(0, 2).every((x) => !x.danger) && sheetOk(n.pop?.box)
+              && items.slice(0, 2).every((x) => !x.danger) && sheetOk(n.pop?.box, n.zoom)
               && (n.pop?.box.b ?? Infinity) <= n.vh;
             await shot(`info-${st}-${width}`);
             await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
@@ -13438,7 +13446,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const items = n.pop?.items ?? [];
             claims[`${it}the session's ⋯: Copy branch · Copy commit · Copy worktree path · — · Bring the session back (danger, last)`] = n.pop?.kind === "kopf"
               && JSON.stringify(items.map((x) => x.t)) === JSON.stringify(["Copy branch", "Copy commit", "Copy worktree path", "Bring the session back"])
-              && n.pop.seps === 1 && items[3]?.danger === true && items[3]?.color === r.danger && sheetOk(n.pop?.box);
+              && n.pop.seps === 1 && items[3]?.danger === true && items[3]?.color === r.danger && sheetOk(n.pop?.box, n.zoom);
             await shot(`info-${st}-${width}`);
             await evaluate(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem')].find((b) => b.textContent.startsWith('Copy branch'))?.click()`);
             claims[`${it}"Copy branch" says it copied`] = await wait(`[...document.querySelectorAll('#boardbody .bpop .bmenuitem .t')].some((t) => t.textContent === 'Copied')`, 2000);

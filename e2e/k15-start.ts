@@ -124,10 +124,19 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     };
     const wait = async (condition: string, ms = 8000): Promise<boolean> => !!await evaluate<boolean>(`new Promise((ok) => { const until = Date.now() + ${ms};
       const tick = () => { let v = false; try { v = !!(${condition}); } catch {} if (v) return ok(true); if (Date.now() > until) return ok(false); setTimeout(tick, 50); }; tick(); })`);
-    // a real pointer on the element's centre, as the owner's click
+    // a real pointer on the element's centre, as the owner's click. The point has to hold still over two frames: the preview
+    // that follows a choice re-lays the window out, and a point measured before it lands beside the target — the Rights switch
+    // went 23 px left with the column and the release hit its tile (the fixture rig waits the same way, k15-start-dom.ts#pointOf)
+    const clickAt = (expression: string) => evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null;
+      e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     const click = async (expression: string): Promise<boolean> => {
-      const at = await evaluate<{ x: number; y: number } | null>(`(() => { const e = ${expression}; if (!e) return null; e.scrollIntoView({ block: 'center' });
-        const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      let at = await clickAt(expression);
+      for (let i = 0; i < 20 && at; i++) {
+        await Bun.sleep(50);
+        const again = await clickAt(expression);
+        if (again && again.x === at.x && again.y === at.y) { at = again; break; }
+        at = again;
+      }
       if (!at) return false;
       for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, ...at, button: "left", clickCount: 1 });
       await Bun.sleep(120);
@@ -137,16 +146,18 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
     await wait(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`, 15000);
     const repos = JSON.stringify([o.repo, real(o.repo)]);
 
-    // 1. the free place opens the start window; on the fixture repo the repo's agent with „+ Rights“ starts there, and the door takes the
-    // Fassung its start brief showed
+    // 1. the free place opens the start window; on the fixture repo the repo's agent with „Rights“ switched on (Builds) starts there, and
+    // the door takes the Fassung its start brief showed
     await click(`document.querySelector('.slot.empty[data-slot="${free.id}"]')`);
     const fenster = await wait(`document.querySelector('#shell-found.k15sitz .sf.s1 .sfag.repoag')`, 10000);
     if (fenster) {
       await click(`[...document.querySelectorAll('#shell-found .sfrepo')].find((r) => (${repos}).includes(r.dataset.repo))`);
       await wait(`(${repos}).includes(document.querySelector('#shell-found .sfrepo.sel')?.dataset.repo) && document.querySelector('#shell-found .sfag.repoag')`, 10000);
       await click(`document.querySelector('#shell-found .sfag.repoag')`);
-      await wait(`document.querySelector('#shell-found .sf.s2 .sfaddon[data-add="rights"]')`, 10000);
-      await click(`document.querySelector('#shell-found .sfaddon[data-add="rights"]')`);
+      // „+ Rights“ is the switch on the Rights stone since the window's tiles (owner 26.10.): the old addon chips
+      // (.sfaddon) went with the old window, so this step clicked nothing and the start carried no rights at all
+      await click(`document.querySelector('#shell-found .sftile[data-b="rights"] .sfsw')`);
+      await wait(`document.querySelector('#shell-found .sftile[data-b="rights"] .sfsw')?.getAttribute('aria-checked') === 'true'`, 5000);
     }
     const bereit = fenster && await wait(`document.querySelector('#shell-found .sftile[data-b="rights"]') && !document.querySelector('#shell-found .sfsheet.laedt')
       && document.querySelector('#shell-found .sfgo') && !document.querySelector('#shell-found .sfgo').disabled`, 15000);

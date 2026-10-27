@@ -6,7 +6,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, hiddenLayerOf, mainVerdict, mergeBaseOf } from "./merge-check";
+import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, helperEnv, helperOf, helperRun, hiddenLayerOf, mainVerdict,
+  mergeBaseOf, mergeCheck, pushCandidate, runOnHelper } from "./merge-check";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -434,5 +435,136 @@ describe("hiddenLayerOf: kein verstecktes Regelbuch im Kandidaten", () => {
   });
   test("Fleets eigener Baum trägt keins", () => {
     expect(hiddenLayerOf("HEAD")).toEqual([]);
+  });
+});
+
+// Der Workhorse hat `hub` als lokalen Pfad: der Helfer ist er selbst, ohne ssh auf sich selbst. Der Mac behält ssh.
+describe("Helfer: ssh wie bisher, ein lokaler Pfad heißt dieser Rechner", () => {
+  const home = "/home/someone";
+  test("MERGE_CHECK_HOST gewinnt; ein ssh://-Remote bleibt ssh", () => {
+    expect(helperOf("ssh://someone@10.0.0.2/srv/repo.git", { MERGE_CHECK_HOST: "user@helper" }, home))
+      .toEqual({ kind: "ssh", host: "user@helper", repo: "~/ci/repo.git" });
+    expect(helperOf("ssh://someone@10.0.0.2/srv/repo.git", {}, home))
+      .toEqual({ kind: "ssh", host: "someone@10.0.0.2", repo: "~/ci/repo.git" });
+  });
+  test("ein lokaler Pfad läuft hier: dasselbe bare Repo wie merge-check-run.sh#CI_HOME, kein ssh", () => {
+    expect(helperOf("/home/helper-user/git/claude-fleet.git", {}, home))
+      .toEqual({ kind: "local", repo: "/home/someone/ci/repo.git" });
+    expect(helperOf("../claude-fleet.git", { CI_HOME: "/var/tmp/ci" }, home))
+      .toEqual({ kind: "local", repo: "/var/tmp/ci/repo.git" });
+  });
+  test("kein Remote, kein ssh, kein Pfad: ein Grund statt eines stillen Abbruchs", () => {
+    expect(() => helperOf(null, {}, home)).toThrow(/kein Helfer/);
+    expect(() => helperOf("https://example.com/fleet.git", {}, home)).toThrow(/weder ssh:\/\/ noch ein lokaler Pfad/);
+  });
+});
+
+describe("lokal schieben und fahren: derselbe Kandidat, derselbe Runner, ohne ssh", () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const tmp = (name: string): string => { const d = mkdtempSync(join(tmpdir(), name)); dirs.push(d); return d; };
+  const gitIn = (dir: string, ...a: string[]): string => {
+    const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+    if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  };
+  test("der Kandidat liegt als refs/mc/<sha> im lokalen Helfer-Repo, ein zweiter Push stört nicht", () => {
+    const dir = tmp("mc-local-");
+    gitIn(dir, "init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.txt"), "1\n");
+    gitIn(dir, "add", "-A");
+    gitIn(dir, "commit", "-q", "-m", "x");
+    const sha = gitIn(dir, "rev-parse", "HEAD");
+    const bare = join(dir, "ci", "repo.git");
+    expect(pushCandidate({ kind: "local", repo: bare }, sha, dir)).toBe(true);
+    expect(gitIn(bare, "rev-parse", `refs/mc/${sha}`)).toBe(sha);
+    expect(pushCandidate({ kind: "local", repo: bare }, sha, dir)).toBe(true);
+  });
+  test("der Runner läuft lokal durch sh und bekommt Commit und große Units als Argumente", async () => {
+    const dir = tmp("mc-runner-");
+    const runner = join(dir, "runner.sh");
+    writeFileSync(runner, "echo \"ran $1 $2\"\nexit 0\n");
+    const r = await runOnHelper({ kind: "local", repo: join(dir, "repo.git") }, "abc123", ["core", "lanes"], runner, dir);
+    expect(r).toEqual({ exit: 0, out: "ran abc123 core,lanes\n" });
+  });
+  // Über ssh bekommt der Runner eine frische Login-Umgebung; lokal erbte er die des Aufrufers — und deren FLEET_*
+  // (FLEET_HOST/PORT beim Server, FLEET_SELF_* in einer Pane) ließ die e2e-Suiten eine andere Fleet lesen
+  // (start-plan.ts liest FLEET_HOST/FLEET_PORT/FLEET_CTL_URL). Lokal gilt darum dieselbe saubere Lage.
+  test("der lokale Runner erbt keine FLEET_*; HOME, PATH, MERGE_CHECK_* und CI_HOME bleiben", () => {
+    const env = helperEnv({ PATH: "/usr/bin:/bin", HOME: "/home/someone", CI_HOME: "/var/tmp/ci",
+      MERGE_CHECK_SCRATCH: "/tmp/mc", MERGE_CHECK_HOST: "user@helper",
+      FLEET_HOST: "127.0.0.1", FLEET_PORT: "8927", FLEET_SELF_URL: "http://127.0.0.1:1", FLEET_SELF_TOKEN: "t",
+      FLEET_SELF_SLOT: "5", FLEET_LIBRARY_REPO: "/r", FLEET_E2E_BAND: "7", FLEET_CMD: "true", LEER: undefined });
+    expect(env).toEqual({ PATH: "/usr/bin:/bin", HOME: "/home/someone", CI_HOME: "/var/tmp/ci",
+      MERGE_CHECK_SCRATCH: "/tmp/mc", MERGE_CHECK_HOST: "user@helper" });
+    expect(Object.keys(env).filter((name) => name.startsWith("FLEET_"))).toEqual([]);
+    expect(helperEnv(process.env)).not.toHaveProperty("FLEET_SELF_TOKEN");
+  });
+  test("über ssh bleibt der Aufruf ohne env-Angabe (ferner Login), lokal nimmt er die gefilterte Umgebung", () => {
+    const ssh = helperRun({ kind: "ssh", host: "someone@10.0.0.2", repo: "~/ci/repo.git" }, "abc", ["core"],
+      { FLEET_HOST: "x", PATH: "/bin" });
+    expect(ssh).toEqual({ argv: ["ssh", "someone@10.0.0.2", "sh", "-s", "--", "abc", "core"] });
+    const local = helperRun({ kind: "local", repo: "/var/tmp/ci/repo.git" }, "abc", [],
+      { FLEET_HOST: "x", PATH: "/bin", HOME: "/h" });
+    expect(local).toEqual({ argv: ["sh", "-s", "--", "abc", "-"], env: { PATH: "/bin", HOME: "/h" } });
+  });
+});
+
+// Kein Urteil ist ein Grund, den man sehen muss: der Server startet den Check mit stdout und stderr auf „ignore“,
+// darum steht jeder Abbruch in der Zeile, mit exit 3, und der Land-Tür fehlt damit nicht mehr das Warum.
+describe("jeder Abbruch vor dem Urteil steht in merge-checks.jsonl", () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const probe = (hub: string | null): { dir: string; g: (...a: string[]) => string; rows: () => Record<string, unknown>[] } => {
+    const dir = mkdtempSync(join(tmpdir(), "mc-abort-"));
+    dirs.push(dir);
+    const g = (...a: string[]): string => {
+      const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString().trim();
+    };
+    g("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.txt"), "1\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "main");
+    g("checkout", "-q", "-b", "bau/x");
+    writeFileSync(join(dir, "x.txt"), "x\n");
+    g("add", "-A");
+    g("commit", "-q", "-m", "x");
+    g("checkout", "-q", "main");
+    if (hub) g("remote", "add", "hub", hub);
+    const rows = (): Record<string, unknown>[] => readFileSync(join(dir, ".git", "merge-checks.jsonl"), "utf8").split("\n")
+      .filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    return { dir, g, rows };
+  };
+  test("kein Helfer: exit 3 und der Grund, an der Spitze des Branches", async () => {
+    const p = probe("https://example.com/fleet.git");
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/x", base: "main", env: {} });
+    expect(r.code).toBe(3);
+    expect(p.rows()).toHaveLength(1);
+    expect(p.rows()[0]).toMatchObject({ branch: "bau/x", base: "main", tip: p.g("rev-parse", "bau/x"),
+      verdict: "error", mergeable: false, exit: 3 });
+    expect(String(p.rows()[0]!.why)).toContain("kein Helfer");
+  });
+  test("der Kandidat kommt nicht hinüber: exit 3, die Zeile nennt den lokalen Helfer", async () => {
+    const p = probe("/pfad/zum/claude-fleet.git");
+    const blocker = join(p.dir, "kein-verzeichnis");
+    writeFileSync(blocker, "x\n"); // CI_HOME liegt unter einer Datei: kein lokales Repo, kein Push
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/x", base: "main", env: { CI_HOME: join(blocker, "ci") } });
+    expect(r.code).toBe(3);
+    expect(p.rows().at(-1)).toMatchObject({ verdict: "error", mergeable: false, exit: 3 });
+    expect(String(p.rows().at(-1)!.why)).toContain("schieben");
+  });
+  test("der Runner stirbt vor dem Urteil: exit 3 mit Transport und Exit", async () => {
+    const p = probe("/pfad/zum/claude-fleet.git");
+    const runner = join(p.dir, "stirbt.sh");
+    writeFileSync(runner, "#!/bin/sh\nexit 7\n");
+    const r = await mergeCheck({ repo: p.dir, branch: "bau/x", base: "main", runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(r.code).toBe(3);
+    const row = p.rows().at(-1)!;
+    expect(row).toMatchObject({ verdict: "error", mergeable: false, exit: 3 });
+    expect(String(row.why)).toContain("kein Urteil");
+    expect(String(row.why)).toContain("sh exit 7");
+    expect(existsSync(join(p.dir, "ci", "repo.git"))).toBe(true);
   });
 });

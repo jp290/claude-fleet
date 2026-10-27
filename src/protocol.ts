@@ -975,7 +975,7 @@ export interface BranchSeenView { at: number; head: string; via: "cookie" | "bea
 // `form` says how a charge landed (K16): "squash" one commit, "commits" main fast-forwarded to the
 // merge check's candidate; `landForm` on the branch is how the next one lands when the board does not say.
 export interface BranchLandView { sha: string; at: number; subject: string; points: string[]; passt: boolean; checked: boolean; form: "squash" | "commits" }
-export interface BranchCheckView { state: "none" | "running" | "green" | "red" | "stale"; at: number | null; why: string | null }
+export interface BranchCheckView { state: "none" | "running" | "green" | "red" | "stale" | "uncheckable"; at: number | null; why: string | null }
 export interface BranchView {
   branch: string; name: string; base: string | null; head: string;
   text: string; rev: number; seen: BranchSeenView | null;

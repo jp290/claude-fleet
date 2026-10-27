@@ -206,6 +206,17 @@ export function usableCheck(rows: readonly unknown[], want: { branch: string; ba
     commits: [...commits] } };
 }
 
+// WAS EINE ZEILE AM BRANCH SAGT: ein Lauf, der vor dem Urteil endete (exit 3 — kein Helfer, der Kandidat kam nicht
+// hinüber, der Runner starb, oder ein Konflikt), ist „nicht prüfbar“ mit seinem Grund, kein Rot, das keine Suite maß.
+// Ältere Zeilen ohne `exit` erkennt man an ihrem Urteil.
+export type CheckVerdict = "green" | "red" | "uncheckable";
+export function checkVerdictOf(row: Record<string, unknown>): CheckVerdict {
+  const exit = typeof row.exit === "number" ? row.exit : null;
+  const verdict = typeof row.verdict === "string" ? row.verdict : null;
+  if (exit === 3 || verdict === "error" || verdict === "conflict") return "uncheckable";
+  return row.mergeable === true ? "green" : "red";
+}
+
 export function dropBranch(book: BranchBook, repo: string, branch: string): BranchBook {
   return book.filter((r) => !(r.repo === repo && r.branch === branch));
 }

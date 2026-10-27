@@ -42,6 +42,10 @@ KEEP_RUNS=20
 # öffnet einen Slot in $HOME, und unter $HOME überlappte der jeden game-maker-Baum der Instanz („game-maker tree is
 # already open in slot 2“, Lauf 1023040123, auf grünem main) — drei rote programs-Läufe, die das Audit nie hatte
 SCRATCH_ROOT="${MERGE_CHECK_SCRATCH:-/var/tmp/fleet-merge-check}"
+# …und auf einem Pfad, den es hier gibt: einem Prozess hinter Fleets eigenem Zaun fehlt /var ganz (die Wurzel dort ist ein
+# tmpfs), dann bleibt /tmp, und kurz — die Unix-Sockets eines Teils liegen unter TMPDIR/… und dürfen 108 Bytes nicht
+# überschreiten (e2e/pins.ts legt sie in ${tmpdir()}/fleet-pins-hy-*/tmux-<uid>/ an)
+case "$SCRATCH_ROOT" in /var/tmp/*) [ -d /var/tmp ] || SCRATCH_ROOT="${MERGE_CHECK_SCRATCH:-/tmp/fleet-merge-check}" ;; esac
 export PATH="$HOME/.bun/bin:$PATH"
 now_ms() { date +%s%3N; }
 T0=$(now_ms)

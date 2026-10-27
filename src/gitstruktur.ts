@@ -19,7 +19,7 @@
 import type { BranchCheckView, BranchesRepoView, WorkplaceRepo, WorkplaceRow } from "./protocol";
 import { shortTitle } from "./suitemeter";
 
-export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "skipped" | "landed";
+export type Diamond = "none" | "running" | "waiting" | "green" | "red" | "skipped" | "landed" | "uncheckable";
 export interface GsSlot {
   id: number; cwd: string | null; label: string | null; openedAt?: number; repo?: string | null; taskTitle?: string;
   git?: { branch: string } | null; worktree?: { repo: string; branch: string } | null;
@@ -218,7 +218,7 @@ const fit = (text: string, width: number): string => {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 };
 const CHECK_WORD: Record<Diamond, string> = { none: "not checked yet", running: "check running", waiting: "check waiting",
-  green: "check passed", red: "check failed", skipped: "no check", landed: "landed" };
+  green: "check passed", red: "check failed", skipped: "no check", landed: "landed", uncheckable: "check not possible" };
 const NEXT_QUIET = "nothing ready to land yet — a branch shows here once its merge check is green on the current main";
 // a number never ends a line apart from its word (no-break spaces)
 const commits = (n: number): string => `${n}\u00a0${n === 1 ? "commit" : "commits"}`;
@@ -353,6 +353,7 @@ export function mergeCheckLine(chk: BranchCheckView | null, proposedBy: string |
   return !chk ? (proposedBy ? `no check command yet — ${proposedBy} proposes one, “Use it” on the diamond` : "no check command in this repo")
     : chk.state === "running" ? "merge check running …"
     : chk.state === "green" ? "merge check green" : chk.state === "red" ? `merge check red: ${chk.why ?? "no reason given"}`
+    : chk.state === "uncheckable" ? `nicht prüfbar: ${chk.why ?? "no reason given"}`
     : chk.state === "stale" ? "merge check on an older state — check again" : "no merge check on this state yet";
 }
 // a checkout's distance in step 1, as a sentence (owner Z135: the count in the menu, not in the box): its commits not landed
@@ -385,13 +386,14 @@ export function headWords(h: GsHead): GsWord[] {
 // under the structure (Z87: the i was „[Zitat entfernt]“): the signs this drawing uses, one line each
 // — a sign one line cannot explain does not belong in the drawing
 export type GsSign = "rect" | "rect-live" | "circle" | "circle-on" | "diamond-none" | "diamond-running" | "diamond-green" | "diamond-red"
-  | "diamond-skipped" | "diamond-landed" | "line-open" | "line" | "ti" | "point";
+  | "diamond-skipped" | "diamond-landed" | "diamond-uncheckable" | "line-open" | "line" | "ti" | "point";
 export const GS_LEGEND: Record<GsSign, string> = {
   rect: "Git head: main, a branch or a lane", "rect-live": "Lane of a live session",
   circle: "Slot with a session, resting", "circle-on": "Slot with a session, working right now",
   "diamond-none": "Check on the way up: none yet", "diamond-running": "Check running or waiting",
   "diamond-green": "Check passed", "diamond-red": "Check failed",
-  "diamond-skipped": "Check skipped", "diamond-landed": "Landed", "line-open": "Dashed: not landed yet", line: "Solid: landed, or where a head branches off",
+  "diamond-skipped": "Check skipped", "diamond-landed": "Landed", "diamond-uncheckable": "Check could not run — the branch says why",
+  "line-open": "Dashed: not landed yet", line: "Solid: landed, or where a head branches off",
   ti: "Test instance running, its port beside it", point: "Commit point: where main stands",
 };
 export function signOf(p: GsShape): GsSign {
@@ -664,6 +666,7 @@ export const GS_CSS = `
   #board .gss .gsd.red { fill: var(--danger); stroke: var(--danger); }
   #board .gss .gsd.running, #board .gss .gsd.waiting { stroke: var(--q-live); }
   #board .gss .gsd.skipped { fill: var(--chat-mute); stroke: var(--chat-mute); }
+  #board .gss .gsd.uncheckable { fill: none; stroke: var(--danger); stroke-dasharray: 3 2; }
   #board .gss .gsd.landed { fill: var(--q-live); stroke: var(--chat-faint); }
   #board .gss .gsdg.sel .gsd, #board .gss .gsdg:focus-visible .gsd { stroke: var(--chat-ink); stroke-width: 2.2; }
   #board .gss .gst rect { fill: var(--q-live); }

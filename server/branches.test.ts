@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   adoptNotes, BRANCH_NAME_MAX, BRANCH_OTHERS_MAX, BRANCH_TEXT_MAX, type BranchBook, type BranchLand, type BranchRecord, chargeBase,
-  chargeMessage, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand, repoBranches, restoreBook, setLandForm,
+  chargeMessage, checkVerdictOf, doneSinceLastLand, dropBranch, findBranch, markSeen, openBranch, openedBy, pruneBook, recordLand, repoBranches, restoreBook, setLandForm,
   setOpener, usableCheck, writeText,
 } from "./branches";
 
@@ -273,6 +273,19 @@ describe("Merge-Check-Zeile: nur genau dieser Tip, diese Basis, dieser main", ()
     expect(usableCheck([row({ base: "bau/neuaufbau" })], want)).toEqual({ ok: false, why: expect.stringContaining("neu prüfen") });
     expect(usableCheck([row({ main: "8".repeat(40) })], want)).toEqual({ ok: false, why: expect.stringContaining("main ist") });
     expect(usableCheck([row({ branch: "bau/y" })], want).ok).toBe(false);
+  });
+  // Rot nur, wenn eine Suite es maß: ein Lauf, der vor dem Urteil abbrach, ist „nicht prüfbar“ mit Grund
+  test("exit 3, conflict und error sind nicht prüfbar, nicht rot", () => {
+    expect(checkVerdictOf({ exit: 3, verdict: "error", mergeable: false })).toBe("uncheckable");
+    expect(checkVerdictOf({ exit: 3, verdict: "conflict", mergeable: false })).toBe("uncheckable");
+    // Zeilen von vor dem Feld `exit` erkennt man am Urteil
+    expect(checkVerdictOf({ verdict: "error", mergeable: false })).toBe("uncheckable");
+    expect(checkVerdictOf({ verdict: "conflict", mergeable: false })).toBe("uncheckable");
+  });
+  test("ein gemessenes Urteil bleibt grün oder rot", () => {
+    expect(checkVerdictOf({ exit: 0, verdict: "green", mergeable: true })).toBe("green");
+    expect(checkVerdictOf({ exit: 1, verdict: "red", mergeable: false })).toBe("red");
+    expect(checkVerdictOf({ exit: 2, verdict: "green", mergeable: false })).toBe("red");
   });
 });
 

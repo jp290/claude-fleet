@@ -334,6 +334,7 @@ describe("round 4: one diamond size, every sign in the legend", () => {
         testinstanz: { state: "up", instance: { port: 8972 } } }),
       row("/w/wt/live", "live-2610171200-x", on("main", 53))];
     const m = gitModel(repo(R1, rows), board(R1, [bv("bau/a", { check: green }), bv("bau/s", { check: { state: "stale", at: 1, why: null } }),
+      bv("bau/p", { check: { state: "uncheckable", at: 1, why: "kein Helfer" } }),
       bv("bau/u", { chargeCommits: 0, lands: [land] })]), [...slots, slot(51, "/w/wt/l1", { worktree: { repo: R1, branch: "fleet/l1" } }),
       slot(53, "/w/wt/live", { label: "Live", worktree: { repo: R1, branch: "live-2610171200-x" } })], (n) => n === 51, card, { live: (b) => b.startsWith("live-") });
     return [L1, gitLayout(m), gitLayout(m, { width: 240 })];
@@ -509,5 +510,12 @@ describe("the check step of a branch without a check command", () => {
     expect(mergeCheckLine(null, "Slot 14")).toContain("Slot 14");
     expect(mergeCheckLine(null, "Slot 14")).toContain("diamond");
     expect(mergeCheckLine(null)).toBe("no check command in this repo");
+  });
+  // owner 27.10.: every stop before a verdict (no helper, push, runner) leaves a line with its reason — the branch
+  // says that reason instead of nothing, never a red that no suite measured
+  test("a check that could not run says so, with the reason from its line", () => {
+    expect(mergeCheckLine({ state: "uncheckable", at: 1, why: "kein Helfer: MERGE_CHECK_HOST fehlt" }))
+      .toBe("nicht prüfbar: kein Helfer: MERGE_CHECK_HOST fehlt");
+    expect(mergeCheckLine({ state: "uncheckable", at: 1, why: null })).toBe("nicht prüfbar: no reason given");
   });
 });

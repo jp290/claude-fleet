@@ -234,6 +234,7 @@ import { postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
+  checkVerdictOf,
   dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
@@ -8741,8 +8742,11 @@ async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base:
   const last = rows.at(-1);
   if (!last) return { state: "none", at: null, why: null };
   const at = typeof last.at === "number" ? last.at : null, why = typeof last.why === "string" ? last.why : null;
+  const state = checkVerdictOf(last);
+  // ein Lauf, der vor dem Urteil abbrach, sagt es für DIESEN Tip — auch wenn er die Spitze nie auflöste (kein tip in der Zeile)
+  if (state === "uncheckable" && (last.tip === undefined || last.tip === tip)) return { state, at, why };
   if (last.tip !== tip || last.base !== base) return { state: "stale", at, why: `geprüft war ${String(last.tip).slice(0, 8)} gegen ${String(last.base)}` };
-  return { state: last.mergeable === true ? "green" : "red", at, why };
+  return { state, at, why };
 }
 const chargeRewritten = (repo: string, r: BranchRecord, tip: string): Promise<boolean> => chargeRewrittenBy(gitRead, repo, r, tip);
 // THE COMMITS OF A CHARGE: reachable from the tip, not from the charge's base and not from main, merge

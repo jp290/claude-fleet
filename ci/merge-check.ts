@@ -13,9 +13,13 @@
 // Exit: 0 mergebar · 1 rot · 2 grün, aber main ist rot · 3 nicht prüfbar (Konflikt, Helfer, Eingabe)
 // Ergebnis: eine Zeile in <git-common-dir>/merge-checks.jsonl und eine Note auf der Branch-Spitze
 // (refs/notes/merge-check): `git log --notes=merge-check <branch>` zeigt das Urteil am Branch.
-// Helfer: MERGE_CHECK_HOST=user@host, sonst Nutzer und Host des git-Remotes `hub`.
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
+// Helfer: MERGE_CHECK_HOST=user@host, sonst Nutzer und Host des git-Remotes `hub`. Ist `hub` ein lokaler Pfad, ist
+// der Helfer diese Maschine: dasselbe bare Repo unter $CI_HOME/repo.git und derselbe Runner durch `sh`, ohne ssh
+// auf sich selbst. Jeder Abbruch vor dem Urteil schreibt `exit: 3` und den Grund in die Zeile, damit am Board
+// „nicht prüfbar: <Grund>“ steht (der Server verwirft stdout und stderr dieses Prozesses).
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { ADJUDICATION_CLEARS_RED } from "../server/adjudication";
 import { BIG_UNITS, bigUnitsFor, bigUnitsLine, type BigUnitSelection } from "./big-units";
 
@@ -124,34 +128,55 @@ function patchIds(args: string[], dir: string): Map<string, string> {
 
 // Zwei gleichzeitige Checks desselben Kandidaten schieben denselben Ref, und einer wird abgewiesen;
 // dann genügt es, dass der Kandidat drüben liegt (wie ci/band-run.sh)
-export function pushCandidate(host: string, sha: string): boolean {
-  if (Bun.spawnSync(["ssh", host, `test -d ${HELPER_REPO} || git init -q --bare ${HELPER_REPO}`]).exitCode !== 0) return false;
-  return git(["push", "-q", `ssh://${host}/${HELPER_REPO}`, `${sha}:refs/mc/${sha}`]).ok
-    || Bun.spawnSync(["ssh", host, `git --git-dir ${HELPER_REPO} cat-file -e ${sha}^{commit}`]).exitCode === 0;
+export function pushCandidate(helper: Helper, sha: string, dir = REPO_DIR): boolean {
+  if (helper.kind === "local") {
+    try { mkdirSync(dirname(helper.repo), { recursive: true }); } catch { return false; }
+    if (Bun.spawnSync(["git", "init", "-q", "--bare", helper.repo]).exitCode !== 0) return false;
+    return git(["push", "-q", helper.repo, `${sha}:refs/mc/${sha}`], undefined, dir).ok
+      || git(["cat-file", "-e", `${sha}^{commit}`], undefined, helper.repo).ok;
+  }
+  if (Bun.spawnSync(["ssh", helper.host, `test -d ${helper.repo} || git init -q --bare ${helper.repo}`]).exitCode !== 0) return false;
+  return git(["push", "-q", `ssh://${helper.host}/${helper.repo}`, `${sha}:refs/mc/${sha}`], undefined, dir).ok
+    || Bun.spawnSync(["ssh", helper.host, `git --git-dir ${helper.repo} cat-file -e ${sha}^{commit}`]).exitCode === 0;
 }
 
-function helperHost(): string {
-  if (process.env.MERGE_CHECK_HOST) return process.env.MERGE_CHECK_HOST;
-  const m = /^ssh:\/\/([^/]+)\//.exec(mustGit(["remote", "get-url", "hub"]));
-  if (!m) throw new Error("kein Helfer: MERGE_CHECK_HOST fehlt, und das Remote `hub` ist keine ssh://-URL");
-  return m[1]!;
+// WO DER CHECK LÄUFT. Auf dem Mac ist `hub` ssh://…: der Helfer ist eine andere Maschine, der Kandidat geht per
+// push über ssh hinüber und der Runner per ssh zurück. Am Workhorse ist `hub` ein lokaler Pfad — der Helfer IST
+// diese Maschine: dasselbe bare Repo unter $CI_HOME/repo.git (wie merge-check-run.sh#CI_HOME) und derselbe Runner
+// durch `sh`. ssh auf sich selbst bräuchte einen Host-Key für den eigenen Namen und geht darum nicht.
+export type Helper = { kind: "ssh"; host: string; repo: string } | { kind: "local"; repo: string };
+
+export function helperOf(hubUrl: string | null | undefined, env: Record<string, string | undefined> = process.env,
+  home = homedir()): Helper {
+  const host = env.MERGE_CHECK_HOST?.trim();
+  if (host) return { kind: "ssh", host, repo: HELPER_REPO };
+  if (!hubUrl) throw new Error("kein Helfer: MERGE_CHECK_HOST fehlt, und dieses Repo hat kein Remote `hub`");
+  const ssh = /^ssh:\/\/([^/]+)\//.exec(hubUrl);
+  if (ssh) return { kind: "ssh", host: ssh[1]!, repo: HELPER_REPO };
+  // alles mit einem Doppelpunkt vor dem ersten Schrägstrich ist ein Remote (https, git, scp-Gestalt user@host:pfad) — kein Pfad
+  if (/^[^/]*:/.test(hubUrl))
+    throw new Error(`kein Helfer: MERGE_CHECK_HOST fehlt, und das Remote \`hub\` (${hubUrl}) ist weder ssh:// noch ein lokaler Pfad`);
+  return { kind: "local", repo: join(resolve(env.CI_HOME ?? join(home, "ci")), "repo.git") };
 }
 
 // Bekannt rot heißt: die jüngste gemessene Audit-Zeile (grün oder rot) auf einem Stand von main ist
 // rot, und kein Urteil hebt sie auf — dieselben Urteile wie im Server (server/adjudication.ts: flake,
 // stale-test, unknowable). Nicht lesbar heißt nicht grün.
-function mainState(main: string): MainState {
-  const r = Bun.spawnSync(["./ctl.sh", "get", "/api/post-land-audits?limit=50", "--json"], { cwd: REPO_DIR });
+function mainState(main: string, dir = REPO_DIR): MainState {
+  // ein Repo ohne ctl.sh (ein Testbaum) ist „nicht lesbar“, nicht „grün“ — und darf den Lauf nicht werfen
+  let r: ReturnType<typeof Bun.spawnSync> | null = null;
+  try { r = Bun.spawnSync(["./ctl.sh", "get", "/api/post-land-audits?limit=50", "--json"], { cwd: dir }); } catch { r = null; }
   let audits: Record<string, unknown>[];
   try {
-    const body: unknown = JSON.parse(r.stdout.toString());
+    if (!r) throw new Error("ctl.sh nicht startbar");
+    const body: unknown = JSON.parse(r.stdout?.toString() ?? "");
     const rows = (body as { audits?: unknown }).audits;
     if (!Array.isArray(rows)) throw new Error("keine audits");
     audits = rows as Record<string, unknown>[];
   } catch {
     return { red: true, why: "Audit-Stand von main nicht lesbar (./ctl.sh get /api/post-land-audits)" };
   }
-  return mainVerdict(audits, (sha) => git(["merge-base", "--is-ancestor", sha, main]).ok);
+  return mainVerdict(audits, (sha) => git(["merge-base", "--is-ancestor", sha, main], undefined, dir).ok);
 }
 export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: (sha: string) => boolean): MainState {
   const measured = audits
@@ -213,8 +238,30 @@ export function auditShardsLine(out: string, big: readonly string[]): string | n
     + (shards.length === shards[0]!.n ? "; sie tragen jede kleine Unit, s1–s3 entfallen" : "");
 }
 
-async function runOnHelper(host: string, sha: string, big: readonly string[]): Promise<{ exit: number; out: string }> {
-  const p = Bun.spawn(["ssh", host, "sh", "-s", "--", sha, bigUnitsArg(big)], { stdin: Bun.file(RUNNER), stdout: "pipe", stderr: "inherit" });
+// DIE UMGEBUNG DES RUNNERS. Über ssh bekommt er eine frische Login-Umgebung; lokal würde er die des Aufrufers erben —
+// und deren FLEET_* (FLEET_HOST/FLEET_PORT beim Server, FLEET_SELF_URL/TOKEN in einer Pane) lässt die e2e-Suiten eine
+// andere Fleet lesen (start-plan.ts liest FLEET_HOST/FLEET_PORT/FLEET_CTL_URL). Darum lokal dieselbe saubere Lage:
+// jedes FLEET_* fällt weg, alles andere (HOME, PATH, MERGE_CHECK_*, CI_HOME) bleibt.
+export function helperEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env))
+    if (typeof value === "string" && !name.startsWith("FLEET_")) out[name] = value;
+  return out;
+}
+
+// der eine Aufruf des Runners, rein: über ssh der ferne Login (keine env-Angabe), lokal `sh` mit der gefilterten Umgebung
+export function helperRun(helper: Helper, sha: string, big: readonly string[],
+  env: Record<string, string | undefined> = process.env): { argv: string[]; env?: Record<string, string> } {
+  return helper.kind === "ssh"
+    ? { argv: ["ssh", helper.host, "sh", "-s", "--", sha, bigUnitsArg(big)] }
+    : { argv: ["sh", "-s", "--", sha, bigUnitsArg(big)], env: helperEnv(env) };
+}
+
+export async function runOnHelper(helper: Helper, sha: string, big: readonly string[],
+  runner = RUNNER, cwd = REPO_DIR): Promise<{ exit: number; out: string }> {
+  const call = helperRun(helper, sha, big);
+  const p = Bun.spawn(call.argv, { stdin: Bun.file(runner), stdout: "pipe", stderr: "inherit", cwd,
+    ...(call.env ? { env: call.env } : {}) });
   let out = "";
   const dec = new TextDecoder();
   for await (const chunk of p.stdout) {
@@ -225,6 +272,99 @@ async function runOnHelper(host: string, sha: string, big: readonly string[]): P
   return { exit: await p.exited, out };
 }
 
+// DAS URTEIL, EINMAL. Jeder Weg endet in `finish` — auch jeder Abbruch VOR dem Urteil (kein Helfer, der Kandidat
+// kommt nicht hinüber, der Runner stirbt): er schreibt `exit: 3` mit dem Grund in die Zeile, damit am Board
+// „nicht prüfbar: <Grund>“ steht statt nichts. Ein Wurf ohne Zeile war der Fehler, den der Workhorse am 27.10.
+// hatte: der Server startet diesen Prozess mit stdout und stderr auf „ignore“, der Grund war nirgends.
+export interface CheckAsk {
+  branch: string; base: string; repair?: boolean;
+  // der Baum, dessen ci/merge-check.ts urteilt (Default: dieser Checkout); Tests geben einen eigenen
+  repo?: string;
+  env?: Record<string, string | undefined>; home?: string;
+  // der Runner statt ci/merge-check-run.sh — nur für Tests (ein Runner, der vor dem Urteil stirbt)
+  runner?: string;
+}
+
+function noteText(row: Record<string, unknown>): string {
+  const main = String(row.main ?? "-"), base = String(row.base ?? "-"), branch = String(row.branch ?? "-");
+  return `merge-check ${String(row.verdict)} · ${row.mergeable === true ? "mergebar" : "nicht mergebar"} · ${Math.round(Number(row.ms ?? 0) / 1000)} s · ${new Date(Number(row.at)).toISOString()}\n`
+    + `Baum ${String(row.tree ?? "-")} = main ${main.slice(0, 8)} + ${base}..${branch}`
+    + (row.candidateForm === "ein-schritt" ? ` in einem Schritt (Basis ${String(row.mergeBase).slice(0, 8)})` : "") + `\n${String(row.why ?? "")}`
+    + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
+    + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : "")
+    + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : "");
+}
+
+export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Record<string, unknown> }> {
+  const repo = a.repo ?? REPO_DIR;
+  const env = a.env ?? process.env;
+  const t0 = Date.now();
+  const row: Record<string, unknown> = { at: t0, branch: a.branch, base: a.base, repair: a.repair === true };
+  const finish = (verdict: string, mergeable: boolean, why: string, code: number): { code: number; row: Record<string, unknown> } => {
+    Object.assign(row, { verdict, mergeable, why, exit: code, ms: Date.now() - t0 });
+    try {
+      appendFileSync(join(mustGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], undefined, repo), "merge-checks.jsonl"), `${JSON.stringify(row)}\n`);
+    } catch (e) {
+      console.error(`merge-check: keine Zeile in merge-checks.jsonl: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // die Note auf der Spitze braucht eine Spitze; ein Abbruch vor ihr steht nur in der Zeile
+    if (typeof row.tip === "string" && row.tip)
+      git(["notes", "--ref=merge-check", "add", "-f", "-m", noteText(row), row.tip], undefined, repo);
+    console.log(`\nmerge-check ${verdict} ${a.branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`
+      + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""));
+    return { code, row };
+  };
+  try {
+    const mainSha = mustGit(["rev-parse", "main"], undefined, repo);
+    const tip = mustGit(["rev-parse", a.branch], undefined, repo);
+    Object.assign(row, { tip, main: mainSha });
+    const cand = candidateOf(mainSha, a.base, a.branch, repo);
+    if ("conflict" in cand) return finish("conflict", false, cand.conflict, 3);
+    Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`], undefined, repo), commits: cand.commits,
+      candidateForm: cand.form, mergeBase: cand.mergeBase,
+      ...(cand.ketteTree ? { ketteTree: cand.ketteTree } : {}), ...(cand.ketteConflict ? { ketteConflict: cand.ketteConflict } : {}),
+      ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
+    const hidden = hiddenLayerOf(cand.sha, repo);
+    if (hidden.length) return finish("red", false, `verweigert, ein verstecktes Regelbuch: ${hidden.join("; ")}`, 1);
+    // WO DER HELFER IST: MERGE_CHECK_HOST zuerst, sonst das Remote `hub`; ein lokaler Pfad heißt: hier
+    const helper = helperOf(git(["remote", "get-url", "hub"], undefined, repo).out || null, env, a.home ?? homedir());
+    const where = helper.kind === "ssh" ? `Helfer ${helper.host}` : `lokalen Helfer ${helper.repo}`;
+    if (!pushCandidate(helper, cand.sha, repo)) return finish("error", false, `Kandidat ließ sich nicht zum ${where} schieben`, 3);
+    const state = mainState(mainSha, repo);
+    row.mainState = state.why;
+    const big = bigUnitsOf(mainSha, cand.sha, repo);
+    Object.assign(row, { bigUnits: big.run, bigUnitsWhy: big.why, bigUnitsLine: bigUnitsLine(big) });
+
+    const run = await runOnHelper(helper, cand.sha, big.run, a.runner ?? RUNNER, repo);
+    const jobs: Job[] = [...run.out.matchAll(/^job (\S+) rc=(\d+) ms=(\d+)$/gm)].map((m) => ({ name: m[1]!, rc: Number(m[2]), ms: Number(m[3]) }));
+    const modules: Record<string, number> = {};
+    for (const m of run.out.matchAll(/^[sa]\d module (\S+) (\d+) ms$/gm)) modules[m[1]!] = Number(m[2]);
+    const units: Record<string, number> = {};
+    for (const m of run.out.matchAll(/^[sa]\d shard-unit (\S+) (\d+) ms$/gm)) units[m[1]!] = Number(m[2]);
+    const shards = auditShardsLine(run.out, big.run);
+    if (shards) row.bigUnitsLine = `${String(row.bigUnitsLine)} · ${shards}`;
+    // die Handlauf-Bänder 5/6 nimmt der Helfer nur, wenn sie frei sind; fehlten sie, sagt die Zeile, warum es länger dauerte
+    const bands = /^bands ([\d ]+) busy=(\S+)$/m.exec(run.out);
+    if (bands) {
+      const got = bands[1]!.trim().split(" ").map(Number);
+      row.bands = got;
+      if (bands[2] !== "-")
+        row.bigUnitsLine = `${String(row.bigUnitsLine)} · Handlauf-Band ${bands[2]} belegt: die Audit-Shards liefen auf ${got.length} Bändern, darum länger`;
+    }
+    const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(run.out);
+    const notApplicable = [...run.out.matchAll(/^na (\S+) — (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`);
+    Object.assign(row, { jobs, modules, units, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
+      run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
+    if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (${helper.kind === "ssh" ? "ssh" : "sh"} exit ${run.exit})`, 3);
+    const verdict = runLine[1] === "green" ? "green" : "red";
+    const d = decide(verdict, state, a.repair === true);
+    return finish(verdict, d.mergeable,
+      verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
+  } catch (e) {
+    return finish("error", false, e instanceof Error ? e.message : String(e), 3);
+  }
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const branch = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--base");
@@ -232,65 +372,7 @@ async function main(): Promise<number> {
   const base = bi >= 0 ? argv[bi + 1] : "main";
   const repair = argv.includes("--repair");
   if (!branch || !base) { console.error("bun ci/merge-check.ts <branch> [--base <ref>] [--repair]"); return 3; }
-  const t0 = Date.now();
-  const mainSha = mustGit(["rev-parse", "main"]);
-  const tip = mustGit(["rev-parse", branch]);
-  const row: Record<string, unknown> = { at: t0, branch, base, tip, main: mainSha, repair };
-  const finish = (verdict: string, mergeable: boolean, why: string, code: number): number => {
-    Object.assign(row, { verdict, mergeable, why, ms: Date.now() - t0 });
-    appendFileSync(join(mustGit(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "merge-checks.jsonl"), `${JSON.stringify(row)}\n`);
-    git(["notes", "--ref=merge-check", "add", "-f", "-m",
-      `merge-check ${verdict} · ${mergeable ? "mergebar" : "nicht mergebar"} · ${Math.round((Date.now() - t0) / 1000)} s · ${new Date(t0).toISOString()}\n`
-      + `Baum ${String(row.tree ?? "-")} = main ${mainSha.slice(0, 8)} + ${base}..${branch}`
-      + (row.candidateForm === "ein-schritt" ? ` in einem Schritt (Basis ${String(row.mergeBase).slice(0, 8)})` : "") + `\n${why}`
-      + (Array.isArray(row.notApplicable) && row.notApplicable.length ? `\nnicht anwendbar: ${row.notApplicable.join("; ")}` : "")
-      + (Array.isArray(row.alreadyOnMain) ? `\nschon auf main, übersprungen: ${row.alreadyOnMain.length} Commit(s)` : "")
-      + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""), tip]);
-    console.log(`\nmerge-check ${verdict} ${branch} in ${Math.round((Date.now() - t0) / 1000)} s — ${mergeable ? "mergebar" : "nicht mergebar"}: ${why}`
-      + (typeof row.bigUnitsLine === "string" ? `\n${row.bigUnitsLine}` : ""));
-    return code;
-  };
-
-  const cand = candidateOf(mainSha, base, branch);
-  if ("conflict" in cand) return finish("conflict", false, cand.conflict, 3);
-  Object.assign(row, { candidate: cand.sha, tree: mustGit(["rev-parse", `${cand.sha}^{tree}`]), commits: cand.commits,
-    candidateForm: cand.form, mergeBase: cand.mergeBase,
-    ...(cand.ketteTree ? { ketteTree: cand.ketteTree } : {}), ...(cand.ketteConflict ? { ketteConflict: cand.ketteConflict } : {}),
-    ...(cand.onMain.length ? { alreadyOnMain: cand.onMain } : {}) });
-  const hidden = hiddenLayerOf(cand.sha);
-  if (hidden.length) return finish("red", false, `verweigert, ein verstecktes Regelbuch: ${hidden.join("; ")}`, 1);
-  const host = helperHost();
-  if (!pushCandidate(host, cand.sha)) return finish("error", false, `Kandidat ließ sich nicht zum Helfer ${host} schieben`, 3);
-  const state = mainState(mainSha);
-  row.mainState = state.why;
-  const big = bigUnitsOf(mainSha, cand.sha);
-  Object.assign(row, { bigUnits: big.run, bigUnitsWhy: big.why, bigUnitsLine: bigUnitsLine(big) });
-
-  const run = await runOnHelper(host, cand.sha, big.run);
-  const jobs: Job[] = [...run.out.matchAll(/^job (\S+) rc=(\d+) ms=(\d+)$/gm)].map((m) => ({ name: m[1]!, rc: Number(m[2]), ms: Number(m[3]) }));
-  const modules: Record<string, number> = {};
-  for (const m of run.out.matchAll(/^[sa]\d module (\S+) (\d+) ms$/gm)) modules[m[1]!] = Number(m[2]);
-  const units: Record<string, number> = {};
-  for (const m of run.out.matchAll(/^[sa]\d shard-unit (\S+) (\d+) ms$/gm)) units[m[1]!] = Number(m[2]);
-  const shards = auditShardsLine(run.out, big.run);
-  if (shards) row.bigUnitsLine = `${String(row.bigUnitsLine)} · ${shards}`;
-  // die Handlauf-Bänder 5/6 nimmt der Helfer nur, wenn sie frei sind; fehlten sie, sagt die Zeile, warum es länger dauerte
-  const bands = /^bands ([\d ]+) busy=(\S+)$/m.exec(run.out);
-  if (bands) {
-    const got = bands[1]!.trim().split(" ").map(Number);
-    row.bands = got;
-    if (bands[2] !== "-")
-      row.bigUnitsLine = `${String(row.bigUnitsLine)} · Handlauf-Band ${bands[2]} belegt: die Audit-Shards liefen auf ${got.length} Bändern, darum länger`;
-  }
-  const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(run.out);
-  const notApplicable = [...run.out.matchAll(/^na (\S+) — (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`);
-  Object.assign(row, { jobs, modules, units, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
-    run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
-  if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (ssh exit ${run.exit})`, 3);
-  const verdict = runLine[1] === "green" ? "green" : "red";
-  const d = decide(verdict, state, repair);
-  return finish(verdict, d.mergeable,
-    verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
+  return (await mergeCheck({ branch, base, repair })).code;
 }
 // KEIN VERSTECKTES REGELBUCH (E9, Owner 23.10.: „[Zitat entfernt]“
 // ): was ein Sitz liest, steht in AGENTS.md, Verträgen und Packs. Der Kandidat trägt kein

@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Answer, branchTestkit, type Fixture, get, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
-import { agentMdDerTuer, agentMdText } from "./agentmd";
+import { agentMdDerTuer, agentMdGeladen, agentMdText } from "./agentmd";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 
 const { SOCKETS, fixture, life, cleanup } = branchTestkit();
@@ -54,6 +54,18 @@ describe("Agent-MD an der Tür", () => {
     expect(await agentMdDerTuer({ profil: 7 }, "claude", dir)).toMatchObject({ ok: false });
     expect(await agentMdDerTuer({ profil: "planer" }, "pi", dir)).toMatchObject({ ok: false, error: expect.stringContaining("pi") });
     expect(await agentMdDerTuer({ profil: "planer" }, "claude", mkdtempSync(join(tmpdir(), "agentmd-leer-")))).toEqual({ ok: false, error: "no saved profiles to read" });
+  });
+  test("ein pi-Sitz nimmt den Zweck an der Tür an, ein gespeichertes Profil bleibt Claude Codes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentmd-pi-"));
+    speicher(dir);
+    const zweck = await agentMdDerTuer({ purpose: "Du prüfst die Türen." }, "pi-deepseek", dir);
+    expect(zweck).toMatchObject({ ok: true, agentMd: { profil: "", titel: "Purpose", text: "Du prüfst die Türen.", getippt: true } });
+    expect(await agentMdDerTuer({ profil: "planer" }, "pi-deepseek", dir)).toMatchObject({ ok: false, error: expect.stringContaining("pi-deepseek") });
+    const gespeichert = zweck.ok ? { profil: "", titel: "Purpose", text: "Du prüfst die Türen.", getippt: true } : null;
+    expect(agentMdGeladen(gespeichert, "pi-deepseek")).toMatchObject({ getippt: true, text: "Du prüfst die Türen." });
+    // ein Profil aus fleet.json ist für einen pi-Sitz kein Zweck und wird nicht geladen
+    expect(agentMdGeladen({ profil: "planer", titel: "planer.md", text: TEXT }, "pi-deepseek")).toBeNull();
+    expect(agentMdGeladen(gespeichert, "codex")).toBeNull();
   });
 });
 

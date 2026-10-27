@@ -176,11 +176,13 @@ jeweils `--model`, `--effort` und den Dateianhang. Im selben Resume mit
 "System prompt: 6.7k tokens (3.3%)" mit Datei: rund 400 zusaetzliche Tokens.
 Das ist die gerundete CLI-Schaetzung, keine exakte Tokenabrechnung.
 
-Gegenstuecke, nur erhoben: Pi bietet laut `pi --help` `--append-system-prompt <text>`
-und akzeptiert dort auch Dateiinhalte. Codex hat keinen gleichnamigen CLI-Schalter;
+Gegenstuecke: Pi 1.0.2 bietet laut `pi --help` `--append-system-prompt <text or file contents>` und
+liest dort einen existierenden Pfad als Datei. Jede pi-Zeile haengt so Fleet's Start-Block an (Zweck und
+gewaehlte Packs, `server.ts#piStartDatei`); bei `pi-zai` und `pi-deepseek` liegt die Datei im eigenen
+Agent-Verzeichnis, weil genau dieses der Zaun oeffnet. Codex hat keinen gleichnamigen CLI-Schalter;
 `developer_instructions` ergaenzt die Session per Konfiguration, waehrend
 `model_instructions_file` die eingebauten Instruktionen ersetzt ([Konfigurationsreferenz](https://learn.chatgpt.com/docs/config-file/config-reference)).
-Fuer beide Harnesses ist hier kein Prompt-Anhang implementiert.
+Fuer Codex ist hier kein Prompt-Anhang implementiert.
 
 ## Tool-Scoping
 
@@ -1166,6 +1168,14 @@ Key-Datei ab Werk `~/.config/fleet-deepseek/key` (`FLEET_PI_DEEPSEEK_KEY_FILE`),
 Boot-Verweigerung wie die pi-zai-Pfade; `~/.pi` bleibt unberührt. Lässt sich kein Zaun bauen (oder ist
 kein bwrap da), startet **kein** pi: die Pane druckt `pi-deepseek: pi was NOT started - its read fence
 (bwrap) is missing or failed its self-test` und bleibt eine Shell.
+
+*Sein Start.* Wie jeder pi-Sitz liest er Fleet's Start-Block ueber
+`--append-system-prompt '<datei>'`: den Zweck, den der Owner an der Tuer tippte, den Zweck seiner
+Vorgaengerin und die gewaehlten Packs (server.ts#piStartDatei, server/sitz-wissen.ts). Die Datei liegt
+unter `<agent-dir>/fleet-start/<sha256>.md` — im Zaun geoeffnet, weil das Agent-Verzeichnis in (B)
+liegt —, traegt nur Text und nie den Key; die Schluesseldatei bleibt ungebunden und das
+`$(cat …)` in der aeusseren Pane-Shell. Claude-Skills bekommt er nicht; ein gewaehlter Pack kommt
+darum woertlich im Start an. `GET /api/self/context/fleet-doors` bleibt fuer ihn offen.
 
 *Rechner-Regel.* Am Workhorse (Linux) ist der Sitz OHNE Einschalten verfügbar — der Zaun ist die
 Zulassung, nicht ein zweites Wort des Operators (`model-register.ts#harnessOffReason`,

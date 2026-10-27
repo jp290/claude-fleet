@@ -812,11 +812,11 @@ interface Harness {
     handoverOn?: boolean;
     // what this session may do (Slot.rechte, server/rechte.ts); claude alone reads it, null = no rules
     rechte?: Rechte | null;
-    // the Agent-MD of the profile it started from (Slot.agentMd, server/agentmd.ts); claude alone reads it
+    // the Agent-MD of the profile it started from (Slot.agentMd, server/agentmd.ts); claude alone reads this member (a pi seat's purpose rides in startDatei)
     agentMd?: AgentMd | null;
     // the notebook of this setup (server/notizbuch.ts, notizbuchFuerStart); claude alone reads it, null = nothing set
     notizbuch?: Notizbuch | null;
-    // Fleet's library for a seat without a standing role (server/sitz-wissen.ts); claude alone reads it
+    // Fleet's library for a seat without a standing role (server/sitz-wissen.ts); claude alone reads this member (pi gets the text as startDatei)
     seat?: SeatStart | null;
     // a seat that builds (isBauCwd): its own tools (.fleet/sitz-werkzeuge.json) and excludes; claude alone reads it
     bau?: boolean;
@@ -828,7 +828,7 @@ interface Harness {
     weglassen?: Weglassen | null; autoModeEnvironment?: boolean | null;
     // the built-in tools chosen at the door (Slot.tools); claude alone reads it
     tools?: readonly string[] | null;
-    // the Orchestratorin's start as a system-prompt file (orchestratorStartDatei); claude alone reads it
+    // the appended system-prompt file: claude's Orchestratorin start, or the start block of a claude/pi seat (server.ts#piStartDatei)
     startDatei?: string | null;
     // TEST SEAM, not a slot field: the bwrap path this line builds its fence with, or null for "no
     // fence on this host". Absent = the boot-decided PI_ZAI_BWRAP. It exists so the suite can hold
@@ -1379,6 +1379,8 @@ const PI_HARNESS: Harness = {
     // aborts the whole line on when it matches nothing, killing the pane at spawn.
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
+    // Fleet's start block (purpose, chosen packs) as a file pi reads: `--append-system-prompt <path>` expands an existing file.
+    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
     // Bare, by owner decision 2026-08-12: full local access is the normal operating mode, so pi
     // runs with the owner's own reach — edits, git, Fleet/tmux and network. The trailing
     // `exec ${SHELL}` hands a dead agent's pane back to the owner; what must not happen is an
@@ -1550,6 +1552,8 @@ const PI_ZAI_HARNESS: Harness = {
     let cmd = `pi --provider zai --model '${model}' --no-approve`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
+    // Fleet's start block (purpose, chosen packs) as a file pi reads inside its fence (server.ts#piStartDatei).
+    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
     const guard = piZaiSpawnGuard("pi-zai");
     // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
     // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
@@ -1657,6 +1661,7 @@ const PI_ZAI_UNFENCED_HARNESS: Harness = {
     let cmd = `pi --provider zai --model '${model}' --no-approve`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
+    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
     // No fence, no sandbox-exec, no bwrap: this is the whole point of the seat. The guard and the
     // key expansion are the same two words pi-zai uses, so the credential handling cannot drift.
     return `${piZaiSpawnGuard("pi-zai-unfenced")}PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' `
@@ -1730,6 +1735,8 @@ const PI_DEEPSEEK_HARNESS: Harness = {
     let cmd = `pi --provider deepseek --model '${model}' --no-approve`;
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
+    // Fleet's start block (purpose, chosen packs) as a file pi reads inside its fence (server.ts#piStartDatei).
+    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
     const guard = piDeepseekSpawnGuard();
     // The fence exists only as bwrap on Linux. The machine rule (model-register.ts#harnessOffReason)
     // already keeps this seat off every other platform; when no fence can be built this line says so
@@ -1800,6 +1807,7 @@ const PI_UNFENCED_HARNESS: Harness = {
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
+    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // Explicit despite the spread: the source-level worker/transcript invariant intentionally reads
@@ -4285,30 +4293,40 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
   const resolve = async (): Promise<{ status: number; body: Record<string, unknown> }> => {
     // A SEAT WITHOUT A STANDING ROLE borrows from Fleet's own register (server/sitz-wissen.ts), not from a task or
     // Program it does not have; in another repo only what holds everywhere.
-    let catalog: { head: string | null; repoRoot: string; plans: ContextPlan[]; origins: readonly string[];
+    type BorrowCatalog = { head: string | null; repoRoot: string; plans: ContextPlan[]; origins: readonly string[];
       blobShas: ReadonlyMap<string, string>; blobModes: ReadonlyMap<string, string>; programId: string | null };
+    const catalogs: BorrowCatalog[] = [];
     if (isSeat(s)) {
       if (!s.cwd) throw new Error("this session names no folder");
       const seat = await seatKnowledgeFor(s.cwd, s.harness ?? null, true);
-      programId = null;
-      catalog = { head: seat.knowledge.head, repoRoot: seat.knowledge.repoRoot, plans: [seat.plan], origins: ["fleet-manifest"],
-        blobShas: seat.blobShas, blobModes: seat.blobModes, programId: null };
+      catalogs.push({ head: seat.knowledge.head, repoRoot: seat.knowledge.repoRoot, plans: [seat.plan], origins: ["fleet-manifest"],
+        blobShas: seat.blobShas, blobModes: seat.blobModes, programId: null });
     } else {
       const scope = await memoryScopeFor(s, url);
       if (!scope.ok) return { status: scope.response.status, body: await scope.response.json() };
-      programId = scope.principal === "program-main" ? scope.program.id : scope.programId;
       const found = await contextCatalogFor(s, scope, true);
-      catalog = { head: found.head, repoRoot: found.repoRoot, plans: [found.base, found.repoPlan, found.programPlan],
+      catalogs.push({ head: found.head, repoRoot: found.repoRoot, plans: [found.base, found.repoPlan, found.programPlan],
         origins: ["fleet-seed", "repo-manifest", "program"], blobShas: found.blobShas, blobModes: found.blobModes,
-        programId: found.program?.id ?? null };
+        programId: found.program?.id ?? null });
+      // A PI SESSION WITH A STANDING ROLE still gets Fleet's own seat sheet: fleet-doors is offered to every seat, but a lane's
+      // plan carries its task's packs. It is a FALLBACK, after its own catalogue, so a lane never loses its own pack to this one.
+      if (s.cwd && harnessFamilie(s.harness ?? "claude") === "pi") {
+        try {
+          const seat = await seatKnowledgeFor(s.cwd, s.harness ?? null, true);
+          catalogs.push({ head: seat.knowledge.head, repoRoot: seat.knowledge.repoRoot, plans: [seat.plan], origins: ["fleet-manifest"],
+            blobShas: seat.blobShas, blobModes: seat.blobModes, programId: null });
+        } catch { /* no Fleet library at this folder: the lane keeps its own catalogue */ }
+      }
     }
-    head = catalog.head; repo = catalog.repoRoot;
+    // the FIRST catalogue that names this id wins; a later one is only the fallback for an id it does not hold
+    const catalog = catalogs.find((entry) => entry.plans.some((plan) => plan.selected.some((pack) => pack.id === id))) ?? catalogs[0]!;
+    head = catalog.head; repo = catalog.repoRoot; programId = catalog.programId;
     const plans = catalog.plans;
     const matches = plans.flatMap((plan, index) => plan.selected.filter((pack) => pack.id === id).map((pack) => ({ pack, index })));
     if (matches.length > 1) return refused("ambiguous-id", "more than one catalogue entry names this id");
     const selected = matches[0];
     if (!selected) {
-      const omitted = plans.flatMap((plan) => plan.omitted).find((pack) => pack.id === id);
+      const omitted = catalogs.flatMap((entry) => entry.plans.flatMap((plan) => plan.omitted)).find((pack) => pack.id === id);
       if (omitted) return refused(omitted.why, "the pack is unavailable under this session's context rules");
       if (programs.some((p) => p.id !== catalog.programId && p.contextPacks?.some((pack) => pack.id === id)))
         return refused("foreign-program", "this pack is outside the session's Program");
@@ -10557,6 +10575,8 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // a foreign harness reads none of the role facts, as before the spawn record (fleet-e2e-harness.ts drives a codex ensureSlot)
       const listRole = h.id !== "claude" ? null : spawnListRole({ claude: true, lane: !!s.worktree,
         orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
+      // ...but a pi seat reads Fleet's library through its start file (server/sitz-wissen.ts, server.ts#piStartDatei).
+      const pi = harnessFamilie(h.id) === "pi";
       // the same reading tickMigrate takes: no handover for the steward, none at a 0 % base — and Claude Code's own
       // compaction stays on where Fleet does not act at the cap (server/succession.ts#autoCompactOff)
       const handoverOn = h.id === "claude" && occupant.label !== STEWARD_LABEL
@@ -10576,7 +10596,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // Ist sie nicht zu haben, startet der Sitz ohne sie, wie vorher; der Grund steht im Log.
       let seat: SeatStart | null = null;
       // In every repo unless it was switched off for this session (seatLibraryOn); the skills in this occupancy's own folder.
-      if (listRole === "generic" && occupant.label !== STEWARD_LABEL) {
+      if (isSeat(s) && (listRole === "generic" || pi)) {
         try {
           // ...and the packs it gave itself (Slot.selbst), even where its library is off
           const an = seatLibraryOn(occupant.bibliothek, eigen, !!occupant.sitz), dazu = occupant.selbst?.jetzt.packs ?? [];
@@ -10588,11 +10608,14 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         if (!current()) return;
       }
       // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
-      // ...and a seat's own start — Fleet's library and the purpose its predecessor wrote (Slot.selbst) — in a file the same way: with
-      // building-an-agent in SEAT_BOX the line of a seat in Fleet's repo outgrew what tmux takes in one message (16 KB, new-session exited 1)
-      const seatZweck = h.id === "claude" ? occupant.selbst?.jetzt.zweck ?? null : null;
+      // ...and a seat's own start — Fleet's library, the owner's purpose and the purpose its predecessor wrote (Slot.selbst) — in a file the
+      // same way: with building-an-agent in SEAT_BOX the line of a seat in Fleet's repo outgrew what tmux takes in one message (16 KB,
+      // new-session exited 1). A pi seat gets the owner's purpose here too: its system-prompt addition is this file.
+      const seatZweck = h.id === "claude" || pi ? occupant.selbst?.jetzt.zweck ?? null : null;
+      const seatStart = [pi ? (occupant.agentMd ? agentMdBlock(occupant.agentMd) : null) : null,
+        seatZweck ? zweckBlock(seatZweck) : null, seat?.text || null].filter(Boolean).join("\n\n");
       const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd)
-        : seat?.text || seatZweck ? seatStartDatei([seatZweck ? zweckBlock(seatZweck) : null, seat?.text || null].filter(Boolean).join("\n\n")) : null;
+        : seatStart ? (pi ? piStartDatei(h.id, seatStart) : seatStartDatei(seatStart)) : null;
       // A SEAT IN ITS OWN SETUP gets its user's login environment (server/login-umgebung.ts, Mangel 136): a file the pane reads and deletes
       const paneEnv = eigen && PANE_LOGIN_ENV ? await paneEnvFile(s.id, occupant.openedAt, occupant.cwd) : null;
       if (!current()) { if (paneEnv) removeEnvFile(paneEnv.file); return; }
@@ -10898,10 +10921,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.browser = browser; // ...and a text lane must not inherit a browser lane's MCP profile, or back
   s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
+  const pi = harnessFamilie(h.id) === "pi";
   s.rechte = h.id === "claude" ? rechte : null; // ...nor its rules
-  s.agentMd = h.id === "claude" ? agentMd : null; // ...nor its Agent-MD
+  s.agentMd = h.id === "claude" || pi ? agentMd : null; // ...nor its Agent-MD (a pi seat keeps the purpose it reads)
   s.sitz = h.id === "claude" ? sitz : null; // ...nor what an imported seat reads
-  s.bibliothek = h.id === "claude" ? bibliothek : null; // ...nor its choice of Fleet's library
+  s.bibliothek = h.id === "claude" || pi ? bibliothek : null; // ...nor its choice of Fleet's library (pi reads it in its start file)
   s.notizbuchWahl = h.id === "claude" ? notizbuchWahl : null; // ...nor its choice of notebook
   s.permissionMode = h.id === "claude" ? permissionMode : null; // ...nor its choice of permission mode
   s.weglassen = h.id === "claude" ? weglassen : null; // ...nor what it left out of ~/.claude
@@ -21653,15 +21677,19 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
   eigen = false, dazu: readonly string[] = []): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
-    const an = !claude || seatLibraryOn(wahl, eigen, !!sitz);
+    const pi = harnessFamilie(harness ?? "claude") === "pi";
+    // pi reads its start block on every spawn (--append-system-prompt), so the library follows the same switch as a Claude seat;
+    // a harness without a prompt keeps the old "nothing to switch off" reading (seatFassungAbschnitte names its borrow path).
+    const an = claude || pi ? seatLibraryOn(wahl, eigen, !!sitz) : true;
     if (!an && !dazu.length)
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
     const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an);
-    // the block the conversation reads: the one of its first request until a compaction after the newest spawn
+    // the block the conversation reads: the one of its first request until a compaction after the newest spawn (Claude Code);
+    // pi appends the file on every spawn, so its block is effective as spawned.
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
-    return seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam);
+    return seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, pi);
   } catch (e) {
     return [unknownAbschnitt("wissen", `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}`)];
   }
@@ -21717,7 +21745,14 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
 function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | null,
   mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false, fleetRepo = false,
   gewaehlt: readonly string[] = [], permissionMode: PermissionModeWahl | null = null, weglassen: Weglassen | null = null,
-  umgebung = false, toolsWahl: readonly string[] | null = null, fleetCheckout = false): { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
+  umgebung = false, toolsWahl: readonly string[] | null = null, fleetCheckout = false, harness: string | null = null):
+  { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
+  // A pi seat has Fleet's start as its own appended file (server.ts#piStartDatei): purpose and library, not Claude Code's
+  // line features. Say that here instead of "this harness gets nothing" — the parts themselves stand under Liest.
+  if (!listRole && harness !== null && harnessFamilie(harness) === "pi")
+    return { zusatz: textAbschnitt("systemzusatz", "server.ts#piStartDatei (--append-system-prompt)",
+      "Fleet hängt seinen Start als Datei an den Systemprompt (--append-system-prompt): den Zweck und die Packs aus "
+        + "seiner Bibliothek. Claude-Code-Regeln, Rechte und Werkzeuglisten setzt Fleet auf dieser Zeile nicht.", false), start: null, darf: [] };
   if (!listRole) return { zusatz: unknownAbschnitt("systemzusatz", "Fleet legt nur auf die Claude-Zeile eigene Teile; dieser Harness bekommt keine"), start: null, darf: [] };
   const aspects = startAspects({ role: listRole, handoverOn: false, fleetUrl: "", tmuxSocket: "", hub: null, noBypass: NO_BYPASS });
   const flags = claudeMcpFlags(mcp.browserMcp, mcp.packMcp);
@@ -21792,7 +21827,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   const modell = o.modell ?? (claude && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] }, false, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: o.modell, effort: o.effort, permissionMode: null, rechte: null, profil: null, bibliothek: false, notizbuch: null, remote: false, packMcp: [],
-      autoModeEnvironment: false, tools: null }), null, null, false, null, o.rolle !== "lane" && fassungImFleetCheckout(o.repoRoot, null));
+      autoModeEnvironment: false, tools: null }), null, null, false, null, o.rolle !== "lane" && fassungImFleetCheckout(o.repoRoot, null), o.harness);
   const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness, fleetBaum !== null);
   const art: SessionKind = o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : o.rolle === "program-main" ? "program-main" : "session";
   return baueFassung({
@@ -21990,11 +22025,12 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau } = await startLageVon(s);
   const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
   const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && modelPinned(eigen) ? DEFAULT_MODEL : null);
+  const pi = harnessFamilie(spawnPick.harness) === "pi";
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
       remote: !!s.remote, packMcp: s.packMcp.map((m) => m.name), autoModeEnvironment: s.autoModeEnvironment === true, tools: s.tools }), s.permissionMode,
-    s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree));
+    s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree), spawnPick.harness);
   const liest: FassungAbschnittEingang[] = [
     ...fassungRolleKarte(rolle, repoRoot),
     fleet.zusatz,
@@ -22006,12 +22042,14 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil || null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
     s.agentMd ? textAbschnitt("eigenes", s.agentMd.getippt ? "Slot.agentMd (Purpose, an der Tür geschrieben)" : `Slot.agentMd (Profil „${s.agentMd.profil}“)`, agentMdBlock(s.agentMd), true)
-      : unknownAbschnitt("eigenes", harnessFamilie(spawnPick.harness) !== "claude"
-        ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
-        : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
-    // the purpose its predecessor wrote (Slot.selbst): in Claude Code's system prompt, on every other harness in the succession brief
+      : unknownAbschnitt("eigenes", pi
+        ? "kein Zweck gesetzt — der pi-Sitz startet ohne den Text der Tür"
+        : harnessFamilie(spawnPick.harness) !== "claude"
+          ? `dieser Harness liest keine Agent-MD (nur Claude Code)`
+          : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
+    // the purpose its predecessor wrote (Slot.selbst): in Claude Code's and pi's appended start, on every other harness in the succession brief
     ...(s.selbst?.jetzt.zweck
-      ? [textAbschnitt("zweck", harnessFamilie(spawnPick.harness) === "claude"
+      ? [textAbschnitt("zweck", harnessFamilie(spawnPick.harness) === "claude" || pi
         ? "Slot.selbst (von der Vorgängerin geschrieben, POST /api/self/einrichten)"
         : "Slot.selbst (von der Vorgängerin geschrieben, im Übergabebrief)", zweckBlock(s.selbst.jetzt.zweck), true)] : []),
   ];
@@ -22088,10 +22126,11 @@ const schwelleAmStart = (slot: number, openedAt: number, pct: number): HandoverS
 // (Parameter `eingang`, nicht `o`: e2e/context-plan.ts zählt die Lesungen der Adapter-Option dieses Namens)
 const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => {
   const claude = harnessOf(eingang.harness).id === "claude";
+  const pi = harnessFamilie(eingang.harness ?? "claude") === "pi";
   const openedAt = Date.now();
   return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt, awaiting: null, successionRetirement: null, mission: null, worktree: null,
     model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: claude && eingang.remote === true,
-    rechte: claude ? eingang.rechte : null, agentMd: claude ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
+    rechte: claude ? eingang.rechte : null, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
     autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, zustellung: null, lauf: null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
     programId: null, releasedBy: null, lineageId: null,
@@ -42761,9 +42800,11 @@ async function seatTreeOf(cwd: string): Promise<SeatTree> {
 // ...except a seat in its own setup (server/eigenes-setup.ts): there only when chosen at the door — and a seat from a file
 // (Slot.sitz) chose by its file: it reads the packs it brought (server/sitz-reise.ts#sitzWissen), not Fleet's whole library
 // A LIST OF PACKS AT A DOOR names only packs Fleet's library has for a seat in this folder (server/sitz-wissen.ts#packAuswahlFehlt):
-// a pack the seat could never get is refused, not silently left out. Claude only, as the library is; null = nothing to refuse.
+// a pack the seat could never get is refused, not silently left out. Claude Code and pi read the library; null = nothing to refuse.
 async function packAuswahlAnDerTuer(wahl: BibliothekWahl | null, cwd: string, harness: string | null): Promise<string | null> {
-  if (!Array.isArray(wahl) || harnessFamilie(harness ?? "claude") !== "claude") return null;
+  // a pi seat reads the same library in its start file (server.ts#piStartDatei); only a harness without one cannot take a list
+  const familie = harnessFamilie(harness ?? "claude");
+  if (!Array.isArray(wahl) || (familie !== "claude" && familie !== "pi")) return null;
   try {
     const fehlt = packAuswahlFehlt(wahl, (await seatKnowledgeFor(cwd, harness)).knowledge);
     return fehlt.length ? `bibliothek: Fleet's library has no pack ${fehlt.join(", ")} for a seat in this folder` : null;
@@ -42857,12 +42898,15 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   const voll = sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
     : (await seatKnowledgeFor(cwd, harness)).knowledge;
   const knowledge = bibliothekGewaehlt(voll, wahl, dazu, an);
-  const files = seatSkillFiles(knowledge);
+  // Claude Code reads the library's skills from --add-dir; a pi seat reads the start block alone (pi 1.0.2 has no Claude skill
+  // folder), so its chosen packs come as box parts and no skill folder is written for it.
+  const pi = harnessFamilie(harness ?? "claude") === "pi";
+  const files = pi ? [] : seatSkillFiles(knowledge);
   const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
   // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
   const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
-  return { knowledge, text: renderSeatStart(knowledge), files, skillsDir, zurWahl, voll: voll.packs };
+  return { knowledge, text: renderSeatStart(knowledge, !pi), files, skillsDir, zurWahl, voll: voll.packs };
 }
 // what a seat's claude line carries: the start block and the folder its library skills come from
 interface SeatStart { readonly text: string; readonly skillsDir: string | null }
@@ -43188,9 +43232,11 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
   // seatStartFor); der Plan liest sie aus derselben Funktion am selben Kopf, so zeigt das Fenster, was startet. Ihre
   // Packs stehen dann in den Zeilen bibliothek und bibliothek-skills, nicht als Pack, das nicht zu diesem Start passt.
   // ...except a seat in its own setup (server/eigenes-setup.ts): outside Fleet's repo the library is off until the window switches it on
-  const eigenPlan = o.rolle === "nur-ordner" && harnessFamilie(harness) === "claude" && (await fleetBaumVon(fp.repoRoot)) === null;
-  const bibliothek = o.rolle === "nur-ordner" && harnessFamilie(harness) === "claude"
-    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge) }),
+  const familie = harnessFamilie(harness);
+  const eigenPlan = o.rolle === "nur-ordner" && familie === "claude" && (await fleetBaumVon(fp.repoRoot)) === null;
+  // a pi seat reads the same library block (server.ts#piStartDatei); it has no Claude skill folder, so seatPacks names no skills for it
+  const bibliothek = o.rolle === "nur-ordner" && (familie === "claude" || familie === "pi")
+    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude") }),
       (e: unknown) => ({ grund: `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}` }))
     : null;
   const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills] : []);
@@ -44774,14 +44820,28 @@ const isOrchestratorLabel = (label: string | null | undefined): boolean =>
 const ORCHESTRATOR_START_ROOT = `${STATE_DIR}/orchestrator-start`;
 // A SEAT'S START AS A FILE (ensureSlot): named by its content like the Orchestratorin's, so a respawn with the same text reuses it
 const SEAT_START_ROOT = `${STATE_DIR}/sitz-start`;
-function seatStartDatei(text: string): string {
-  const pfad = `${SEAT_START_ROOT}/${sha256Of(text).slice(0, 32)}.md`;
+function startDateiUnter(root: string, text: string): string {
+  const pfad = `${root}/${sha256Of(text).slice(0, 32)}.md`;
   if (!existsSync(pfad)) {
-    mkdirSync(SEAT_START_ROOT, { recursive: true });
-    writeFileSync(`${pfad}.${process.pid}`, text);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(`${pfad}.${process.pid}`, text, { mode: 0o600 });
     renameSync(`${pfad}.${process.pid}`, pfad);
   }
   return pfad;
+}
+function seatStartDatei(text: string): string {
+  return startDateiUnter(SEAT_START_ROOT, text);
+}
+// A PI SEAT'S START FILE LIVES WHERE ITS FENCE OPENS A DOOR: the pi-zai and pi-deepseek fences open their own agent
+// directory (server/pi-zai-fence.ts, (B)), not Fleet's checkout. The unfenced pi family may read Fleet's state, so its
+// start stays beside a Claude seat's. `--append-system-prompt` resolves an existing path to its contents, and the file
+// carries no key — the key stays the pane shell's `$(cat …)` and the fence's deny rule.
+function piStartDatei(harness: string, text: string): string {
+  const id = harnessOf(harness).id;
+  const root = id === "pi-zai" || id === "pi-zai-unfenced" ? `${PI_ZAI_AGENT_DIR}/fleet-start`
+    : id === "pi-deepseek" ? `${PI_DEEPSEEK_AGENT_DIR}/fleet-start`
+    : SEAT_START_ROOT;
+  return startDateiUnter(root, text);
 }
 const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
 function orchestratorStartDatei(cwd: string): string {
@@ -47041,13 +47101,13 @@ if (existsSync(file)) {
         if ((v as { remote?: unknown }).remote === true && hOf.id === "claude") s.remote = true;
         // ...and what the session may do, only readable rules and only on Claude Code (server/rechte.ts)
         s.rechte = rechteGeladen((v as { rechte?: unknown }).rechte, hOf.id);
-        // ...and the Agent-MD of its profile, only on Claude Code (server/agentmd.ts)
+        // ...and the Agent-MD of its profile on Claude Code, or the purpose a pi seat reads in its start file (server/agentmd.ts)
         s.agentMd = agentMdGeladen((v as { agentMd?: unknown }).agentMd, hOf.id);
         // ...and what an imported seat reads (server/sitz-reise.ts)
         s.sitz = sitzStartGeladen((v as { sitz?: unknown }).sitz, hOf.id);
-        // ...and the choice of Fleet's library, only a boolean and only on Claude Code (seatLibraryOn)
+        // ...and the choice of Fleet's library, only a boolean and only where a start reads it: Claude Code and pi (seatLibraryOn)
         const bib = bibliothekWahlGeladen((v as { bibliothek?: unknown }).bibliothek);
-        s.bibliothek = hOf.id === "claude" ? bib : null;
+        s.bibliothek = hOf.id === "claude" || hOf.id.startsWith("pi") ? bib : null;
         // ...and the notebook chosen at its opening: only the two values, only on Claude Code
         const nbw = notizbuchDerTuer((v as { notizbuchWahl?: unknown }).notizbuchWahl);
         s.notizbuchWahl = nbw.ok && hOf.id === "claude" ? nbw.wahl : null;

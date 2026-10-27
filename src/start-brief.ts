@@ -7,6 +7,8 @@
 // once, at the start — the CLAUDE.md and AGENTS.md files, the memory index, the git status, the first message —; when it fits — a rule
 // file with `paths:`, the lists by name, each context pack that waits as a skill —. Settings without text come last. A part carries the
 // name the left side gives it (a pack its title, never its path); the path stays in `datei`.
+import { agentWort } from "./k15-agent";
+
 export interface Datei { pfad: string; bytes: number; eigentum?: string }
 export interface Abschnitt { id: string; quelle?: string | null; bytes?: number | string; text?: string | null; grund?: string | null; dateien?: Datei[] | null }
 export interface Fassung { teile: { id: string; abschnitte: Abschnitt[] }[] }
@@ -31,6 +33,8 @@ export interface Startbrief { anweisungen: Block[]; ersteNachricht: Block[]; war
 // what the window adds that the Fassung doesn't carry: the git status as Claude Code reads it, the first message, the line's own flags,
 // and a pack's title and moment as the library names them (the Fassung names a pack that waits as a skill by its id only)
 export interface Dazu { repo: string; gitNormal: string | null; gitJetzt: string | null; aufgabe: string | null; hooksAus: boolean; ccTokens: number | null;
+  /** the harness this start runs; absent = the Fassung's own `wer.harness`, else Claude Code */
+  harness?: string | null;
   pack?: (id: string) => { titel: string; wann: string | null } | null }
 
 const abschnitte = (f: Fassung | null, teil: string, id: string): Abschnitt[] =>
@@ -156,9 +160,13 @@ function vereint<T>(normal: T[], jetzt: T[], key: (x: T) => string): string[] {
 
 export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief {
   const anweisungen: Block[] = [], ersteNachricht: Block[] = [], wartend: Block[] = [], einstellungen: Block[] = [];
-  // ① Claude Code itself: its text is not Fleet's to show; its size is a measurement
-  anweisungen.push({ key: "cc", herkunft: "cc", pfad: "Claude Code's system prompt", wer: "Claude Code", satz: "how it works, and what its tools do",
-    bytes: null, text: `Claude Code's own instructions, the description of each tool it may use, and its environment.\nFleet doesn't write this text and can't show it word for word${x.ccTokens ? `; it was measured at about ${Math.round(x.ccTokens / 1000)}k tokens` : ""}.`,
+  // THE AGENT THIS START RUNS: a pi seat reads its own program's prompt, not Claude Code's; its name stands in every row that
+  // belongs to the program rather than to Fleet (owner: a pi seat no longer reads „[Zitat entfernt]“).
+  const harnessId = x.harness ?? text1(jetzt, "wer", "harness") ?? "claude";
+  const H = agentWort(harnessId);
+  // ① the harness itself: its text is not Fleet's to show; its size is a measurement
+  anweisungen.push({ key: "cc", herkunft: "cc", pfad: `${H}'s system prompt`, wer: H, satz: "how it works, and what its tools do",
+    bytes: null, text: `${H}'s own instructions, the description of each tool it may use, and its environment.\nFleet doesn't write this text and can't show it word for word${x.ccTokens ? `; it was measured at about ${Math.round(x.ccTokens / 1000)}k tokens` : ""}.`,
     diff: null, zeichen: null, bausteine: ["skills"] });
   // ② from Fleet: what --append-system-prompt carries, each text a part of its own (no group head: the left names each one too)
   const fleetText = (key: string, pfad: string, satz: string, neu: string | null, alt: string | null, bs: string[], datei?: string, wer = "Fleet") => {
@@ -195,12 +203,12 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
     ersteNachricht.push(vergleiche({ key: `mem:${pfad}`, herkunft: eigen ? "fleet" : "du", pfad: eigen ? "Own notebook" : "Memory", datei: anzeige(pfad, x.repo), wer: eigen ? "Fleet" : "Yours",
       satz: eigen ? "its own notes, for the session after it" : "what earlier sessions here noted", bausteine: ["memory", "notebook"] }, a?.text ?? null, b?.text ?? null));
   }
-  // ⑤ the git status: Claude Code looks at the folder's git when it starts and reads this along
+  // ⑤ the git status: the harness looks at the folder's git when it starts and reads this along
   if (x.gitJetzt !== null || x.gitNormal !== null)
-    ersteNachricht.push(vergleiche({ key: "git", herkunft: "cc", pfad: "git status", wer: "Claude Code", satz: "read from the folder when it starts", bausteine: ["workplace", "branch"] }, x.gitJetzt, x.gitNormal));
+    ersteNachricht.push(vergleiche({ key: "git", herkunft: "cc", pfad: "git status", wer: H, satz: "read from the folder when it starts", bausteine: ["workplace", "branch"] }, x.gitJetzt, x.gitNormal));
   // ⑥ the first message
   ersteNachricht.push(x.aufgabe !== null
-    ? vergleiche({ key: "task", herkunft: "fleet", pfad: "first message", wer: "Fleet", satz: "your task, typed in once Claude Code is ready", bausteine: ["task"] }, x.aufgabe || "(still empty: write it in First task)", null)
+    ? vergleiche({ key: "task", herkunft: "fleet", pfad: "first message", wer: "Fleet", satz: `your task, typed in once ${H} is ready`, bausteine: ["task"] }, x.aufgabe || "(still empty: write it in First task)", null)
     : { key: "task", herkunft: "du", pfad: "first message", wer: "Yours", satz: "none: it waits for you to type", bytes: null, text: null, diff: null, zeichen: null, bausteine: ["task"] });
   // ⑦ the lists, names only: Claude sees each name and loads one when it fits
   const liste = (f: Fassung | null) => [text1(f, "arbeitet", "claude-eigenes"), text1(f, "arbeitet", "plugins")].filter(Boolean).join("\n") || null;
@@ -220,7 +228,7 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
   const linie = (f: Fassung | null) => ([["harness", "wer", "harness"], ["model", "wer", "modell"], ["effort", "wer", "effort"], ["permission mode", "darf", "modus"], ["tools", "darf", "werkzeuge"],
     ["--settings", "darf", "einstellungen"], ["MCP", "darf", "mcp"], ["chosen here", "darf", "mitgegeben"], ["left out", "darf", "weggelassen"]] as const)
     .flatMap(([w, t, id]) => { const v = text1(f, t, id); return v === null ? [] : zeilen(v).flatMap((z) => w === "--settings" ? jeSchluessel(z) : [z]).map((z, i) => `${i ? " ".repeat(16) : w.padEnd(16)}${z}`); }).join("\n");
-  einstellungen.push(vergleiche({ key: "line", herkunft: "cc", pfad: "Model and permissions", wer: "Claude Code", satz: "how Fleet starts claude: flags and settings, no text",
+  einstellungen.push(vergleiche({ key: "line", herkunft: "cc", pfad: "Model and permissions", wer: H, satz: `how Fleet starts ${harnessId}: flags and settings, no text`,
     bausteine: ["model", "permissions", "plan", "skills", "connectors", "rules", "hooks", "memory", "rights"] }, linie(jetzt), linie(normal)));
   // „(keine Hooks)“: the Fassung's word for none (server/fassung-umfeld.ts)
   const hooks = text1(jetzt, "darf", "hooks-eigene");

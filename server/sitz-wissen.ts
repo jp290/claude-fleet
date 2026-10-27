@@ -10,7 +10,9 @@
 //   (die useWhen-Zeile), der Text lädt, wenn Claude sie aufruft. Fleet schreibt die Skills in ein Verzeichnis und gibt
 //   es mit `--add-dir` (Probe an claude 2.1.308: die Skill steht im init und wird über das Skill-Werkzeug geladen;
 //   ohne `--add-dir` fehlt sie). Ob Claude sie aufruft, misst skillAufrufe am Transkript.
-// Andere Harnesses lesen weder Start-Block noch Skills; sie leihen über GET /api/self/context/<id>.
+// Andere Harnesses lesen weder Start-Block noch Skills; sie leihen über GET /api/self/context/<id>. EIN pi-Sitz ist die Ausnahme: pi 1.0.2
+// kennt `--append-system-prompt <Text oder Datei>` und liest damit denselben Start-Block wie Claude Code (server.ts#piStartDatei); Claude-Skills
+// bleiben Claude Code allein.
 //
 // WELCHE PACKS (Owner 22.10. über Slot 16: „[Zitat entfernt]“
 // , „[Zitat entfernt]“): einer aus Fleets Register (`.fleet/context-packs.json` im Fleet-Baum) erreicht einen solchen
@@ -105,8 +107,8 @@ const quellPfad = (k: SeatKnowledge, path: string): string => path.startsWith("/
 const groesse = (bytes: number): string => bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1).replace(".", ",")} kB`;
 
 export const SEAT_START_HEAD = "FLEET LIBRARY (server/sitz-wissen.ts): Fleet's knowledge for your seat.";
-const headOf = (k: SeatKnowledge): string => {
-  const box = boxOf(k), skills = skillsOf(k);
+const headOf = (k: SeatKnowledge, withSkills = true): string => {
+  const box = boxOf(k), skills = withSkills ? skillsOf(k) : [];
   return [SEAT_START_HEAD,
     box.length ? `In full below: ${box.map((pack) => pack.id).join(", ")}.` : "",
     skills.length ? `As skills, open one when its description fits your moment (Skill tool): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
@@ -114,18 +116,20 @@ const headOf = (k: SeatKnowledge): string => {
 };
 const boxBlock = (pack: SeatPack): string => `--- ${pack.id} (${quelleOf(pack)}${pack.autor ? ` · author: ${pack.autor}` : ""}) ---\n${pack.text}`;
 
-/** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt. */
-export function renderSeatStart(k: SeatKnowledge): string {
-  if (!boxOf(k).length && !skillsOf(k).length) return "";
-  return [headOf(k), ...boxOf(k).map(boxBlock)].join("\n\n");
+/** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt.
+ *  `withSkills` false = ein pi-Sitz: er liest den Block, aber keine Claude-Skills, darum nennt der Kopf keine. */
+export function renderSeatStart(k: SeatKnowledge, withSkills = true): string {
+  if (!boxOf(k).length && !(withSkills && skillsOf(k).length)) return "";
+  return [headOf(k, withSkills), ...boxOf(k).map(boxBlock)].join("\n\n");
 }
 
 const skillZeile = (pack: SeatPack): string => `- ${pack.id}: ${pack.useWhen}`;
 /** Was ein Sitz aus der Bibliothek bekommt, je Weg die Packs: wörtlich im Start, als Skill (mit der Zeile, die Claude in
- *  seiner Skill-Liste sieht). Der Gründungsplan zeigt damit, was der Spawn gibt. */
-export function seatPacks(k: SeatKnowledge): { box: string[]; skills: string[]; skillListe: string } {
-  return { box: boxOf(k).map((pack) => pack.id), skills: skillsOf(k).map((pack) => pack.id),
-    skillListe: skillsOf(k).map(skillZeile).join("\n") };
+ *  seiner Skill-Liste sieht). Der Gründungsplan zeigt damit, was der Spawn gibt. `withSkills` false = ein pi-Sitz,
+ *  der keine Claude-Skills lädt; seine Packs kommen über den Start-Block. */
+export function seatPacks(k: SeatKnowledge, withSkills = true): { box: string[]; skills: string[]; skillListe: string } {
+  return { box: boxOf(k).map((pack) => pack.id), skills: withSkills ? skillsOf(k).map((pack) => pack.id) : [],
+    skillListe: withSkills ? skillsOf(k).map(skillZeile).join("\n") : "" };
 }
 
 /** DER KATALOG FÜRS STARTFENSTER (Owner 25.10.: „[Zitat entfernt]“): je Pack, den
@@ -229,9 +233,10 @@ export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste
  *  sieht. Die Bytes eines Abschnitts sind die, die immer im Kontext stehen; was eine Skill beim Aufruf lädt, steht im
  *  Grund. `skillsDir` ist der Ordner, den der Start mit `--add-dir` bekommt; null vor dem Start (er gehört der Belegung). `nichtWirksam`: warum der Start-Block in der
- *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. */
-export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string): FassungAbschnittEingang[] {
-  if (!claude) {
+ *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. `pi`: pi liest den
+ *  Start-Block über `--append-system-prompt`, aber keine Claude-Skills. */
+export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string, pi = false): FassungAbschnittEingang[] {
+  if (!claude && !pi) {
     // Ein Harness ohne Fleets Systemprompt bekommt die Steine seiner Vorgängerin im Übergabebrief, nicht als Start-Block
     // (Owner 2026-10-26: „[Zitat entfernt]“).
     // Die Fassung zeigt sie trotzdem hier, damit Info → Setup dieselbe + Zeile mit Autor hat wie bei Claude Code.
@@ -241,12 +246,12 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
     ...steine.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, `im Übergabebrief: ${pack.autor}`))];
   }
-  const box = boxOf(k), skills = skillsOf(k);
+  const box = boxOf(k), skills = pi ? [] : skillsOf(k);
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"
       ? "Fleet-Repo" : "anderes Repo"}, ${k.head.slice(0, 8)})`)];
   return [
-    textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k), false, undefined, undefined,
+    textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k, !pi), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`

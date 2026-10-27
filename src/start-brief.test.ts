@@ -38,6 +38,16 @@ describe("the start brief, file by file against claude by hand", () => {
     expect(b.ersteNachricht.find((x) => x.pfad === "Memory")!.datei).toBe("~/.claude/projects/…/memory/MEMORY.md");
     expect(b.wartend.map((x) => x.pfad)).toEqual(["skills, agents, plugins, connectors"]);
   });
+  test("a pi seat reads its harness's name where the program's own part stands, not Claude Code", () => {
+    const b = startbrief(fassung({}), fassung({}), { ...dazu, harness: "pi-deepseek", aufgabe: "Prüf die Türen." });
+    const cc = b.anweisungen.find((x) => x.key === "cc")!;
+    expect([cc.pfad, cc.wer]).toEqual(["Pi-deepseek's system prompt", "Pi-deepseek"]);
+    expect(cc.text).toContain("Pi-deepseek's own instructions");
+    expect(b.ersteNachricht.find((x) => x.key === "git")!.wer).toBe("Pi-deepseek");
+    expect(b.ersteNachricht.find((x) => x.key === "task")!.satz).toContain("once Pi-deepseek is ready");
+    expect(b.einstellungen.find((x) => x.key === "line")!.wer).toBe("Pi-deepseek");
+    expect(alle(b).some((x) => x.text?.includes("Claude Code"))).toBe(false);
+  });
   test("leaving your rules out shows your CLAUDE.md word for word as − lines, and the repo's file unchanged", () => {
     const b = startbrief(fassung({ eigene: false }), fassung({}), dazu);
     const mine = alle(b).find((x) => x.key === "regel:/Users/o/.claude/CLAUDE.md")!;

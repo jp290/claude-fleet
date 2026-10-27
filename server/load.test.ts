@@ -241,6 +241,17 @@ describe("pi-deepseek: die Startzeile", () => {
     expect(PI_DEEPSEEK_HARNESS.note).toContain("fence");
   });
 
+  // Owner 2026-10-26, zweiter Fix vor dem Startfenster: pi 1.0.2 liest `--append-system-prompt <Text|Datei>`.
+  // Jede pi-Zeile haengt Fleet's Start-Datei an; die Datei selbst schreibt ensureSlot (server.ts#piStartDatei).
+  test("jede pi-Zeile haengt Fleet's Start-Datei an", async () => {
+    const { PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS } = await load();
+    const startDatei = `/tmp/fleet-start/${"a".repeat(32)}.md`;
+    for (const h of [PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS]) {
+      const line = h.spawnCmd({ ...base, cwd, fenceBwrap: BWRAP, startDatei });
+      expect(line).toContain(`--append-system-prompt '${startDatei}'`);
+    }
+  });
+
   // Die andere Seite derselben Entscheidung, ebenfalls GENANNT statt gelesen: ohne Zaun startet die
   // Zeile KEIN pi, sondern sagt es und laesst eine gewoehnliche Shell stehen. So muss es auf jedem
   // Rechner ohne bwrap (dem Mac) aussehen, und so ist es hier auf jedem Host pruefbar.

@@ -132,9 +132,10 @@ A door that answers 202 has accepted work, not finished it. Read the state it na
 ## Handing over
 
 Text is the only thing you can add to your successor's start: a purpose and context packs. Rights, model, hooks and
-MCP servers are the person's. On a harness with Fleet's system prompt the purpose and packs go into that prompt addition;
-on a harness without one they arrive in the succession brief. Either way each stone is one `+` line that names its author
-and is followed by its text. A restart keeps your own start; only the succession brings the new one.
+MCP servers are the person's. Claude Code and every pi adapter read the purpose and packs in their appended system
+prompt (a pi seat reads them from the file Fleet passes with `--append-system-prompt`); on a harness without one they
+arrive in the succession brief. Either way each stone is one `+` line that names its author and is followed by its
+text. A restart keeps your own start; only the succession brings the new one.
 
 ## Fleet's own doors are not yours
 

@@ -1,8 +1,9 @@
 // DIE AGENT-MD EINES PROFILS KOMMT BEIM START AN (Harness 2.0 Schritt 2, docs/konstellation/modell.md Änderung 1: „ein Profil liegt am Server,
 // und die Tür nimmt es ganz“). Das Fenster „Neue Session“ speichert eigene Profile mit ihrer Agent-MD im K15-Speicher (server/k15-speicher.ts).
 // Eine Tür bekommt nur die Kennung (`profil`), liest das Profil dort und gibt seine Agent-MD der Session mit: als Block im Systemprompt jeder
-// Startzeile, also auch nach einem Neustart und bei einer Nachfolgerin (Slot.agentMd, persistiert wie Slot.rechte). Nur Claude Code: der
-// Block steht in dessen `--append-system-prompt`.
+// Startzeile, also auch nach einem Neustart und bei einer Nachfolgerin (Slot.agentMd, persistiert wie Slot.rechte). Der Block steht auf der
+// Claude-Zeile in `--append-system-prompt`; ein pi-Sitz bekommt ihn im Start-Block, den server.ts#piStartDatei mit `--append-system-prompt`
+// übergibt. Ein gespeichertes Profil bleibt Claude Codes; an der Tür nimmt ein pi-Sitz nur den getippten Zweck.
 import { join } from "node:path";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 
@@ -48,20 +49,25 @@ export async function agentMdDerTuer(body: Record<string, unknown> | null, harne
 // EIN PURPOSE ALS TEXT AN DER TÜR (Slot 16 für den Owner, 24.10.: was das Fenster zeigt, nimmt eine Tür): `purpose` ist der Text, den die
 // Session als ihren Zweck im Systemprompt liest, ohne gespeichertes Profil. Er ersetzt das Gedächtnis nicht (Prüfung Runde 7, C2).
 export const PURPOSE_TITEL = "Purpose";
+// WHICH HARNESSES READ A PURPOSE: Claude Code in its system prompt, every pi adapter in the start block its
+// `--append-system-prompt` carries (server.ts#piStartDatei). A saved profile stays Claude Code's alone.
+const purposeHarness = (harness: string): boolean => harness === "claude" || harness.startsWith("pi");
 function purposeDerTuer(v: unknown, profil: unknown, harness: string): { ok: true; agentMd: AgentMd } | { ok: false; error: string } {
   if (profil !== undefined && profil !== null) return { ok: false, error: "purpose and profil are two purposes — send one" };
   if (typeof v !== "string" || !v.trim()) return { ok: false, error: "purpose must be a non-empty text" };
-  if (harness !== "claude") return { ok: false, error: `harness ${harness} takes no purpose — it goes into Claude Code's system prompt` };
+  if (!purposeHarness(harness)) return { ok: false, error: `harness ${harness} takes no purpose — it goes into the harness's appended system prompt` };
   const text = v.trim();
   if (new TextEncoder().encode(text).length > MAX_AGENTMD_BYTES) return { ok: false, error: `purpose is larger than ${MAX_AGENTMD_BYTES / 1000} KB` };
   return { ok: true, agentMd: { profil: "", titel: PURPOSE_TITEL, text, sha256: sha(text), getippt: true } };
 }
 
-// was fleet.json für einen Slot hält: nur eine lesbare Agent-MD und nur an Claude Code
+// was fleet.json für einen Slot hält: eine lesbare Agent-MD (nur Claude Code) oder den Zweck, den ein pi-Sitz liest
 export function agentMdGeladen(raw: unknown, harness: string): AgentMd | null {
   const r = rec(raw);
-  if (harness !== "claude" || !r) return null;
+  if (!r) return null;
   const { profil, titel, text, name, getippt } = r;
+  const piPurpose = harness !== "claude" && harness.startsWith("pi") && getippt === true;
+  if (harness !== "claude" && !piPurpose) return null;
   if (typeof profil !== "string" || typeof titel !== "string" || typeof text !== "string" || !text) return null;
   return { profil: getippt === true ? "" : profil, titel, text, sha256: sha(text), ...(typeof name === "string" ? { name } : {}),
     ...(getippt === true ? { getippt: true as const } : {}) };

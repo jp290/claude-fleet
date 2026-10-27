@@ -1060,18 +1060,20 @@ function spalteBrief(s: St, p: ReturnType<typeof plaene> | null): HTMLElement {
   const eigen = eigenesSetup(fn ?? fj);
   const hh = el("div", "sfhh"), h = el("h3", "", "Start brief"), hb = el("div", "sfhb");
   hb.dataset.scroll = "brief";
-  hh.append(h, el("p", "", "What Claude reads when it starts, word for word and in this order."));
+  const i = infoDa(s), w = z.wahl;
+  const harnessWort = agentWort(w.harness ?? (s.katalog ? standardAgent(s.katalog) : null) ?? "claude");
+  hh.append(h, el("p", "", `What ${harnessWort} reads when it starts, word for word and in this order.`));
   col.append(hh, hb);
   const zu = knopf("sfcl sfhclose", ["✕"], () => { z.brief = false; render(); }, "Close");
   if (!fj || !fn) { h.append(zu); hb.append(el("div", "sfleer", p.fehler ? `Not readable: ${p.fehler}` : "Reading …")); return col; }
-  const i = infoDa(s), w = z.wahl;
+  const harness = w.harness ?? (s.katalog ? standardAgent(s.katalog) : null) ?? "claude";
   const brief = startbrief(fj, fn, { repo: s.repo ?? "", gitNormal: i ? gitText(i, null) : null, gitJetzt: i ? gitText(i, w.branch !== null ? `<its branch${w.branch.trim() ? ` “${w.branch.trim()}”` : ""}>` : null) : null,
-    aufgabe: w.aufgabe, hooksAus: !w.hooks, ccTokens: ccTokens(p.a), pack: (id) => { const pk = packVon(s, id); return pk ? { titel: steinTitel(s, id), wann: pk.useWhen } : null; } });
+    aufgabe: w.aufgabe, hooksAus: !w.hooks, ccTokens: ccTokens(p.a), harness, pack: (id) => { const pk = packVon(s, id); return pk ? { titel: steinTitel(s, id), wann: pk.useWhen } : null; } });
   const n = geaendert(brief);
   if (!n) z.nur = false;
   // the start in one number (server.ts#startSumme: Claude Code as measured, and what Fleet and your files add)
   const tok = (p.a as Answer | null)?.startSumme?.tokens;
-  if (typeof tok === "number") { const t = el("span", "sftok", `≈ ${Math.round(tok / 1000)}k tokens`); t.title = "What it holds when it starts: Claude Code's own part as measured, and every text listed here"; h.append(t); }
+  if (typeof tok === "number") { const t = el("span", "sftok", `≈ ${Math.round(tok / 1000)}k tokens`); t.title = `What it holds when it starts: ${harnessWort}'s own part as measured, and every text listed here`; h.append(t); }
   // every part that has words to read, open at once, and closed again
   const lesbar2 = [...brief.anweisungen, ...brief.ersteNachricht, ...brief.wartend, ...brief.einstellungen].filter((b) => b.text !== null || b.diff !== null).map((b) => b.key);
   const alleOffen = lesbar2.length > 0 && lesbar2.every((k) => z.falten.has(k));

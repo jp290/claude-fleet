@@ -1129,6 +1129,8 @@ await import(pathToFileURL(process.argv[2]).href);
           const messageAddressesFor = () => [], messageRetentionUnknown = () => [], NO_MESSAGE_ADDRESS = 'unsupported';
           const messages = {entries:[],dropped:0}, attentionRequests = [], autos = [], watches = [], fleetEvents = [];
           const selfPosition = () => ({}), lineageSelfView = () => null, attentionFor = () => [], selfContextView = () => null;
+          // the /api/self route also carries the live rights view (server/tuer-rechte.ts); this probe tests the occupant guard
+          const rechteFuerStart = () => ({});
           ${tested}
           throw Error('route did not execute');
         })();`;

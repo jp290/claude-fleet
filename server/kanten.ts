@@ -104,10 +104,10 @@ export const uhrzeit = (ms: number): string =>
   new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
 // DIE SÄTZE AN DIE SESSIONS: einer, wenn die Kante gilt, einer, wenn sie geschlossen wird, einer, wenn sie abweist
-export const kanteGilt = (k: Kante, du: KantenEnde): string => {
+export const kanteGilt = (k: Kante, du: KantenEnde, fromOrchestrator = true): string => {
   const other = andererSlot(k, du);
   return `You can write to slot ${other} directly until ${uhrzeit(k.until)} (POST /api/self/messages, to {"kind":"session","slot":${other}}); `
-    + `the Orchestrator reads along. Reason: ${k.why}`;
+    + `${fromOrchestrator ? "the Orchestrator reads along." : "the seat that granted it reads along."} Reason: ${k.why}`;
 };
 export const kanteGeschlossen = (k: Kante, du: KantenEnde): string =>
   `Your edge to slot ${andererSlot(k, du)} has been closed since ${uhrzeit(kanteEnde(k))}; write through the Orchestrator again.`;

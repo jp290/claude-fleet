@@ -1,0 +1,70 @@
+// DIE RECHTE AN FLEETS TÜREN, als eine Schicht (Richtung Schritt 2, Owner 2026-10-26: „[Zitat entfernt]“ und „[Zitat entfernt]“). Diese Datei hält die Ids' Bedeutung, die Rollenbundel
+// und die eine additive Regel: wirksam = Rollenbundel ∪ Zusagen des Sitzes. Die Türen selbst prüfen mit
+// server.ts#verlangeRecht, damit eine Abweisung immer dasselbe Feld und denselben Satz trägt.
+import { type RechtId, type Rechte } from "../session-rechte";
+
+// Jedes Recht in einer Zeile, die ein Fremder im Startbrief versteht: was es erlaubt, nicht wie es heißt.
+export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
+  "seat.open": "open a seat",
+  "land.branch": "land its own branch",
+  "land.program": "land a Program row",
+  "fleet.deploy": "deploy Fleet",
+  "edge.grant": "grant or close an edge",
+  "text.handover": "write the handover its successor reads",
+  "text.pack": "write a context pack another seat can read",
+  "text.concept.version": "publish a concept version",
+  "text.concept.annotation": "annotate a concept",
+  "text.program": "write its Program's text",
+};
+
+// Die Rollen, die ein Sitz gleichzeitig tragen kann (Steward auf einer Lane, Lane als gebundene MAIN, …).
+// Die Reihenfolge ist die der Abweisung: Orchestratorin, Program-MAIN, Lane, Steward, sonst generic.
+export type RechtRolle = "orchestrator" | "program-main" | "lane" | "steward" | "generic";
+export const RECHT_ROLLEN: readonly RechtRolle[] = ["orchestrator", "program-main", "lane", "steward"];
+
+// Jede Zelle stammt aus einer Prüfung, die heute schon an der Tür steht; die Matrix in
+// server/rechte-tueren.test.ts hält sie fest. Nichts, was eine Rolle heute tut, fehlt hier.
+export const ROLLEN_BUENDEL: Readonly<Record<RechtRolle, readonly RechtId[]>> = {
+  orchestrator: ["seat.open", "land.branch", "text.handover", "text.pack", "text.concept.annotation", "edge.grant"],
+  "program-main": ["seat.open", "land.branch", "land.program", "text.handover", "text.pack",
+    "text.concept.version", "text.concept.annotation", "text.program"],
+  lane: ["land.branch", "text.handover", "text.pack", "text.concept.version", "text.concept.annotation"],
+  steward: ["land.branch", "fleet.deploy", "text.pack", "text.concept.annotation"],
+  generic: ["seat.open", "land.branch", "text.handover", "text.pack", "text.concept.annotation"],
+};
+
+// Das Rollenbundel eines Sitzes: `none` ersetzt es (nur der Owner wählt ihn beim Öffnen), sonst die Vereinigung
+// aller Ansprüche. Ein Sitz ohne Anspruch ist generic, genau wie server.ts#isSeat ihn liest.
+export function buendelFuer(rollen: readonly RechtRolle[], rechte: Rechte | null | undefined): RechtId[] {
+  if (rechte?.buendel === "none") return [];
+  const claims = rollen.length ? rollen : ["generic" as const];
+  return [...new Set(claims.flatMap((r) => ROLLEN_BUENDEL[r]))];
+}
+
+// Die eine additive Regel: ein Recht des Rollenbundels oder eine Zusage des Owners. Zusagen nehmen nichts weg.
+export function wirksameRechte(rechte: Rechte | null | undefined, rollen: readonly RechtRolle[]): Set<RechtId> {
+  return new Set([...buendelFuer(rollen, rechte), ...(rechte?.recht ?? [])]);
+}
+
+// Was GET /api/self und der Startbrief lesen: dieselbe Rechnung, getrennt nach Herkunft, damit ein Sitz sieht,
+// was seine Rolle gibt und was der Owner ihm zusätzlich zugesagt hat.
+export function rechteAnsicht(rechte: Rechte | null | undefined, rollen: readonly RechtRolle[], harness: string) {
+  const bundle = buendelFuer(rollen, rechte);
+  const granted = [...(rechte?.recht ?? [])];
+  const effective = [...wirksameRechte(rechte, rollen)];
+  return { role: rollen.join("+") || "generic", bundle, granted, effective, noFence: harness !== "claude" };
+}
+
+// Die zwei Zeilen des Startbriefs. Die erste nennt jedes wirksame Recht mit seiner Bedeutung, nicht nur seine Id;
+// die zweite sagt, wo Fleet keinen Zaun setzt. Beide sind Text, keine Prüfung: geprüft wird an der Tür.
+export function rechteZeilen(rechte: Rechte | null | undefined, rollen: readonly RechtRolle[], harness: string): string[] {
+  const view = rechteAnsicht(rechte, rollen, harness);
+  const rights = view.effective.length
+    ? view.effective.map((id) => `${id} — ${RECHT_WAS[id]}`).join("; ")
+    : "none";
+  const rightsLine = `FLEET SERVER RIGHTS (checked at Fleet's doors): ${rights}. Source: role ${view.role} + ${view.granted.length} grant(s).`;
+  const fence = view.noFence
+    ? `FLEET SETS NO HARNESS FENCE for this seat: ${harness} applies its own rules; only the server rights above are checked at Fleet's doors.`
+    : "FLEET'S FENCE: the four start switches are Claude Code permission rules, not server checks; file edits and shell commands beyond them are held only by Claude Code. The owner's key bypasses them.";
+  return [rightsLine, fence];
+}

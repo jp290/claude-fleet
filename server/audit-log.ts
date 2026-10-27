@@ -418,6 +418,9 @@ type AuditEvent =
   | "messages_unreadable"
   // an edge the Orchestratorin granted or closed early (server/kanten.ts): the two slots, the end, the edge id — never the reason
   | "kante_grant"
+  // the owner granted server rights to one seat (server.ts, POST /api/slots/:id/rechte); detail names the
+  // granted ids and the effective set, so a later reader can see what changed without re-deriving it
+  | "rechte_grant"
   | "kante_close"
   // a terminal land armed the merge subscription its bound Program-MAIN never made
   // (armProgramMainLandWatch), or declined to because that MAIN's return path is full. The second

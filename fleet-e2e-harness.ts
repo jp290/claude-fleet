@@ -26,6 +26,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { codexModelSupport, type CodexModelSupport } from "./model-register";
+import { rechteFuerHarness } from "./session-rechte";
 import { readCodexFirstTurn, readCodexFirstTurnEvidence, readCodexRollout } from "./server/conversation-read";
 import type { Slot } from "./server/types";
 import type { SlotInfo } from "./src/client";
@@ -515,7 +516,7 @@ export async function checkCodexSpawnFixtures(source: string,
       waitForSlotTeardown: async () => { if (fixture.joined) Object.assign(slot, { cwd: null, openedAt: 0 }); await barrier("teardown"); },
       waitForSlotSpawn: () => barrier("spawn"), assertProgramFoundingTargetOpen: () => {},
       repoCanon: (p: string) => p, assertGameMakerTreeOpen: () => {}, openSlotIntents: new Set(),
-      harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }), harnessFamilie,
+      harnessOf: () => ({ id: "codex", allowsLanes: true, singleton: false }), harnessFamilie, rechteFuerHarness,
       permissionsOf: () => ({ ok: true, permissions: { sandbox: "danger-full-access", approval: "never" } }),
       slotOpeningGuard: (target: Record<string, unknown>) => {
         const expected = JSON.stringify([target.cwd, target.openedAt, target.selfToken, target.permissions]);
@@ -1471,7 +1472,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       } catch(e) {error=String(e);}
       return {commands,publications,awaited,error,profile:s.permissions};
     };`);
-  const exercise = new Function("codexPermissionsFrom", "harnessFamilie", code)(codexPermissionsFrom, harnessFamilie) as
+  const exercise = new Function("codexPermissionsFrom", "harnessFamilie", "rechteFuerHarness", code)(codexPermissionsFrom, harnessFamilie, rechteFuerHarness) as
     (scenario: string) => Promise<{ commands: string[]; publications: string[]; awaited: boolean; error: string | null;
       profile: { sandbox?: string; approval?: string; state?: string } }>;
   const fresh = await exercise("fresh"), resume = await exercise("resume");

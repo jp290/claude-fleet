@@ -5,6 +5,7 @@
 // Harness, mit ihren Schranken oder engeren; was der Body nicht nennt, erbt das Kind von ihr. Frei öffnet nur, wer keine
 // Schranke hat: Claude Code in bypassPermissions (die Orchestratorin) oder Codex mit danger-full-access und approval never.
 import { RECHTE_BEFEHLE, befehlAn, rechteAus, type Rechte } from "../session-rechte";
+import { wirksameRechte, type RechtRolle } from "./tuer-rechte";
 import type { ClaudePermissionMode } from "./session-start";
 import type { CodexPermissions } from "./types";
 
@@ -15,6 +16,9 @@ export interface Oeffnerin {
   modus: ClaudePermissionMode | null;
   permissions: CodexPermissions | null;
   rechte: Rechte | null;
+  // Die Rollenansprüche der Öffnerin, aus denselben Prädikaten wie an ihren Türen (server.ts#rechteRollen).
+  // Fehlt die Angabe, gilt sie als generic — die enge Annahme, nie die weite.
+  rollen?: readonly RechtRolle[];
 }
 
 const SANDBOX = ["read-only", "workspace-write", "danger-full-access"] as const;
@@ -60,12 +64,30 @@ export function spawnNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Ant
   return { ok: true, body: kind };
 }
 
-// der Body der Self-Tür, wie openBoardBranch ihn bekommt: dazu die `rechte` einer Claude-Code-Öffnerin
+// der Body der Self-Tür, wie openBoardBranch ihn bekommt: dazu die `rechte` der Öffnerin. Die vier Schalter
+// vergleicht nur eine Claude-Öffnerin; die Server-Rechte vergleicht JEDE Öffnerin, auch die ohne Schranke
+// (Owner 2026-10-26: ein Recht, das die Öffnerin nicht hat, gibt sie nicht weiter). Ein Branch-Kind ist eine
+// freie Session ohne Bindung, also generic — sein Rollenbundel bleibt sein eigenes.
 export function kindNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Antwort {
   const sp = spawnNieWeiter(o, body);
-  if (!sp.ok || ohneSchranke(o) || o.harness !== "claude") return sp;
-  if (body.rechte === undefined) return { ok: true, body: { ...sp.body, rechte: o.rechte } };
-  const r = body.rechte === null ? null : rechteAus(body.rechte);
-  const weiter = body.rechte === null || r ? RECHTE_BEFEHLE.filter((b) => freiheit(r, b.id) > freiheit(o.rechte, b.id)) : [];
+  if (!sp.ok) return sp;
+  const childBody = sp.body;
+  // Server-Rechte: der Body, sonst die Zusagen der Öffnerin; ein buendel im Body ersetzt das Rollenbundel des Kindes.
+  const raw = childBody.rechte === undefined ? o.rechte : childBody.rechte;
+  const r = raw === null ? null : rechteAus(raw);
+  // unlesbare Rechte gehen unverändert weiter: openBoardBranch lehnt sie mit seinem eigenen Satz ab
+  if (raw !== null && r) {
+    const child = wirksameRechte(r, ["generic"]);
+    const opener = wirksameRechte(o.rechte, o.rollen ?? ["generic"]);
+    const weiter = [...child].filter((id) => !opener.has(id)).sort();
+    if (weiter.length) return nein(`rechte give ${weiter.join(", ")} more than yours`);
+  }
+  // Ohne Angabe erbt das Kind die Zusagen der Öffnerin auf jedem Harness; ohne solche bleibt der Body wie er war.
+  if (body.rechte === undefined && o.rechte !== null) return { ok: true, body: { ...childBody, rechte: o.rechte } };
+  // Die vier Schalter bleiben Claude Codes, und eine Öffnerin ohne Schranke gibt ihre eigenen weiter wie bisher.
+  if (ohneSchranke(o) || o.harness !== "claude") return sp;
+  if (body.rechte === undefined) return { ok: true, body: { ...childBody, rechte: o.rechte } };
+  const schalter = body.rechte === null ? null : r;
+  const weiter = body.rechte === null || schalter ? RECHTE_BEFEHLE.filter((b) => freiheit(schalter, b.id) > freiheit(o.rechte, b.id)) : [];
   return weiter.length ? nein(`rechte give ${weiter.map((b) => b.id).join(", ")} more than yours`) : sp;
 }

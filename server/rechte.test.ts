@@ -29,12 +29,18 @@ const gespeichert = (f: Fixture, slot: number): unknown =>
   (persisted(f).slots as Record<string, { rechte?: unknown }> | undefined)?.[String(slot)]?.rechte;
 
 describe("Rechte an der Tür: nur lesbare und nur für Claude Code", () => {
-  test("fehlt, ist lesbar, ist unlesbar, gehört nicht zu Claude Code", () => {
+  test("fehlt, ist lesbar, ist unlesbar; Server-Rechte gelten auf jedem Harness, die vier Schalter bleiben Claude Code", () => {
     expect(rechteDerTuer({}, "claude")).toEqual({ ok: true, rechte: null });
     expect(rechteDerTuer({ rechte: { stufe: "lesen" } }, "claude")).toEqual({ ok: true, rechte: { stufe: "lesen", an: [], aus: [] } });
     for (const rechte of [{ stufe: "alles" }, { stufe: "bauen", an: ["landen"], aus: ["landen"] }, { stufe: "bauen", an: ["rm"] }, ["bauen"], "bauen"])
       expect(rechteDerTuer({ rechte }, "claude").ok).toBe(false);
-    expect(rechteDerTuer({ rechte: { stufe: "bauen" } }, "codex")).toMatchObject({ ok: false, error: expect.stringContaining("codex") });
+    // ein reiner Rechte-Body braucht keine Stufe und wird auf codex angenommen; die Schalter werden neutralisiert
+    expect(rechteDerTuer({ rechte: { recht: ["seat.open"], buendel: "none" } }, "codex")).toEqual({ ok: true,
+      rechte: { stufe: "bauen", an: [], aus: [], recht: ["seat.open"], buendel: "none" } });
+    expect(rechteDerTuer({ rechte: { stufe: "deployen", an: ["deploy"] } }, "codex")).toEqual({ ok: true,
+      rechte: { stufe: "bauen", an: [], aus: [] } });
+    expect(rechteDerTuer({ rechte: { recht: ["kein-recht"] } }, "claude")).toMatchObject({ ok: false,
+      error: expect.stringContaining("kein-recht") });
   });
 });
 
@@ -76,12 +82,12 @@ describe("Rechte kommen bei der gestarteten Session an", () => {
     expect(gespeichert(f, 1)).toBeUndefined();
   }, LIFE_DEADLINE_MS);
 
-  test("unlesbare Rechte oder ein anderer Agent: 400, und keine Session startet", async () => {
+  test("unlesbare Rechte: 400, und keine Session startet", async () => {
     const f = fixture();
-    const [stufe, beides, pi] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, rechte: { stufe: "alles" } }),
+    const [stufe, beides, unbekannt] = await life(f, [post("/api/slots/1/open", { cwd: f.repo, rechte: { stufe: "alles" } }),
       post("/api/slots/1/open", { cwd: f.repo, rechte: { stufe: "bauen", an: ["deploy"], aus: ["deploy"] } }),
-      post("/api/slots/1/open", { cwd: f.repo, harness: "pi", rechte: { stufe: "bauen" } })]);
-    for (const a of [stufe, beides, pi]) expect(a).toMatchObject({ status: 400, body: { error: expect.stringContaining("rechte") } });
+      post("/api/slots/1/open", { cwd: f.repo, rechte: { recht: ["kein-recht"] } })]);
+    for (const a of [stufe, beides, unbekannt]) expect(a).toMatchObject({ status: 400, body: { error: expect.stringContaining("rechte") } });
     expect(() => startzeile(f, f.repo)).toThrow("keine Pane");
   }, LIFE_DEADLINE_MS);
 });

@@ -24,7 +24,8 @@ import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungF
 import { openerGeladen, openerVon } from "./server/opener";
 import { andererSlot, beendeteKante, type Kante, kanteAbgelaufen, kanteBeruehrt, kanteGeben, kanteGeschlossen, kanteGilt, kanteLebt,
   kanteMerkt, kanteSchliessen, kantenGeladen, kantenGestutzt, kantenWunsch, lebendeKante, uhrzeit } from "./server/kanten";
-import type { Rechte } from "./session-rechte";
+import { istRechtId, rechteFuerHarness, RECHT_IDS, RECHTE_STANDARD, type RechtId, type Rechte } from "./session-rechte";
+import { RECHT_WAS, rechteAnsicht, rechteZeilen, wirksameRechte, type RechtRolle } from "./server/tuer-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
 import type { CcAnatomie } from "./src/k15-anatomie";
 import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
@@ -8838,7 +8839,7 @@ function oeffnerinOf(s: Slot): Oeffnerin {
     orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
   const pe = slotPermissionsOf(s);
   return { harness, modus: harness === CLAUDE_HARNESS.id && role ? PERMISSION_MODE[role] : null,
-    permissions: pe.ok ? pe.permissions : null, rechte: s.rechte };
+    permissions: pe.ok ? pe.permissions : null, rechte: s.rechte, rollen: rechteRollen(s) };
 }
 // a self filing's spawn choice, capped by its filer: the row-level pair, or each variant's (a group names none at row level)
 function selfSpawnCapped(o: Oeffnerin, body: Record<string, unknown>):
@@ -10937,7 +10938,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.webSearch = !!worktree && h.id === "codex" && webSearch;
   s.remote = remote; // ...nor a session the previous occupant's Remote Control
   const pi = harnessFamilie(h.id) === "pi";
-  s.rechte = h.id === "claude" ? rechte : null; // ...nor its rules
+  s.rechte = rechteFuerHarness(rechte, h.id); // server rights on every harness; the four switches stay Claude's (Owner 2026-10-26)
   s.agentMd = h.id === "claude" || pi ? agentMd : null; // ...nor its Agent-MD (a pi seat keeps the purpose it reads)
   s.sitz = h.id === "claude" ? sitz : null; // ...nor what an imported seat reads
   s.bibliothek = h.id === "claude" || pi ? bibliothek : null; // ...nor its choice of Fleet's library (pi reads it in its start file)
@@ -14874,6 +14875,10 @@ async function switchLaneHarness(s: Slot, req: Request): Promise<Response> {
 async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
   const scoped = successionScopeError(s, { lane: "own-rail" });
   if (scoped) return scoped;
+  // The standing role's own sentence comes first (it tells the caller why no right would help); for
+  // every other seat the handover right is the honest first reason, checked before the body read.
+  const noRight = verlangeRecht(s, "text.handover", "POST /api/self/succeed", "write the carry its successor reads");
+  if (noRight) return noRight;
   // Slot is one mutable object reused by every occupant. Capture the authenticated occupant before
   // the first await; a later token alone cannot distinguish the old session from a recycled row.
   const predecessorIdentity: SuccessionPredecessorIdentity = {
@@ -15102,8 +15107,9 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
     ? { container: s.container, containerContext: s.containerContext } : NO_BOX;
   // the successor continues the same line in the same cwd: it keeps the founding's MCP servers
   const carriedMcp = [...s.packMcp];
-  // ...and what it may do, as long as the successor is Claude Code too (server/rechte.ts)
-  const carriedRechte = harnessOf(harness).id === "claude" ? s.rechte : null;
+  // ...and what it may do: server rights travel on every harness, the four switches are neutralised on a
+  // non-Claude successor instead of being applied to a harness that does not read them (Owner 2026-10-26)
+  const carriedRechte = rechteFuerHarness(s.rechte, harnessOf(harness).id);
   const carriedAgentMd = harnessOf(harness).id === "claude" ? s.agentMd : null;
   const carriedSitz = harnessOf(harness).id === "claude" ? s.sitz : null;
   const carriedBibliothek = harnessOf(harness).id === "claude" ? s.bibliothek : null;
@@ -18475,6 +18481,9 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
 async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Response> {
   const sender = messageSenderFor(s);
   const orchestratorin = sender.ok && sender.from.kind === "role" && sender.from.role === "orchestrator";
+  // Das Schreiben an dieser Tür ist das Recht `edge.grant`; die Rolle Orchestratorin trägt es als Bundel,
+  // der Owner kann es jeder anderen Sitzung zusagen (Owner 2026-10-26). Die harten Enden-Grenzen bleiben.
+  const right = () => verlangeRecht(s, "edge.grant", `${req.method} /api/self/kanten${id === null ? "" : "/<id>"}`, "grant or close an edge");
   const now = Date.now();
   const view = (k: Kante) => ({ id: k.id, between: [k.a.slot, k.b.slot], why: k.why, at: k.at, until: k.until, endedAt: k.endedAt,
     live: kanteLebt(k, now), untilText: uhrzeit(k.endedAt ?? k.until),
@@ -18487,16 +18496,19 @@ async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Res
     const mine = kantenGestutzt(kantenBook, now).filter((k) => orchestratorin || (seat !== null && kanteBeruehrt(k, seat)));
     return json({ kanten: mine.map(view) });
   }
-  if (!orchestratorin)
-    return json({ error: "only the Orchestrator grants or closes an edge — ask her in the Postfach, with the slot and the reason" }, 403);
-  // her sentence into a session's Postfach, from her role address, like any word of hers
+  // Die Sätze an die Enden kommen von der Sitzung, die die Kante gab: von der Rolle, wenn es die Orchestratorin
+  // ist, sonst von ihrer eigenen Sitzungsadresse — nie gefälscht als Rollenwort (Owner 2026-10-26).
+  const sagVon: MessageAddress = orchestratorin ? { kind: "role", role: "orchestrator" }
+    : { kind: "session", slot: s.id, openedAt: s.openedAt };
   const sag = (k: Kante, text: (k: Kante, du: { slot: number; cwd: string }) => string, tag: string): string[] => [k.a, k.b].flatMap((end) => {
     const live = slotFrom(end.slot);
     if (!live?.cwd || live.cwd !== end.cwd) return [];
-    return [appendMessage({ kind: "role", role: "orchestrator" }, { kind: "session", slot: live.id, openedAt: live.openedAt },
+    return [appendMessage(sagVon, { kind: "session", slot: live.id, openedAt: live.openedAt },
       { kind: "text", text: text(k, end) }, `kante:${k.id}:${tag}:${end.slot}`, null).id];
   });
   if (req.method === "DELETE") {
+    const noRight = right();
+    if (noRight) return noRight;
     if (id === null) return json({ error: "DELETE /api/self/kanten/<id> closes one edge" }, 400);
     const done = kanteSchliessen(kantenBook, id, now);
     if (!done.kante) return json({ error: `no live edge ${id}` }, 404);
@@ -18506,9 +18518,14 @@ async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Res
     await saveStateNow();
     return json({ ok: true, kante: view(done.kante), told });
   }
+  const noRight = right();
+  if (noRight) return noRight;
   if (id !== null) return json({ error: "POST /api/self/kanten grants an edge; the path names none" }, 400);
   const w = kantenWunsch(await readJson(req));
   if (!w.ok) return json({ error: w.error }, 400);
+  // Ein Recht öffnet die Tür, nicht die eigene Person als Ende: eine Kante verbindet zwei ANDERE einfache Sitzungen.
+  if (w.slots.includes(s.id))
+    return json({ error: "an edge never names its granter as an end — grant it between two other plain sessions" }, 409);
   const ends: { slot: number; cwd: string }[] = [];
   for (const n of w.slots) {
     const t = slotFrom(n);
@@ -18520,7 +18537,7 @@ async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Res
   const done = kanteGeben(kantenBook, ends[0]!, ends[1]!, w.why, w.minutes, now, randomBytes(8).toString("hex"));
   kantenBook = kantenGestutzt(done.book, now);
   audit("kante_grant", undefined, `slot ${done.kante.a.slot} <-> slot ${done.kante.b.slot} until ${new Date(done.kante.until).toISOString()} ${done.kante.id}`);
-  const told = sag(done.kante, kanteGilt, "auf");
+  const told = sag(done.kante, (k, end) => kanteGilt(k, end, orchestratorin), "auf");
   await saveStateNow();
   return json({ ok: true, kante: view(done.kante), told }, 201);
 }
@@ -19476,6 +19493,12 @@ async function selfLandTaskForMain(s: Slot, id: string, switches: LandSwitches =
     json({ error: `this session's id does not match the bound MAIN identity (${match}) — landing is the one act bound to the exact recorded occupant; ask the owner to re-bind the Program-MAIN`, sessionIdMatch: match }, 409);
   if (binding.programs.every((p) => p.main!.sessionId !== s.sessionId))
     return identityRefusal(sessionIdMatchOf(binding.programs[0]!.main!.sessionId, s.sessionId));
+  // The land right is checked after the instance lock and the binding bracket, whose sentences tell
+  // the caller more (the lane/steward refusals sit in the route above), and before the row is read
+  // or anything starts. A bound MAIN carries land.program in its bundle; an owner-granted seat can
+  // reach this line too, and a seat with the bundle removed is refused here by name.
+  const noRight = verlangeRecht(s, "land.program", `POST /api/self/tasks/${id}/land`, "land a Program row");
+  if (noRight) return noRight;
   // (2) THE ROW.
   const t = tasks.find((x) => x.id === id);
   if (!t) return json({ error: "unknown task" }, 404);
@@ -21868,9 +21891,11 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       unknownAbschnitt("eigenes", !claude ? "dieser Harness liest keine Agent-MD (nur Claude Code)"
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
     ]),
-    darf: !claude ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
-      : [textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-        "No rights set — the harness's own rules apply; what is locked stays with the owner.", true), ...fleet.darf, ...umfeld.darf],
+    // Ein neuer Plan ist noch kein Sitz: gezeigt wird das Rollenbundel, das seine Rolle beim Start trägt, plus
+    // die Zaun-Zeile für seinen Harness. Zusagen des Owners erscheinen erst am laufenden Sitz.
+    darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
+        rechteZeilen(null, [o.rolle === "program-main" ? "program-main" : o.rolle === "orchestrator" ? "orchestrator"
+          : o.rolle === "lane" ? "lane" : "generic"], o.harness).join("\n"), true), ...fleet.darf, ...umfeld.darf],
     arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, steward: false, eigen: null,
       wahl: fleetChoiceOf(art), warmFleet: art === "orchestrator" || art === "program-main", eigenesSetup: eigen }), ...umfeld.arbeitet],
     claudeCode: o.claudeCode ?? null,
@@ -22083,11 +22108,11 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ],
     aufgabe: await fassungAufgabe(s, rolle, repoRoot),
     liest: markiereEigenes(liest),
-    darf: harnessFamilie(spawnPick.harness) !== "claude"
-      ? [unknownAbschnitt("darf", "Rechte sind Claude-Code-Regeln; dieser Harness liest sie nicht")]
-      : [s.rechte ? textAbschnitt("darf", "Slot.rechte (server/rechte.ts#rechteSatz)", rechteSatz(s.rechte), true)
-        : textAbschnitt("darf", "Slot.rechte (nicht gesetzt)",
-          "No rights set — the harness's own rules apply; what is locked stays with the owner.", true), ...fleet.darf, ...umfeld.darf],
+    // DER STARTBRIEF NENNT DIE SERVER-RECHTE UND DEN ZAUN (Richtung Schritt 2, Owner 2026-10-26): die Rechte
+    // jedes wirksamen Rechts mit seiner Bedeutung, darunter wo Fleet keinen Zaun setzt. Auf JEDEM Harness,
+    // denn Server-Rechte sind keine Claude-Regeln; die vier Schalter bleiben daneben Claude Codes.
+    darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
+        rechteZeilen(s.rechte, rechteRollen(s), harnessOf(spawnPick.harness).id).join("\n"), true), ...fleet.darf, ...umfeld.darf],
     arbeitet: [...fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s, eigen), ...umfeld.arbeitet],
     claudeCode, agent: s.agent ? { ...s.agent, satz: agentHerkunftSatz(s.agent) } : null,
   });
@@ -22146,7 +22171,9 @@ const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => 
   const openedAt = Date.now();
   return { ...basis, cwd: eingang.cwd, label: eingang.label, openedAt, awaiting: null, successionRetirement: null, mission: null, worktree: null, boardBranch: null,
     model: eingang.model, harness: eingang.harness, effort: eingang.effort, browser: false, webSearch: false, remote: claude && eingang.remote === true,
-    rechte: claude ? eingang.rechte : null, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
+    // Server-Rechte gelten auf JEDEM Harness; Agent-MD und Bibliothek tragen Claude und pi, die übrigen
+    // Setup-Wahlen fallen auf einem anderen Harness weg (Owner 2026-10-26).
+    rechte: eingang.rechte, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
     autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, zustellung: null, lauf: null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
     programId: null, releasedBy: null, lineageId: null,
@@ -42929,6 +42956,36 @@ interface SeatStart { readonly text: string; readonly skillsDir: string | null }
 // a seat without a standing role: no lane, no bound MAIN, not the Orchestratorin (positionRole) and not the steward
 const isSeat = (s: Slot): boolean => positionRole(s) === "generic" && s.label !== STEWARD_LABEL;
 
+// DIE ROLLEN, DIE EIN SITZ GLEICHZEITIG TRÄGT (Richtung Schritt 2, Owner 2026-10-26). Gelesen aus denselben
+// Prädikaten wie die Türen: das Steward-Label, die Program-Bindung, der Worktree und die AUFGELÖSTE
+// Orchestratorin (deliveryRecipient, nicht ein zweites Label). Keine Ansprüche = generic.
+function rechteRollen(s: Slot): RechtRolle[] {
+  const rollen: RechtRolle[] = [];
+  // Eine Vorschau rechnet über einen noch nicht belegten Slot (fassungSlotDerOeffnung): er ist nicht in `slots`,
+  // also entscheidet dort das Label, das die Öffnung stempeln würde. Am laufenden Sitz bleibt die AUFGELÖSTE
+  // Orchestratorin die einzige Quelle (ein zweiter Labelträger trägt das Bundel nicht).
+  const orchestrator = slots.includes(s)
+    ? deliveryRecipient({ kind: "orchestrator" }) === s
+    : !s.worktree && isOrchestratorLabel(s.label);
+  if (orchestrator) rollen.push("orchestrator");
+  if (boundProgramsForMain(s).length > 0) rollen.push("program-main");
+  if (s.worktree) rollen.push("lane");
+  if (s.label === STEWARD_LABEL) rollen.push("steward");
+  return rollen.length ? rollen : ["generic"];
+}
+// DIE EINE RECHTSPRÜFUNG AN DEN TÜREN: nach dem Self-Token und vor dem Body/der Türlogik, damit ein fehlendes
+// Recht immer zuerst antwortet und sich selbst nennt. Ein Recht ist ein Schlüssel zur Tür, kein Ersatz für ihre
+// harten Grenzen (eigener Branch, Binding, grünes Gate): die bleiben darunter bestehen.
+function verlangeRecht(s: Slot, id: RechtId, door: string, was: string = RECHT_WAS[id]): Response | null {
+  const rollen = rechteRollen(s);
+  if (wirksameRechte(s.rechte, rollen).has(id)) return null;
+  const role = rollen.join("+");
+  return json({ error: `missing right \`${id}\`: this seat may not ${was} — its role ${role} does not carry it and no grant adds it; the owner grants it at POST /api/slots/${s.id}/rechte`,
+    missingRight: id, door, role }, 409);
+}
+// Der Startbrief und GET /api/self lesen dieselbe Rechnung (server/tuer-rechte.ts#rechteAnsicht).
+const rechteFuerStart = (s: Slot) => rechteAnsicht(s.rechte, rechteRollen(s), harnessOf(s.harness).id);
+
 // The Fleet seeds and the repository's own declared packs land in ONE plan and one receipt. In a
 // foreign tree the seeds keep their honest `source-unavailable` verdict; the repo-declared packs
 // are additional rows. BOTH FRAMES READ A MANIFEST since 2026-08-19: until then the fleet-control
@@ -50828,7 +50885,15 @@ async function handleStewardRoute(req: Request, url: URL): Promise<Response | nu
   // route above and until now could only file a note about them — the expiring class that made the
   // verb necessary (472aba10). Same two functions the owner's routes call, no second copy.
   if (url.pathname === "/api/deploys" && req.method === "GET") return await deploysRoute(url);
-  if (url.pathname === "/api/deploy" && req.method === "POST") return await deployVerb("steward");
+  if (url.pathname === "/api/deploy" && req.method === "POST") {
+    // Der Steward ist der bestehende Nicht-Owner-Deploy-Türsteher; ohne Steward-Sitz gibt es keine aufrufende
+    // Sitzung, also keine Prüfung und keinen Deploy (Owner 2026-10-26). Der Owner-Schlüssel bleibt daneben.
+    const home = stewardSlot();
+    if (!home) return json({ error: "the steward token has no steward seat to carry fleet.deploy — open the ⚙ steward seat or deploy with the owner's key" }, 409);
+    const noRight = verlangeRecht(home, "fleet.deploy", "POST /api/deploy", "deploy Fleet");
+    if (noRight) return noRight;
+    return await deployVerb("steward");
+  }
   if (url.pathname === "/api/steward/digest" && req.method === "GET") {
     const home = stewardSlot();
     if (!home?.cwd) return json({ error: "no steward slot active" }, 404);
@@ -51106,6 +51171,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const addresses = messageAddressesFor(s);
       return json({
         slot: s.id,
+        // dieselbe Rechnung wie im Startbrief: Rolle, Bundel, Zusagen, wirksame Rechte und ob dieser Harness
+        // überhaupt einen Fleet-Zaun hat (Richtung Schritt 2, Owner 2026-10-26)
+        rechte: rechteFuerStart(s),
         position: { ...selfPosition(s, outcomes),
           at: Date.now(), openedAt, sessionId,
           messages: addresses.length ? {
@@ -51245,6 +51313,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const voll = /^leseansicht\/([^/]+)$/.exec(selfKonzept[2]!)?.[1] ?? null;
       const op = voll !== null ? (req.method === "GET" ? { op: "read-leseansicht" as const } : null) : konzeptOpOf(req.method, selfKonzept[2]!);
       if (!op) return json({ error: "not found" }, 404);
+      // Schreiben an einem Konzept prüft sein Recht; Lesen und die Leseansicht bleiben frei (ihre Bindung
+      // prüft konzeptKontextFor darunter). Die alte Rollenprüfung bleibt als harte Grenze bestehen.
+      if (op.op === "write-version") {
+        const noRight = verlangeRecht(s, "text.concept.version", `POST ${url.pathname}`, "publish a concept version");
+        if (noRight) return noRight;
+      } else if (op.op === "write-anmerkung" || op.op === "verwerfen") {
+        const noRight = verlangeRecht(s, "text.concept.annotation", `POST ${url.pathname}`,
+          op.op === "verwerfen" ? "withdraw an annotation" : "annotate a concept");
+        if (noRight) return noRight;
+      }
       if (op.op === "read-leseansicht") {
         const leser = await korrekturLeserFor(s);
         if (!leser.ok) return json({ error: leser.error }, 409);
@@ -51288,10 +51366,16 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      // The lane's own sentence and the binding's own sentence come first: they tell the caller what
+      // to fix, and the role no-right case below can only be reached by a live bound MAIN (whose
+      // bundle carries text.program) or by an owner-granted seat. The right is still checked before
+      // any body read or write (Owner 2026-10-26).
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane cannot write its Program's context packs — its MAIN maintains them" }, 409);
       const binding = mainBindingOf(s);
       if (!binding.ok) return json({ error: binding.error }, 409);
+      const noRight = verlangeRecht(s, "text.program", "POST /api/self/program-context-packs", "write its Program's context pointers");
+      if (noRight) return noRight;
       // packs belong to ONE Program: a MAIN of several picks it with `programId` among its own
       const packBody = await readJson(req);
       const choice = programChoiceOf(packBody?.programId);
@@ -51343,6 +51427,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); } // flat cost, same as tokenGate
+      const noRight = verlangeRecht(s, "text.program", `POST /api/self/program-${programTextDoor[1]}`,
+        programTextDoor[1] === "decisions" ? "write its Program's decisions" : "propose its Program's living text");
+      if (noRight) return noRight;
       const decisionDoor = programTextDoor[1] === "decisions";
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: decisionDoor
@@ -51816,6 +51903,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "text.program", "POST /api/self/tasks/<id>/notes", "write its Program's row notes");
+      if (noRight) return noRight;
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not assign a source — a lane executes the row it was founded on, it does not choose what the rows its own MAIN releases are worked against" }, 409);
       return assignNoteForMain(s, selfTaskNotes[1]!, await readJson(req));
@@ -51853,6 +51942,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not sharpen a brief — the brief is the work order a lane was founded on, and the producer does not rewrite what it is measured against" }, 409);
+      // After the lane sentence, which tells the caller more than a missing right would; still
+      // before the body and the write.
+      const noRight = verlangeRecht(s, "text.program", "POST /api/self/tasks/<id>/brief", "write its Program's row brief");
+      if (noRight) return noRight;
       return sharpenBriefForMain(s, selfTaskBrief[1]!, await readJson(req));
     }
 
@@ -51881,6 +51974,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not comment a MAIN task row — this act belongs to its bound MAIN" }, 409);
+      // After the lane sentence, which tells the caller more than a missing right would; still
+      // before the body and the write.
+      const noRight = verlangeRecht(s, "text.program", "POST /api/self/tasks/<id>/comment", "write its Program's row comment");
+      if (noRight) return noRight;
       return taskDoorForMain(s, selfTaskComment[1]!, "comment", await readJson(req));
     }
 
@@ -51916,6 +52013,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "seat.open", "POST /api/self/tasks/<id>/release", "open a Program lane");
+      if (noRight) return noRight;
       if (s.worktree && s.label !== STEWARD_LABEL)
         return json({ error: "a lane may not release a queue row — releasing is the bracket above lanes" }, 409);
       return releaseTaskForMain(s, selfTaskRelease[1]);
@@ -51992,6 +52091,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "text.handover", "POST /api/self/handover", "write the handover its successor reads");
+      if (noRight) return noRight;
       return handleSelfHandover(s, req);
     }
     // WHAT A SEAT LEAVES OUT OF ITS OWN ~/.claude (Slot.weglassen, server/eigenes-setup.ts#weglassenDerTuer): set by the seat for its own slot,
@@ -52023,6 +52124,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "text.pack", "POST /api/self/packs", "write a context pack another seat can read");
+      if (noRight) return noRight;
       const pk = eigenerPackDerTuer(await readJson(req), registerIds(), positionRole(s) === "orchestrator");
       if (!pk.ok) return json({ error: pk.error }, 400);
       if (s.openedAt !== p.openedAt) return json({ error: "this slot has another occupant now" }, 409);
@@ -52043,6 +52146,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         naechster: { purpose: (x?.naechster ?? x?.jetzt ?? leer).zweck, packs: (x?.naechster ?? x?.jetzt ?? leer).packs },
         zeilen: einrichtenZeilen(x?.jetzt ?? leer, x?.naechster ?? x?.jetzt ?? leer), gilt: "bei deiner Übergabe (POST /api/self/succeed); ein Neustart behält deinen Start" });
       if (req.method === "GET") return json(ansicht(s.selbst));
+      const noRight = verlangeRecht(s, "text.handover", "POST /api/self/einrichten", "set the purpose and packs its successor starts with");
+      if (noRight) return noRight;
       if (s.worktree) return json({ error: "a lane is set up by its card — einrichten is for a seat of its own" }, 409);
       if (!isSeat(s)) return json({ error: "a seat with a standing role (MAIN, Orchestratorin, steward) gets its start from that role — einrichten is for a seat without one" }, 409);
       const er = einrichtenDerTuer(await readJson(req), s.selbst);
@@ -52078,6 +52183,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "seat.open", `${req.method} ${url.pathname}`);
+      if (noRight) return noRight;
       const asked = await selfBranchRequest(s, await readJson(req));
       if (!asked.ok) return asked.response;
       if (url.pathname === "/api/self/branches") {
@@ -52137,6 +52244,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const p = resolveSelfPrincipal(req);
       const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
       if (!s?.cwd) { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      const noRight = verlangeRecht(s, "land.branch", "POST /api/self/branches/land");
+      if (noRight) return noRight;
       const body = await readJson(req);
       const subject = typeof body?.subject === "string" ? body.subject.trim() : "";
       if (!body || !subject || subject.length > 200 || /[\r\n]/.test(subject) || (body.branch !== undefined && typeof body.branch !== "string")
@@ -56276,6 +56385,38 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       }
       saveState();
       return json({ ok: true });
+    }
+    // DIE EINE NEUE TÜR DIESES SCHNITTS (Richtung Schritt 2, Owner 2026-10-26): der Owner sagt einem SITZ ein
+    // Recht zu, mit dem Owner-Schlüssel. Sie schreibt in das vorhandene Slot.rechte, nicht in einen zweiten
+    // Speicher; sie kann `buendel` nicht ändern, also einem Sitz nichts nehmen, und sie ist kein Self-Door.
+    const grantMatch = /^\/api\/slots\/(\d+)\/rechte$/.exec(url.pathname);
+    if (req.method === "POST" && grantMatch) {
+      const s = slotFrom(grantMatch[1]);
+      if (!s) return json({ error: "bad slot" }, 400);
+      if (!s.cwd) return json({ error: "slot not active — grants belong to a live seat" }, 400);
+      const body = await readJson(req);
+      if (!body || typeof body !== "object" || Array.isArray(body))
+        return json({ error: "expected { grant: [right id] }" }, 400);
+      const extra = Object.keys(body).filter((k) => k !== "grant");
+      if (extra.length)
+        return json({ error: `this door reads only grant — [${extra.join(", ")}] is not read; it cannot change a seat's bundle or its switches` }, 400);
+      const asked = (body as { grant?: unknown }).grant;
+      if (!Array.isArray(asked) || asked.length === 0)
+        return json({ error: `grant must name at least one right from ${RECHT_IDS.join(", ")}`, rights: RECHT_IDS }, 400);
+      const unbekannt = asked.filter((id) => !istRechtId(id));
+      if (unbekannt.length)
+        return json({ error: `unknown right(s): ${unbekannt.map(String).join(", ")} — valid right ids: ${RECHT_IDS.join(", ")}`, rights: RECHT_IDS }, 400);
+      const rights = [...new Set(asked as RechtId[])];
+      const rollen = rechteRollen(s);
+      if (rights.includes("fleet.deploy") && !rollen.includes("steward"))
+        return json({ error: "fleet.deploy opens the steward's existing deploy door in this cut — there is no self deploy door, so the owner grants it only to a steward-labelled seat" }, 409);
+      const before = rechteFuerHarness(s.rechte, harnessOf(s.harness).id);
+      const recht = [...new Set([...(before?.recht ?? []), ...rights])];
+      s.rechte = { stufe: before?.stufe ?? RECHTE_STANDARD, an: before?.an ?? [], aus: before?.aus ?? [],
+        recht, ...(before?.buendel ? { buendel: before.buendel } : {}) };
+      audit("rechte_grant", s.id, `grant=${rights.join(",")} effective=${[...wirksameRechte(s.rechte, rollen)].join(",")}`);
+      await saveStateNow();
+      return json({ ok: true, slot: s.id, rechte: s.rechte, ...rechteAnsicht(s.rechte, rollen, harnessOf(s.harness).id) });
     }
     const slotMatch = /^\/api\/slots\/(\d+)\/(open|open-worktree|kill|rename|mission|zustellung|remote|model|lane-harness|share|unshare|land|shelve|restart|sleep|wake|succeed)$/.exec(url.pathname);
     if (req.method === "POST" && slotMatch) {

@@ -23,7 +23,30 @@ export const RECHTE_BEFEHLE: readonly { readonly id: string; readonly wort: stri
 export const RECHTE_STANDARD: RechteStufe = "bauen";
 export const RECHTE_ZAUN = "Das sind Regeln für Claude Code beim Start, keine Sperre im Server: Wer den Owner-Schlüssel liest, kommt an ihnen vorbei.";
 
-export interface Rechte { readonly stufe: RechteStufe; readonly an: readonly string[]; readonly aus: readonly string[] }
+// DIE RECHTE AN FLEETS TÜREN (Richtung Schritt 2, Owner 2026-10-26): eine eigene, harness-unabhängige Ebene.
+// Sie steht neben den vier Claude-Schaltern, nicht in ihnen: ein Sitz kann ein Server-Recht haben und den
+// passenden Schalter aus, oder umgekehrt. Die Ids sind absichtlich ein eigener Namensraum (`fleet.deploy`
+// ist nicht der `deploy`-Schalter). Was jedes Recht erlaubt, steht in server/tuer-rechte.ts#RECHT_WAS.
+export type RechtId =
+  | "seat.open" | "land.branch" | "land.program" | "fleet.deploy" | "edge.grant"
+  | "text.handover" | "text.pack" | "text.concept.version"
+  | "text.concept.annotation" | "text.program";
+export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.program", "fleet.deploy", "edge.grant",
+  "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program"];
+// Der eine benannte leere Bundel dieses Schnitts: der Owner öffnet damit eine Probe, deren Rolle nichts
+// hinzufügt. Er ist kein Produktions-Rollenbundel und nimmt einer Rolle nichts weg.
+export type RechteBuendel = "none";
+export const istRechtId = (v: unknown): v is RechtId => typeof v === "string" && (RECHT_IDS as readonly string[]).includes(v);
+
+export interface Rechte {
+  readonly stufe: RechteStufe;
+  readonly an: readonly string[];
+  readonly aus: readonly string[];
+  // Zusagen des Owners an genau diesen Sitz, additiv zu seinem Rollenbundel (server/tuer-rechte.ts)
+  readonly recht?: readonly RechtId[];
+  // beim Öffnen gewählt; ersetzt die Rollenbundel, Zusagen kommen weiter dazu
+  readonly buendel?: RechteBuendel;
+}
 export const istStufe = (v: unknown): v is RechteStufe => RECHTE_STUFEN.some((s) => s.id === v);
 const rang = (s: RechteStufe): number => RECHTE_STUFEN.findIndex((x) => x.id === s);
 
@@ -55,12 +78,31 @@ export function rechteRegeln(r: Rechte): { allow: string[]; deny: string[] } {
   }
   return { allow, deny };
 }
-// was ein Start von außen schickt, geprüft; null = nicht lesbar
+// was ein Start von außen schickt, geprüft; null = nicht lesbar. Ein reiner Rechte-Body (nur `recht` und/oder
+// `buendel`) bekommt die Standardstufe mit leeren Schaltern: die Server-Rechte gelten auf jedem Harness, die
+// vier Schalter bleiben Claude Codes. Ein unbekanntes Recht wird nie still fallen gelassen, sondern macht den
+// Body unlesbar (die Tür antwortet 400 und nennt das Feld).
 export function rechteAus(v: unknown): Rechte | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const r = v as Record<string, unknown>;
   const ids = (x: unknown): string[] | null => x === undefined ? [] : Array.isArray(x) && x.every((y) => typeof y === "string" && RECHTE_BEFEHLE.some((b) => b.id === y)) ? x as string[] : null;
   const an = ids(r.an), aus = ids(r.aus);
-  if (!istStufe(r.stufe) || !an || !aus || an.some((x) => aus.includes(x))) return null;
-  return { stufe: r.stufe, an, aus };
+  const recht: RechtId[] | null | undefined = r.recht === undefined ? undefined
+    : Array.isArray(r.recht) && r.recht.every(istRechtId) ? [...new Set(r.recht as RechtId[])] : null;
+  if (r.recht !== undefined && recht === null) return null;
+  const buendel: RechteBuendel | null | undefined = r.buendel === undefined ? undefined : r.buendel === "none" ? "none" : null;
+  if (r.buendel !== undefined && buendel === null) return null;
+  // nur Rechte genannt: die Schalter sind nicht Teil dieses Bodys
+  const stufe = r.stufe === undefined && (recht !== undefined || buendel !== undefined) ? RECHTE_STANDARD : r.stufe;
+  if (!istStufe(stufe) || !an || !aus || an.some((x) => aus.includes(x))) return null;
+  return { stufe, an, aus, ...(recht ? { recht } : {}), ...(buendel ? { buendel } : {}) };
+}
+
+// EIN HARNESS OHNE CLAUDE-SCHALTER TRÄGT NUR DIE SERVER-RECHTE: die vier Schalter werden auf die Standardstufe
+// mit leeren Listen gesetzt, nicht angewendet. So bleibt ein Recht bei einer Nachfolge über einen Harnesswechsel
+// erhalten, ohne dass eine fremde Regel an Claude Code vorbeigeht.
+export function rechteFuerHarness(r: Rechte | null, harness: string): Rechte | null {
+  if (!r || harness === "claude") return r;
+  return { stufe: RECHTE_STANDARD, an: [], aus: [],
+    ...(r.recht?.length ? { recht: r.recht } : {}), ...(r.buendel ? { buendel: r.buendel } : {}) };
 }

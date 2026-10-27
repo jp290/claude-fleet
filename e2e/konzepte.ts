@@ -576,8 +576,9 @@ async function ledgerDoors(): Promise<void> {
       const plainV = await self(plainTok!, "versionen", "POST", version(v4Sha), OK);
       const orchD = await self(orchTok!, `anmerkungen/${orchW.body.anmerkung?.id}/verwerfen`, "POST", { grund: "selbst" }, OK);
       const mainV = await self(mainTok!, "versionen", "POST", version(v4Sha), OK);
-      check("konzepte any session versions stay: the Orchestratorin and a plain session are 409 on a fassung and on verwerfen, the MAIN still 403, nothing appended",
-        orchV.status === 409 && plainV.status === 409 && orchD.status === 409 && /lane or by the bound MAIN/.test(orchV.body.error ?? "")
+      check("konzepte any session versions stay: the Orchestratorin and a plain session are 409 on a fassung (missing right) and on verwerfen (lane/MAIN scope), the MAIN still 403, nothing appended",
+        orchV.status === 409 && plainV.status === 409 && orchD.status === 409
+          && /missing right `text\.concept\.version`/.test(orchV.body.error ?? "") && /lane or by the bound MAIN/.test(orchD.body.error ?? "")
           && mainV.status === 403 && okLines().length === okBefore && okAnmerkungen().length === okAnmBefore,
         `orch=${orchV.status}/${orchD.status} ${orchV.body.error} plain=${plainV.status} main=${mainV.status} lines=${okLines().length - okBefore}/${okAnmerkungen().length - okAnmBefore}`);
 

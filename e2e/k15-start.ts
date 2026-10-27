@@ -171,7 +171,8 @@ export async function runK15StartLiveDom(o: { base: string; token: string; repo:
       { teile?: { id: string; abschnitte: { id: string; text?: string | null }[] }[]; festgehalten?: unknown } | null : null;
     const rechteSatz = gehalten?.teile?.find((t) => t.id === "darf")?.abschnitte.find((x) => x.id === "darf")?.text ?? null;
     facts.fensterSlot = { cwd: amOrt?.cwd ?? null, rechteSatz: rechteSatz?.slice(0, 160) ?? null, festgehalten: !!gehalten?.festgehalten };
-    claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo) && !!rechteSatz?.startsWith("FLEET RIGHTS (level “build”");
+    claims.fenster = fensterZu && !!amOrt?.cwd && real(amOrt.cwd) === real(o.repo)
+      && !!rechteSatz?.startsWith("FLEET SERVER RIGHTS (checked at Fleet's doors):") && rechteSatz.includes("seat.open — open a seat");
 
     // the window is open on a free place with the repo's agent; the old start window does not open
     claims.opens = fenster && !!await evaluate<boolean>(`!document.querySelector('.fdgo, .fdkind')`);

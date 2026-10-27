@@ -48,7 +48,8 @@ describe("Kanten: zwei Sessions schreiben sich direkt, auf Zeit, mit Freigabe de
       as(f, A, get("/api/self/messages?unread=1")),
     ]);
     expect(ohne?.status).toBe(409);
-    expect(selbst?.status).toBe(403);
+    // eine Sitzung ohne `edge.grant` bekommt die Abweisung, die das fehlende Recht nennt — nicht mehr 403
+    expect([selbst?.status, selbst?.body.missingRight]).toEqual([409, "edge.grant"]);
     expect(frei?.status).toBe(201);
     expect((frei?.body.told as string[]).length).toBe(2);
     expect([ab?.status, (ab?.body.holder as { slot: number } | null)?.slot]).toEqual([200, B]);

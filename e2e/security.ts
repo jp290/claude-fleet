@@ -576,7 +576,13 @@ const routeSet = (src: string): string[] => [...new Set([
 // TOKENLESS adds the spellings that reach the path without the word at all: a computed key on
 // `url` (`url[k]`), a destructure OF `url`, and `req.url` read raw instead of via `new URL(req.url)`.
 // Whole-line comments are skipped — they route nothing, and one names "the pathname" in prose.
-const RECOGNIZED = [LITERAL, REGEXP, /\]\.includes\(url\.pathname\)/g, /STATIC\[url\.pathname\]/g];
+//   · the door-label form below: `verlangeRecht(..., `${req.method} ${url.pathname}`)` names the
+//     refusal a right check answers with. It READS the path but routes nothing (the route already
+//     matched above it), so it is consumed like the STATIC lookup: recognized, yet never added to
+//     routeSet. Kept as its own spelling so the pin does not have to accept an arbitrary
+//     template-string read.
+const RIGHT_DOOR_LABEL = /verlangeRecht\([^;\n]*url\.pathname/g;
+const RECOGNIZED = [LITERAL, REGEXP, /\]\.includes\(url\.pathname\)/g, /STATIC\[url\.pathname\]/g, RIGHT_DOOR_LABEL];
 const TOKENLESS = /\burl\s*\[|\}\s*=\s*url\b|(?<!new URL\()\breq\.url\b/;
 const unrecognized = (src: string): string[] =>
   src.split("\n").map((l) => l.trim()).filter((l) => !/^(?:\/\/|\*(?:\s|$))/.test(l)).filter((l) =>

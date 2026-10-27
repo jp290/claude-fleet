@@ -9,29 +9,33 @@ The owner's key does not replace it here: a self door is a session's own door. W
 beside it, because that is what the code checks today.
 
 An **orchestrator** is exactly this: a person's own agent with this pack, its rights and a direction. Fleet's own
-orchestrator is one with Fleet's direction; another person's orchestrator is one with theirs. Today this pack alone
-does not give you the Orchestratorin's role: granting or closing an edge (`POST /api/self/kanten` ·
-`DELETE /api/self/kanten/<id>`), adjudicating a red post-land audit (`POST /api/self/post-land-audits/adjudicate`) and queueing a tip's audit (`POST /api/self/repos/audit-tip`,
-read through `GET /api/self/merges`) still ask for that role, and the role keeps them (owner 2026-10-26). A seat with
-this pack and a direction is an orchestrator in the direction's sense; it is not appointed to a role, and it takes
-nothing from one.
+orchestrator is one with Fleet's direction; another person's orchestrator is one with theirs. Granting or closing an
+edge (`POST /api/self/kanten` · `DELETE /api/self/kanten/<id>`) is the right `edge.grant`: Fleet's Orchestratorin carries
+it in her role bundle, and the owner can grant it to any seat with `POST /api/slots/<id>/rechte`. Adjudicating a red
+post-land audit (`POST /api/self/post-land-audits/adjudicate`) and queueing a tip's audit (`POST /api/self/repos/audit-tip`,
+read through `GET /api/self/merges`) still ask for the Orchestratorin's role, and the role keeps them (owner 2026-10-26).
+A seat with this pack and a direction is an orchestrator in the direction's sense; it is not appointed to a role, and
+it takes nothing from one.
 
 ## If you are a seat without a standing role
 
 You can always: read and write your own handover, succeed or retire, open and land your own branch, propose its check,
 borrow a context pack, write a pack of your own, set what your successor gets, schedule an auto, read the events and
-messages addressed to you, see the edges you are in, and hand a tree and a command to the helper.
+messages addressed to you, see the edges you are in, and hand a tree and a command to the helper. Each of these acts
+is a server right in your generic bundle, named in the table; the start brief and `GET /api/self` show the rights this
+occupant actually has.
 
-You cannot fill the queue, judge a fleet report, release or land a Program row, read a Program inbox, grant an edge,
-or adjudicate an audit. Those need a lane, a bound MAIN or the Orchestratorin, named below. A refusal is a 409 with
+You cannot fill the queue, judge a fleet report, release or land a Program row, read a Program inbox, or adjudicate an
+audit. Those need a lane, a bound MAIN or the Orchestratorin, named below. Granting an edge needs the right
+`edge.grant`: the Orchestratorin's bundle carries it; the owner can grant it to your seat. A refusal is a 409 with
 the reason, never a silent drop.
 
 ## The doors every seat has
 
 | Door | What it is for | What opens it today |
 | --- | --- | --- |
-| `POST /api/self/handover` | Keep the standing handover your successor and the owner door read. | self token; a lane writes its stand, the steward never |
-| `POST /api/self/succeed` | Start your successor in your place with your handover. | self token; a lane uses its own baton rail, the steward never |
+| `POST /api/self/handover` | Keep the standing handover your successor and the owner door read. | right `text.handover` (generic, lane, bound MAIN, Orchestratorin — not the steward); self token; a lane writes its stand |
+| `POST /api/self/succeed` | Start your successor in your place with your handover. | right `text.handover` (generic, lane, bound MAIN, Orchestratorin — not the steward); self token; a lane uses its own baton rail |
 | `POST /api/self/retire` | End your own session. | self token; not the steward |
 | `GET /api/self/messages` · `POST /api/self/messages` · `POST /api/self/messages/<id>/read` | Read your addressed mail, send a message, mark one read. | self token; the sender comes from your binding, and a body never names a principal |
 | `GET /api/self/events/<id>` · `POST /api/self/events/<id>/ack` | Read the event addressed to you, or acknowledge it. | self token, this occupant's events only |
@@ -39,13 +43,13 @@ the reason, never a silent drop.
 | `POST /api/self/watch` | Subscribe your own slot to one server-generated completion fact. | self token, non-lane (the steward may watch) |
 | `POST /api/self/autos` · `DELETE /api/self/autos/<id>` | Schedule one prompt for yourself, or take your schedule back. | self token, for your own slot only |
 | `GET /api/self/branch` · `POST /api/self/branches/check` · `POST /api/self/repo-check` | Read your own branch and its check, run the check, propose the repo's command. | self token, own branch and own repo only; the check never runs as a repair (`repair: true` answers 409 — a land on a red main is the owner's door) |
-| `POST /api/self/branches/land` | Land your own branch after the person's "Looks good" and a green check. | self token, own branch; both conditions are checked |
-| `POST /api/self/branches` · `POST /api/self/branches/open` | Open a board branch, or a session on one. | self token, non-lane, non-steward, in your own repo; the child is never wider than you |
-| `POST /api/self/packs` | Write a private context pack of your own, valid at once. | self token; an id from Fleet's register is refused, and the owner's private pack is the Orchestratorin's |
-| `GET /api/self/einrichten` · `POST /api/self/einrichten` | Set or read the purpose and packs your successor gets on top of your start. | self token, a seat without a standing role; text only, on every harness |
+| `POST /api/self/branches/land` | Land your own branch after the person's "Looks good" and a green check. | right `land.branch` (every role bundle); self token, own branch; both conditions are checked |
+| `POST /api/self/branches` · `POST /api/self/branches/open` | Open a board branch, or a session on one. | right `seat.open` (generic, bound MAIN, Orchestratorin); self token, non-lane, non-steward, in your own repo; the child is never wider than you |
+| `POST /api/self/packs` | Write a private context pack of your own, valid at once. | right `text.pack` (every role bundle); self token; an id from Fleet's register is refused, and the owner's private pack is the Orchestratorin's |
+| `GET /api/self/einrichten` · `POST /api/self/einrichten` | Set or read the purpose and packs your successor gets on top of your start. | POST: right `text.handover` (generic; a lane and a standing role are refused by the door); GET: self token; text only, on every harness |
 | `POST /api/self/weglassen` | Leave part of your own `~/.claude` out of your next start. | self token, Claude Code only, a seat of its own (never a lane) |
 | `GET /api/self/context/<id>` | Borrow one context pack's text and its source at HEAD. | self token; a seat borrows Fleet's library, a role borrows its own plan |
-| `GET /api/self/konzepte/<konzept>/<op>` · `POST /api/self/konzepte/<konzept>/<op>` | Read a concept's versions and annotations, or annotate it. | self token; publishing a version needs a lane or a bound MAIN |
+| `GET /api/self/konzepte/<konzept>/<op>` · `POST /api/self/konzepte/<konzept>/<op>` | Read a concept's versions and annotations, or annotate it. | reading: self token; annotating: right `text.concept.annotation` (every role bundle); publishing: right `text.concept.version` (lane, bound MAIN); withdrawing an annotation: `text.concept.annotation` and the lane/MAIN scope |
 | `GET /api/self/konzepte/k-owner-korrekturen/leseansicht` | Read the owner's corrections as they apply to your binding. | self token; a lane, MAIN, orchestrator or a seat in Fleet's repo |
 | `POST /api/self/jobs` · `GET /api/self/jobs/<id>` · `POST /api/self/jobs/<id>/withdraw` | Hand a tree and an allowed command to the helper; read or withdraw it. | POST and withdraw: self token, own job; GET: also the bound MAIN of the offering lane's Program |
 | `POST /api/self/rueckfrage` · `GET /api/self/rueckfrage` | Answer or read the permission question your pane stands on. | self token |
@@ -90,11 +94,11 @@ pack on adds no role and takes none away.
 | --- | --- | --- |
 | `GET /api/self/programs` · `POST /api/self/programs` | Read the Programs you propose or are bound to; propose one. | self token, non-lane |
 | `GET /api/self/program-execution` | Read what your bound Program is doing: lanes, rows, stands. | self token, non-lane, bound MAIN |
-| `POST /api/self/program-context-packs` | Write the context pointers of your own Program. | self token, non-lane, bound MAIN |
-| `POST /api/self/program-decisions` · `POST /api/self/program-text-proposals` | Append a Program decision; propose a change to its goal text. | self token, non-lane, bound MAIN |
+| `POST /api/self/program-context-packs` | Write the context pointers of your own Program. | right `text.program` (bound MAIN bundle); self token, non-lane, bound MAIN |
+| `POST /api/self/program-decisions` · `POST /api/self/program-text-proposals` | Append a Program decision; propose a change to its goal text. | right `text.program` (bound MAIN bundle); self token, non-lane, bound MAIN |
 | `GET /api/self/memory` | Read the project memory in your scope (`view=work`, `sources`, `evidence`, `observations`). | self token; the scope comes from your lane or MAIN binding |
 | `POST /api/self/main-direct/preflight` · `POST /api/self/main-direct/finalize` · `POST /api/self/main-direct/abandon` · `GET /api/self/main-direct` | Report provenance for work a NON-lane session does straight on main. | self token, non-lane |
-| `POST /api/self/kanten` · `DELETE /api/self/kanten/<id>` | Grant or close an edge between two seats. | the Orchestratorin alone |
+| `POST /api/self/kanten` · `DELETE /api/self/kanten/<id>` | Grant or close an edge between two seats. | right `edge.grant` (Orchestratorin bundle; the owner grants it to any seat); self token; two plain sessions, never the granter as an end |
 | `GET /api/self/fleet-report` · `POST /api/self/fleet-report` | Read reports addressed to you; file a worker result. | GET: self token; POST: a worker lane (never MAIN or the steward) |
 | `POST /api/self/fleet-report/batch` · `POST /api/self/fleet-report/<id>/accept` · `POST /api/self/fleet-report/<id>/reject` | Judge the reports your Program is owed. | self token, non-lane MAIN or steward |
 | `GET /api/self/clarifications` · `POST /api/self/clarifications` · `POST /api/self/clarifications/<id>/reply` | Ask your MAIN a question; answer a lane's question. | GET: self token; POST: a worker lane; reply: non-lane MAIN or steward |
@@ -103,10 +107,11 @@ pack on adds no role and takes none away.
 | `POST /api/self/tasks` | File a queue row into your Program. | self token, non-lane MAIN or steward |
 | `GET /api/self/tasks/<id>` | Read a queue row. | self token; a lane reads only its own row, a MAIN its Program's rows |
 | `POST /api/self/tasks/<id>/files-proposal` | Propose the file surface a row stands on. | self token; lane or MAIN, while the row is open |
-| `POST /api/self/tasks/<id>/notes` · `POST /api/self/tasks/<id>/brief` · `POST /api/self/tasks/<id>/comment` · `POST /api/self/tasks/<id>/withdraw` | Assign a source, sharpen a brief, comment a row, withdraw it. | self token, non-lane MAIN or steward |
+| `POST /api/self/tasks/<id>/notes` · `POST /api/self/tasks/<id>/brief` · `POST /api/self/tasks/<id>/comment` | Assign a source, sharpen a brief, comment a row. | right `text.program` (bound MAIN bundle); self token, non-lane |
+| `POST /api/self/tasks/<id>/withdraw` | Withdraw a queue row. | self token, non-lane MAIN or steward (a status decision, not a text right) |
 | `POST /api/self/tasks/<id>/spawn` · `POST /api/self/tasks/<id>/variant-winner` · `POST /api/self/tasks/confirm-cards` | Choose a row's worker, decide a variant group, confirm a card surface. | self token, non-lane MAIN or steward |
-| `POST /api/self/tasks/<id>/release` · `POST /api/self/tasks/<id>/hold` | Release a row into the queue, or hold it. | self token, non-lane MAIN or steward |
-| `POST /api/self/tasks/<id>/land` | Land a finished row on the integration branch. | self token, non-lane MAIN (not the steward) |
+| `POST /api/self/tasks/<id>/release` · `POST /api/self/tasks/<id>/hold` | Release a row into the queue, or hold it. | release: right `seat.open` (generic, bound MAIN, Orchestratorin); hold: self token, non-lane MAIN or steward |
+| `POST /api/self/tasks/<id>/land` | Land a finished row on the integration branch. | right `land.program` (bound MAIN bundle); self token, non-lane MAIN (not the steward) |
 | `POST /api/self/tasks/<id>/park` | Park a reviewed Program lane for review. | self token, non-lane MAIN (not the steward) |
 | `POST /api/self/wave/split` | Hand rows of your own wave back, with the reason. | self token, the lane holding that wave |
 | `GET /api/self/merges` · `POST /api/self/repos/audit-tip` | Read the land sensor; queue the tip's audit. | self token, Orchestratorin or bound MAIN (a MAIN only from Fleet's own checkout) |
@@ -122,9 +127,11 @@ pack on adds no role and takes none away.
 ## What a refusal tells you
 
 - **401** means the token is not a live occupant's self token.
-- **403** means another right is missing, for example granting an edge.
+- **403** means a hard owner/scope boundary outside the rights layer remains in the way.
 - **409** means the token is right but the act is not askable from where you stand; the sentence names what is missing
-  (a lane, a binding, the Orchestratorin, the owner's „[Zitat entfernt]“, a green check). Do not retry it as it is.
+  (a lane, a binding, the Orchestratorin, the owner's „[Zitat entfernt]“, a green check). A missing server right is a 409
+  with `missingRight: "<id>"` (and `door`, `role`); the owner grants it at `POST /api/slots/<id>/rechte`. Do not
+  retry the act unchanged.
 - **400** means the body asked for something the door does not read; the answer names the fields it does read.
 
 A door that answers 202 has accepted work, not finished it. Read the state it names before you report it as done.

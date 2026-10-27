@@ -2154,8 +2154,9 @@ interface Slot {
   // without one. Carried by a generic succession; persisted; cleared on open/kill.
   agent: import("./agenten").AgentBezug | null;
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
-  // „Was darf er?“ (server/rechte.ts): Claude Code rules in the `--settings` of every spawn and one sentence in
-  // its system prompt. claude only; carried by a generic succession; persisted; cleared on open/kill.
+  // „Was darf er?“ (server/rechte.ts): server rights (`recht`, `buendel`) on every harness, and the four Claude Code
+  // switch rules in the `--settings` of every spawn plus one sentence in its system prompt on Claude only; carried by
+  // a generic succession (switches only while the successor is Claude); persisted; cleared on open/kill.
   zustellung: import("./zustellung").Zustellung | null; // ob Postfach-Nachrichten direkt oder gebündelt
   // ankommen (server/zustellung.ts). null = der Standard nach Rolle: ein Slot mit Worktree (Lane)
   // bündelt, jede andere Session kommt direkt. Vom Owner über POST /api/slots/:id/zustellung gesetzt,

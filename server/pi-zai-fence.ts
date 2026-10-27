@@ -300,10 +300,19 @@ export function piZaiTiocstiClosed(read: () => string = () => readFileSync("/pro
 // /lib64 and /sbin are its symlinks (recreated, not bound). The /etc entries are what a dynamic
 // binary, DNS, TLS, user lookup and terminal programs read; /etc as a whole stays closed.
 const BWRAP_SYSTEM_DIRS = ["/bin", "/lib", "/lib32", "/lib64", "/sbin"] as const;
+// THE BROWSER IN A PANE (owner 27.10., measured by the Mac's Orchestratorin in her own bwrap fence):
+// /usr/bin/chromium is a shell script that sources /etc/chromium.d/* before it execs the browser, and
+// the browser reads its font configuration from /etc/fonts. Without them the wrapper dies at
+// `. /etc/chromium.d/*: cannot open /etc/chromium.d/*: No such file` — measured 2026-10-27 in a fenced
+// pi seat (`/usr/bin/chromium: 77: .: cannot open /etc/chromium.d/*: No such file`), where the DOM probes of the suite could not start a browser at all. /etc/chromium is the
+// package's own config dir beside them; /etc/alternatives was already here for the same reason (the
+// browser's and the fonts' symlinked files resolve through it). Every entry is gated on existing, so a
+// host without the Debian layout carries none of them and nothing else changes.
 const BWRAP_SYSTEM_RO = ["/usr", "/opt", "/etc/alternatives", "/etc/ssl", "/etc/ca-certificates", "/etc/ld.so.cache",
   "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/resolv.conf", "/etc/hosts", "/etc/host.conf", "/etc/nsswitch.conf",
   "/etc/gai.conf", "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/timezone", "/etc/terminfo", "/etc/os-release",
-  "/etc/shells", "/etc/mime.types", "/etc/protocols", "/etc/services"] as const;
+  "/etc/shells", "/etc/mime.types", "/etc/protocols", "/etc/services",
+  "/etc/fonts", "/etc/chromium", "/etc/chromium.d"] as const;
 
 export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } = {}): PiZaiBwrap | null {
   const exists = (p: string): boolean => { try { lstatSync(p); return true; } catch { return false; } };
@@ -340,6 +349,11 @@ export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } =
     } catch { /* absent on this system */ }
   }
   for (const p of BWRAP_SYSTEM_RO) if (exists(p)) { a.push("--ro-bind", p, p); open(p); }
+  // --dev gives a fresh /dev as a tmpfs and /dev/shm as a writable directory ON it: measured 2026-10-27
+  // inside a fenced pi seat (`bwrap --dev /dev … ls -ld /dev/shm` → `drwxr-xr-x … /dev/shm`, no own
+  // mount in /proc/mounts, `stat -f -c %T /dev/shm` → tmpfs, a write went through). Chromium's shared
+  // memory needs exactly that, so no second --tmpfs goes on top of it; the `shm` probe in
+  // e2e/pi-zai-bwrap-probe.ts keeps it honest, since a bwrap that stopped making that dir would show there.
   a.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
 
   // (B) read-only tools: the PATH dirs under home and pi's package root come from the caller; the
@@ -360,6 +374,16 @@ export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } =
     }
   }
   for (const p of toolDests.filter((p) => !toolDests.some((r) => r !== p && under(p, r)))) if (exists(p)) { a.push("--ro-bind", p, p); open(p); }
+
+  // (B) THE BROWSER CACHE, one window into ~/.cache and no wider (owner 27.10.): Playwright keeps its
+  // browsers in ~/.cache/ms-playwright and the start points PLAYWRIGHT_BROWSERS_PATH there, so a fenced
+  // pane that starts one would otherwise meet a browser it cannot read. ONE subdirectory, read-only,
+  // only when it exists, and only when it is a real directory: a symlink there could name any tree on
+  // the machine, and a bind mount follows it — nothing closes a hole like that but the lstat. ~/.cache
+  // as a whole stays closed (every other tool's state lives in it); the pane's own temp home is where
+  // its own writes go.
+  const browserCache = `${i.home}/.cache/ms-playwright`;
+  try { if (lstatSync(browserCache).isDirectory()) { a.push("--ro-bind", browserCache, browserCache); open(browserCache); } } catch { /* absent: no bind */ }
 
   // (B) read-write: the lane, the pane's temp home, the pi agent dir
   a.push("--bind", i.cwd, i.cwd); open(i.cwd);

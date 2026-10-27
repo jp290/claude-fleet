@@ -10,9 +10,10 @@
 // namespaces, a run already inside a fence) the result says `unavailable` with the reason; the caller
 // prints a SKIP under its own name instead of a green.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type PiZaiFenceInput, piSessionSlug, piZaiBwrapArgs, piZaiGitOf, piZaiTiocstiClosed, piZaiTmpFor } from "../server/pi-zai-fence";
+import { dirname } from "node:path";
 
 // what a probe may find: a needle in a file the fixture made. A probe is READ when the needle came back.
 const NEEDLE = "PZSECRET-7f3a";
@@ -33,7 +34,7 @@ export interface BwrapProbe {
 // protected = the fence must refuse it; allowed = the pane's work, the fence must let it through
 export const PROTECTED = ["ssh", "key", "fleetjson", "envfile", "zshrc", "otherwt", "denyroot", "foreignsession", "scaffoldenv",
   "foreignenviron", "tmuxlive", "homewrite", "mainref", "foreignref", "hook"] as const;
-export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "ownref", "gitcommit"] as const;
+export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "ownref", "gitcommit", "shm"] as const;
 
 function probeScript(f: Fx): string {
   const r = (name: string, path: string): string => `if grep -aq ${NEEDLE} '${path}' 2>/dev/null; then echo '${name}=1'; else echo '${name}=0'; fi`;
@@ -53,6 +54,8 @@ function probeScript(f: Fx): string {
     `if echo x > '${f.agent}/sessions/${piSessionSlug(f.cwd)}/own' 2>/dev/null; then echo 'ownsession=1'; else echo 'ownsession=0'; fi`,
     `if git -C '${f.cwd}' update-ref refs/heads/branch/pz-board HEAD 2>/dev/null; then echo 'ownref=1'; else echo 'ownref=0'; fi`,
     `if git -C '${f.cwd}' -c user.email=a@b -c user.name=n commit -q --allow-empty -m lane 2>/dev/null; then echo 'gitcommit=1'; else echo 'gitcommit=0'; fi`,
+    // the shared memory Chromium needs (owner 27.10.): /dev/shm is --dev's own writable dir on its tmpfs
+    `if echo x > /dev/shm/pz-shm 2>/dev/null; then echo 'shm=1'; rm -f /dev/shm/pz-shm; else echo 'shm=0'; fi`,
   ].join("\n");
 }
 
@@ -153,6 +156,26 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
     writeFileSync(`${agent}/auth.json`, authBackup);
     const topLevel = piZaiBwrapArgs({ ...input, git: g && { ...g, ref: "refs/heads/toplevel" } });
     const withNew = piZaiBwrapArgs(input, { newSession: true })?.args ?? [], without = piZaiBwrapArgs(input, { newSession: false })?.args ?? [];
+    // (a)-(c) THE BROWSER'S NEEDS (owner 27.10., measured by the Mac's Orchestratorin in her own bwrap
+    // fence): three /etc entries this host may or may not carry, and the ONE read-only window into
+    // ~/.cache — each read-only where it exists and absent (no bind at all) where it does not, and never
+    // writable. The cache half is proven BOTH ways in the fixture's own home, because the /etc half
+    // depends on the host this probe runs on; a symlink there must not be bound, because a bind follows it.
+    const roBoundAt = (xs: string[], p: string): boolean => xs.some((x, k) => x === "--ro-bind" && xs[k + 1] === p && xs[k + 2] === p);
+    const rwBoundAt = (xs: string[], p: string): boolean => xs.some((x, k) => x === "--bind" && xs[k + 1] === p);
+    const cache = `${home}/.cache/ms-playwright`;
+    // both readings with the SAME switch, or the --new-session arg would answer for the cache
+    const cacheAbsent = piZaiBwrapArgs(input, { newSession: false })?.args ?? [];
+    mkdirSync(`${cache}/chromium-1234`, { recursive: true });
+    const cachePresent = piZaiBwrapArgs(input, { newSession: false })?.args ?? [];
+    rmSync(cache, { recursive: true, force: true });
+    symlinkSync(home, cache); // the worst case: the cache names the whole home
+    const cacheLinked = piZaiBwrapArgs(input, { newSession: false })?.args ?? [];
+    rmSync(cache, { force: true });
+    // ...and no writable bind beyond the pane's own work: the tree, its temp home, its agent dir and
+    // its own session, git's objects/admin/own branch. A new --bind anywhere else fails here.
+    const knownRw = new Set([cwd, own, agent, `${agent}/sessions/${piSessionSlug(cwd)}`,
+      ...(g ? [`${g.common}/objects`, g.admin, dirname(`${g.common}/${g.ref}`), dirname(`${g.common}/logs/${g.ref}`)] : [])]);
     const build = {
       refusesNullDenyRoots: piZaiBwrapArgs({ ...input, denyRoots: null }) === null,
       refusesEmptyDenyRoots: piZaiBwrapArgs({ ...input, denyRoots: [] }) === null,
@@ -167,6 +190,12 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
       diesWithParent: !!args && args.includes("--die-with-parent"),
       noWholeHomeNoRootBind: !!args && !args.some((x, k) => (x === home || x === "/") && ["--bind", "--ro-bind"].includes(args[k - 1] ?? "")),
       noMainRefBinding: !!topLevel && !topLevel.args.some((x) => x === `${g?.common}/refs/heads` || x === `${g?.common}/logs/refs/heads`),
+      browserEtcRoWhereItExists: !!args && ["/etc/fonts", "/etc/chromium", "/etc/chromium.d"].every((p) => existsSync(p) ? roBoundAt(args, p) : !roBoundAt(args, p)),
+      browserEtcNeverWritable: !!args && ["/etc/fonts", "/etc/chromium", "/etc/chromium.d", "/usr"].every((p) => !rwBoundAt(args, p)),
+      browserCacheRoWhenPresent: roBoundAt(cachePresent, cache) && !rwBoundAt(cachePresent, cache),
+      browserCacheDroppedWhenAbsent: !roBoundAt(cacheAbsent, cache) && !rwBoundAt(cacheAbsent, cache) && cachePresent.length === cacheAbsent.length + 3, // "--ro-bind src dest" is three entries
+      browserCacheSymlinkNotBound: !roBoundAt(cacheLinked, cache) && !rwBoundAt(cacheLinked, cache),
+      noNewWritableBind: !!args && args.flatMap((x, k) => x === "--bind" ? [args[k + 1]!] : []).every((d) => knownRw.has(d)),
       newSessionSwitch: withNew.includes("--new-session") && !without.includes("--new-session"),
       tiocstiRead: piZaiTiocstiClosed(() => "0\n") && !piZaiTiocstiClosed(() => "1\n") && !piZaiTiocstiClosed(() => { throw new Error("absent"); }),
     };

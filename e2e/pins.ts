@@ -1468,8 +1468,14 @@ export default function (pi) {
         `unreached: ${fmt([...BW_PROTECTED, ...BW_ALLOWED].filter((k) => bw.control[k] !== true))}`);
       pin(`${RULE_BW} refuses T1-T3 and the writes: owner secrets, key, fleet.json/.env, home, other worktree, deny root, foreign session, scaffold .env, foreign environ, live tmux socket, main and foreign refs, git hook`,
         leaks(bw.fenced).length === 0, `leaks: ${fmt(leaks(bw.fenced))}`);
-      pin(`${RULE_BW} lets the pane work: a file in the worktree, a PATH tool, a write in the worktree, the own session dir, the own ref and its reflog, a commit on the own branch`,
+      pin(`${RULE_BW} lets the pane work: a file in the worktree, a PATH tool, a write in the worktree, the own session dir, the own ref and its reflog, a commit on the own branch, shared memory in /dev/shm`,
         broken(bw.fenced).length === 0, `refused: ${fmt(broken(bw.fenced))}`);
+      // (owner 27.10.) a fenced pane must be able to start a browser: chromium's launcher sources
+      // /etc/chromium.d/*, the browser reads /etc/fonts and Playwright's browsers sit in ~/.cache
+      pin(`${RULE_BW} the browser's own needs: /etc/fonts, /etc/chromium and /etc/chromium.d read-only where this host has them and dropped where it has not, ~/.cache/ms-playwright read-only only as a real directory (never ~/.cache, never a symlink), and no writable bind beyond the pane's own work`,
+        ["browserEtcRoWhereItExists", "browserEtcNeverWritable", "browserCacheRoWhenPresent", "browserCacheDroppedWhenAbsent",
+         "browserCacheSymlinkNotBound", "noNewWritableBind"].every((k) => bw.build[k] === true),
+        `failed: ${fmt(Object.entries(bw.build).filter(([k, ok]) => !ok && /^(browser|noNewWritableBind)/.test(k)).map(([k]) => k))}`);
       pin(`${RULE_BW} mutant: no fence at all - the probe reports leaks (detector can fail)`,
         leaks(bw.noFence).length === BW_PROTECTED.length, `leaks: ${fmt(leaks(bw.noFence))}`);
       pin(`${RULE_BW} mutant: the home added to the allowlist - the probe reports the home, other worktree and secrets`,

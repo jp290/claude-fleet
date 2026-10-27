@@ -1035,7 +1035,14 @@ ihrer Symlinks (`~/.local/bin/node` → der ganze `node-v…`-Baum), pis Paket-R
 und das eigene Temp-Home `/tmp/fleet-pi-zai/<hash>` (lesen/schreiben), das Agent-Verzeichnis, dessen
 `sessions/` durch ein leeres tmpfs ersetzt ist, in das nur die EIGENE Session-Ordnung zurückgebunden wird,
 und `auth.json` nur lesend (leerer Store, sonst wie auf macOS kein Zaun; fehlt sie, legt die äußere Shell
-`{}` an). `/tmp` ist ein frisches tmpfs: der Live-tmux-Socket, die Sitzungen und Kopien anderer Panes, der
+`{}` an). **Seit 27.10. für den Browser in einer Pane** (eine gezäunte Lane fährt die Suite, deren DOM-Proben
+Chromium starten): `/etc/fonts`, `/etc/chromium`, `/etc/chromium.d` nur lesend, wenn der Rechner sie hat —
+`/usr/bin/chromium` ist ein Shell-Skript, das `/etc/chromium.d/*` einliest und vorher an
+`. /etc/chromium.d/*: cannot open …: No such file` stirbt; dazu Playwrights Browser-Cache
+`~/.cache/ms-playwright`, nur dieses eine Unterverzeichnis, nur lesend, nur als echtes Verzeichnis (ein
+Symlink würde beim Bind mitgeöffnet und bleibt darum zu). `/dev/shm` legt `--dev` selbst an: gemessen am
+27.10. ein schreibbares Verzeichnis auf dem `/dev`-tmpfs (`stat -f -c %T` → tmpfs), also kein zweiter Mount;
+`e2e/pi-zai-bwrap-probe.ts` prüft Schreiben dorthin als Probe `shm`. `/tmp` ist ein frisches tmpfs: der Live-tmux-Socket, die Sitzungen und Kopien anderer Panes, der
 Haupt-Checkout samt `fleet.json`/`.env`, `~/.ssh`, der Key und jede andere Home-Datei sind schlicht nicht
 da. (C) wirkt nur dort, wo eine Öffnung ein Geheimnis enthält (ein pi-zai-MAIN im Server-Checkout, ein
 liegengebliebenes `.env` im cwd): `/dev/null` über die Datei, ein leeres Nur-Lese-tmpfs über das

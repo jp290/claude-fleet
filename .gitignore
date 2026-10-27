@@ -110,3 +110,14 @@ perf.jsonl
 perf.jsonl.1
 field-perf.jsonl
 field-perf.jsonl.1
+# Fleet's state in the checkout that runs it (STATE_DIR = this folder on both hosts): the seat start files, start
+# fassungen and history, the agent list and the delivery/borrow/branch-end ledgers. Untracked and not ignored, they made
+# fleet-sync refuse every run on the follower with "worktree not clean" (2026-10-26, the follower stood a day behind).
+/agenten.json
+/branch-ends.jsonl
+/context-borrows.jsonl
+/postfach-versuche.jsonl
+/start-historie.jsonl
+/sitz-start/
+/orchestrator-start/
+/start-fassungen/

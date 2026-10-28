@@ -552,6 +552,18 @@ describe("lokal schieben und fahren: derselbe Kandidat, derselbe Runner, ohne ss
     const r = await runOnHelper({ kind: "local", repo: join(dir, "repo.git") }, "abc123", ["core", "lanes"], runner, dir);
     expect(r).toEqual({ exit: 0, out: "ran abc123 core,lanes\n" });
   });
+  // Das eigentliche Maß: kein kontrollierendes Terminal. `: < /dev/tty` öffnet es — in einer tmux-Pane gelingt das,
+  // unter `setsid -w` nicht (eine neue Sitzung hat keins). Der Runner-Text kommt dabei über stdin: er IST das Skript,
+  // das `sh -s` liest, und die Argumente stehen hinter `--`. Ohne den Fix steht dieser Lauf in der Pane auf T.
+  test.skipIf(process.platform !== "linux" || !Bun.which("setsid"))(
+    "lokal auf linux läuft der Runner ohne kontrollierendes Terminal, sein Text über stdin, Args hinter --", async () => {
+      const dir = tmp("mc-setsid-");
+      const runner = join(dir, "runner.sh");
+      writeFileSync(runner, 'if ( : < /dev/tty ) 2>/dev/null; then echo "mit-terminal"; else echo "ohne-terminal"; fi\n'
+        + 'echo "ran $1 $2"\n');
+      const r = await runOnHelper({ kind: "local", repo: join(dir, "repo.git") }, "abc123", ["core"], runner, dir, "linux");
+      expect(r).toEqual({ exit: 0, out: "ohne-terminal\nran abc123 core\n" });
+    });
   // Über ssh bekommt der Runner eine frische Login-Umgebung; lokal erbte er die des Aufrufers — und deren FLEET_*
   // (FLEET_HOST/PORT beim Server, FLEET_SELF_* in einer Pane) ließ die e2e-Suiten eine andere Fleet lesen
   // (start-plan.ts liest FLEET_HOST/FLEET_PORT/FLEET_CTL_URL). Lokal gilt darum dieselbe saubere Lage.
@@ -569,9 +581,28 @@ describe("lokal schieben und fahren: derselbe Kandidat, derselbe Runner, ohne ss
     const ssh = helperRun({ kind: "ssh", host: "someone@10.0.0.2", repo: "~/ci/repo.git" }, "abc", ["core"],
       { FLEET_HOST: "x", PATH: "/bin" });
     expect(ssh).toEqual({ argv: ["ssh", "someone@10.0.0.2", "sh", "-s", "--", "abc", "core"] });
+    // darwin ausdrücklich: die Umgebung hängt nicht an der Plattform, das Kommando schon (nächster Test)
     const local = helperRun({ kind: "local", repo: "/var/tmp/ci/repo.git" }, "abc", [],
-      { FLEET_HOST: "x", PATH: "/bin", HOME: "/h" });
+      { FLEET_HOST: "x", PATH: "/bin", HOME: "/h" }, "darwin");
     expect(local).toEqual({ argv: ["sh", "-s", "--", "abc", "-"], env: { PATH: "/bin", HOME: "/h" } });
+  });
+  // Der Server läuft in einer tmux-Pane, hat also ein Terminal. `ci/merge-check-run.sh#run` legt jeden Job per
+  // `timeout` in eine Hintergrund-Prozessgruppe; fasst darin etwas das Terminal an, hält der Kernel den Job an
+  // (Zustand T), bis das Limit ihn tötet — höhere Limits helfen darum nicht. `setsid -w` gibt dem lokalen Lauf eine
+  // eigene Sitzung ohne kontrollierendes Terminal und wartet selbst auf sein Ende; darwin hat kein setsid und
+  // braucht es nicht (die Läufe dort kommen ohne Terminal). Die Plattform kommt als Seam herein, damit die Prüfung
+  // nicht davon abhängt, auf welcher Maschine sie läuft.
+  test("lokal auf linux startet der Runner über setsid -w, Commit und Units unverändert hinter --", () => {
+    const call = helperRun({ kind: "local", repo: "/var/tmp/ci/repo.git" }, "abc", ["core", "lanes"],
+      { FLEET_HOST: "x", PATH: "/bin" }, "linux");
+    expect(call.argv).toEqual(["setsid", "-w", "sh", "-s", "--", "abc", "core,lanes"]);
+    expect(call.env).toEqual({ PATH: "/bin" });
+  });
+  test("lokal auf darwin bleibt es beim Aufruf von heute, ohne setsid", () => {
+    const call = helperRun({ kind: "local", repo: "/var/tmp/ci/repo.git" }, "abc", ["core"],
+      { PATH: "/bin" }, "darwin");
+    expect(call.argv).toEqual(["sh", "-s", "--", "abc", "core"]);
+    expect(call.argv).not.toContain("setsid");
   });
 });
 

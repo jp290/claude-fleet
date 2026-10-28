@@ -272,17 +272,27 @@ export function helperEnv(env: Record<string, string | undefined> = process.env)
   return out;
 }
 
-// der eine Aufruf des Runners, rein: über ssh der ferne Login (keine env-Angabe), lokal `sh` mit der gefilterten Umgebung
+// der eine Aufruf des Runners, rein: über ssh der ferne Login (keine env-Angabe), lokal `sh` mit der gefilterten Umgebung.
+// LOKAL OHNE TERMINAL: der Server läuft in einer tmux-Pane, hat also eins. `ci/merge-check-run.sh#run` legt jeden Job
+// per `timeout` in eine Hintergrund-Prozessgruppe; fasst darin etwas das Terminal an, hält der Kernel den Job an
+// (Zustand T), bis das Limit ihn tötet — höhere Limits helfen darum nicht (28.10. gemessen: `bun test
+// server/agenten-tuer.test.ts` in einer tmux-Pane unter `timeout` steht nach 1 s auf T, ohne Terminal in 7 s grün).
+// `setsid -w` gibt dem Lauf eine eigene Sitzung ohne kontrollierendes Terminal und wartet selbst auf sein Ende;
+// ohne `-w` käme der Aufruf sofort zurück und das Urteil fehlte. Auf darwin gibt es kein setsid und es braucht dort
+// keins, die Läufe kommen dort ohne Terminal. Der Runner-Text geht weiter über stdin, die Umgebung bleibt, `--` und
+// die Argumente dahinter bleiben, wo sie waren; die Plattform ist ein Parameter, damit die Prüfung nicht an die
+// Maschine gebunden ist, auf der sie läuft.
 export function helperRun(helper: Helper, sha: string, big: readonly string[],
-  env: Record<string, string | undefined> = process.env): { argv: string[]; env?: Record<string, string> } {
-  return helper.kind === "ssh"
-    ? { argv: ["ssh", helper.host, "sh", "-s", "--", sha, bigUnitsArg(big)] }
-    : { argv: ["sh", "-s", "--", sha, bigUnitsArg(big)], env: helperEnv(env) };
+  env: Record<string, string | undefined> = process.env,
+  platform: string = process.platform): { argv: string[]; env?: Record<string, string> } {
+  if (helper.kind === "ssh") return { argv: ["ssh", helper.host, "sh", "-s", "--", sha, bigUnitsArg(big)] };
+  const sh = ["sh", "-s", "--", sha, bigUnitsArg(big)];
+  return { argv: platform === "linux" ? ["setsid", "-w", ...sh] : sh, env: helperEnv(env) };
 }
 
 export async function runOnHelper(helper: Helper, sha: string, big: readonly string[],
-  runner = RUNNER, cwd = REPO_DIR): Promise<{ exit: number; out: string }> {
-  const call = helperRun(helper, sha, big);
+  runner = RUNNER, cwd = REPO_DIR, platform = process.platform): Promise<{ exit: number; out: string }> {
+  const call = helperRun(helper, sha, big, process.env, platform);
   const p = Bun.spawn(call.argv, { stdin: Bun.file(runner), stdout: "pipe", stderr: "inherit", cwd,
     ...(call.env ? { env: call.env } : {}) });
   let out = "";

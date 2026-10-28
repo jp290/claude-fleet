@@ -974,7 +974,10 @@ export interface BranchSeenView { at: number; head: string; via: "cookie" | "bea
 // null where the repo has no ci/merge-check.ts (a charge there needs the explicit „ohne Merge-Check“).
 // `form` says how a charge landed (K16): "squash" one commit, "commits" main fast-forwarded to the
 // merge check's candidate; `landForm` on the branch is how the next one lands when the board does not say.
-export interface BranchLandView { sha: string; at: number; subject: string; points: string[]; passt: boolean; checked: boolean; form: "squash" | "commits" }
+// `zusage` on a land says it stood on the owner's standing word for the repo (server/land-zusage.ts) instead of
+// a „[Zitat entfernt]“ at exactly that tip — then `passt` is false.
+export interface BranchLandView { sha: string; at: number; subject: string; points: string[]; passt: boolean; checked: boolean; form: "squash" | "commits";
+  zusage?: boolean }
 export interface BranchCheckView { state: "none" | "running" | "green" | "red" | "stale" | "uncheckable"; at: number | null; why: string | null }
 export interface BranchView {
   branch: string; name: string; base: string | null; head: string;
@@ -984,12 +987,18 @@ export interface BranchView {
   lands: BranchLandView[]; landForm: "squash" | "commits"; chargeBase: string | null; chargeCommits: number | null; check: BranchCheckView | null;
 }
 export interface BranchOtherView { branch: string; head: string; at: number; path: string | null }
+// The owner's standing word for a repo (server/land-zusage.ts, Owner 28.10.: „[Zitat entfernt]“):
+// `on` lets a session land after its green check without a „passt“ on every tip. Only the owner's door sets it
+// (POST /api/branches/zusage), it is off by default, and the check and the audit after a land stay as they are.
+export interface ZusageView { on: boolean; at: number | null }
 export interface BranchesRepoView {
   // integration: the branch charges land on (main), null when the repo has none readable
   repo: string; integration: string | null; branches: BranchView[]; others: BranchOtherView[]; othersTotal: number; reasons: FactReason[];
   // how this repo checks a charge (server/pruefbefehl.ts): its own ci/merge-check.ts, the owner's check command, or none yet —
   // and a command a session proposed, which runs only once the owner takes it
   checkCommand?: RepoCheckView;
+  // the owner's standing word for this repo: whether it stands, and since when
+  zusage?: ZusageView;
 }
 export interface RepoCheckView { way: "merge-check" | "command" | "none"; cmd: string | null; by: string | null; at: number | null;
   proposal: { cmd: string; by: string; at: number } | null }

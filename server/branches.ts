@@ -22,10 +22,14 @@ export type SeenVia = "cookie" | "bearer" | "query";
 export interface BranchSeen { at: number; head: string; via: SeenVia }
 // Eine Charge auf main: genau ein Commit `sha`, gebaut aus den Commits base..tip des Branches. Die
 // nächste Charge zählt ab `tip` (chargeBase). `points` sind die Punkte, die diese Charge erledigt hat;
-// `passt` sagt, ob der Owner genau diesen Tip gesehen hatte; `checked`, ob ein Merge-Check ihn prüfte.
+// `passt` sagt, ob der Owner genau diesen Tip gesehen hatte; `zusage` sagt, ob sie stattdessen auf der
+// stehenden Zusage des Repos stand (server/land-zusage.ts) — dann ist `passt` false; `checked`, ob ein
+// Merge-Check ihn prüfte.
 // `form` "commits": main sprang auf den Kandidaten des Merge-Checks, `sha` ist dessen Spitze; fehlt = ein Commit.
 export type LandForm = "squash" | "commits";
 export interface BranchLand { sha: string; at: number; tip: string; base: string; subject: string; points: string[]; passt: boolean; checked: boolean;
+  // das Land stand auf der stehenden Zusage des Owners für dieses Repo, nicht auf einem „[Zitat entfernt]“ dieser Spitze
+  zusage?: true;
   // der Land lief auf einem ROTEN main, weil der Branch es belegt behebt (ci/repair-proof.ts,
   // server/branch-land.ts): der Grund steht im Merge-Check und in der Land-Zeile, damit man später
   // sieht, welche Länder trotz rotem main liefen. Fehlt das Feld, war main nicht rot.
@@ -180,13 +184,16 @@ export function recordLand(book: BranchBook, repo: string, branch: string, land:
 // Betreff), damit die Herkunft lesbar bleibt, und ob der Owner diesen Stand gesehen hatte.
 // `english`: der main eines fremden Repos liest englisch (Brief fremdes-repo-rund, Punkt 6) — Fleets eigener behält seine Sprache
 export function chargeMessage(subject: string, o: { branch: string; tip: string; commits: readonly { sha: string; subject: string }[];
-  passt: boolean; checked: boolean; english?: boolean }): string {
+  passt: boolean; zusage?: boolean; checked: boolean; english?: boolean }): string {
   const lines = o.commits.map((c) => `- ${c.sha.slice(0, 8)} ${c.subject}`);
   const tip = o.tip.slice(0, 8);
   if (o.english) return [subject.trim(), "", `Batch from ${o.branch} up to ${tip}${o.checked ? "" : " (without a check)"}:`, ...lines, "",
-    o.passt ? `Looked at and marked “looks good” at ${tip}.` : "Not marked “looks good”."].join("\n");
+    o.passt ? `Looked at and marked “looks good” at ${tip}.`
+      : o.zusage ? `Landed on the owner's standing word for this repo, not on a “looks good” at ${tip}.` : "Not marked “looks good”."].join("\n");
   return [subject.trim(), "", `Charge aus ${o.branch} bis ${tip}${o.checked ? "" : " (ohne Merge-Check)"}:`, ...lines, "",
-    o.passt ? `Owner hat diesen Stand gesehen: passt (${tip}).` : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
+    o.passt ? `Owner hat diesen Stand gesehen: passt (${tip}).`
+      : o.zusage ? `Owner hat für dieses Repo zugesagt: das Land steht auf der stehenden Zusage, nicht auf einem „passt“ dieser Spitze (${tip}).`
+      : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
 }
 // Ist die jüngste Merge-Check-Zeile dieses Branches eine, auf die eine Charge bauen darf? Sie muss
 // genau diesen Tip gegen genau diese Basis prüfen, mergebar sein und den main von jetzt kennen. Ihre
@@ -268,9 +275,9 @@ function landsOf(v: unknown): BranchLand[] {
     const l = x as Record<string, unknown>;
     return str(l.sha) && SHA_RE.test(l.sha) && num(l.at) && str(l.tip) && SHA_RE.test(l.tip) && str(l.base) && str(l.subject)
       && Array.isArray(l.points) && l.points.every(str) && typeof l.passt === "boolean" && typeof l.checked === "boolean"
-      && (l.form === undefined || isLandForm(l.form))
+      && (l.form === undefined || isLandForm(l.form)) && (l.zusage === undefined || typeof l.zusage === "boolean")
       ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked,
-        ...(l.form ? { form: l.form } : {}) }] : [];
+        ...(l.zusage === true ? { zusage: true as const } : {}), ...(l.form ? { form: l.form } : {}) }] : [];
   });
 }
 // ein Öffner kommt ganz oder gar nicht; ein kaputter nimmt den Datensatz nicht mit

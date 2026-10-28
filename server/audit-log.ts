@@ -202,6 +202,12 @@ type AuditEvent =
   // never asked about. The ordinary land carries no flag and is refused, so an absent row here means
   // no override happened, not that one was unrecorded.
   | "land_rejected_report_override"
+  // the owner gave or took back his STANDING WORD for a repo (POST /api/branches/zusage,
+  // server/land-zusage.ts): from then on a session lands after its green check without a „[Zitat entfernt]“ on
+  // every tip. Detail names the repo and `zusage=true|false`, the same pair the state file holds —
+  // the trail is what says WHEN it stood, which the state's `at` alone cannot answer for a repo
+  // whose word was taken back and given again.
+  | "land_zusage"
   | "slot_shelve"
   // the board editor wrote a file into a session's working directory. This server's only
   // owner-driven write to a path outside its own state files, so it is on the trail by the same

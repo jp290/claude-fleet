@@ -123,12 +123,16 @@ export function branchCharge(repo: string, b: BranchView): HTMLElement {
 // „PASST“ AS A BUTTON (owner Z132, 18.10.: „[Zitat entfernt]“; Mangel 121): the owner
 // marks the tip he looked at — POST /api/branches/seen with the tip this view read. The line says which tip that is,
 // and a commit after it asks again; on the tip he marked, the session lands the branch itself (/api/self/branches/land)
+// THE STANDING WORD (owner 28.10.: „[Zitat entfernt]“) stands beside it: one word for the repo,
+// and a session lands after its green check without a „passt“ on every tip — POST /api/branches/zusage, owner only.
 export function lookedLine(repo: string, b: BranchView, repaint: () => void): HTMLElement {
   injectCss();
   const key = keyOf(repo, b.branch);
   const tip = sha7(b.head), at = b.seen?.head ?? null;
+  const zusage = boardRepo(repo)?.zusage?.on === true;
   const line = el("div", "zd brc-seen");
   line.dataset.seen = at === b.head ? "tip" : at ? "older" : "none";
+  line.dataset.zusage = zusage ? "on" : "off";
   // WHAT HAPPENS AFTER „LOOKS GOOD“, said as it is (brief fremdes-repo-rund, point 1): the session lands only after a green
   // check (server/branch-land.ts), so a repo without a check command gets the owner's own land, behind a question
   const way = boardRepo(repo)?.checkCommand?.way ?? (b.check ? "merge-check" : "none");
@@ -155,8 +159,41 @@ export function lookedLine(repo: string, b: BranchView, repaint: () => void): HT
     r.appendChild(btn);
     line.appendChild(r);
   }
+  // THE STANDING WORD: on, it says what it does — every tip may land after its green check; off, one click sets it
+  if (zusage) {
+    const r = el("span", "r");
+    r.appendChild(el("span", "tx", `Standing word on — a session lands after its green check without „Looks good“ on each tip`));
+    const off = el("button", "rk-btn quiet", "Take it back") as HTMLButtonElement;
+    off.type = "button";
+    off.title = `Withdraw the standing word for ${repo}: a session needs „Looks good“ on the tip again`;
+    off.disabled = busy.has(key);
+    off.onclick = (e) => { e.stopPropagation(); void setStandingWord(repo, false, b, repaint); };
+    r.appendChild(off);
+    line.appendChild(r);
+  } else {
+    const r = el("span", "r");
+    const btn = el("button", "rk-btn quiet", "Standing word") as HTMLButtonElement;
+    btn.type = "button";
+    btn.title = `Say it once for ${repo}: from then on a session lands after its green check without „Looks good“ on each tip`;
+    btn.disabled = busy.has(key);
+    btn.onclick = (e) => { e.stopPropagation(); void setStandingWord(repo, true, b, repaint); };
+    r.appendChild(btn);
+    line.appendChild(r);
+  }
   line.append(...said(key));
   return line;
+}
+// the owner's standing word for the whole repo — POST /api/branches/zusage; nothing else changes, the green check stays
+async function setStandingWord(repo: string, on: boolean, b: BranchView, repaint: () => void): Promise<void> {
+  const key = keyOf(repo, b.branch);
+  busy.add(key);
+  errs.delete(key);
+  repaint();
+  const r = await post("/api/branches/zusage", { repo, zusage: on }).catch(() => null);
+  const j = (await r?.json().catch(() => null)) as { error?: string } | null;
+  busy.delete(key);
+  if (!r?.ok) errs.set(key, `The standing word was not ${on ? "set" : "withdrawn"}: ${j?.error ?? (r ? `answer ${r.status}` : "the server was not reachable")}`);
+  loadBranches(true, repaint);
 }
 async function markLooked(repo: string, b: BranchView, repaint: () => void): Promise<void> {
   const key = keyOf(repo, b.branch), head = b.head;

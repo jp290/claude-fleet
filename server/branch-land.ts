@@ -1,7 +1,7 @@
 // Neuaufbau K5 S3 + rechts-7 Punkt 5 · DAS LAND EINER CHARGE, ein Kern für zwei Türen. Die Owner-Tür
 // POST /api/branches/land und die Self-Tür POST /api/self/branches/land (Owner Z132, 18.10.: „[Zitat entfernt]“; Z87: „[Zitat entfernt]“)
 // prüfen dasselbe und bewegen main auf demselben Weg. Die Self-Tür verlangt dazu das „passt“ des Owners auf
-// genau dieser Spitze und einen brauchbaren Merge-Check; „ohne Merge-Check“ gibt es nur an der Owner-Tür.
+// genau dieser Spitze ODER seine stehende Zusage für das Repo (server/land-zusage.ts, Owner 28.10.: „[Zitat entfernt]“) und einen brauchbaren Merge-Check; „[Zitat entfernt]“ gibt es nur an der Owner-Tür.
 //
 // Die Commits seit der letzten Charge werden EIN Commit auf dem Integrationszweig, mit dem Betreff aus der
 // Rückfrage. Sein Baum ist der Kandidat des Merge-Checks (oder, ohne Merge-Check und nur mit unchecked, derselbe
@@ -30,13 +30,16 @@ export interface LandDeps {
   afterLand(repo: string, main: string, branch: string, sha: string): Promise<void>;
   // repos with a charge in flight: one at a time per repo
   landing: Set<string>;
+  // the owner's standing word for this repo (server/land-zusage.ts): at the session's door it does what „[Zitat entfernt]“ on
+  // this very tip does. It never replaces the green check below and never touches the owner's door.
+  zusage(repo: string): boolean;
   // the answer's word on a deploy, where the server runs from this repo
   deployNote(repo: string): string | null;
   // a repo that is not Fleet's own gets its charge commit in English (chargeMessage)
   english(repo: string): Promise<boolean>;
 }
 export interface LandAsk { repo: string; branch: string; subject: string; unchecked: boolean; squash: boolean | undefined;
-  // the session's own door: „passt“ on this very tip and a merge check, or no land
+  // the session's own door: „passt“ on this very tip (or the repo's standing word) and a merge check, or no land
   own: boolean }
 export interface LandAnswer { status: number; body: Record<string, unknown> }
 
@@ -48,6 +51,15 @@ export async function chargeRewritten(gitRead: LandDeps["gitRead"], repo: string
 }
 
 const refuse = (status: number, error: string): LandAnswer => ({ status, body: { error } });
+// was ein Sitz hört, wenn weder ein „passt“ auf dieser Spitze noch die stehende Zusage des Repos da ist. Der Satz
+// nennt BEIDE Wege — die Markierung der Spitze und die Zusage des Repos —, damit niemand rätselt, wo das Wort herkommt.
+export const NOT_SEEN = "er markiert diese Spitze (POST /api/branches/seen { repo, branch, head }) oder setzt für das Repo die "
+  + "stehende Zusage (POST /api/branches/zusage { repo, zusage: true })";
+export const notSeen = (r: BranchRecord, tip: string): string =>
+  `${
+    r.seen ? `„passt“ gilt ${r.seen.head.slice(0, 8)}, die Spitze ist ${tip.slice(0, 8)} — der Owner hat sie noch nicht gesehen`
+      : `noch kein „passt“ auf ${tip.slice(0, 8)} — der Owner hat diesen Stand noch nicht gesehen`
+  }; ${NOT_SEEN}`;
 // what a session in a repo without a check hears: the way to one (server/pruefbefehl.ts), and that the owner may land without
 export const NO_CHECK_OWN = "this repo has no check command, and a session lands its branch only after a green check — propose one with "
   + "POST /api/self/repo-check { cmd } (the owner takes it on the board), or the owner lands it without a check";
@@ -65,10 +77,11 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
     if (tipR.code !== 0 || mainR.code !== 0) return refuse(400, "branch or integration branch unreadable");
     const tip = tipR.out, mainSha = mainR.out;
     if (await chargeRewritten(d.gitRead, repo, record, tip)) return refuse(409, CHARGE_REWRITTEN);
-    // THE SESSION'S OWN LAND waits for the owner's eye on exactly this tip (Mangel 121): a commit after „[Zitat entfernt]“ is unseen
-    if (a.own && record.seen?.head !== tip)
-      return refuse(409, record.seen ? `„passt“ gilt ${record.seen.head.slice(0, 8)}, die Spitze ist ${tip.slice(0, 8)} — der Owner hat sie noch nicht gesehen`
-        : `noch kein „passt“ auf ${tip.slice(0, 8)} — der Owner hat diesen Stand noch nicht gesehen`);
+    // THE SESSION'S OWN LAND: the owner's eye on exactly this tip (Mangel 121) or his standing word for the repo
+    // (28.10.). Without either, a commit after „[Zitat entfernt]“ stays unseen and the refusal names both ways.
+    const passt = record.seen?.head === tip;
+    const zusage = d.zusage(repo);
+    if (a.own && !passt && !zusage) return refuse(409, notSeen(record, tip));
     const base = chargeBase(record, main);
     if (!base) return refuse(400, "cannot resolve the charge's base");
     const checked = d.hasMergeCheck(repo);
@@ -93,24 +106,25 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
       if ("conflict" in built) return refuse(409, built.conflict);
       tree = built.tree;
     }
-    const passt = record.seen?.head === tip;
+    const aufZusage = a.own && !passt && zusage;
     let sha: string;
     if (form === "commits" && use) sha = use.row.candidate;
     else {
-      const commit = await d.git(repo, "commit-tree", tree, "-p", mainSha, "-m", chargeMessage(subject, { branch, tip, commits, passt, checked,
-        english: await d.english(repo) }));
+      const commit = await d.git(repo, "commit-tree", tree, "-p", mainSha, "-m", chargeMessage(subject, { branch, tip, commits, passt,
+        zusage: aufZusage, checked, english: await d.english(repo) }));
       if (commit.code !== 0 || !commit.out) return refuse(409, `commit-tree: ${commit.err.slice(0, 200)}`);
       sha = commit.out;
     }
     const moved = await d.advanceIntegration(repo, main, sha);
     if (moved) return refuse(409, `main wurde nicht bewegt: ${moved.error}`);
     const landed = recordLand(d.book(), repo, branch, { sha, at: Date.now(), tip, base, subject, points: doneSinceLastLand(record), passt, checked, form,
+      ...(aufZusage ? { zusage: true as const } : {}),
       ...(use?.row.repair === true ? { repair: true as const } : {}) });
     if (landed.ok) d.setBook(landed.book);
     await d.saveStateNow();
     await d.afterLand(repo, main, branch, sha);
     const deploy = d.deployNote(repo);
-    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, checked, form, ...(use?.row.repair === true ? { repair: true } : {}), ...(deploy ? { deploy } : {}) } };
+    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, zusage: aufZusage, checked, form, ...(use?.row.repair === true ? { repair: true } : {}), ...(deploy ? { deploy } : {}) } };
   } finally {
     d.landing.delete(repo);
   }

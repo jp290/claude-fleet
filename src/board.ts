@@ -4331,7 +4331,7 @@ function gsPanel(R: WorkplaceRepo, m: GsModel, key: string, word: GsWord | null,
     if (remote) said.push(remote);
   } else if (at === "branch-check") {
     said.push(!bb ? "Not a board branch — it has no merge check"
-      : item?.merged ? `Landed ${bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
+      : item?.merged ? `Landed ${bb.lands.at(-1)?.zusage ? "on your standing word" : bb.lands.at(-1)?.checked ? "with a green merge check" : "without a merge check"} · “${bb.lands.at(-1)?.subject ?? ""}”` : mergeCheckLine(bb.check));
   } else if (at !== "lane-check") {
     if (s) {
       const b = el("button", "gsfact", `Slot ${s.id} · ${s.vertrauen ? "Claude Code asks whether you trust this folder — answer in the terminal"

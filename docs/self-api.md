@@ -974,6 +974,12 @@ curl -X POST http://<fleet-host>:<port>/api/self/branches/land -H "x-fleet-self-
 - Gelandet wird nur, wenn das „passt“ auf genau der Spitze von jetzt steht (sonst 409 mit der Spitze, auf die es zielt)
   und ein brauchbarer Merge-Check vorliegt (`bun ci/merge-check.ts <branch> --base <chargeBase>`; sonst 409 mit dem Grund).
   `squash` wie an der Owner-Tür; „[Zitat entfernt]“ gibt es hier nicht.
+- **Statt des „passt“ auf jeder Spitze steht die ZUSAGE des Repos** (28.10.): `POST /api/branches/zusage {"repo": "<pfad>", "zusage": true}` an der Owner-Tür setzt EIN stehendes Wort
+  für das Repo, `{"zusage": false}` nimmt es zurück. Sie ist standardmäßig aus, liegt in `fleet.json` unter
+  `landZusagen` (überlebt den Neustart) und ersetzt nur das „passt“ auf der Spitze — nie den grünen Merge-Check, nie
+  den Audit nach dem Land, und die Owner-Tür prüft sie nicht. `GET /api/self/branch` und `GET /api/branches` zeigen
+  `zusage: {on, at}`; ein Land, das auf ihr stand, antwortet `zusage: true` und trägt `zusage: true` an seiner
+  Land-Zeile (`passt` ist dann false). Ohne beides nennt der 409 beide Wege: Spitze markieren oder Zusage setzen.
 - Derselbe Kern wie `POST /api/branches/land` (server/branch-land.ts). Die Antwort sagt `deploy`, wenn der Server aus
   diesem Repo läuft — deployen tut weiter der Owner bzw. die Bauleitung.
 

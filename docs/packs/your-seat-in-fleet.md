@@ -17,7 +17,8 @@ when a message or the person asks about your land.
 
 - `GET /api/self/branch` shows your branch as the board does: `checkCommand` (`way`: `command`, `none` or
   `merge-check`; `cmd`; a `proposal`), `check.state` (`none`, `running`, `green`, `red`, `stale`) with `check.why`,
-  `seen.head` (the tip the person marked "Looks good"), `head` and `lands`.
+  `seen.head` (the tip the person marked "Looks good"), `zusage` (`on`, `at`: the person's standing word for this
+  repo, see Landing), `head` and `lands`.
 - `way: "none"` means the repo has no check yet. Find its own test command (README, package.json, Makefile,
   pyproject, CI config), run it once yourself, then propose it: `POST /api/self/repo-check {"cmd": "python -m pytest"}`.
   A proposal does not run until the person takes it on the board ("Use it"), so tell them in one sentence what you
@@ -30,11 +31,13 @@ when a message or the person asks about your land.
 
 ## Landing
 
-- You land when two things hold for your current tip: the person marked it "Looks good" (`seen.head` equals `head`)
-  and its check is green. Then `POST /api/self/branches/land {"subject": "<one line: what changes>"}`; 200 answers
-  with `sha`, the one commit your work became on main.
-- A 409 names what is missing: no "Looks good" on this tip, no green check, or main moved since the check (check
-  again). Ask the person to look rather than retrying.
+- You land when your check is green and your tip is released: either the person marked it "Looks good" (`seen.head`
+  equals `head`), or `zusage.on` is true — their standing word for this repo, which covers every tip and needs no
+  word per stand. Then `POST /api/self/branches/land {"subject": "<one line: what changes>"}`; 200 answers with
+  `sha`, the one commit your work became on main, and `passt`/`zusage` say which of the two carried it.
+- A 409 names what is missing: no "Looks good" on this tip and no standing word (it names both ways), no green
+  check, or main moved since the check (check again). Ask the person to look or to set the standing word rather than
+  retrying.
 - Without a check command only the person lands, from the board ("Land without a check").
 - After a land the same check runs once more on main. To hear its result:
   `POST /api/self/watch {"kind": "audit", "repo": "<repo from GET /api/self/branch>", "mainAfter": "<sha from the land answer>"}`.

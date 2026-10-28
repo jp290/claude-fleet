@@ -239,6 +239,7 @@ import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type Br
   dropBranch, findBranch, isLandForm, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
+import { readZusagen, setZusage, zusageOn, zusageView, type LandZusagen } from "./server/land-zusage";
 import { agentDirOf, paneVars, readLoginEnv, removeEnvFile, writeEnvFile } from "./server/login-umgebung";
 import { checkCmdProblem, confirmedCheck, OWN_MERGE_CHECK, proposeCheck, readRepoChecks, repoCheckView, setCheck, type RepoChecks } from "./server/pruefbefehl";
 import { endLandedBranches, endParkedInstances, heldBy, type BranchEnd, type EndDeps, type EndHolds, type Instance } from "./server/branch-ende";
@@ -4884,6 +4885,10 @@ unknown, a row without provenance stays unknown, coverage=incomplete is not abse
 let repoWorkers: Record<string, Record<string, string>> = {};
 // a repo's check command (server/pruefbefehl.ts): its merge check, land gate and audit where it has no ci/merge-check.ts
 let repoChecks: RepoChecks = {};
+// the owner's STANDING WORD per repo (server/land-zusage.ts, Owner 28.10.: „[Zitat entfernt]“):
+// at the session's own land door it does what „passt“ on exactly this tip does. Off unless the owner says it, and
+// only his door sets it. The green check, the audit after the land and the owner's door are untouched by it.
+let landZusagen: LandZusagen = {};
 // Only names that something actually CONSULTS may be stored. A route that accepted any
 // WorkerName would let the owner configure a worker nothing reads and see it echoed back — a
 // setting that looks applied and does nothing, which is worse than a 400.
@@ -6333,7 +6338,8 @@ function stateSnapshot(): string {
     ...(blockerObservedAt.size ? { blockerObservedAt: Object.fromEntries(blockerObservedAt) } : {}),
     auditPings, comments: shareComments, dispatch: dispatchOn, autosOn, quietHours, merges: Object.fromEntries(mergeLast),
     mergeParked: Object.fromEntries(mergeParked),
-    repoBases, repoWorkers, ...(Object.keys(repoChecks).length ? { repoChecks } : {}), repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(kantenBook.length ? { kanten: kantenGestutzt(kantenBook, Date.now()) } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
+    repoBases, repoWorkers, ...(Object.keys(repoChecks).length ? { repoChecks } : {}),
+    ...(Object.keys(landZusagen).length ? { landZusagen } : {}), repoLaneCaps, shelved, ...retiredCandidateState, ...(Object.keys(worktreeNotes).length ? { worktreeNotes } : {}), ...(branchBook.length ? { branches: branchBook } : {}), ...(kantenBook.length ? { kanten: kantenGestutzt(kantenBook, Date.now()) } : {}), ...(notesAdoptedAt !== null ? { branchNotesAdoptedAt: notesAdoptedAt } : {}),
     landPending: Object.fromEntries(landPending), mainDirectPreflights,
     // the stall sensor's clock (tickStallSensor) — only once it ever ran, so a state file of a
     // fleet that never stood stuck carries no new key
@@ -8646,7 +8652,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     listWorktrees(repo), integrationBranch(repo)]);
   if (refsRead.code !== 0)
     return { repo, integration, branches: [], others: [], othersTotal: 0, reasons: [{ field: "branches", reason: "branch-refs-unreadable" }],
-      checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)) };
+      checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)), zusage: zusageView(landZusagen, repo) };
   const refs: BranchRef[] = refsRead.out.split("\n").flatMap((line) => {
     const [ref, head, at] = line.split("\0");
     return ref?.startsWith("refs/heads/") && head && at ? [{ branch: ref.slice("refs/heads/".length), head, at: Number(at) * 1000 }] : [];
@@ -8667,13 +8673,13 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
     return { branch: record.branch, name: record.name, base, head: ref.head, text: record.text, rev: record.rev,
       seen: record.seen, path, session: holder ? { slot: holder.slot, openedAt: holder.openedAt } : null,
       distance: m ? { ahead: Number(m[2]), behind: Number(m[1]) } : null,
-      lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, checked: l.checked,
-        form: l.form ?? "squash" })),
+      lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, zusage: l.zusage === true,
+        checked: l.checked, form: l.form ?? "squash" })),
       landForm: record.landForm ?? "squash", chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
       check: await chargeCheckView(repo, record, ref.head, cb) };
   }));
   return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons,
-    checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)) };
+    checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)), zusage: zusageView(landZusagen, repo) };
 }
 async function branchesView(): Promise<BranchesView> {
   return { repos: await Promise.all((await branchRepos()).map((repo) => branchesOfRepo(repo))) };
@@ -9286,6 +9292,8 @@ const branchLandDeps: LandDeps = {
     void tickGit().catch(() => {});
   },
   landing: branchLanding,
+  // the owner's standing word for this repo, as the land door reads it (server/land-zusage.ts)
+  zusage: (repo) => zusageOn(landZusagen, repo),
   deployNote: (repo) => (FLEET_REPO_ROOT && repoCanon(FLEET_REPO_ROOT) === repo ? "nötig — der Server fährt den neuen Stand erst nach einem Deploy" : null),
   english: async (repo) => (await fleetBaumVon(repo)) === null,
 };
@@ -47330,6 +47338,10 @@ if (existsSync(file)) {
     const rc = readRepoChecks((persisted as { repoChecks?: unknown }).repoChecks);
     repoChecks = rc.checks;
     for (const repo of rc.dropped) console.warn(`[check] fleet.json: the check command for ${repo} is unreadable — dropped`);
+    // …and the owner's standing word per repo, re-validated the same way — a broken entry is named and inert
+    const lz = readZusagen((persisted as { landZusagen?: unknown }).landZusagen);
+    landZusagen = lz.zusagen;
+    for (const repo of lz.dropped) console.warn(`[land] fleet.json: the standing word for ${repo} is unreadable — dropped`);
     const prw = (persisted as { repoWorkers?: unknown }).repoWorkers;
     if (typeof prw === "object" && prw !== null && !Array.isArray(prw))
       for (const [repo, v] of Object.entries(prw as Record<string, unknown>)) {
@@ -52307,7 +52319,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const view = await branchesOfRepo(own.repo);
       const b = view.branches.find((x) => x.branch === own.branch);
       if (!b) return json({ error: `${own.branch} is no board branch` }, 404);
-      return json({ repo: own.repo, integration: view.integration, checkCommand: view.checkCommand, branch: b.branch, name: b.name, head: b.head,
+      return json({ repo: own.repo, integration: view.integration, checkCommand: view.checkCommand, zusage: view.zusage,
+        branch: b.branch, name: b.name, head: b.head,
         seen: b.seen, check: b.check, chargeCommits: b.chargeCommits, landForm: b.landForm, lands: b.lands });
     }
 
@@ -54502,6 +54515,23 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (url.pathname === "/api/branches" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "branches accepts no selectors" }, 400);
       return json(await branchesView());
+    }
+    // THE OWNER'S STANDING WORD FOR A REPO (Owner 28.10.: „[Zitat entfernt]“;
+    // „[Zitat entfernt]“): at the session's own land door it does what „[Zitat entfernt]“ on exactly this
+    // tip does, so a session lands after its green check without a per-tip word. OWNER-ONLY BY POSITION, like
+    // /api/branches/seen: this is the owner's word, and no self token reaches it. { repo, zusage } — `false` takes the
+    // entry out again; the green check, the audit after the land and the owner's own door stay exactly as they are.
+    if (url.pathname === "/api/branches/zusage" && req.method === "POST") {
+      const body = await readJson(req);
+      if (!body || typeof body.repo !== "string" || typeof body.zusage !== "boolean")
+        return json({ error: "expected { repo, zusage: true | false }" }, 400);
+      const ro = await branchRepoOf(body.repo);
+      if (!ro.ok) return json({ error: ro.error }, 400);
+      landZusagen = setZusage(landZusagen, ro.repo, body.zusage, Date.now());
+      await saveStateNow();
+      audit("land_zusage", undefined, `${ro.repo} zusage=${body.zusage}`);
+      workplacesCache = null;
+      return json({ ok: true, repo: ro.repo, zusage: zusageView(landZusagen, ro.repo) });
     }
     // open a branch on the board: a NEW one (no `branch`: a name derived from `name`; or a free
     // `branch` name), or an EXISTING one — checked out into a worktree if it has none. A name another

@@ -642,6 +642,10 @@ const dangerous = (slot: number): Probe[] => [
   { path: "/api/branches", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/note", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/seen", method: "POST", body: {}, owner: 400 },
+  // the owner's STANDING WORD for a repo (Owner 28.10.: „[Zitat entfernt]“): it lets a
+  // session land after its green check without a „[Zitat entfernt]“ on every tip, so a scoped credential that could set it
+  // would hand itself the owner's gate. An empty body answers the owner a side-effect-free 400 (no entry written).
+  { path: "/api/branches/zusage", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/diff", method: "GET", owner: 400 },
   { path: "/api/branches/open", method: "POST", body: {}, owner: 400 },
   { path: "/api/branches/check", method: "POST", body: {}, owner: 400 },

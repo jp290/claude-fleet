@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { rechteZeilen } from "../server/tuer-rechte";
+import { rechteSatz } from "../server/rechte";
 
 export interface K15StartDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 class K15VerdictIn extends Error {
@@ -880,9 +881,15 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await briefZu();
         const h = fassungDerVorschau(mit("lesen"));
         const s = await sfStart();
-        facts.rechte = { stufe, gelesen, satz, posts: s, expect: h };
+        // DER SATZ DER GEWÄHLTEN STUFE STEHT IM AUFGEKLAPPTEN BLOCK (main rot am 28.10., „[Zitat entfernt]“): der Startbrief zeigt den
+        // Rechte-Block nur, wenn der „[Zitat entfernt]“-Satz sich von dem ohne Wahl unterscheidet (src/start-brief.ts), und dieser Satz kommt aus
+        // server/tuer-rechte.ts#rechteZeilen. Eine Fassung, die die Stufe nicht nennt, trägt denselben Satz wie ohne Wahl, kein Block
+        // erscheint, und „Looks only“ wäre im Brief unsichtbar. Darum muss der Block den Satz von „lesen“ selbst tragen.
+        const stufeSatz = rechteSatz({ stufe: "lesen", an: [], aus: [] });
+        facts.rechte = { stufe, gelesen, satz, stufeSatz, posts: s, expect: h };
         verdicts[C.rechte] = stufe === "Builds" && gelesen.bauen && gelesen.lesen && satz?.zeichen === "+"
           && satz.text.startsWith("FLEET SERVER RIGHTS (checked at Fleet's doors):") && satz.text.includes("seat.open — open a seat")
+          && satz.text.includes(stufeSatz)
           && h !== null && s.length === 1 && canon(s[0]!.body) === canon({ cwd: REPO, fassung: h, rechte: { stufe: "lesen", an: [], aus: [] } });
       });
 

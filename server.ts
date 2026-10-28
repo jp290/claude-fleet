@@ -21858,7 +21858,9 @@ const fassungNeueListRolle = (rolle: FassungRolle, harness: string): SessionSpaw
   spawnListRole({ claude: harnessFamilie(harness) === "claude", lane: rolle === "lane", orchestrator: rolle === "orchestrator", boundMain: false });
 
 async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; modell: string | null; effort: string | null;
-  repoRoot: string; claudeCode?: unknown }): Promise<Fassung> {
+  repoRoot: string; claudeCode?: unknown;
+  /** die Rechte dieser Wahl (aus der Adresse der Vorschau, wie die Tür sie liest); null = ohne Wahl, der Satz bleibt der der Rolle */
+  rechte?: Rechte | null }): Promise<Fassung> {
   const claude = harnessFamilie(o.harness) === "claude";
   // a seat in Fleet's repo, as ensureSlot decides it (fleetBaumVon), and a seat in its own setup outside it
   const fleetBaum = claude ? await fleetBaumVon(o.repoRoot) : null;
@@ -21892,9 +21894,10 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
         : "kein eigenes Profil gesetzt — die Session startet ohne Agent-MD"),
     ]),
     // Ein neuer Plan ist noch kein Sitz: gezeigt wird das Rollenbundel, das seine Rolle beim Start trägt, plus
-    // die Zaun-Zeile für seinen Harness. Zusagen des Owners erscheinen erst am laufenden Sitz.
+    // die Zaun-Zeile für seinen Harness. Zusagen des Owners erscheinen erst am laufenden Sitz — die vier Schalter
+    // einer Wahl gelten aber schon für diesen Start, darum nennt sie der Satz wie bei fassungFuerSlot (Owner 28.10.).
     darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
-        rechteZeilen(null, [o.rolle === "program-main" ? "program-main" : o.rolle === "orchestrator" ? "orchestrator"
+        rechteZeilen(o.rechte ?? null, [o.rolle === "program-main" ? "program-main" : o.rolle === "orchestrator" ? "orchestrator"
           : o.rolle === "lane" ? "lane" : "generic"], o.harness).join("\n"), true), ...fleet.darf, ...umfeld.darf],
     arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, steward: false, eigen: null,
       wahl: fleetChoiceOf(art), warmFleet: art === "orchestrator" || art === "program-main", eigenesSetup: eigen }), ...umfeld.arbeitet],
@@ -43751,8 +43754,12 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       if (!wd.ok) return refuse(wd.error);
       fassung = { ...await fassungDerOeffnung(freierSlotFuerVorschau(), { ...eingang, weglassen: wd.wahl }), anlass: "neu" };
     } else {
+      // was die Öffnung außer dem Plan noch liest, gilt auch hier: `rechte` kommt aus derselben Adresse wie im Zweig oben,
+      // und die Vorschau eines Lane- oder MAIN-Starts muss der Start sein, den die Tür dann prüft (fsg. FassungBewegt).
+      const rt = rechteDerTuer(q.start ?? {}, resolveContextHarness(ho.harness));
+      if (!rt.ok) return refuse(rt.error);
       fassung = await fassungFuerNeuenPlan({ rolle: fassungRolleVon(rolle), harness: resolveContextHarness(ho.harness), modell: mo.model,
-        effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode });
+        effort: eo.effort, repoRoot: fp.value.repoRoot, claudeCode, rechte: rt.rechte });
     }
   }
   // THE MODE this start runs in (server/eigenes-setup.ts#eigenesSetup), read as the spawn reads it: the window names it before anything is chosen

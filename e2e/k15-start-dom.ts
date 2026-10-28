@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { rechteZeilen } from "../server/tuer-rechte";
 import { rechteSatz } from "../server/rechte";
+import type { Rechte } from "../session-rechte";
 
 export interface K15StartDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 class K15VerdictIn extends Error {
@@ -247,7 +248,9 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
   const role = w.role ?? "nur-ordner";
   const weg = JSON.parse(w.weglassen ?? "{}") as { claudeMd?: boolean; rules?: boolean };
   const regeln = REGELN.filter((r) => !(weg.claudeMd && r.pfad.endsWith("/.claude/CLAUDE.md")) && !(weg.rules && r.pfad.includes("/.claude/rules/")));
-  const stufe = w.rechte ? (JSON.parse(w.rechte) as { stufe: string }).stufe : null;
+  // die gewählte Rechte-Stufe, wie die Tür sie liest (server/rechte.ts#rechteAus): sie gehört in den „darf“-Abschnitt wie am echten Start
+  const rechte = w.rechte ? (JSON.parse(w.rechte) as Rechte) : null;
+  const stufe = rechte?.stufe ?? null;
   const gewaehlt = ["model", "effort", "permissionMode", "tools", "notizbuch", "rechte", "bibliothek", "schwelle"].filter((k) => w[k] !== undefined);
   // the library: whole (true), none (false) or exactly these packs, as the preview's query or a saved agent's list carries it
   const bib = w.bibliothek, packsAn: string[] = bib === undefined || bib === "false" ? [] : bib === "true" ? PACK_KATALOG.map((x) => x.id)
@@ -264,8 +267,10 @@ const fassungOf = (q: URLSearchParams): { teile: { id: string; abschnitte: Recor
       ...(w.notizbuch === "aus" ? [] : [a("gedaechtnis", "- [Fixture](fixture.md) — a note", { quelle: `${HOME}/.claude/projects/-fixture-claude-fleet/memory`,
         dateien: [{ pfad: `${HOME}/.claude/projects/-fixture-claude-fleet/memory/MEMORY.md`, bytes: 32 }] })])] },
     { id: "darf", abschnitte: [...(role === "nur-ordner" ? [a("eigenes-setup", "Eigenes Setup: so wie von Hand.")] : []),
-      // dieselben zwei Zeilen wie server/tuer-rechte.ts#rechteZeilen: Rechte mit Bedeutung, dann der Zaun
-      a("darf", rechteZeilen(null, [role === "orchestratorin" ? "orchestrator" : role === "main" ? "program-main" : role === "lane" ? "lane" : "generic"], "claude").join("\n")),
+      // dieselben Zeilen wie server/tuer-rechte.ts#rechteZeilen, mit den Rechten DIESER Wahl wie am echten Start (server.ts#fassungFuerSlot
+      // gibt s.rechte hinein): Rechte mit Bedeutung, die Stufe, dann der Zaun. Ohne sie trüge die Wahl denselben Satz wie „normal“,
+      // und der Startbrief zeigte keinen Rechte-Block (src/start-brief.ts:182f) — main war am 28.10. genau daran rot.
+      a("darf", rechteZeilen(rechte, [role === "orchestratorin" ? "orchestrator" : role === "main" ? "program-main" : role === "lane" ? "lane" : "generic"], "claude").join("\n")),
       ...(w.permissionMode ? [a("modus", w.permissionMode)] : []),
       a("mitgegeben", gewaehlt.length ? gewaehlt.map((k) => `${k}: ${w[k]}`).join("\n") : "nichts"),
       ...(weg.claudeMd || weg.rules ? [a("weggelassen", `beim Öffnen weggelassen (weglassen): ${[weg.claudeMd ? "~/.claude/CLAUDE.md" : null, weg.rules ? "~/.claude/rules/**" : null].filter(Boolean).join(" und ")}`)] : []),

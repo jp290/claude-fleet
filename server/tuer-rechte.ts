@@ -2,6 +2,7 @@
 // und die eine additive Regel: wirksam = Rollenbundel ∪ Zusagen des Sitzes. Die Türen selbst prüfen mit
 // server.ts#verlangeRecht, damit eine Abweisung immer dasselbe Feld und denselben Satz trägt.
 import { type RechtId, type Rechte } from "../session-rechte";
+import { rechteSatz } from "./rechte";
 
 // Jedes Recht in einer Zeile, die ein Fremder im Startbrief versteht: was es erlaubt, nicht wie es heißt.
 export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
@@ -55,16 +56,22 @@ export function rechteAnsicht(rechte: Rechte | null | undefined, rollen: readonl
   return { role: rollen.join("+") || "generic", bundle, granted, effective, noFence: harness !== "claude" };
 }
 
-// Die zwei Zeilen des Startbriefs. Die erste nennt jedes wirksame Recht mit seiner Bedeutung, nicht nur seine Id;
-// die zweite sagt, wo Fleet keinen Zaun setzt. Beide sind Text, keine Prüfung: geprüft wird an der Tür.
+// Die Zeilen des Startbriefs. Die erste nennt jedes wirksame Recht mit seiner Bedeutung, nicht nur seine Id; setzt der Start die
+// vier Schalter, folgt ihre Stufe als eigener Satz; die letzte sagt, wo Fleet keinen Zaun setzt. Alles ist Text, keine Prüfung:
+// geprüft wird an der Tür.
 export function rechteZeilen(rechte: Rechte | null | undefined, rollen: readonly RechtRolle[], harness: string): string[] {
   const view = rechteAnsicht(rechte, rollen, harness);
   const rights = view.effective.length
     ? view.effective.map((id) => `${id} — ${RECHT_WAS[id]}`).join("; ")
     : "none";
   const rightsLine = `FLEET SERVER RIGHTS (checked at Fleet's doors): ${rights}. Source: role ${view.role} + ${view.granted.length} grant(s).`;
+  // DIE VIER SCHALTER, sobald der Start sie setzt (nur Claude Code liest sie, darum dieselbe Grenze wie der Zaun): eine Stufe
+  // ändert die Regeln dieses Starts, also nennt der Brief sie. Ohne diese Zeile trüge eine Vorschau mit „Nur lesen“ denselben
+  // „darf“-Satz wie eine ohne Wahl, und der Startbrief fiele über `rj !== rn` auf keinen Rechte-Block (src/start-brief.ts:182f;
+  // main rot am 28.10., „[Zitat entfernt]“). Der Satz ist der, den die Session selbst im Systemprompt liest.
+  const schalter = rechte && !view.noFence ? [rechteSatz(rechte)] : [];
   const fence = view.noFence
     ? `FLEET SETS NO HARNESS FENCE for this seat: ${harness} applies its own rules; only the server rights above are checked at Fleet's doors.`
     : "FLEET'S FENCE: the four start switches are Claude Code permission rules, not server checks; file edits and shell commands beyond them are held only by Claude Code. The owner's key bypasses them.";
-  return [rightsLine, fence];
+  return [rightsLine, ...schalter, fence];
 }

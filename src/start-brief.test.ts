@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { anzeige, fliessend, geaendert, gegenVorgaengerin, packDateien, regelDateien, startbrief, uebergabeHinweis, zeilenDiff, type Dazu, type Fassung } from "./start-brief";
 import { schwelleAbschnitt, type SchwelleFakten } from "../server/fassung-umfeld";
+import { rechteZeilen } from "../server/tuer-rechte";
 
 const CLAUDE = "# Global Rules\n\n- Lead with the answer.\n- Report faithfully.";
 const HOME_AGENTS = "# Home\n\n- Bun, not Node.";
@@ -84,6 +85,23 @@ describe("the start brief, file by file against claude by hand", () => {
     const line = b.einstellungen.find((x) => x.key === "line")!;
     expect(line.zeichen).toBe("~");
     expect(line.diff!.filter((z) => z.z !== " ").map((z) => z.z + z.t.trim())).toEqual(["−model           kein Modell gewählt", "+model           claude-sonnet-5-5"]);
+  });
+  // MAIN WAR AM 28.10. ROT („k15 start DOM: Rights-Stein“): der Startbrief zeigt den Rechte-Block nur, wenn der „darf“-Satz
+  // der Vorschau sich von dem ohne Wahl unterscheidet (src/start-brief.ts:182f). Dieser Satz kommt aus server/tuer-rechte.ts#rechteZeilen
+  // (server.ts#fassungFuerSlot, „darf“/„darf“). Nennt er die gewählte Stufe nicht, trägt eine Vorschau mit „Nur lesen“ denselben
+  // Satz wie eine ohne Wahl, und der Block, auf den das Fenster klickt, fehlt — ein Produktfehler, kein Prüf-Fehler.
+  test("a chosen rights level carries its own “darf” sentence, so the brief shows the Rights block", () => {
+    const satz = (rechte: Parameters<typeof rechteZeilen>[0]) => rechteZeilen(rechte, ["generic"], "claude").join("\n");
+    const lesen = satz({ stufe: "lesen", an: [], aus: [] });
+    expect(lesen).not.toBe(satz(null));
+    expect(lesen).not.toBe(satz({ stufe: "bauen", an: [], aus: [] }));
+    // die Server-Rechte bleiben die erste Zeile (der Start und die Abnahme lesen sie so); die Stufe steht darin
+    expect(lesen.startsWith("FLEET SERVER RIGHTS (checked at Fleet's doors):")).toBe(true);
+    expect(lesen).toContain("seat.open — open a seat");
+    expect(lesen).toContain("level “read only”");
+    const b = startbrief(fassung({ rechte: lesen }), fassung({}), dazu);
+    const block = b.anweisungen.find((x) => x.key === "rechte")!;
+    expect([block.zeichen, block.text]).toEqual(["+", lesen]);
   });
   test("a connector left out marks only the setting it adds, not the whole --settings line around it", () => {
     const vorher = { claudeMdExcludes: ["~/.claude/CLAUDE.md"], autoMode: { environment: ["a long text that stays"] } };

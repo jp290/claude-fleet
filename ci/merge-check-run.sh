@@ -22,7 +22,8 @@
 # ci/band-run.sh, ein Handlauf wartet dann). Die Zeile `bands <genommen> busy=<belegt>` sagt, welche er bekam.
 # Ausgabe: je Teil eine Zeile `job <name> rc=<rc> ms=<ms>`, `na <was> — <warum>` für Nicht-Anwendbares,
 # je gefahrenem Audit-Shard `audit-shard <k>/<n> <units>`, dazu die `module`/`shard-unit`-Zeilen der
-# Shards, und als letzte Zeile `merge-check green|red <ms>`. Exit 0 nur, wenn jeder Teil 0 war.
+# Shards, je rotem Teil seine roten Prüfungen als `fail <name> <prüfzeile>` (höchstens 5 je Teil, aus
+# $RUN/<name>.log), und als letzte Zeile `merge-check green|red <ms>`. Exit 0 nur, wenn jeder Teil 0 war.
 set -u
 SHA="${1:?commit fehlt}"
 BIG_RUN="${2:?große Units fehlen (unit,… oder -)}"
@@ -167,6 +168,19 @@ wait
 cat "$RUN/jobs"
 for name in s1 s2 s3 $(echo "$PLAN" | awk 'NF { print "a" $2 }'); do
   [ -f "$RUN/$name.log" ] && grep -hE '^(module|shard-unit) ' "$RUN/$name.log" | sed "s/^/$name /"
+done
+# EIN ROTER CHECK NENNT SEINE ROTEN PRÜFUNGEN: der Server startet jeden Teil mit stdout/stderr auf „ignore“,
+# sein Log ist der einzige Ort, an dem steht WELCHE Prüfung rot war. Ohne diese Zeilen muss die Leitung den
+# Audit-Shard von Hand nachfahren (~15–20 min) — der teuerste Teil eines roten Checks.
+# Quellen: `bun test` schreibt `(fail) <name>`, der e2e-Runner `FAIL  <check>  (<detail>)`. Beides je rotem
+# Teil, höchstens 5 Zeilen, jede auf einer Zeile. Vor der Urteilszeile: der Server parst `^job ` und
+# `^merge-check (green|red) ` mit Regex, andere Zeilen stören ihn nicht.
+red=$(grep -v ' rc=0 ' "$RUN/jobs" | sed 's/^job \([^ ]*\).*/\1/' | tr '\n' ' ')
+for name in $red; do
+  [ -f "$RUN/$name.log" ] || continue
+  grep -hE '^\(fail\) .*|^FAIL  .*' "$RUN/$name.log" | head -n 5 | while IFS= read -r line; do
+    printf 'fail %s %s\n' "$name" "$line"
+  done
 done
 red=$(grep -v ' rc=0 ' "$RUN/jobs" | sed 's/^job \([^ ]*\).*/\1/' | tr '\n' ' ')
 TOTAL=$(( $(now_ms) - T0 ))

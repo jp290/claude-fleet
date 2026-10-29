@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, diffPaths, helperEnv, helperOf, helperRun, hiddenLayerOf,
-  mainAuditOf, mainVerdict, mergeBaseOf, mergeCheck, namesInTree, pushCandidate, runOnHelper } from "./merge-check";
+  mainAuditOf, mainVerdict, mergeBaseOf, mergeCheck, namesInTree, pushCandidate, redOf, runOnHelper } from "./merge-check";
 import { repairProofOf } from "./repair-proof";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
@@ -514,6 +514,30 @@ describe("auditShardsLine: was das Urteil über die gefahrenen Audit-Shards sagt
   });
   test("ohne audit-shard-Zeile (Doku-Änderung) keine Zeile", () => {
     expect(auditShardsLine(out(), [])).toBeNull();
+  });
+});
+
+// Owner 28.10.: ein roter Check nannte nur den Job („[Zitat entfernt]“) — welche Prüfung rot war, wusste nur, wer den
+// Audit-Shard von Hand nachfuhr. Der Runner schreibt sie jetzt als `fail <job> <zeile>`, und beides entsteht
+// hier aus Text allein: `row.fails` und die `why`-Zeile des roten Urteils.
+describe("redOf: ein roter Check nennt seine roten Prüfungen", () => {
+  const out = (...l: string[]): string => ["job local rc=1 ms=1000", "job gate rc=0 ms=2000", ...l,
+    "merge-check red 3000 — local"].join("\n");
+  test("eine fail-Zeile wird zu row.fails und steht in der why-Zeile", () => {
+    const r = redOf(out("fail local FAIL  chat: the reply is empty  (want=1 got=0)"));
+    expect(r.fails).toEqual(["local: FAIL  chat: the reply is empty  (want=1 got=0)"]);
+    expect(r.why).toBe("rot: local — FAIL  chat: the reply is empty  (want=1 got=0)");
+  });
+  test("mehr als eine Prüfung: die erste steht da, der Rest wird gezählt", () => {
+    const r = redOf(out("fail local FAIL  chat: the reply is empty", "fail local (fail) merge-check > red names its check",
+      "fail local FAIL  third check"));
+    expect(r.fails).toHaveLength(3);
+    expect(r.why).toBe("rot: local — FAIL  chat: the reply is empty (+2 weitere)");
+  });
+  test("ohne fail-Zeilen bleibt die why-Zeile wie heute, fails leer", () => {
+    const r = redOf(out());
+    expect(r.fails).toEqual([]);
+    expect(r.why).toBe("rot: local");
   });
 });
 

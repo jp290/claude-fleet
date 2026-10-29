@@ -31,6 +31,23 @@ const HELPER_REPO = "~/ci/repo.git";
 interface Job { name: string; rc: number; ms: number }
 interface MainState { red: boolean; why: string }
 
+// EIN ROTER CHECK NENNT SEINE ROTEN PRÜFUNGEN: der Runner gibt je rotem Teil die Prüfzeilen seines Logs als
+// `fail <name> <zeile>` aus (ci/merge-check-run.sh, aus `(fail) <name>` von `bun test` und `FAIL  <check>
+// (<detail>)` des e2e-Runners). Hier werden daraus `row.fails` und die erste Prüfung in der `why`-Zeile:
+// `rot: a1 — FAIL  chat: …`, bei mehreren `(+2 weitere)`. Reiner Text hinein, Text und Array heraus — keine
+// Datei, kein Prozess, damit es prüfbar ist (ci/merge-check.test.ts). Ohne `fail`-Zeilen bleibt alles wie heute.
+export function redOf(out: string): { fails: string[]; why: string } {
+  const found = [...out.matchAll(/^fail (\S+) ([^\n]*)$/gm)]
+    .slice(0, 10).map((m) => ({ job: m[1]!, check: m[2]!.trim() }));
+  const fails = found.map((f) => `${f.job}: ${f.check}`);
+  const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(out);
+  const jobsFallback = [...out.matchAll(/^job (\S+) rc=(\d+) ms=\d+$/gm)]
+    .filter((m) => m[2] !== "0").map((m) => m[1]!).join(", ");
+  const base = (runLine?.[3] ?? jobsFallback).trim();
+  if (!found.length) return { fails, why: `rot: ${base}` };
+  return { fails, why: `rot: ${base} — ${found[0]!.check}` + (found.length > 1 ? ` (+${found.length - 1} weitere)` : "") };
+}
+
 function git(args: string[], input?: string, dir = REPO_DIR): { ok: boolean; out: string; err: string } {
   const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdin: input === undefined ? "ignore" : Buffer.from(input) });
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
@@ -413,14 +430,15 @@ export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Reco
         row.bigUnitsLine = `${String(row.bigUnitsLine)} · Handlauf-Band ${bands[2]} belegt: die Audit-Shards liefen auf ${got.length} Bändern, darum länger`;
     }
     const runLine = /^merge-check (green|red) (\d+)(?: — (.*))?$/m.exec(run.out);
+    const red = redOf(run.out);
     const notApplicable = [...run.out.matchAll(/^na (\S+) — (.*)$/gm)].map((m) => `${m[1]}: ${m[2]}`);
     Object.assign(row, { jobs, modules, units, notApplicable, helperMs: runLine ? Number(runLine[2]) : null,
+      ...(red.fails.length ? { fails: red.fails } : {}),
       run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
     if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (${helper.kind === "ssh" ? "ssh" : "sh"} exit ${run.exit})`, 3);
     const verdict = runLine[1] === "green" ? "green" : "red";
     const d = decide(verdict, state, proof?.ok === true, proof ? proof.why : undefined);
-    return finish(verdict, d.mergeable,
-      verdict === "red" ? `rot: ${runLine[3] ?? jobs.filter((j) => j.rc !== 0).map((j) => j.name).join(", ")}` : d.why, d.code);
+    return finish(verdict, d.mergeable, verdict === "red" ? red.why : d.why, d.code);
   } catch (e) {
     return finish("error", false, e instanceof Error ? e.message : String(e), 3);
   }

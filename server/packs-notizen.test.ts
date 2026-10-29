@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ContextPackTrigger } from "../context-packs";
 import { sectionAt } from "../context-sections";
 import { bibliothekGewaehlt, packAuswahlFehlt, seatContextFacts, seatKatalog, type SeatKnowledge } from "./sitz-wissen";
 
@@ -13,7 +14,7 @@ const ROOT = join(import.meta.dir, "..");
 const NEU = ["gezaeunter-sitz", "proaktiv-arbeiten"] as const;
 
 interface RegisterPack {
-  readonly id: string; readonly useWhen: string; readonly triggers: string[];
+  readonly id: string; readonly useWhen: string; readonly triggers: ContextPackTrigger[];
   readonly sources: readonly { readonly path: string; readonly anchor: string }[];
 }
 const register = JSON.parse(readFileSync(join(ROOT, ".fleet", "context-packs.json"), "utf8")) as RegisterPack[];

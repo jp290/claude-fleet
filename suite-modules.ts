@@ -85,9 +85,10 @@ export const FIXTURES: readonly Fixture[] = [
   // The couplings and their signatures: docs/messungen/2026-09-14-suite-sharding-probe.md §6 (K1-K5)
   {
     name: "server:slots-1-2-open", origin: "server-state",
-    what: "slot 1 (cwd ~/claude-fleet) and slot 2 (cwd ~) OPEN — slot 2 is the non-worktree negative "
+    what: "slot 1 (cwd: a throwaway repository the runner makes, e2e/base-fixture.ts) and slot 2 (cwd ~) "
+      + "OPEN — slot 2 is the non-worktree negative "
       + "control four lane families measure against (`/api/slots/2/diff|land|shelve|risk|commit|merge` → 400)",
-    synthesized: "the runner opens both before the first step with slots.ts's own two calls — the "
+    synthesized: "the runner opens both before the first step with the two calls slots.ts makes first — the "
       + "shard base fixture, green since 2026-09-13 (K2: `--shard 2/4` failed `shelve rejects a "
       + "non-worktree slot` without it)",
   },

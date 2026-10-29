@@ -26,6 +26,7 @@
 // does not distinguish a product failure from missing setup. Both filters at once is refused —
 // nobody has measured that. Contract and the fixture record: docs/verify-tiering.md §16.
 import { REPO, SOCK, check, failures, post, quarantineLine, results } from "./e2e/harness";
+import { baseFixtureRepo } from "./e2e/base-fixture";
 import { DOM_MUTANT_SLICES, newCtx, parseShard, selectSkipUnits, shardPlan, SHARD_UNITS, unitsOfRun, type LaneCtx, type StewardCtx } from "./e2e/ctx";
 import { FIXTURES, MODULE_FIXTURES, selectModules } from "./suite-modules";
 import * as contextPacks from "./e2e/context-packs";
@@ -466,7 +467,7 @@ let completed = false;
 try {
 
 // THE BASE FIXTURE OF A FILTERED RUN THAT SKIPS slots.ts. The whole suite opens slot 1 and slot 2
-// in its first server-touching family (slots.ts, same two calls, same cwds) and never closes them
+// in its first server-touching family (slots.ts, the same two calls) and never closes them
 // before restart.ts — so every module in between meets an open PLAIN slot 2 and uses it as its
 // non-worktree negative control (`/api/slots/2/diff|land|shelve|risk|commit|merge` → 400). A run
 // that skips slots.ts must re-create that world or those controls measure "no such slot" instead:
@@ -475,8 +476,11 @@ try {
 // `!myUnits.has("core")` (slots.ts belongs to `core` and to no other unit) and in module mode is
 // the fixture `server:slots-1-2-open` the plan reports as planted. The flag-less run reaches this
 // state through slots.run() as before and plants nothing.
+// Slot 1's cwd is a throwaway repository the runner makes, not `~/claude-fleet`: behind Fleet's fence
+// HOME carries no such name, and the runner's own tree carries the Game-Maker fixture
+// (e2e/base-fixture.ts).
 if (willRun && !willRun.has("slots")) {
-  const o1 = await post("/api/slots/1/open", { cwd: "~/claude-fleet" });
+  const o1 = await post("/api/slots/1/open", { cwd: baseFixtureRepo() });
   const o2 = await post("/api/slots/2/open", { cwd: "~" });
   if (!o1.ok || !o2.ok) throw new Error(`base fixture: slot 1 → ${o1.status}, slot 2 → ${o2.status}`);
 }

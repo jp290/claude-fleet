@@ -1,5 +1,7 @@
 // The directory picker API and the pin list it surfaces.
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename } from "node:path";
 import { check, get, post, ROOT } from "./harness";
 
 interface DirsResp { path: string; dirs: string[]; total: number; capped: boolean }
@@ -23,8 +25,14 @@ async function pickerFixture(): Promise<string> {
 
 export async function run(): Promise<void> {
   // --- directory picker API ---
+  // The listing check needs a folder of its own under HOME. It used to assert on `claude-fleet` — the
+  // owner's checkout, which exists on the host and NOT behind Fleet's fence (HOME is the seat's temp
+  // home there). So the check measured the fence instead of the picker (merge-check shard a3:
+  // `/api/dirs lists home (2 dirs)`). The pin below rides on the same folder.
+  const homeProbe = `${process.env.HOME ?? homedir()}/fleet-dirs-probe-${process.pid}`;
+  await mkdir(homeProbe, { recursive: true });
   const dirs = (await (await get("/api/dirs?path=~")).json()) as { path: string; dirs: string[]; common: string[]; recents: string[] };
-  check("/api/dirs lists home", Array.isArray(dirs.dirs) && dirs.dirs.includes("claude-fleet"), `${dirs.dirs.length} dirs`);
+  check("/api/dirs lists home", Array.isArray(dirs.dirs) && dirs.dirs.includes(basename(homeProbe)), `${dirs.dirs.length} dirs`);
   check("/api/dirs common includes home", dirs.common.includes(dirs.path));
   const badDirs = await get("/api/dirs?path=/nonexistent-xyz");
   check("/api/dirs rejects bad path", badDirs.status === 400);
@@ -32,7 +40,7 @@ export async function run(): Promise<void> {
   check("/api/dirs exposes pins + worktrees arrays", Array.isArray(dirs2.pins) && Array.isArray(dirs2.worktrees) && Array.isArray(dirs2.repos));
 
   // --- pins ---
-  const pinPath = `${process.env.HOME}/claude-fleet`;
+  const pinPath = homeProbe;
   const pinAdd = (await (await post("/api/pins", { path: pinPath, on: true })).json()) as { ok: boolean; pins: string[] };
   check("pin add returns updated list", pinAdd.ok === true && pinAdd.pins.includes(pinPath), JSON.stringify(pinAdd.pins));
   const dirsPinned = (await (await get("/api/dirs?path=~")).json()) as { pins: string[] };
@@ -43,6 +51,7 @@ export async function run(): Promise<void> {
   check("pin rejects empty path", pinBad.status === 400);
   const pinDel = (await (await post("/api/pins", { path: pinPath, on: false })).json()) as { pins: string[] };
   check("unpin removes it", !pinDel.pins.includes(pinPath), JSON.stringify(pinDel.pins));
+  await rm(homeProbe, { recursive: true, force: true });
 
   // --- the founding roles' presets (owner 2026-10-01: stored for every future start, with a reset) ---
   type PresetsResp = { ok?: boolean; error?: string; presets: Record<string, { base: string; plus: string[]; minus: string[] }> | null };

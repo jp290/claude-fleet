@@ -200,7 +200,9 @@ export async function run(ctx: Ctx): Promise<void> {
     let done = false;
     const finish = (v: number) => { if (!done) { done = true; resolve(v); } };
     const w = wsWithHeaders(`ws://${IP}:${PORT}/ws-share/${sh3.id}`, { cookie: sh3Cookie });
-    w.onopen = () => void post("/api/slots/3/open", { cwd: "~/claude-fleet" });
+    // a DIFFERENT cwd has to exist where the suite runs: its own tree, not `~/claude-fleet`, which a
+    // fenced seat's temp home does not carry (e2e/base-fixture.ts)
+    w.onopen = () => void post("/api/slots/3/open", { cwd: ROOT });
     w.onclose = (e) => finish(e.code);
     w.onerror = () => finish(-1);
     setTimeout(() => finish(-2), 3000); // bound the wait — a hang here must not hang the suite

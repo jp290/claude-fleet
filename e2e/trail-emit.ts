@@ -22,7 +22,7 @@
 // This module writes nothing on import: the file is opened lazily on the first row, so a run
 // that emits no checks leaves no empty file behind.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, openSync, readlinkSync, writeSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, openSync, readlinkSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -182,10 +182,20 @@ export const TRAIL_TREE_WHY: string | null = TRAIL_TREE !== null ? null
 // a linked worktree's common dir is the MAIN checkout's .git, so every lane's runs land in ONE
 // trail — which is what makes "has this check failed on trees that do not contain my change?"
 // answerable at all. Only if no tree resolves does the trail fall back to a scratch dir.
-const defaultDir = (): string => {
-  const common = SRC ? git(SRC, "rev-parse", "--path-format=absolute", "--git-common-dir") : null;
-  return common ? join(dirname(common), "e2e-trail") : join(tmpdir(), "fleet-e2e-trail");
-};
+// AND IF THE CHECKOUT CANNOT BE WRITTEN. Behind Fleet's fence (server/pi-zai-fence.ts) a seat's
+// worktree is the one writable bind; the main checkout is closed, its e2e-trail does not exist and
+// none of its parents can be created. Every row of such a run was dropped, and the six trail checks
+// were red for the environment — the same "red at the fence, not at the check" that the base fixture
+// had. The rows are not lost, only local: the same scratch fallback a tree-less run already uses.
+const canWrite = (p: string): boolean => { try { accessSync(p, constants.W_OK); return true; } catch { return false; } };
+export function trailHome(common: string | null, scratch = join(tmpdir(), "fleet-e2e-trail")): string {
+  if (!common) return scratch;
+  const dir = join(dirname(common), "e2e-trail");
+  // an existing trail dir must itself be writable; a missing one needs only its parent to be
+  return canWrite(dir) || (!existsSync(dir) && canWrite(dirname(common))) ? dir : scratch;
+}
+const defaultDir = (): string =>
+  trailHome(SRC ? git(SRC, "rev-parse", "--path-format=absolute", "--git-common-dir") : null);
 const envDir = process.env.FLEET_E2E_TRAIL_DIR;
 export const TRAIL_DIR = envDir === "" ? null : (envDir ?? defaultDir());
 

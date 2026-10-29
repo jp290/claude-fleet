@@ -20750,6 +20750,10 @@ async function canDeliver(s: Slot, opts: {
   alive?: boolean;      // honor a FRESH claudeAlive (default true) — never a cache
   quietHours?: boolean; // honor quiet hours (default true; pass false for one-shots / owner acts)
   idleMs?: number;      // idle threshold in ms; 0/undefined disables the busy gate
+  // wake a sleeping pane to probe it (default true). FALSE is a QUESTION, not a delivery: a sleeping
+  // pane is then no obstacle and stays asleep — the probes below need a pane, and the delivery that
+  // follows (the Postfach tick) asks again with the default and wakes it itself.
+  wake?: boolean;
 }): Promise<{ ok: true } | { ok: false; gate: DeliveryGate; detail?: string }> {
   if ((opts.killSwitch ?? true) && !autosOn) return { ok: false, gate: "kill-switch" };
   // BEFORE the liveness probe, and deliberately not behind the `alive` opt-out: the callers that
@@ -20758,12 +20762,13 @@ async function canDeliver(s: Slot, opts: {
   // putting it first costs nothing and names the reason precisely.
   if ((opts.harness ?? true) && !harnessAutomatable(s)) return { ok: false, gate: "harness" };
   let woke = false;
-  if (opts.alive ?? true) {
+  const asleep = !!s.sleeping || slotWakeInflight.has(s.id);
+  if ((opts.alive ?? true) && !(asleep && opts.wake === false)) {
     // A SLEEPING PANE IS WOKEN, NOT SKIPPED: a delivery that answered "not-alive" here would be swallowed
     // exactly when nobody watches the pane. Behind the alive opt-in on purpose — a caller that waives
     // the probe is about to deliver nothing into a pane (a policy pre-check, an owner git op), and
     // sendText wakes for the ones that then paste anyway. Quiet hours first: never wake to refuse.
-    if (s.sleeping || slotWakeInflight.has(s.id)) {
+    if (asleep) {
       if ((opts.quietHours ?? true) && inQuietHours(opts.now)) return { ok: false, gate: "quiet-hours" };
       const w = await wakeSlot(s, "delivery");
       if (!w.ok) return { ok: false, gate: "not-alive", detail: `asleep — wake failed: ${w.reason}` };
@@ -20786,10 +20791,11 @@ async function canDeliver(s: Slot, opts: {
 // DIE FRAGE DER SENDETÜR AN DENSELBEN TAKT: kann diese Pane die Nachricht jetzt bekommen? Es sind die
 // Tore und die Schwelle von zustellePostfachDirekt — harness und quiet-hours sind für Postfach-Post
 // aus (eine Nachricht ist keine unbeaufsichtigte Arbeit), kill-switch, alive, blocked-screen und idle
-// gelten. Die Antwort ist die benannte Sperre oder null; getippt wird hier nichts.
+// gelten. Die Antwort ist die benannte Sperre oder null; getippt wird hier nichts, und ein schlafender
+// Empfänger wird NICHT geweckt (wake: false): er ist kein Hindernis, der Takt weckt ihn, wenn er zustellt.
 const POSTFACH_GATE = { idleMs: REPORT_DECISION_IDLE_MS, harness: false, quietHours: false } as const;
 async function postfachHindernisFuer(holder: Slot, at: number): Promise<PostfachHindernis | null> {
-  const verdict = await canDeliver(holder, { now: Date.now(), ...POSTFACH_GATE });
+  const verdict = await canDeliver(holder, { now: Date.now(), ...POSTFACH_GATE, wake: false });
   return verdict.ok ? null : postfachHindernis(verdict.gate, holder.id, at, verdict.detail ?? null);
 }
 

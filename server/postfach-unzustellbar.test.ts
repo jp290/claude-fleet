@@ -143,4 +143,24 @@ describe("Eine Nachricht, die nicht zugestellt werden kann, sagt warum", () => {
       // ... und der gespeicherte Record lädt, statt nach dem nächsten Neustart das ganze Postfach zu verlieren
       expect(loadMessages(persisted(f).messages).ok).toBe(true);
     }, LIFE_DEADLINE_MS * 3);
+
+  test("(e) ein schlafender Empfänger: die Sendetür antwortet ohne Wecken und ohne `delivery` — geweckt wird erst vom Takt",
+    async () => {
+      const f = await dreiSitze(tot);
+      const b = seat(f, B) as Seat & { sessionId?: string };
+      if (!b.sessionId) throw new Error(`Slot ${B} hat in fleet.json keine Session-Id — der Schlaf wäre nicht fortsetzbar`);
+      // der Schlaf verlangt das Transkript der Unterhaltung auf der Platte (server.ts#sleepSlot)
+      const projekt = join(tot.PROJECTS, b.cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(projekt, { recursive: true });
+      writeFileSync(join(projekt, `${b.sessionId}.jsonl`), "");
+      const [, schlaf, gesendet] = await tot.life(f, [{ ausgabe: B, vorMs: 60_000 },
+        post(`/api/slots/${B}/sleep`, {}), schreib(f, A, B, "e1", "an einen Schlafenden"), "save"]);
+      expect(schlaf?.status).toBe(200);
+      expect(gesendet?.status).toBe(200);
+      // geweckt, fände der Sendeweg einen Sitz ohne lebenden Agenten und nennte `alive`; hier fehlt die Sperre ganz
+      expect(gesendet?.body.delivery).toBeUndefined();
+      expect(rowOf(f, gesendet).delivery).toBeUndefined();
+      // und der Sitz schläft weiter: die Sendetür hat ihn nicht geweckt
+      expect((persisted(f).slots as Record<string, { sleeping?: unknown }>)[String(B)]?.sleeping).toBeTruthy();
+    }, LIFE_DEADLINE_MS * 3);
 });

@@ -255,6 +255,7 @@ import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choi
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
+import { piCacheFact, piLastUsage, type PiUsage } from "./server/pi-cache";
 import { k15Freigabe, k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
 import { bindePosition, k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht, type LaufServer } from "./server/laeufe";
@@ -1408,7 +1409,7 @@ const PI_HARNESS: Harness = {
   // as the only gap): ToolProfile is a claude CLI flag set, and Pi has no equivalent to `--tools ""`.
   worker: () => null,
   // Pi's session file is not a Fleet transcript, but it does carry host-readable usage counters.
-  context: { file: piContextFile, used: readPiUsedTokens },
+  context: { file: piContextFile, used: readPiUsedTokens, tail: readPiTail },
   // ...and the same file, resolved the same way (cwd slug + pinned UUID + session header), is the
   // conversation view's source: server/conversation-read.ts#readPiSession walks its id/parentId tree.
   conversation: { file: piContextFile, read: readPiSession },
@@ -1598,7 +1599,7 @@ const PI_ZAI_HARNESS: Harness = {
   // and Pi has no equivalent of the worker tier's Claude ToolProfile.
   worker: () => null,
   // Same Pi JSONL format and usage parser, but rooted in this adapter's process-local agent home.
-  context: { file: piZaiContextFile, used: readPiUsedTokens },
+  context: { file: piZaiContextFile, used: readPiUsedTokens, tail: readPiTail },
   conversation: { file: piZaiContextFile, read: readPiSession },
   pinsSession: true,
   comms: PI_FENCED_COMMS, // depth one, as PI_HARNESS (see piFencedBwrapLine for bwrap)
@@ -1679,7 +1680,7 @@ const PI_ZAI_UNFENCED_HARNESS: Harness = {
       + `ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${cmd}; exec ${SHELL}`;
   },
   worker: () => null,
-  context: { file: piZaiContextFile, used: readPiUsedTokens },
+  context: { file: piZaiContextFile, used: readPiUsedTokens, tail: readPiTail },
   conversation: { file: piZaiContextFile, read: readPiSession },
   pinsSession: true,
   comms: ["pi"],
@@ -1763,7 +1764,7 @@ const PI_DEEPSEEK_HARNESS: Harness = {
   // equivalent of the worker tier's Claude ToolProfile.
   worker: () => null,
   // Same Pi JSONL format, rooted in this seat's own process-local agent home.
-  context: { file: piDeepseekContextFile, used: readPiUsedTokens },
+  context: { file: piDeepseekContextFile, used: readPiUsedTokens, tail: readPiTail },
   conversation: { file: piDeepseekContextFile, read: readPiSession },
   pinsSession: true,
   comms: PI_FENCED_COMMS,
@@ -48876,7 +48877,10 @@ interface ApiErrorLine { at: number; text: string; kind: ApiStallKind; resetAt: 
 // One tail read, two answers: the numerator (as `used` returns it) and whether the LAST assistant
 // line is such an error round. apiError is null both for "the last assistant line is a real one"
 // and for "no assistant line in the tail" — neither is a stall anyone can act on.
-type DeliveryTtlSource = "1h" | "5m" | "codex" | "unknown";
+// "1h"/"5m" are Claude's own tiers, "codex" its measured rollout. A pi provider carries the SOURCE
+// of its measured lifetime verbatim (server/pi-cache.ts#MEASURED_CACHE_LIFETIME), so the board can
+// name the measurement; "unknown" is the absence of one, never a guessed duration.
+type DeliveryTtlSource = string;
 interface DeliveryCacheFact { at: number | null; ttlSec: number; ttlQuelle: DeliveryTtlSource }
 // `compactedAt`: the newest compact_boundary in the tail when no real model call followed it (claude
 // only) — the fill is then Claude's own postTokens, and the cache the last call wrote is spent
@@ -49000,12 +49004,17 @@ function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorL
 // `refresh: false` when the caller has just run contextReading(s) itself (the sessions poll): one tail read per slot
 function deliveryCacheReading(s: Slot, refresh = true): DeliveryCacheFact {
   const h = harnessOf(s.harness);
-  if (h.id !== "claude" && h.id !== "codex") return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
+  // Pi writes no Claude transcript, but its session file names the provider's own cache counters.
+  // The tail read (server.ts#readPiTail) already produced the fact for harnesses whose context
+  // reader carries a tail; an unmeasured provider therein stays "unknown" (server/pi-cache.ts).
+  const pi = harnessFamilie(h.id) === "pi";
+  if (!pi && h.id !== "claude" && h.id !== "codex") return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   if (!s.cwd || !s.sessionId) return { at: null, ttlSec: h.id === "codex" ? 1800 : 300,
     ttlQuelle: h.id === "codex" ? "codex" : "unknown" };
   if (refresh) contextReading(s);
   const identity = `${h.id}\0${s.cwd}\0${s.sessionId}`;
   const tail = ctxFiles.get(s.id)?.identity === identity ? ctxCache.get(s.id) : null;
+  if (pi) return tail?.cache ?? { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   if (h.id === "claude") return tail?.cache ?? { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   const read = tail?.read;
   return { at: read && typeof read !== "number" ? read.at ?? null : null,
@@ -49251,8 +49260,10 @@ function isolatedPiContextFile(root: string, o: { cwd: string; sessionId: string
 // Pi's newest assistant usage record, tail-read under the same bounded contract as Claude's. Input
 // plus cacheRead plus cacheWrite is what is currently IN the window: cached input still occupies
 // context even when it was not newly paid for. output (and reasoning, which is part of completion)
-// is excluded for the same reason Claude's output_tokens is excluded above.
-function readPiUsedTokens(file: string, size: number): number | null {
+// is excluded for the same reason Claude's output_tokens is excluded above. The SAME bytes answer
+// the cache question (server/pi-cache.ts): the tail returns both halves so the 2 s poll and the
+// handover view never pay a second pass over a multi-megabyte session file.
+function readPiUsageTail(file: string, size: number): PiUsage | null {
   const from = Math.max(0, size - CTX_TAIL_BYTES);
   let text: string;
   let fd: number | null = null;
@@ -49266,23 +49277,15 @@ function readPiUsedTokens(file: string, size: number): number | null {
   } finally {
     if (fd !== null) try { closeSync(fd); } catch { /* best effort */ }
   }
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"usage"')) continue;
-    let row: { type?: unknown; message?: { role?: unknown; usage?: unknown } };
-    try { row = JSON.parse(lines[i]) as typeof row; }
-    catch { continue; } // torn first tail line — keep walking back
-    const u = row.message?.usage;
-    if (row.type !== "message" || row.message?.role !== "assistant" || typeof u !== "object" || u === null) continue;
-    const num = (k: string): number | null => {
-      const v = (u as Record<string, unknown>)[k];
-      return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
-    };
-    const input = num("input"), cacheRead = num("cacheRead"), cacheWrite = num("cacheWrite");
-    if (input === null || cacheRead === null || cacheWrite === null) continue;
-    return input + cacheRead + cacheWrite;
-  }
-  return null;
+  return piLastUsage(text.split("\n"));
+}
+function readPiUsedTokens(file: string, size: number): number | null {
+  const use = readPiUsageTail(file, size);
+  return use ? use.input + use.cacheRead + use.cacheWrite : null;
+}
+function readPiTail(file: string, size: number): ContextTail {
+  const use = readPiUsageTail(file, size);
+  return { read: use ? use.input + use.cacheRead + use.cacheWrite : null, apiError: null, cache: piCacheFact(use) };
 }
 
 // Codex names its rollout by the conversation UUID, so identity here is the FILENAME's suffix and

@@ -219,6 +219,8 @@ export function successorSpawnOf(body: Record<string, unknown> | null, current: 
 // die Stufe des Caches (1 h oder 5 min) und eine Kompaktierung danach. Warm bis zum Ende der Stufe,
 // dann kalt: Ein Turn schreibt den ganzen Kontext neu. Hat Claude nach dem letzten Aufruf kompaktiert,
 // ist der alte Cache verbraucht und der Kontext klein; dann heißt es „kompaktiert“, nicht „kalt“.
+// Für Pi-Sitze (DeepSeek, GLM) trägt `tier` die QUELLE der gemessenen Dauer statt einer Claude-Stufe
+// (server/pi-cache.ts): eine Stunde, sechs Stunden — oder gar keine Messung („unknown“).
 export type CacheState = "warm" | "kalt" | "kompaktiert" | "unbekannt";
 export interface CacheView { state: CacheState; lastCallAt: number | null; ttlSec: number; coldAt: number | null }
 export function cacheView(lastCallAt: number | null, ttlSec: number, compactedAt: number | null, now: number): CacheView {
@@ -236,12 +238,13 @@ export function cacheView(lastCallAt: number | null, ttlSec: number, compactedAt
 // für ihre Art (server.ts#keepCacheFleetOn).
 export interface WarmFacts {
   on: boolean; asleep: boolean; pinned: boolean;
-  lastCallAt: number | null; tier: "1h" | "5m" | "codex" | "unknown"; compactedAt: number | null;
+  // "1h" | "5m" (Claude), "codex", "unknown" — oder die Quelle einer gemessenen Pi-Dauer
+  lastCallAt: number | null; tier: string; compactedAt: number | null;
   idleMin: number; lifetimeMin: number;
   warmTurns: number; warmMax: number; warmLastHour: number; hourCap: number;
 }
-export type WarmReason = "off" | "asleep" | "unpinned" | "no-usage" | "cache-5m" | "compacted" | "before-duration"
-  | "expired" | "warm-cap" | "hour-cap" | "due";
+export type WarmReason = "off" | "asleep" | "unpinned" | "no-usage" | "cache-5m" | "cache-long" | "cache-unknown"
+  | "compacted" | "before-duration" | "expired" | "warm-cap" | "hour-cap" | "due";
 export interface WarmDecision { act: "warm" | null; reason: WarmReason; lastUsageAt: number | null; dueAt: number | null }
 export function warmDecision(f: WarmFacts, now: number): WarmDecision {
   const no = (reason: WarmReason, lastUsageAt: number | null = null, dueAt: number | null = null): WarmDecision =>
@@ -253,6 +256,13 @@ export function warmDecision(f: WarmFacts, now: number): WarmDecision {
   if (last === null) return no("no-usage");
   // eine 5-min-Stufe ist vor jedem Warm-Turn verfallen, eine Kompaktierung hat den Cache verbraucht
   if (f.tier === "5m") return no("cache-5m", last);
+  // WARMHALTEN NUR, WO ES ETWAS HÄLT. Eine gemessene Dauer von Stunden (DeepSeek: sechs, gemessen
+  // 29.10.) braucht keinen Puls — der nächste Besitzer-Turn kommt lange vor dem Ablauf, und ein
+  // Warm-Turn verbrauchte nur Tokens. Ein ungemessener Anbieter (GLM: keine Messung auf dieser
+  // Maschine) ist gar keine Grundlage für einen Turn; beide bleiben ohne Warm-Turn, nie mit einem
+  // geratenen TTL. Kurz genug für einen Puls ~1 min vor Ablauf sind nur die Stufen bis zu einer Stunde.
+  if (f.tier === "unknown") return no("cache-unknown", last);
+  if (f.tier !== "1h" && f.tier !== "codex") return no("cache-long", last);
   if (f.compactedAt !== null && f.compactedAt >= last) return no("compacted", last);
   const dueAt = last + f.idleMin * 60_000;
   if (now < dueAt) return no("before-duration", last, dueAt);

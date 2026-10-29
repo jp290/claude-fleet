@@ -414,11 +414,18 @@ export async function run(): Promise<void> {
       r.event === "delivery_bundle_queued" && r.slot === warmSlot
         && r.path === "inbox-nudge" && r.cache === "kalt") ?? null,
     { timeoutMs: 8_000, what: "cold program inbox nudge enters its window" });
-    await Bun.sleep(2_700);
-    const inboxSends = auditRows().slice(inboxAuditBefore).filter((r) =>
+    const inboxSendsNow = () => auditRows().slice(inboxAuditBefore).filter((r) =>
       r.event === "send" && r.slot === warmSlot && r.path === "inbox-nudge");
-    const inboxPrompts = (await plogRead()).slice(inboxPlBefore).filter((p) =>
+    const inboxPromptsNow = async () => (await plogRead()).slice(inboxPlBefore).filter((p) =>
       p.slot === warmSlot && p.text.startsWith(`[fleet inbox] 1 ungelesene Eintraege in der Inbox deines Programs ${inboxProgramId}`));
+    // wait for the delivery itself (its send row AND its prompt line), not a fixed 2.7 s behind the 2 s window:
+    // under load the tick lands later, and the check below still names what arrived if it never does
+    await until(async () => inboxSendsNow().length > 0 && (await inboxPromptsNow()).length > 0,
+      { timeoutMs: 10_000, what: "cold inbox nudge send row and prompt line" }).catch((e: unknown) => {
+      if (!(e instanceof UntilTimeout)) throw e;
+    });
+    const inboxSends = inboxSendsNow();
+    const inboxPrompts = await inboxPromptsNow();
     check("a cold inbox nudge reaches its MAIN after the bundle window without another wakeup",
       inboxQueued.deliveryClass === "buendelbar" && typeof inboxQueued.dueAt === "number"
         && inboxSends.length === 1 && (inboxSends[0]?.ts ?? 0) >= inboxQueued.dueAt - 100

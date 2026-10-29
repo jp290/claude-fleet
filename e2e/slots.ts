@@ -11954,6 +11954,14 @@ export async function startArbeitsorteBrowser(profile: string): Promise<Arbeitso
     throw error;
   }
 }
+// WHICH BUTTONS THE SEEN LINE CARRIES — the rule, not a count (owner 28.10.: the standing word stands in the same line,
+// so "no button left" stopped saying anything true). „Looks good" stands on a tip the owner has not marked, and it is
+// gone on the tip he marked, because then there is nothing left to press — a new commit brings it back. The standing word
+// stands beside it either way and names its own act: „Standing word" while the repo's word is off, „Take it back" while
+// it stands. A repo without a check command adds its own land button under the marked tip.
+export function seenLineButtons(s: { marked: boolean; zusage: boolean; noCheck?: boolean }): string[] {
+  return [...(s.marked && s.noCheck ? ["Land without a check"] : []), ...(s.marked ? [] : ["Looks good"]), s.zusage ? "Take it back" : "Standing word"];
+}
 // `browser`: a running one to use instead of starting a Chromium — this run then works in a browser
 // context of its own (its own cache and storage, as a fresh profile had them; an app.js the previous
 // mutant left in a shared cache would otherwise answer for this one) and leaves the process running
@@ -13624,8 +13632,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           // „PASST“ AS A BUTTON (owner Z132, 18.10.; Mangel 121): the board branch's menu says the tip, „[Zitat entfernt]“ sends
           // /api/branches/seen with exactly that tip and the line then says it; a commit after it asks again
           const BRANCH_HEAD = `svg.gss > g.gsr[data-head=${JSON.stringify(`branch:${onBranch.branch}`)}]`;
-          const looked = () => evaluate<{ text: string | null; buttons: string[] }>(`(() => { const z = document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen');
-            return { text: z?.querySelector('.tx')?.textContent ?? null, buttons: z ? [...z.querySelectorAll('button')].map((b) => b.textContent) : [] }; })()`);
+          const looked = () => evaluate<{ text: string | null; buttons: string[]; seen: string | null; zusage: string | null }>(`(() => { const z = document.querySelector('#boardbody .rk-git .gsm .zd.brc-seen');
+            return { text: z?.querySelector('.tx')?.textContent ?? null, buttons: z ? [...z.querySelectorAll('button')].map((b) => b.textContent) : [],
+              seen: z?.dataset.seen ?? null, zusage: z?.dataset.zusage ?? null }; })()`);
+          // the buttons as the rule reads them: the line's own datasets say whether this tip is the marked one and whether
+          // the repo's standing word stands — so the claim never counts buttons but names which ones the line must carry
+          const lineButtons = (o: { seen: string | null; zusage: string | null }) => seenLineButtons({ marked: o.seen === "tip", zusage: o.zusage === "on" });
           const h1 = fx.branchHead, h2 = hex("branch/rechter-tab, ein Commit später");
           // without the branch's head drawn there is no menu to press: the claim is red, the walk goes on
           const headDrawn = async () => (await wait(`document.querySelector('#boardbody .rk-git ${BRANCH_HEAD}')`, 8000))
@@ -13645,9 +13657,12 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             const again = await looked();
             facts.looksGood = { unseen, sent, marked, again, reopened };
             claims[`${tag}a board branch's menu says which tip the owner looked at: "Looks good" sends /seen with the tip it shows, then says it; a new commit asks again`] =
-              unseen.text === `Not seen yet · tip ${sha7(h1)}` && JSON.stringify(unseen.buttons) === JSON.stringify(["Looks good"]) && sent
-              && marked.text === `Looks good at ${sha7(h1)} — the session may land it` && marked.buttons.length === 0 && reopened
-              && again.text === `Not seen yet · tip ${sha7(h2)} (you looked at ${sha7(h1)})` && JSON.stringify(again.buttons) === JSON.stringify(["Looks good"]);
+              unseen.text === `Not seen yet · tip ${sha7(h1)}` && JSON.stringify(unseen.buttons) === JSON.stringify(lineButtons(unseen))
+              && unseen.buttons.includes("Looks good") && unseen.buttons.includes("Standing word") && sent
+              && marked.text === `Looks good at ${sha7(h1)} — the session may land it` && !marked.buttons.includes("Looks good")
+              && JSON.stringify(marked.buttons) === JSON.stringify(lineButtons(marked)) && marked.buttons.includes("Standing word") && reopened
+              && again.text === `Not seen yet · tip ${sha7(h2)} (you looked at ${sha7(h1)})` && JSON.stringify(again.buttons) === JSON.stringify(lineButtons(again))
+              && again.buttons.includes("Looks good");
           } else claims[`${tag}a board branch's menu says which tip the owner looked at: "Looks good" sends /seen with the tip it shows, then says it; a new commit asks again`] = false;
           await gsClose();
           // A CHECK OF AN OLDER TIP IS NO CHECK (owner 18.10. 23:4x: the dashed diamond was a sign too many): the branch's diamond

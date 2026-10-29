@@ -88,13 +88,24 @@ describe("kein Warm-Turn für stundenlange oder ungemessene Caches", () => {
 
   test("deepseek: die gemessene Sechs-Stunden-Dauer plant keinen Puls", () => {
     const fact = piCacheFact(piLastUsage(PI_SESSION_DEEPSEEK));
-    const d = warmDecision(facts({ tier: fact.ttlQuelle, lastCallAt: fact.at }), LAST_AT + 51 * MIN);
+    const d = warmDecision(facts({ pi: true, tier: fact.ttlQuelle, lastCallAt: fact.at }), LAST_AT + 51 * MIN);
     expect(d).toEqual({ act: null, reason: "cache-long", lastUsageAt: LAST_AT, dueAt: null });
   });
 
   test("ein ungemessener Anbieter plant keinen Puls", () => {
-    const d = warmDecision(facts({ tier: "unknown" }), LAST_AT + 51 * MIN);
+    const d = warmDecision(facts({ pi: true, tier: "unknown" }), LAST_AT + 51 * MIN);
     expect(d).toEqual({ act: null, reason: "cache-unknown", lastUsageAt: LAST_AT, dueAt: null });
+  });
+
+  // EIN CLAUDE-SITZ ENTSCHEIDET WIE AUF MAIN: seine Stufe „unknown“ heißt „kein cache_creation-Beleg im Tail“, nicht „ungemessener
+  // Anbieter“ — er bekam seine Warm-Entscheidung schon vorher und bekommt sie weiter (Leitung 29.10.: die zwei neuen Zweige gelten nur
+  // für einen pi-Cache-Stand, die Claude-Sitze hat Zug C nicht zu ändern gebeten)
+  test("Claude, Stufe unknown, Puls fällig: derselbe Warm-Turn wie vorher", () => {
+    expect(warmDecision(facts({ tier: "unknown" }), LAST_AT + 51 * MIN)).toMatchObject({ act: "warm", reason: "due" });
+  });
+
+  test("Claude, Stufe unknown, vor der Dauer: wartet wie vorher", () => {
+    expect(warmDecision(facts({ tier: "unknown" }), LAST_AT + 10 * MIN)).toMatchObject({ act: null, reason: "before-duration" });
   });
 
   test("eine kurze gemessene Stufe pulst weiter", () => {

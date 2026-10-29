@@ -240,6 +240,9 @@ export interface WarmFacts {
   on: boolean; asleep: boolean; pinned: boolean;
   // "1h" | "5m" (Claude), "codex", "unknown" — oder die Quelle einer gemessenen Pi-Dauer
   lastCallAt: number | null; tier: string; compactedAt: number | null;
+  // der Cache-Stand ist der eines pi-Sitzes: nur dann heißt `tier` „Quelle einer Dauer“ statt „Claude-Stufe“. Bei Claude
+  // heißt „unknown“ „kein cache_creation-Beleg im Tail“, und dieser Sitz entscheidet wie vorher.
+  pi?: boolean;
   idleMin: number; lifetimeMin: number;
   warmTurns: number; warmMax: number; warmLastHour: number; hourCap: number;
 }
@@ -261,8 +264,10 @@ export function warmDecision(f: WarmFacts, now: number): WarmDecision {
   // Warm-Turn verbrauchte nur Tokens. Ein ungemessener Anbieter (GLM: keine Messung auf dieser
   // Maschine) ist gar keine Grundlage für einen Turn; beide bleiben ohne Warm-Turn, nie mit einem
   // geratenen TTL. Kurz genug für einen Puls ~1 min vor Ablauf sind nur die Stufen bis zu einer Stunde.
-  if (f.tier === "unknown") return no("cache-unknown", last);
-  if (f.tier !== "1h" && f.tier !== "codex") return no("cache-long", last);
+  if (f.pi) {
+    if (f.tier === "unknown") return no("cache-unknown", last);
+    if (f.tier !== "1h" && f.tier !== "codex") return no("cache-long", last);
+  }
   if (f.compactedAt !== null && f.compactedAt >= last) return no("compacted", last);
   const dueAt = last + f.idleMin * 60_000;
   if (now < dueAt) return no("before-duration", last, dueAt);

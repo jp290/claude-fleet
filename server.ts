@@ -28943,7 +28943,7 @@ function keepCacheDecision(s: Slot, now: number): WarmDecision {
   const run = on ? keepCacheRunOf(s) : null;
   if (run && cache?.at != null && run.lastWarmAt && cache.at > run.lastWarmAt + KEEP_CACHE_OWN_TURN_MS) run.warmTurns = 0;
   return warmDecision({ on, asleep: !!s.sleeping, pinned: !!s.sessionId, lastCallAt: cache?.at ?? null,
-    tier: cache?.ttlQuelle ?? "unknown", compactedAt: ctxCache.get(s.id)?.compactedAt ?? null,
+    tier: cache?.ttlQuelle ?? "unknown", pi: harnessFamilie(harnessOf(s.harness).id) === "pi", compactedAt: ctxCache.get(s.id)?.compactedAt ?? null,
     idleMin: keepCacheIdleMinOf(s), lifetimeMin: KEEP_CACHE_LIFETIME_MIN, warmTurns: run?.warmTurns ?? 0,
     warmMax: KEEP_CACHE_WARM_MAX, warmLastHour: run ? warmLastHour(run, now) : 0, hourCap: KEEP_CACHE_PER_HOUR }, now);
 }

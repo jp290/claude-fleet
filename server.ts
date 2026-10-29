@@ -28423,11 +28423,14 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
     rememberPostfachAttempt(current, ids);
     const receipted = acknowledgePostfach(current, plan.entries, acceptance);
     const cleared = vergissPostfachHindernisse(ids);
-    if (receipted || cleared)
-      void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
     current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(current);
     logPrompt(current, text, "auto", sentAt, undefined, acceptance);
+    // DAS SPEICHERN KOMMT NACH DEM PROMPT-LOG, nicht davor: der Audit-Eintrag „send“ steht schon, und wer ihn sieht,
+    // liest gleich danach das Prompt-Log. Der Speicherstand serialisiert den ganzen Zustand (gleichzeitig, bevor etwas
+    // abgegeben wird) und lag, seit die Sperre mit dem Tippen gelöscht wird, auch ohne Quittung in dieser Lücke.
+    if (receipted || cleared)
+      void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
   };
   // A PARKED RESEND THAT MAY HAVE TYPED is remembered like a direct one: tickParkedSends settles it
   // "uncertain" and never retries it, but without this row the next postfach tick would offer the

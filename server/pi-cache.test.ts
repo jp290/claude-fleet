@@ -26,6 +26,33 @@ describe("der letzte Aufruf aus der pi-Sitzungsdatei", () => {
   });
 });
 
+describe("eine Usage-Zeile ohne Zeitstempel (e2e/watch.ts, e2e/security.ts: pi-Fixtures)", () => {
+  // genau die Zeile aus e2e/watch.ts:7806 — weder `message.timestamp` noch `timestamp` an der Zeile, kein Anbieter
+  const ZEILE_WATCH = JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 29_200,
+    output: 9_000_000, cacheRead: 100_000, cacheWrite: 0, reasoning: 0, totalTokens: 9_129_200 } } });
+
+  test("die Zähler zählen weiter, nur die Cache-Uhr ist unbekannt", () => {
+    const use = piLastUsage([ZEILE_WATCH]);
+    expect(use).toEqual({ at: null, provider: null, input: 29_200, cacheRead: 100_000, cacheWrite: 0 });
+    // der Zähler des Kontexts (server.ts#readPiUsedTokens): input + cacheRead + cacheWrite = 129 200, die Hälfte von 258 400
+    expect(use!.input + use!.cacheRead + use!.cacheWrite).toBe(129_200);
+    expect(piCacheFact(use)).toEqual({ at: null, ttlSec: 300, ttlQuelle: "unknown" });
+    expect(piCacheState(piCacheFact(use), LAST_AT)).toBe("unbekannt");
+  });
+
+  test("auch bei einem gemessenen Anbieter gibt eine Zeile ohne Zeitstempel keine Cache-Uhr", () => {
+    const use = piLastUsage([JSON.stringify({ type: "message", message: { role: "assistant", provider: "deepseek",
+      usage: { input: 10, cacheRead: 500, cacheWrite: 0 } } })]);
+    expect(use?.cacheRead).toBe(500);
+    expect(piCacheFact(use).at).toBeNull();
+  });
+
+  test("sie ist nicht die ältere Zeile mit Zeitstempel: die jüngste Zeile gewinnt", () => {
+    const use = piLastUsage([...PI_SESSION_DEEPSEEK, ZEILE_WATCH]);
+    expect(use?.input).toBe(29_200);
+  });
+});
+
 describe("warm, kalt, unbekannt", () => {
   test("deepseek mit Cache-Anteil ist warm und nennt die Quelle der Dauer", () => {
     const fact = piCacheFact(piLastUsage(PI_SESSION_DEEPSEEK));

@@ -9,8 +9,10 @@
 // 0.99–1.00 through pauses up to 60 min, hits up to 8.75 h); its own guide says "usually within a few
 // hours to a few days". GLM (zai) has no measurement on this host, so it has no row.
 export interface PiUsage {
-  // message.timestamp when the file carries it, else the line's own timestamp (Unix ms)
-  at: number;
+  // message.timestamp when the file carries it, else the line's own timestamp (Unix ms); null when the
+  // row carries neither — the counters still count (the context numerator reads them), only the cache
+  // clock is unknown
+  at: number | null;
   provider: string | null;
   input: number;
   cacheRead: number;
@@ -36,7 +38,9 @@ export function measuredCacheLifetime(provider: string | null | undefined): Meas
 // The newest assistant row that carries all three usage counters, walked back from the END of the
 // file. Same contract as the context numerator (server.ts#readPiUsedTokens): the newest parseable
 // row is the answer, a row missing a counter is skipped, and a torn first line of a tail simply
-// fails to parse and the walk goes on. `null` = no such row in what was read.
+// fails to parse and the walk goes on. A row WITHOUT a timestamp is NOT skipped: the numerator reads
+// its counters, and skipping it here would make the context reading fall back to an older row. Its
+// `at` is null. `null` = no such row in what was read.
 export function piLastUsage(lines: readonly string[]): PiUsage | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].includes('"usage"')) continue;
@@ -54,8 +58,8 @@ export function piLastUsage(lines: readonly string[]): PiUsage | null {
     const input = num("input"), cacheRead = num("cacheRead"), cacheWrite = num("cacheWrite");
     if (input === null || cacheRead === null || cacheWrite === null) continue;
     const stamp = row.message.timestamp ?? row.timestamp;
-    const at = typeof stamp === "number" ? stamp : typeof stamp === "string" ? Date.parse(stamp) : NaN;
-    if (!Number.isFinite(at)) continue;
+    const parsed = typeof stamp === "number" ? stamp : typeof stamp === "string" ? Date.parse(stamp) : NaN;
+    const at = Number.isFinite(parsed) ? parsed : null;
     const provider = typeof row.message.provider === "string" && row.message.provider ? row.message.provider : null;
     return { at, provider, input, cacheRead, cacheWrite };
   }
@@ -65,10 +69,11 @@ export function piLastUsage(lines: readonly string[]): PiUsage | null {
 // The cache fact in the shape the delivery path already speaks (server.ts#DeliveryCacheFact). A
 // provider this host has not measured yields `unknown` with no `at`: an unknown provider is not a
 // warm cache and not a cold one. A call whose cache portion was ZERO wrote nothing reusable, so its
-// lifetime is 0 and the reading is cold — while `at` stays the real call time.
+// lifetime is 0 and the reading is cold — while `at` stays the real call time. A call with no
+// timestamp has no cache clock: `unknown`, like an unmeasured provider.
 export interface PiCacheFact { at: number | null; ttlSec: number; ttlQuelle: string }
 export function piCacheFact(last: PiUsage | null): PiCacheFact {
-  if (!last) return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
+  if (!last || last.at === null) return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   const measured = measuredCacheLifetime(last.provider);
   if (!measured) return { at: null, ttlSec: 300, ttlQuelle: "unknown" };
   if (last.cacheRead <= 0) return { at: last.at, ttlSec: 0, ttlQuelle: measured.quelle };

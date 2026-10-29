@@ -2904,16 +2904,16 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
   const hindernis = r.delivery === undefined ? null : loadPostfachHindernis(r.delivery, `entry ${index} delivery`);
   if (typeof hindernis === "string") return hindernis;
   // ZWEI FAKTEN, DIE SICH AUSSCHLIESSEN: eine Quittung ist die Ankunft, eine Sperre ist ihr Fehlen.
-  // Der Takt löscht die Sperre mit dem Tippen (loescheSperre); stehen beide da, ist der Eintrag
-  // kaputt und wird benannt abgelehnt statt in eine der zwei Lesarten geraten.
-  if (hindernis && r.readBy !== null)
-    return `entry ${index} delivery is present on a receipted message — a receipt is the arrival, an obstacle is its absence`;
+  // Die Quittung gewinnt, und die Sperre fällt still weg: loadMessages ist alles-oder-nichts, ein
+  // abgelehnter Eintrag wäre das ganze Postfach nach dem nächsten Neustart, und die Nachricht ist
+  // gelesen — der Grund, der sie festhielt, gilt nicht mehr. (Geschrieben wird so ein Paar nicht mehr:
+  // stampMessageRead räumt die Sperre; der Loader schützt Records, die vorher so gespeichert wurden.)
   return { id: r.id, from, to, at: r.at, payload, idempotencyKey: r.idempotencyKey,
     replyTo: r.replyTo as string | null,
     readBy: by === null ? null : { slot: by.slot, openedAt: by.openedAt, sessionId: by.sessionId },
     readAt: r.readAt as number | null,
     ...(r.personal === true ? { personal: true as const } : {}),
-    ...(hindernis ? { delivery: hindernis } : {}) };
+    ...(hindernis && r.readBy === null ? { delivery: hindernis } : {}) };
 };
 
 // CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramInbox's discipline and for its reason: a record

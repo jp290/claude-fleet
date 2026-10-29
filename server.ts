@@ -18361,6 +18361,8 @@ function stampMessageRead(entry: Message, s: Slot): boolean {
   if (entry.readBy !== null) return false;
   entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
   entry.readAt = Date.now();
+  // eine Quittung ist die Ankunft, und die Sperre ist ihr Fehlen: beide am Eintrag lässt den Loader den Record ablehnen
+  loescheSperre(entry);
   audit("message_read", s.id, `${entry.id} ${addressLabel(entry.to)}`);
   return true;
 }

@@ -13,6 +13,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadMessages } from "./types";
 import { branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, type Answer, type Fixture } from "./branches-testkit";
 
 // ZWEI KITS, absichtlich: `tot` startet den Ersatz-claude des Kits (`exec sleep 600`), den die
@@ -127,5 +128,19 @@ describe("Eine Nachricht, die nicht zugestellt werden kann, sagt warum", () => {
       expect([hindernis?.gate, hindernis?.tor, hindernis?.slot]).toEqual(["kill-switch", "kill-switch", B]);
       const row = rowOf(f, gesendet);
       expect([row.delivery?.gate, row.readBy]).toEqual(["kill-switch", null]);
+    }, LIFE_DEADLINE_MS * 3);
+
+  test("(d) wer eine als nicht zugestellt vermerkte Nachricht holt und quittiert, lässt keine Sperre am gelesenen Eintrag — der Record lädt",
+    async () => {
+      const f = await dreiSitze(tot);
+      const [gesendet, geholt] = await tot.life(f, [schreib(f, A, B, "d1", "wird geholt, nicht getippt"),
+        as(f, B, get("/api/self/messages?unread=1&read=1"))]);
+      expect(gesendet?.body.delivery).toBeDefined();
+      expect(geholt?.status).toBe(200);
+      const row = rowOf(f, gesendet);
+      // die Quittung ist die Ankunft: die Sperre, die sie festhielt, steht nicht mehr am Eintrag ...
+      expect([row.readBy === null, row.delivery]).toEqual([false, undefined]);
+      // ... und der gespeicherte Record lädt, statt nach dem nächsten Neustart das ganze Postfach zu verlieren
+      expect(loadMessages(persisted(f).messages).ok).toBe(true);
     }, LIFE_DEADLINE_MS * 3);
 });

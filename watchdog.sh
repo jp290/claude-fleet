@@ -123,6 +123,10 @@ VERIFY_Q=$(printf '%s' "$VERIFY_CMD" | sed "s/'/'\\\\''/g")
 # srv-spawn line carries FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'. Takes effect only on
 # `launchctl kickstart -k gui/$(id -u)/com.claude-fleet.watchdog` — a plain srv restart
 # keeps the old spawn line, exactly as with VERIFY_CMD.
+# OFF PER MACHINE (Owner 29.10., Workhorse + Mac on one hub): `FLEET_POSTLAND_AUDIT=off` in this checkout's .env leaves
+# the command out of the srv line, so this machine audits nothing after a land or a sync; the machine that landed the tip
+# audits it once. The spawned shell sources .env first, so every srv start (a deploy) applies it; unset = as before.
+# Bridge until the check memory (branch/pruef-gedaechtnis) knows a tree is already audited.
 # Cost, so the decision is made with it in view: 15–19 min of a full e2e-isolated run in four shards
 # on the work-horse (docs/neuaufbau/befunde/02-ci.md §2), not on this box. Repo-guarded like VERIFY_CMD — exit 42 in a foreign
 # repo records UNKNOWN (a non-measurement), never a false green and never a false red.
@@ -267,7 +271,7 @@ while true; do
     boot_why=$(printf '%s' "${respawn_why:-srv was down}" | tr -cd 'A-Za-z0-9 =:/._(),-' | cut -c1-120)
     respawn_why=""
     if tmux -L "$WD_SOCK" new-session -d -s srv \
-      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=\${FLEET_VERIFY_TIMEOUT_MS:-480000} FLEET_VERIFY_WAIT_MS=\${FLEET_VERIFY_WAIT_MS:-2700000} FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q' FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 FLEET_BOOT_CAUSE=watchdog FLEET_BOOT_WHY='$boot_why' exec bun server.ts >> server.log 2>&1"; then
+      "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && { [ \"\${FLEET_POSTLAND_AUDIT:-on}\" = off ] || export FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=\${FLEET_VERIFY_TIMEOUT_MS:-480000} FLEET_VERIFY_WAIT_MS=\${FLEET_VERIFY_WAIT_MS:-2700000} FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 FLEET_BOOT_CAUSE=watchdog FLEET_BOOT_WHY='$boot_why' exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with

@@ -69,7 +69,12 @@ export function spawnNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Ant
 // (Owner 2026-10-26: ein Recht, das die Öffnerin nicht hat, gibt sie nicht weiter). Ein Branch-Kind ist eine
 // freie Session ohne Bindung, also generic — sein Rollenbundel bleibt sein eigenes.
 export function kindNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Antwort {
-  const sp = spawnNieWeiter(o, body);
+  // Die eine Ausnahme (Owner 2026-10-29): eine Claude-Öffnerin öffnet auch einen GEZÄUNTEN pi-zai-Sitz (bwrap, nur sein Worktree
+  // beschreibbar; schlägt der Selbsttest des Zauns fehl, startet pi nicht, server.ts#PI_ZAI_FENCE_FAILED). Weder pi-zai-unfenced
+  // noch ein anderer Harness, und nur auf der Branch-Tür: die Aufgaben-Türen fragen spawnNieWeiter allein.
+  const piZai = o.harness === "claude" && body.harness === "pi-zai";
+  const gefaltet = spawnNieWeiter(o, piZai ? { ...body, harness: o.harness } : body);
+  const sp: Antwort = gefaltet.ok && piZai ? { ok: true, body: { ...gefaltet.body, harness: "pi-zai" } } : gefaltet;
   if (!sp.ok) return sp;
   const childBody = sp.body;
   // Server-Rechte: der Body, sonst die Zusagen der Öffnerin; ein buendel im Body ersetzt das Rollenbundel des Kindes.

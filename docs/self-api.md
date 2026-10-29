@@ -1046,6 +1046,10 @@ curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $F
     unverändert.
   - **Jede andere Öffnerin** öffnet nur ihren eigenen Harness. Fehlt `harness`, ist es ihrer. Ein anderer Harness
     gibt 409, auch ein engerer: Klassifizierer, Sandbox und Freigabe lassen sich nicht gegeneinander aufrechnen.
+    Die eine Ausnahme (Owner 2026-10-29): eine Claude-Code-Öffnerin öffnet auch `harness: „[Zitat entfernt]“`, den gezäunten
+    Sitz (bwrap, nur sein Worktree beschreibbar; besteht der Selbsttest des Zauns nicht, startet pi nicht). Weder
+    `pi-zai-unfenced` noch `pi`, `pi-deepseek` oder Codex, und keine Codex-Öffnerin; die `rechte` des Kindes werden
+    weiter wie unten verglichen.
   - **Codex unter Codex:** Sandbox (`read-only` < `workspace-write` < `danger-full-access`) und Freigabe
     (`on-request` < `never`) sind je höchstens die der Öffnerin. Ohne `permissions` erbt das Kind ihre statt
     Codex' Standard `danger-full-access`/`never`. Sind ihre nicht lesbar, gilt die engste.

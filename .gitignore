@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 streams/
 # Fleets Bibliothek als Skills je Sitz (server.ts#SEAT_SKILLS_ROOT), im State-Ordner
 sitz-skills/

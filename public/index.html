@@ -634,6 +634,11 @@
   .msendnow:hover, .mliveesc:hover { color: var(--chat-ink); background: var(--chat-raised); }
   .mliveesc { margin-left: auto; padding: 2px 12px; }
   .msg.user.pending .mbody, .msg.user.pending .mimgs { opacity: 0.7; }
+  /* a long owner bubble folds (src/bubble-fold.ts): the beginning stands, the rest opens with one
+     quiet button — the height clamps, nothing is cut from the text, a short bubble is not touched */
+  .msg.user .mbody.mfold { max-height: 11em; overflow: hidden; }
+  .msg.user .mbody.mfold.open { max-height: none; overflow: visible; }
+  .mfoldbtn { margin: 5px 0 0; }
   /* a sent drop as its picture (src/client.ts#dropStrip): one fixed-height row above YOUR bubble,
      right-aligned like the bubble, the bubble's edge and a softer radius. The height is set before
      the bytes arrive, so a loading picture never moves the reading position; the width follows the

@@ -1826,13 +1826,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       `${errs.filter(Boolean).join("; ") || "ran"} · first fill fresh ${firstFresh} · delta ${freshDelta}/${deltaKids} fresh · pollChat delta path ${realDelta} · ${ms} ms · reduced-motion ${still} · top ${gTop?.kid.text}@${gTop?.off} -> ${gAfter?.kid.text}@${gAfter?.off}`);
   }
   // (C) a send shows whether it still waits or is through: the pending bubble carries "waiting" once
-  // the board delivered it, the transcript entry that retires it carries "arrived"
+  // the board delivered it, the transcript entry that retires it carries "arrived" (a long owner bubble's
+  // fold button stands between body and state, src/bubble-fold.ts)
   check("chat senden (C): a sent message shows \"waiting\" until the transcript has it, then \"arrived\"",
-    /msg\.append\(body, sendState\("sending"\), meta\)/.test(cliSrc)
+    /msg\.append\(body, \.\.\.\(fold \? \[fold\] : \[\]\), sendState\("sending"\), meta\)/.test(cliSrc)
       && /pending\?\.querySelector\("\.msend"\)\?\.replaceWith\(sendState\("wait"\)\)/.test(cliSrc)
       && /this\.addMessage\(e, body, header, null, this\.settlePending\(raw\)\)/.test(cliSrc)
       && /this\.addMessage\(e, part\.text, header, part\.mark, this\.settlePending\(part\.text\)\)/.test(cliSrc)
-      && /msg\.append\(body, \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
+      && /msg\.append\(body, \.\.\.\(fold \? \[fold\] : \[\]\), \.\.\.\(arrived \? \[sendState\("done"\)\] : \[\]\), meta\)/.test(cliSrc)
       && /wait: "waiting", done: "arrived"/.test(cliSrc),
     "addPending / doSend / appendEntry / sendState in src/client.ts");
   // (D) the click into the composer: the free space under the last message and the lower half,

@@ -2,11 +2,14 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import type { TEntry } from "./conversation-read";
 import { appendEvent } from "./persist";
+import { pendingSettledBy } from "../src/pendingsend";
+import { safetySystemNote } from "../src/safety-note";
 
 const ROOT = join(import.meta.dir, "..");
 const SERVER = join(ROOT, "server.ts");
@@ -664,5 +667,84 @@ describe("succession.autoCompact: was die Startzeile der Besetzung Claude Codes 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Brief 2026-10-29 Ziel 1: Eine Composer-Sendung über PASTE_MAX_BYTES bekommt die Pane als EINE
+// Zeiger-Zeile (server.ts#storePaneInboxText, Datei unter streams/pane-inbox/). Der Chat zeigte die
+// Zeile mit ihrem Datei-Pfad, und die wartende Blase trat nie ab, denn der Eintrag trägt nicht den
+// gesendeten Text. viewEntry liest die Worte des Owners aus dem Pane-Inbox zurück — die Session
+// selbst bekommt weiterhin genau die Zeiger-Zeile, die sie heute bekommt.
+describe("viewEntry: eine lange Sendung kommt als die Worte des Owners, nicht als Zeiger-Zeile", () => {
+  const ts = "2026-10-29T11:22:33.444Z";
+  const openedAt = 1_760_000_000_000;
+  const long = "Eine lange Sendung des Owners, über der Paste-Grenze.\n".repeat(400);
+  const bytes = Buffer.byteLength(long, "utf8");
+  const sha = createHash("sha256").update(long, "utf8").digest("hex");
+  const file = join(STATE_DIR, "streams", "pane-inbox", `slot2-${openedAt}`, `${sha.slice(0, 16)}.txt`);
+  const pointer = `[fleet] message ${sha.slice(0, 16)}: ${bytes} bytes (sha256 ${sha}) is too long to paste into a terminal, so it was stored whole. Read the complete text from ${file} before acting on it.`;
+  const head = "[fleet-delivery · owner credential · Slot 2] ";
+  const withHead = head + pointer;
+  const entry = (n: number, text: string): TEntry => ({ n, role: "user", ts, blocks: [{ t: "text", text }] });
+
+  test("die Zeiger-Zeile der langen Sendung wird der gespeicherte Text, mit Kopf und Hülle wie getippt", async () => {
+    const { viewEntry } = await load();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, long);
+    const user = (content: string) => ({ type: "user", timestamp: ts, message: { role: "user", content } });
+    try {
+      // die Form, in der Claude Code eine Paste speichert (src/pendingsend.ts#unwrapPasted)
+      expect(viewEntry(user(`<pasted_content id="p9">\n${withHead}\n</pasted_content id="p9">`), 44))
+        .toEqual(entry(44, `${head}${long}`));
+      expect(viewEntry(user(withHead), 45)).toEqual(entry(45, `${head}${long}`));
+      // die Worte treten die wartende Blase ab wie jede andere Sendung (src/pendingsend.ts#pendingSettledBy)
+      expect(pendingSettledBy(long, `${head}${long}`)).toBe(true);
+    } finally {
+      rmSync(dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  test("eine Zeiger-Zeile ohne gespeicherten File bleibt die Zeile, eine kurze Nachricht bleibt kurz", async () => {
+    const { viewEntry } = await load();
+    const user = (content: string) => ({ type: "user", timestamp: ts, message: { role: "user", content } });
+    // kein File unter streams/pane-inbox: die Ansicht sagt, was die Session bekommen hat
+    const wrong = withHead.replace(`${bytes} bytes`, `${bytes + 3} bytes`);
+    expect(viewEntry(user(wrong), 46)).toEqual(entry(46, wrong));
+    expect(viewEntry(user("kurze Nachricht"), 47)).toEqual(entry(47, "kurze Nachricht"));
+  });
+});
+
+// Brief 2026-10-29 Ziel 3: Die Sicherungen eines Modells stoppen eine Antwort, Claude Code wechselt
+// nach einer Flagge das Modell — es schreibt beides als eigene system-Zeilen (gemessen 2026-10-29,
+// system/informational und system/model_refusal_fallback). viewEntry warf jede system-Zeile außer
+// local_command weg, also sagte der Chat nichts. Die zwei gemessenen Formen kommen als meta-Eintrag
+// in den Chat (src/client.ts#addStopLine macht die eine stille Zeile daraus); Claude Codes eigene
+// user-Zeile an das Modell („Your response above was stopped by a safety classifier …“) ist keine
+// Blase des Owners.
+describe("viewEntry: eine gestoppte Antwort wird benannt", () => {
+  const ts = "2026-01-01T12:00:02.000Z";
+  const stopped = { type: "system", subtype: "informational", level: "notice", timestamp: ts,
+    content: "Opus 5.5's safeguards stopped the response above · continuing once with that noted" };
+  const fallback = { type: "system", subtype: "model_refusal_fallback", level: "warning", timestamp: ts,
+    originalModel: "Opus 5.5", fallbackModel: "Opus 4.8",
+    content: "Opus 5.5's safeguards flagged this session. Opus 4.8 is answering instead, or you can edit and retry with Opus 5.5 if you prefer.\n\nDetails: `[cyber]`" };
+  const meta = (n: number, text: string): TEntry => ({ n, role: "user", ts, blocks: [{ t: "text", text }], meta: true });
+
+  test("die zwei gemessenen system-Zeilen der Sicherungen kommen als meta-Eintrag, unangetastet", async () => {
+    const { viewEntry } = await load();
+    expect(viewEntry(stopped, 81)).toEqual(meta(81, stopped.content as string));
+    expect(viewEntry(fallback, 82)).toEqual(meta(82, fallback.content as string));
+    // der Chat erkennt sie mit derselben Funktion und zeigt die eine stille Zeile (src/safety-note.ts)
+    expect(safetySystemNote({ content: stopped.content })?.summary).toContain("safeguards stopped the answer");
+    expect(safetySystemNote(fallback)?.summary).toContain("Opus 4.8 is answering instead");
+  });
+
+  test("Claude Codes eigene Zeile an das Modell wird keine Blase des Owners, jede andere system-Zeile bleibt draußen", async () => {
+    const { viewEntry } = await load();
+    const own = "Your response above was stopped by a safety classifier because it was flagged as [cyber]. Read the safety report and continue appropriately.";
+    expect(viewEntry({ type: "user", timestamp: ts, message: { role: "user", content: own } }, 83)).toBeNull();
+    expect(viewEntry({ type: "user", timestamp: ts,
+      message: { role: "user", content: [{ type: "text", text: own }] } }, 84)).toBeNull();
+    expect(viewEntry({ type: "system", subtype: "turn_duration", timestamp: ts }, 85)).toBeNull();
   });
 });

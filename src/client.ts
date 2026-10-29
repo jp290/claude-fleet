@@ -35,6 +35,9 @@ import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { syncWichte } from "./wicht";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
+import { foldOwnerToggle } from "./bubble-fold";
+import { safetySystemNote, type SafetyNote } from "./safety-note";
+import { pendingTakeBack } from "./pending-takeback";
 import { deliveryParts, type DeliveryPart } from "./delivery-format";
 import { RUECKFRAGE_SATZ, sendFailureMessage, sendFailureToastMs, VERTRAUEN_SATZ } from "./pendingsend";
 import { isSlashLine, slashCommand, slashOutput, slashSentence, type SlashCommand, type SlashOutput } from "./slashcommand";
@@ -1286,7 +1289,8 @@ const chatShelf = new Map<number, ChatShelfRow>();
 // A "wartet" bubble: the composer's own at Enter (no `key`), or one the session's queue names
 // (`key` = the queue entry; GET /api/slots/:id/transcript → `queued`). A composer bubble the queue
 // names becomes that entry's bubble — one bubble per send. `leftAt`: when its entry left the queue
-// without the transcript bringing it in the same read.
+// without the transcript bringing it in the same read — or, for a bubble no entry ever named, when
+// the queue first failed to name it (the take-back clock, src/pending-takeback.ts).
 type PendingBubble = { text: string; el: HTMLElement; key?: string; leftAt?: number };
 // the transcript turn follows its dequeue within milliseconds (measured 2026-10-03, ~10 ms); a read
 // between the two lines keeps the bubble, one the transcript never brings goes after this long
@@ -2187,6 +2191,11 @@ class Pane {
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
   private appendEntry(e: TEntry) {
     if (e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text" && isInterruptMark(b.text))) { this.addInterrupt(e); return; }
+    // the model's safeguards stopped an answer, or Claude Code switched models after a safety flag
+    // (server.ts#viewEntry serves the system line as meta): one quiet line, never a bubble of yours
+    const stopped = e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text")
+      ? safetySystemNote({ content: e.blocks.map((b) => b.text).join("\n") }) : null;
+    if (stopped) { this.addStopLine(e, stopped); return; }
     // a message another session sent reaches a RESTING session as meta (server.ts#crossSessionEntry): its quiet line, not
     // a task notification
     const said = e.meta && e.blocks.length === 1 && e.blocks[0]!.t === "text" ? otherSender(e.blocks[0]!.text) : null;
@@ -2236,6 +2245,9 @@ class Pane {
     mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
     bodySource.set(body, drops.rest);
     for (const code of body.querySelectorAll<HTMLElement>(".code")) decorateCode(code);
+    // a long owner bubble folds (src/bubble-fold.ts): the beginning stands, one quiet button opens the rest —
+    // the copy button and the tooltip keep the whole text, a short bubble is not touched
+    const fold = e.role === "user" ? foldOwnerToggle(body, drops.rest) : null;
     if (drops.images.length) msg.appendChild(dropStrip(this.slot, drops.images));
     const meta = el("div", "mmeta");
     const who = e.role === "user" ? "you" : "claude";
@@ -2248,7 +2260,7 @@ class Pane {
       meta.appendChild(head);
     }
     meta.appendChild(copyButton("copy", "copy this message as Markdown", () => text));
-    msg.append(body, ...(arrived ? [sendState("done")] : []), meta);
+    msg.append(body, ...(fold ? [fold] : []), ...(arrived ? [sendState("done")] : []), meta);
     this.chatAdd(msg);
     return msg;
   }
@@ -2313,6 +2325,21 @@ class Pane {
     this.chatAdd(line);
   }
 
+  // THE MODEL'S SAFEGUARDS STOPPED AN ANSWER (src/safety-note.ts): Claude Code writes the system
+  // line itself, so the chat shows what happened in the quiet form Esc already has — the fact in the
+  // summary, what the owner can do one click open, the raw line in the tooltip. Never a bubble of yours.
+  private addStopLine(e: TEntry, note: SafetyNote) {
+    this.toolGroup = null;
+    this.notifGroup = null;
+    const line = document.createElement("details");
+    line.className = "msys mstop";
+    const sum = document.createElement("summary");
+    sum.append(el("span", "msyswho", "safety"), el("span", "msystext", `${note.summary}${e.ts ? ` · ${fmtClock(e.ts)}` : ""}`));
+    sum.title = `Claude Code wrote this line itself — the model's safeguards, not you.\n${note.raw}`;
+    line.append(sum, el("div", "msysbody", note.advice));
+    this.chatAdd(line);
+  }
+
   // THE SENT PROMPT, BEFORE THE TRANSCRIPT HAS IT. Measured 2026-09-22
   // (docs/messungen/2026-09-22-chat-absenden-zeitleiste.md): the bubble waited for POST /send (~350–500 ms) AND the next chat
   // poll (up to chatMs, 1 s / 3 s with the data saver) — mid-turn until the agent wrote the queued
@@ -2327,9 +2354,11 @@ class Pane {
     const body = el("div", "mbody");
     mdInto(body, drops.rest, { entity: this.hoverOn ? (kind, id) => entityKnown(kind, id, this.slot) : undefined });
     bodySource.set(body, drops.rest);
+    // the send's own bubble folds the same way the transcript's will (src/bubble-fold.ts)
+    const fold = foldOwnerToggle(body, drops.rest);
     const meta = el("div", "mmeta");
     meta.appendChild(el("span", "mwho", "you · sending …"));
-    msg.append(body, sendState("sending"), meta);
+    msg.append(body, ...(fold ? [fold] : []), sendState("sending"), meta);
     this.chatAdd(msg);
     this.pending = [...this.pending, { text, el: msg }];
     this.followEnd(true);
@@ -2357,7 +2386,9 @@ class Pane {
         if (this.pending.some((p) => p.key === key)) return;
         const mine = this.pending.find((p) => p.key === undefined && pendingSettledBy(p.text, part.text));
         if (mine) {
-          mine.el.querySelector(".msend")?.replaceWith(this.queueState());
+          // the queue names the composer's own bubble: it becomes that entry's bubble — a take-back
+          // row from before goes with it, the wait state gets the queue's own controls
+          (mine.el.querySelector(".msendrow") ?? mine.el.querySelector(".msend"))?.replaceWith(this.queueState());
           this.pending = this.pending.map((p) => (p === mine ? { ...p, key } : p));
           return;
         }
@@ -2367,8 +2398,17 @@ class Pane {
         this.pending = [...this.pending, { text: part.text, el: msg, key }];
       });
     }
-    for (const p of this.pending) if (p.key !== undefined && !listed.has(p.key) && now - (p.leftAt ?? now) > QUEUE_LEFT_MS) this.dropPending(p.el);
-    this.pending = this.pending.map((p) => (p.key === undefined ? p
+    // A BUBBLE THAT NEVER ARRIVES (src/pending-takeback.ts): a send the queue has never named gets
+    // the same QUEUE_LEFT_MS grace a named bubble gets after leaving the queue — then the owner may
+    // take the text back. Not automatic: the pane may still hold it unsubmitted (2026-10-03 §7).
+    for (const p of this.pending) {
+      if (p.key !== undefined) {
+        if (!listed.has(p.key) && now - (p.leftAt ?? now) > QUEUE_LEFT_MS) this.dropPending(p.el);
+        continue;
+      }
+      if (pendingTakeBack(p, now, QUEUE_LEFT_MS)) this.markTakeBack(p);
+    }
+    this.pending = this.pending.map((p) => (p.key === undefined ? { ...p, leftAt: p.leftAt ?? now }
       : { ...p, leftAt: listed.has(p.key) ? undefined : p.leftAt ?? now }));
   }
   // THE HELD BUNDLE (server.ts#heldDeliveriesView): Fleet holds deliveries for this session and types
@@ -2439,6 +2479,35 @@ class Pane {
     const row = el("div", "msendrow");
     row.append(sendState("wait"), sendNowButton(() => void this.recall("send-now")));
     return row;
+  }
+  // THE SEND THAT NEVER ARRIVED, five seconds after the queue stopped naming it (src/pending-takeback.ts):
+  // one quiet button beside the wait state. Only on an accepted send — "sending …" has no verdict yet,
+  // a refused one goes on its own — and once; the queue naming the bubble later takes the button away.
+  private markTakeBack(p: PendingBubble): void {
+    if (p.el.querySelector(".mtakeback")) return;
+    const state = p.el.querySelector(".msend.wait");
+    if (!state) return;
+    const row = el("div", "msendrow");
+    const back = el("button", "msendnow mtakeback") as HTMLButtonElement;
+    back.type = "button";
+    back.textContent = "Take back";
+    back.title = "This send never reached the session's queue or history — the text comes back into the composer";
+    back.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.takeBack(p);
+    });
+    state.replaceWith(row);
+    row.append(state, back);
+  }
+  // the bubble goes, its text goes back into the composer — exactly where Esc and ↑ put a recalled
+  // message (src/recall.ts#recalledText): above what the composer already holds
+  private takeBack(p: PendingBubble): void {
+    this.dropPending(p.el);
+    if (panes[focused] !== this) focusPane(this.index);
+    ta.value = recalledText([p.text], ta.value);
+    ta.dispatchEvent(new Event("input"));
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
   }
   // ESC AND ↑ AS IN THE TERMINAL (src/recall.ts, server/recall.ts): true = the key is this pane's now
   escKey(): boolean {

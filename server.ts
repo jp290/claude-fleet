@@ -223,6 +223,8 @@ import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolve
 import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KonzeptOp, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
+import { expandPaneInboxText } from "./server/pane-inbox";
+import { safetyClassifierOwn, safetySystemNote } from "./src/safety-note";
 import { createTranscriptPush } from "./server/transcript-push";
 import { RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
 import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
@@ -25369,9 +25371,15 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   // A slash command Claude Code ran comes in two forms (docs/neuaufbau/befunde/12-modellwechsel.md §7): (a) as
   // system/local_command lines, (b) as user lines with the same text. Form (a) is served as the user text line form
   // (b) writes, so the chat shows both the same way (src/slashcommand.ts); every other system line stays out.
-  if (d.type === "system")
+  if (d.type === "system") {
+    // A MODEL'S SAFEGUARDS STOPPED AN ANSWER, or Claude Code switched models after a safety flag
+    // (measured 2026-10-29, system/informational and system/model_refusal_fallback): the chat names
+    // it as one quiet line (src/safety-note.ts, Pane#addStopLine). Every other system line stays out.
+    if (typeof d.content === "string" && safetySystemNote(d))
+      return { n, role: "user", ts, blocks: [{ t: "text", text: cap(d.content, 20_000) }], meta: true };
     return d.subtype === "local_command" && typeof d.content === "string" && d.content
       ? { n, role: "user", ts, blocks: [{ t: "text", text: cap(d.content, 20_000) }] } : null;
+  }
   // A message sent while a turn runs waits in Claude Code's queue (`queue-operation` lines, read by
   // server/live-state.ts#foldLine) and reaches the conversation in one of two measured forms
   // (docs/messungen/2026-10-03-terminal-vs-chat-warten.md §2, §2t): taken at the turn's end it becomes
@@ -25389,7 +25397,9 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
     return {
       n, role: "user",
       ts: ts ?? (typeof a.timestamp === "string" ? a.timestamp : null),
-      blocks: [{ t: "text", text: cap(a.prompt, 20_000) }],
+      // a long send stands in the pane as its pointer line (server.ts#storePaneInboxText): the view
+      // reads the owner's words back from the pane inbox, exactly as the typed user line below
+      blocks: [{ t: "text", text: expandPaneInboxText(a.prompt, PANE_INBOX_DIR) ?? cap(a.prompt, 20_000) }],
     };
   }
   const content = d.message?.content;
@@ -25402,8 +25412,15 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
   if (d.type === "user") {
     if (typeof content === "string") {
       if (content.startsWith("<system-reminder")) return null; // harness noise, not the user
+      // Claude Code's own note TO THE MODEL that a safety classifier stopped its response (measured
+      // 2026-10-29): not the owner's words — the safeguards' system line names the event as the
+      // quiet line, and this one never becomes a "you" bubble
+      if (safetyClassifierOwn(content)) return null;
       if (content.startsWith("<task-notification")) meta = true; // background task reported back
-      blocks.push({ t: "text", text: cap(content, 20_000) });
+      // A LONG SEND (above PASTE_MAX_BYTES) reached the pane as ONE pointer line naming the stored
+      // file; the session keeps exactly that line, and every view shows the owner's words again
+      // (server/pane-inbox.ts) — uncapped, the fold in the chat view keeps the bubble small
+      blocks.push({ t: "text", text: expandPaneInboxText(content, PANE_INBOX_DIR) ?? cap(content, 20_000) });
     } else if (Array.isArray(content)) {
       for (const b of content) {
         const blk = b as { type?: unknown; content?: unknown; text?: unknown; tool_use_id?: unknown };
@@ -25412,8 +25429,8 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
             ...(typeof blk.tool_use_id === "string" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}),
             ...(ask && typeof blk.tool_use_id === "string" && ask.calls.has(blk.tool_use_id)
               ? { answer: nativeAnswer(d.toolUseResult, ask.calls.get(blk.tool_use_id)) } : {}) });
-        else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder"))
-          blocks.push({ t: "text", text: cap(blk.text, 20_000) });
+        else if (blk.type === "text" && typeof blk.text === "string" && !blk.text.startsWith("<system-reminder") && !safetyClassifierOwn(blk.text))
+          blocks.push({ t: "text", text: expandPaneInboxText(blk.text, PANE_INBOX_DIR) ?? cap(blk.text, 20_000) });
       }
       // Esc mid-turn: Claude Code writes its own marker as a user text block (measured,
       // docs/messungen/2026-10-03-terminal-vs-chat-warten.md §6). The terminal shows it as a line under
@@ -25718,7 +25735,13 @@ async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversat
   // the branch rides in `source`: when pi's leaf moves to another branch the client's consumed
   // lines are no longer the conversation, and a changed source is how it learns to start over
   const source = (file.split("/").pop() ?? "") + (read.branch ? `#${read.branch}` : "");
-  return { entries: read.entries.filter((e) => e.n > after), total: read.total, source, cache: read.cache, model: read.model, effort: read.effort,
+  // A LONG SEND reached the pane as its pointer line (server.ts#storePaneInboxText); codex and pi
+  // record that line in their own transcripts, which their leaf reads. The owner's words come back
+  // here at serve time — the same read-back viewEntry does for claude (server/pane-inbox.ts).
+  const inbox = (e: TEntry): TEntry => e.role !== "user" || !e.blocks.some((b) => b.t === "text") ? e
+    : { ...e, blocks: e.blocks.map((b) => b.t === "text"
+      ? { ...b, text: expandPaneInboxText(b.text, PANE_INBOX_DIR) ?? b.text } : b) };
+  return { entries: read.entries.filter((e) => e.n > after).map(inbox), total: read.total, source, cache: read.cache, model: read.model, effort: read.effort,
     ...(native && { native: nativeOf(native, s, before, { found: true, questions: false, pinned: true, fileSession: s.sessionId, via: "harness-file" }) }) };
 }
 
@@ -53638,7 +53661,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       if (harnessOf(s.harness).id !== "claude")
         return json({ turn: "unknown", detail: null, queued: [], composer: null, withdrawn: [], at: Date.now() });
-      return json(await liveReader.read(s.id));
+      const live = await liveReader.read(s.id);
+      // a long send stands in Claude Code's queue as its pointer line (server.ts#storePaneInboxText):
+      // the queue read-back carries the owner's words, exactly as the transcript route does (viewEntry)
+      return json({ ...live, queued: live.queued.map((q) => ({ ...q, text: expandPaneInboxText(q.text, PANE_INBOX_DIR) ?? q.text })) });
     }
     // Esc and ↑ from the chat view (server/recall.ts); Claude Code only, like /live
     const recallMatch = /^\/api\/slots\/(\d+)\/recall$/.exec(url.pathname);

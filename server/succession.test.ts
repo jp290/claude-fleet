@@ -9,8 +9,8 @@
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
 import { actDecision, agoText, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
-  orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
-  thresholdOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
+  onHandoverBand, orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
+  thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
   type ThresholdChoice, type WarmFacts } from "./succession";
 import { loadHandoverSetting, loadLineageHandover, type HandoverSetting, type LineageObligationRef } from "./types";
 
@@ -661,5 +661,54 @@ describe("der Record trägt Ziel und Ausgang je Pflicht, und der Loader liest ih
     expect(refused({ kind: "inbox", id: "e1", owedBy, reArm: null, notRearmed: "gelesen" })).toContain("only a watch or an auto is re-armed");
     expect(refused({ ...auditWatch, notRearmed: "erste Zeile\nzweite Zeile" })).toContain("notRearmed must be one line");
     expect(refused({ ...auditWatch, rearmed: "../x" })).toContain("rearmed must be 1-64 id characters");
+  });
+});
+
+// OWNER 29.10. („[Zitat entfernt]“): auch ein pi-Sitz bekommt die
+// Übergabe-Schwelle. Dieselbe Zeile, derselbe Entscheid — nur der Harness-Filter öffnet sich
+// (server/succession.ts#onHandoverBand, server.ts#successionThresholdOff/#tickMigrate).
+describe("die pi-Sitze liegen auf Fleets Übergabe-Band", () => {
+  const t = thresholdOf("session", 40, null);
+  const off = (o: { harness?: string; steward?: boolean; awaitingOwner?: boolean; pinned?: boolean; fleetPct?: number;
+    threshold?: typeof t } = {}) => thresholdOffOf({ steward: false, awaitingOwner: false, pinned: true, harness: "claude",
+      fleetPct: 44, threshold: t, ...o });
+  test("Claude und jeder pi-Adapter liegen darauf, Codex und der Container nicht", () => {
+    for (const h of ["claude", "pi", "pi-zai", "pi-zai-unfenced", "pi-unfenced", "pi-deepseek"])
+      expect(onHandoverBand(h)).toBe(true);
+    for (const h of ["codex", "container", "ein-anderer-agent"]) expect(onHandoverBand(h)).toBe(false);
+  });
+  test("ein pi-Sitz feuert bei 40/45 wie ein Claude-Sitz — kein „harness“ mehr", () => {
+    for (const h of ["claude", "pi-zai", "pi-deepseek"]) expect(off({ harness: h })).toBeNull();
+    expect(off({ harness: "codex" })).toBe("harness");
+    expect(off({ harness: "container" })).toBe("harness");
+  });
+  test("die Reihenfolge der Gründe bleibt: Steward, Warten, kein Pin, Harness, Hauptschalter, Basis 0", () => {
+    expect(off({ steward: true, pinned: false, harness: "codex" })).toBe("steward");
+    expect(off({ awaitingOwner: true, pinned: false, harness: "codex" })).toBe("waiting");
+    expect(off({ pinned: false, harness: "codex" })).toBe("unpinned");
+    expect(off({ fleetPct: 0, harness: "pi-zai" })).toBe("fleet");
+    expect(off({ harness: "pi-zai", threshold: thresholdOf("session", 0, null) })).toBe("rail");
+    expect(off({ harness: "pi-zai", threshold: thresholdOf("session", 44, 0) })).toBe("session");
+    expect(off({ harness: "pi-zai", threshold: thresholdOf("session", 44, null, true) })).toBe("setup");
+  });
+  test("an der Obergrenze übergibt ein pi-Sitz an dieselbe Harness und dasselbe Modell; an der Basis kommt nur der Hinweis", () => {
+    // die Start-Fassung der Nachfolgerin: kein Wechsel auf Claude, kein Modellwechsel
+    expect(successorSpawnOf(null, { harness: "pi-zai", model: "glm-5.3", effort: "high" }))
+      .toEqual({ ok: true, changed: false, pick: { harness: "pi-zai", model: "glm-5.3", effort: "high" } });
+    expect(successorSpawnOf(null, { harness: "pi-deepseek", model: "deepseek-flash", effort: null }))
+      .toEqual({ ok: true, changed: false, pick: { harness: "pi-deepseek", model: "deepseek-flash", effort: null } });
+    // der Übergabe-Entscheid: bei „succeed“ handelt Fleet erst an der Obergrenze, vorher nur der Hinweis
+    const pi = thresholdOf("session", 44, null);
+    const act = (fill: number, choice: ThresholdChoice) => actDecision({ choice, step: thresholdStep(fill, pi, "unbekannt"),
+      resting: true, hinted: true, hintOn: true, cold: false, atCap: fill >= pi.capPct, actedAt: null, retryMs: 60_000, now: NOW });
+    expect(act(46, "succeed")).toEqual({ act: null, reason: "not-due" });
+    expect(act(50, "succeed")).toEqual({ act: "succeed", reason: "due" });
+    // die eine Zeile, die der pi-Sitz zu lesen bekommt: derselbe Text, nur der Agent heißt Pi
+    const piFacts = (choice: ThresholdChoice) => ({ fillPct: 46, usedTokens: 460_000, windowTokens: 1_000_000,
+      threshold: pi, cache: "unbekannt" as const, choice, step: thresholdStep(46, pi, "unbekannt"), agent: "Pi" });
+    expect(hintText(piFacts("hint"))).toContain("Fleet does not hand over itself, you choose the point");
+    expect(hintText(piFacts("succeed"))).toContain("Fleet opens a new session itself from 49 %");
+    expect(hintText(piFacts("compact"))).toContain("Pi summarizes the conversation and you keep working");
+    expect(hintText({ ...piFacts("compact"), agent: undefined })).toContain("Claude summarizes the conversation");
   });
 });

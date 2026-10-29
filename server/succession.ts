@@ -302,6 +302,27 @@ export type SessionKind = "orchestrator" | "program-main" | "bau" | "lane" | "se
 const FLEET_BASE_PCT: Record<SessionKind, number> = { orchestrator: 45, "program-main": 40, bau: 40, lane: 37, session: 40 };
 export const CAP_GAP_PCT = 5;
 export interface Threshold { kind: SessionKind; basePct: number; capPct: number; from: "session" | "env" | "fleet" | "setup" }
+// DIE HARNESSES AUF FLEETS ÜBERGABE-BAND (S3): Claude und die pi-Adapter. Beide messen ihren Füllstand durch
+// ihren `context`-Leser und ihre Unterhaltung durch ihren eigenen Leser (`conversation`), also kann derselbe
+// Takt sie hinweisen und übergeben. Codex bleibt draußen: es kompaktiert sein Fenster selbst (Owner 06.09.);
+// der Container, weil er keine lesbare Usage-Datei hat. Eine unbekannte Harness bleibt draußen, bis ihr
+// Leser da ist — nicht „0 %“, sondern „nicht meine Sache“ (server.ts#tickMigrate).
+export function onHandoverBand(harnessId: string): boolean {
+  return harnessId === "claude" || harnessId.startsWith("pi");
+}
+// WARUM AN DIESER SESSION KEINE SCHWELLE FEUERT (server.ts#successionThresholdOff), in der Reihenfolge, in
+// der der Takt die Gründe prüft. Reine Logik: der Aufrufer liest Steward, Warten, Pin und Harness am Slot.
+export type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | "setup";
+export function thresholdOffOf(f: { steward: boolean; awaitingOwner: boolean; pinned: boolean; harness: string;
+  fleetPct: number; threshold: Threshold }): ThresholdOff | null {
+  if (f.steward) return "steward";
+  if (f.awaitingOwner) return "waiting";
+  if (!f.pinned) return "unpinned";
+  if (!onHandoverBand(f.harness)) return "harness";
+  if (f.fleetPct <= 0) return "fleet";        // der Hauptschalter: ohne ihn wird gar kein Takt registriert
+  if (f.threshold.basePct <= 0) return f.threshold.from === "session" ? "session" : f.threshold.from === "setup" ? "setup" : "rail";
+  return null;
+}
 // `envPct`: der Env-Wert der Schiene, null = nicht gesetzt; 0 schaltet die Schiene ab (basePct 0).
 // `ownPct`: der eigene Wert der Session (HandoverSetting.thresholdPct), null = keiner; 0 = „Aus“ für diese Session
 // (K9 S3c, Owner 14.10.: „[Zitat entfernt]“): Basis 0, also weder Hinweis noch Handlung.
@@ -450,7 +471,10 @@ export class HintLedger {
 // Eine Lane gibt mit ihrem handoff-Report weiter (server.ts#succeedLane), jede andere Session mit der
 // stehenden Übergabe, die auch die Owner-Tür ohne Turn liest (server.ts#handleOwnerSucceed).
 export interface HintFacts { fillPct: number; usedTokens: number; windowTokens: number; threshold: Threshold; step: ThresholdStep;
-  cache: CacheState; choice: ThresholdChoice }
+  cache: CacheState; choice: ThresholdChoice;
+  // der Name des Agenten, der beim Compact zusammenfasst (default „Claude“, damit der Claude-Text unverändert bleibt);
+  // ein pi-Sitz liest „Pi“ statt „Claude“
+  agent?: string }
 export function hintText(f: HintFacts): string {
   const lane = f.threshold.kind === "lane";
   const why = f.step !== "due" ? "" : f.fillPct >= f.threshold.capPct ? " The cap is reached."
@@ -462,7 +486,7 @@ export function hintText(f: HintFacts): string {
   const handover = `a standing handover (POST /api/self/handover, \`intent\` OR \`pointer\`, ${token})`;
   const when = `From ${f.threshold.capPct} % or shortly before your cache goes cold`;
   if (f.choice === "compact")
-    return `${head}${when} Fleet types \`/compact\` as soon as you are idle: Claude summarizes the conversation and you keep working. `
+    return `${head}${when} Fleet types \`/compact\` as soon as you are idle: ${f.agent ?? "Claude"} summarizes the conversation and you keep working. `
       + `${lane ? "Commit your state first." : `Write what the summary must not lose into ${handover} first.`}`;
   // DIE SESSION GIBT SELBST WEITER (Owner 07.08.: „[Zitat entfernt]“; 18.10.: die
   // Session ruft die Übergabe auf, nicht das System): Fleets neue Session ist nur der Rückfall

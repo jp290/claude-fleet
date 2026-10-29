@@ -15,7 +15,7 @@ export type Choice = NonNullable<BriefSuccession["atThreshold"]>;
 export const OFF_WHY: Record<NonNullable<BriefSuccession["thresholdOff"]>, string> = {
   fleet: "not switched on in this Fleet",
   rail: "set to 0 for this kind of session",
-  harness: "only for Claude sessions",
+  harness: "this agent is not on Fleet's handover band",
   steward: "the planning session is never asked",
   waiting: "it is waiting for you",
   unpinned: "no conversation to measure yet",

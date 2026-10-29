@@ -7706,10 +7706,10 @@ export async function run(): Promise<void> {
     const stewardId = await openPlain("⚙ steward");
     const unknownId = await openPlain("migrate-unknown", fleetSeatDir("migrate-unknown"));
     // TWO MORE CONTROLS, 2026-09-13. `boundId` is a claude MAIN the planted Program below binds, so
-    // the main rail has an unbound AND a bound reader of the same 50%. `piId` is a FOREIGN harness
-    // at the same fill: the stand-in `pi` makes it probe `alive`, and the restart below arms
-    // FLEET_HARNESS_AUTOMATION, so canDeliver would admit it — only the tick's claude filter keeps it
-    // silent. Without both of those the "no prompt" row would measure the harness gate instead.
+    // the main rail has an unbound AND a bound reader of the same 50%. `piId` is a pi adapter at the
+    // same fill: the stand-in `pi` makes it probe `alive`, and the restart below arms
+    // FLEET_HARNESS_AUTOMATION, so canDeliver admits it — since Owner 29.10. a pi seat is ON Fleet's
+    // handover band (server/succession.ts#onHandoverBand), so its row is a DELIVERED nudge, not silence.
     const boundId = await openPlain("migrate-bound-main");
     // THE ORCHESTRATORIN'S OWN ROW (K9 S3, Owner 13.10.: „[Zitat entfernt]“
     // ): the one slot the role address resolves to, at the same 50 %
@@ -8000,13 +8000,13 @@ export async function run(): Promise<void> {
       check("GET /api/self names the session's own fill and threshold: the lane at 50 % against its 44, cap 49",
         laneCtx?.fill?.pct === 50 && laneCtx.kind === "lane" && laneCtx.basePct === 44 && laneCtx.capPct === 49
           && laneCtx.from === "env" && laneCtx.off === null && laneCtx.hint === true, JSON.stringify(laneCtx));
-      // THE MEASUREMENT IS NOT THE PRESSURE (owner, 2026-09-06): contextFill answers for a pi slot
-      // too, and the board must still not read it as a handover band. The fill is served, the
-      // threshold is off, and the reason names the harness rather than leaving a blank.
+      // A PI SEAT IS ON THE BAND (Owner 29.10.: „[Zitat entfernt]“;
+      // the band is server/succession.ts#onHandoverBand). The board reads the same row a claude session
+      // gets: the measured fill, the env base and cap, and no harness gate.
       const piSucc = await succOf(piId);
-      check("succession facts: a non-claude slot at the same 50% is served its fill and NO threshold, named as the harness gate",
-        piSucc?.fill?.pct === 50 && piSucc.thresholdPct === null && piSucc.thresholdOff === "harness"
-          && piSucc.nudges === 0, JSON.stringify(piSucc));
+      check("succession facts: a pi slot at 50% is on the handover band — fill, 44/49 from the env and no harness gate",
+        piSucc?.fill?.pct === 50 && piSucc.thresholdPct === 44 && piSucc.capPct === 49 && piSucc.thresholdOff === null,
+        JSON.stringify(piSucc));
       // the codex reading is SHOWN — the measured fill is honest display — and nothing follows from it
       const codexSucc = await succOf(codexId);
       check("succession facts: a codex slot at 50% is served its measured fill and NO threshold, off as the harness gate",
@@ -8061,15 +8061,16 @@ export async function run(): Promise<void> {
       `main=${(await migratePrompts(mainId)).length} lane=${(await migratePrompts(lane.slot)).length}`);
     // Read AFTER the main, lane and bound prompts arrived plus four more ticks, so the pi slot sat
     // in every one of those `due` scans at 50%, alive, with harness automation on. BREAKS IF: the
-    // claude filter in tickMigrate is removed — the stand-in accepts the paste and this counts 1.
-    check("tickMigrate never nudges a NON-claude harness slot above the threshold, while the claude slots beside it were nudged",
-      (await migratePrompts(piId)).length === 0 && (await migratePrompts(mainId)).length === 1
+    // band gate in tickMigrate (server/succession.ts#onHandoverBand) drops the pi adapters again —
+    // the stand-in accepts the paste and this counts 0.
+    check("tickMigrate nudges a pi slot above the threshold, once, like the claude slots beside it",
+      (await migratePrompts(piId)).length === 1 && (await migratePrompts(mainId)).length === 1
         && (await migratePrompts(boundId)).length === 1,
       `pi=${(await migratePrompts(piId)).length} main=${(await migratePrompts(mainId)).length} bound=${(await migratePrompts(boundId)).length}`);
     // THE DIRECT CODEX CASE, read over the same ticks: a live, deliverable codex pane at a measured
-    // 50 % gets no context nudge of any kind. BREAKS IF: tickMigrate's claude gate (both the scan
-    // and the post-await re-check) is narrowed or dropped — the stand-in accepts the paste or the
-    // send fails on it, and either way the prompt journal counts 1.
+    // 50 % gets no context nudge of any kind. BREAKS IF: tickMigrate's band gate (both the scan
+    // and the post-await re-check) admits codex — the stand-in accepts the paste or the send fails
+    // on it, and either way the prompt journal counts 1.
     check("tickMigrate never nudges a CODEX slot above the threshold — native compaction, no Fleet context succession",
       (await migratePrompts(codexId)).length === 0
         && !(await plogRead()).some((e) => e.slot === codexId && e.openedAt === migrateOccupant.get(codexId)

@@ -250,9 +250,9 @@ import { checkCmdProblem, confirmedCheck, OWN_MERGE_CHECK, proposeCheck, readRep
 import { endLandedBranches, endParkedInstances, heldBy, type BranchEnd, type EndDeps, type EndHolds, type Instance } from "./server/branch-ende";
 import { landedIn, tickRounds, type RoundDeps } from "./server/runde";
 import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-blick";
-import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, orchestratorContextLine, ownSetting,
-  rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdStep, warmDecision, warmTextInput,
-  type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type WarmDecision } from "./server/succession";
+import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, onHandoverBand, orchestratorContextLine, ownSetting,
+  rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput,
+  type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { piCacheFact, piLastUsage, type PiUsage } from "./server/pi-cache";
@@ -264,7 +264,7 @@ import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
-import { eigenerModus, leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
+import { eigenerModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
@@ -22048,7 +22048,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
         rechteZeilen(o.rechte ?? null, [o.rolle === "program-main" ? "program-main" : o.rolle === "orchestrator" ? "orchestrator"
           : o.rolle === "lane" ? "lane" : "generic"], o.harness).join("\n"), true), ...fleet.darf, ...umfeld.darf],
-    arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, steward: false, eigen: null,
+    arbeitet: [...fassungArbeitetFuerPlan(o.rolle, o.harness, o.repoRoot), ...fassungLaufwerte({ art, claude, onBand: onHandoverBand(o.harness), steward: false, eigen: null,
       wahl: fleetChoiceOf(art), warmFleet: art === "orchestrator" || art === "program-main", eigenesSetup: eigen }), ...umfeld.arbeitet],
     claudeCode: o.claudeCode ?? null,
   });
@@ -22137,14 +22137,11 @@ const KEEP_CACHE_AUS_WORT: Record<KeepCacheExempt, string> = {
   steward: "the steward is not kept warm", lane: "a lane hands over with its handoff report and is not kept warm",
   harness: "only a Claude session has the measured cache lifetime",
 };
-function fassungLaufwerte(o: { art: SessionKind; claude: boolean; steward: boolean; eigen: HandoverSetting | null;
+function fassungLaufwerte(o: { art: SessionKind; claude: boolean; onBand: boolean; steward: boolean; eigen: HandoverSetting | null;
   wahl: ThresholdChoice; warmFleet: boolean; eigenesSetup: boolean }): FassungAbschnittEingang[] {
   const t = thresholdOf(o.art, railEnvPct(o.art), o.eigen?.thresholdPct ?? null, o.eigenesSetup);
-  const aus = o.steward ? "the steward does not hand over" : !o.claude ? "only a Claude session is on the handover track"
-    : MIGRATE_PCT <= 0 ? "FLEET_MIGRATE_PCT is 0, Fleet has no handover tick"
-    : t.basePct <= 0 ? (t.from === "session" ? "switched off for this session"
-      : t.from === "setup" ? "own setup — Fleet types no note and does not hand over until you pick a threshold (field schwelle)"
-      : `${o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT"} is 0`) : null;
+  // die Schwelle folgt dem Band (Claude + pi), das Warmhalten bleibt Claudes gemessene Cache-Lebensdauer
+  const aus = schwelleAus({ steward: o.steward, onBand: o.onBand, fleetPct: MIGRATE_PCT, art: o.art, basePct: t.basePct, from: t.from });
   const exempt: KeepCacheExempt | null = o.steward ? "steward" : o.art === "lane" ? "lane" : !o.claude ? "harness" : null;
   return [
     schwelleAbschnitt({ art: o.art, basePct: t.basePct, capPct: t.capPct, von: t.from, envName: o.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT",
@@ -22159,7 +22156,8 @@ function fassungLaufwerteFuer(s: Slot, eigenesSetup = spawnImEigenenSetup(s)): F
   const live = slots.includes(s);
   const art: SessionKind = live ? sessionKindOf(s) : s.worktree ? "lane" : isOrchestratorLabel(s.label) ? "orchestrator"
     : boundProgramsForMain(s).length ? "program-main" : s.cwd && isBauCwd(s.cwd) ? "bau" : "session";
-  return fassungLaufwerte({ art, claude: harnessOf(s.harness) === CLAUDE_HARNESS, steward: s.label === STEWARD_LABEL, eigen: ownHandover(s),
+  return fassungLaufwerte({ art, claude: harnessOf(s.harness) === CLAUDE_HARNESS, onBand: onHandoverBand(harnessOf(s.harness).id),
+    steward: s.label === STEWARD_LABEL, eigen: ownHandover(s),
     wahl: thresholdChoiceOf(s, art), warmFleet: live ? keepCacheFleetOn(s) : art === "orchestrator" || art === "program-main", eigenesSetup });
 }
 
@@ -28538,9 +28536,7 @@ function migrateRailOf(s: Slot): MigrateRail {
 // THE THRESHOLD IS THE EFFECTIVE ONE, never the raw env. FLEET_MIGRATE_PCT = 0 leaves tickMigrate
 // unregistered (the setInterval at the bottom of this file), which turns the LANE rail's own 40 off
 // with it; a board printing 40 there would name a gate that cannot fire. Every other `off` reason
-// is one of the tick's own skips, in the order the tick applies them. `session` is the owner's „[Zitat entfernt]“ for
-// this one session (HandoverSetting.thresholdPct HANDOVER_PCT_OFF, K9 S3c), `rail` a 0 on its kind's env.
-type ThresholdOff = "steward" | "waiting" | "unpinned" | "harness" | "fleet" | "rail" | "session" | "setup";
+// is one of the tick's own skips, in the order the tick applies them (server/succession.ts#thresholdOffOf).
 interface SuccessionFacts {
   rail: "lane" | MigrateRail;
   // THE ROW OF THE THRESHOLD TABLE (K9 S3): the kind of session, the base the hint comes at
@@ -28646,13 +28642,8 @@ function selfContextView(s: Slot): Record<string, unknown> {
 }
 const handoverNudgeOn = (s: Slot): boolean => !(s.handover && s.handover.occupant.openedAt === s.openedAt && !s.handover.nudge);
 function successionThresholdOff(s: Slot, t: Threshold): ThresholdOff | null {
-  if (s.label === STEWARD_LABEL) return "steward";
-  if (s.awaiting === "owner") return "waiting";
-  if (!s.sessionId) return "unpinned";
-  if (harnessOf(s.harness) !== CLAUDE_HARNESS) return "harness";
-  if (MIGRATE_PCT <= 0) return "fleet";        // the master switch: no tick is registered at all
-  if (t.basePct <= 0) return t.from === "session" ? "session" : t.from === "setup" ? "setup" : "rail";
-  return null;
+  return thresholdOffOf({ steward: s.label === STEWARD_LABEL, awaitingOwner: s.awaiting === "owner", pinned: !!s.sessionId,
+    harness: harnessOf(s.harness).id, fleetPct: MIGRATE_PCT, threshold: t });
 }
 // A PROGRAM-MAIN'S LINE IS ITS PROGRAM (docs/self-api.md §Linien-Record): it never carries a
 // lineage record, so its sessions are the Program's own lineage entries up to the one holding now.
@@ -28759,9 +28750,9 @@ function patchHandover(s: Slot, body: Record<string, unknown> | null): Response 
   if (at && !at.ok) return json({ refusal: at.refusal, error: at.refusal === "lane-succeed"
     ? "a lane hands over by its own handoff report — at the threshold it takes the hint or Compact, not a new session"
     : "atThreshold must be null, hint, compact or succeed" }, at.refusal === "lane-succeed" ? 409 : 400);
-  // the band is claude's (tickMigrate skips every other harness before it reads the fill): a setting
-  // there would name a gate that cannot fire, so it is refused rather than stored
-  if (harnessOf(s.harness) !== CLAUDE_HARNESS)
+  // the band is Fleet's own (tickMigrate skips every agent outside it before it reads the fill): a
+  // setting there would name a gate that cannot fire, so it is refused rather than stored
+  if (!onHandoverBand(harnessOf(s.harness).id))
     return json({ refusal: "harness", error: `${s.harness ?? "this harness"} is not on the handover band — nothing would act on a setting` }, 409);
   const cur = s.handover && s.handover.occupant.openedAt === s.openedAt ? s.handover : null;
   const next: HandoverSetting = {
@@ -29166,17 +29157,27 @@ async function pastTranscript(s: Slot, n: number, after: number) {
 // FRESH_TAIL_MAX). A handover written three hours ago over a pane that has rested since is fresh; one
 // written ten minutes ago before 30 000 characters of work is not, and the nudge then asks for a new
 // one. An unreadable rest is never fresh (cannot tell is not "nothing lost"). Memoised per occupant on
-// (handover, transcript file, its size and mtime): the answer cannot change while the conversation
+// (handover, conversation file, its size and mtime): the answer cannot change while the conversation
 // file did not, so a slot that sits past its cooldown does not re-read it every tick. KEYED ON THE
 // FILE, NOT ON `lastOutput` (MAIN review of this cut): lastOutput is a pane-activity proxy whose
 // refresh a quiet window (our own paste echo, a resize repaint) and title-only bytes suppress on
 // purpose, so a transcript could grow past the cap behind an unchanged lastOutput and a memoised
-// "fresh" would never be asked again. tickMigrate is claude-only, so transcriptFile names the file.
+// "fresh" would never be asked again. The file is Claude's transcript or the harness's own
+// conversation file (pi's session jsonl) — the same file freshTranscriptTail reads through.
 const migrateFreshMemo = new Map<number, { key: string; fresh: boolean }>();
+// THE FILE WHOSE SIZE SAYS WHETHER THE CONVERSATION GREW after a standing handover: Claude's transcript,
+// or the harness's own conversation file (pi's session jsonl, resolved by identity exactly as the
+// context reader resolves it). null = this agent keeps no file Fleet reads.
+function conversationFile(s: Slot): string | null {
+  const transcript = transcriptFile(s);
+  if (transcript) return transcript;
+  const conv = harnessOf(s.harness).conversation;
+  return conv && s.cwd && s.sessionId ? conv.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
+}
 async function standingHandoverFresh(s: Slot): Promise<boolean> {
   const standing = liveStandingHandover(s);
   if (!standing) return false;
-  const file = transcriptFile(s);
+  const file = conversationFile(s);
   if (!file) return false;
   let stat: { size: number; mtimeMs: number };
   try { stat = statSync(file); } catch { return false; }
@@ -29203,11 +29204,12 @@ async function tickMigrate(): Promise<void> {
   const acts: { s: Slot; sessionId: string; facts: HintFacts }[] = [];
   for (const s of slots) {
     if (!s.cwd || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
-    // CLAUDE ONLY, on both rails. contextFill answers for codex/pi/pi-zai too, but the handover band
-    // is a claude fact: Codex compacts its own window, and a Pi/GLM session at 80% is operating
-    // state, not succession pressure (owner, 2026-09-06). Another harness is „[Zitat entfernt]“
-    // , never "0%" — so it is skipped before the fill is read, not after.
-    if (harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
+    // THE HARNESSES ON FLEET'S BAND, on both rails (server/succession.ts#onHandoverBand): Claude and the
+    // pi adapters, which measure their fill through their `context` reader and their conversation through
+    // their own reader. Codex stays out because it compacts its own window natively (owner, 2026-09-06),
+    // the container because it has no readable usage file. Another agent is "not this tick's business",
+    // never "0%" — so it is skipped before the fill is read, not after.
+    if (!onHandoverBand(harnessOf(s.harness).id)) continue;
     // `awaiting === "owner"` above covers the clarify lane: it was told to stop and wait
     const threshold = thresholdFor(s);
     const fill = contextFill(s);
@@ -29218,7 +29220,7 @@ async function tickMigrate(): Promise<void> {
     const step = thresholdStep(fill.pct, threshold, cache.state, !keepCacheOn(s) && cacheCooling(cache, now));
     const choice = thresholdChoiceOf(s, threshold.kind);
     const facts: HintFacts = { fillPct: fill.pct, usedTokens: fill.usedTokens, windowTokens: fill.windowTokens, threshold, step,
-      cache: cache.state, choice };
+      cache: cache.state, choice, ...(harnessOf(s.harness).id === "claude" ? {} : { agent: "Pi" }) };
     // a session the owner switched the hint off for gets none (Slot.handover); its act still comes
     if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now, cache.state))
       due.push({ s, sessionId: s.sessionId, lane: threshold.kind === "lane", facts });
@@ -29241,7 +29243,7 @@ async function tickMigrate(): Promise<void> {
       // into a plain checkout (or back) during these awaits would otherwise be handed the other
       // rail's exit.
       if (!verdict.ok || s.sessionId !== sessionId || !s.cwd || (s.worktree !== null) !== lane
-        || harnessOf(s.harness) !== CLAUDE_HARNESS) continue;
+        || !onHandoverBand(harnessOf(s.harness).id)) continue;
       // asked after the delivery gate, so the transcript is read only for a hint that would go out.
       // NOT FOR A LANE: its standing handover is the stand its MAIN reads (handleSelfHandover), no
       // door hands a lane over on it, so it must not silence the lane's own hint.

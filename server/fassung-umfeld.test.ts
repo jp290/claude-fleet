@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { baueFassung, fuehreNach, textAbschnitt, type FassungEingang } from "./fassung";
-import { leseUmfeld, schwelleAbschnitt, umfeldAbschnitte, warmhaltenAbschnitt, type SchwelleFakten, type WarmFakten } from "./fassung-umfeld";
+import { leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, warmhaltenAbschnitt, type SchwelleFakten, type WarmFakten } from "./fassung-umfeld";
+import { onHandoverBand } from "./succession";
 import { setupDateien, umfeldZeilen } from "../src/fassung-umfeld-zeilen";
 
 const ordner: string[] = [];
@@ -255,5 +256,28 @@ describe("ein Sitz im eigenen Setup", () => {
     expect(zeile?.wert).toBe("Schemas am Start: 9 000 B von 74 818 B (Bash 7 000, Read 2 000)");
     expect(zeile?.titel).toContain("gemessen 2026-10-23 an claude 2.1.309 (.fleet/werkzeug-schemas.json)");
     expect(zeile?.titel).toContain("--tools Bash,Read");
+  });
+});
+
+// DIE START-FASSUNG DER NACHFOLGERIN (Owner 29.10.: auch ein pi-Sitz führt seine Nachfolge selbst): die
+// Schwelle wird jetzt für jeden Agenten auf Fleets Band gezeigt, nicht mehr nur für Claude. Dieselben zwei
+// Schritte, die server.ts#fassungLaufwerte geht — der Grund und dann der Satz.
+describe("ein pi-Sitz startet mit derselben Übergabe-Schwelle wie ein Claude-Sitz", () => {
+  const basis = { steward: false, onBand: onHandoverBand("pi-zai"), fleetPct: 44, art: "session", basePct: 40, from: "fleet" as const };
+  test("pi-zai und pi-deepseek zeigen 40/45 statt „off“; Codex bleibt mit Grund aus", () => {
+    for (const harness of ["pi-zai", "pi-deepseek"]) {
+      const f = { ...basis, onBand: onHandoverBand(harness) };
+      expect(schwelleAus(f)).toBeNull();
+      expect(schwelleAbschnitt({ art: "session", basePct: f.basePct, capPct: 45, von: "fleet", envName: "FLEET_MIGRATE_PCT",
+        aus: schwelleAus(f), wahl: "hint", hinweis: true }).text).toBe("Handover at 40 % · due at 45 % · at the threshold: note · note on");
+    }
+    expect(schwelleAus({ ...basis, onBand: onHandoverBand("codex") })).toBe("this agent is not on Fleet's handover track");
+    expect(schwelleAus({ ...basis, onBand: onHandoverBand("claude") })).toBeNull();
+  });
+  test("die anderen Gründe bleiben, wo sie waren", () => {
+    expect(schwelleAus({ ...basis, steward: true })).toBe("the steward does not hand over");
+    expect(schwelleAus({ ...basis, fleetPct: 0 })).toContain("FLEET_MIGRATE_PCT is 0");
+    expect(schwelleAus({ ...basis, basePct: 0, from: "session" })).toBe("switched off for this session");
+    expect(schwelleAus({ ...basis, art: "lane", basePct: 0, from: "env" })).toContain("FLEET_LANE_MIGRATE_PCT is 0");
   });
 });

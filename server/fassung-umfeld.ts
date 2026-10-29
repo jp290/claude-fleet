@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { textAbschnitt, unknownAbschnitt, type FassungAbschnittEingang } from "./fassung";
+import type { Threshold } from "./succession";
 
 export type QuellArt = "verwaltet" | "owner" | "repo" | "lokal";
 /** Die verwaltete Datei dieser Plattform (Claude Code liest sie vor allen anderen); null = es gibt keine. */
@@ -301,6 +302,19 @@ export function schwelleAbschnitt(f: SchwelleFakten): FassungAbschnittEingang {
     : f.von === "setup" ? "server/succession.ts#thresholdOf (own setup)" : `server/succession.ts#FLEET_BASE_PCT (${f.art})`;
   return textAbschnitt("schwelle", quelle, f.aus ? `Handover threshold off: ${f.aus}`
     : `Handover at ${f.basePct} % · due at ${f.capPct} % · at the threshold: ${WAHL_WORT[f.wahl]} · note ${f.hinweis ? "on" : "off"}`, true);
+}
+// WARUM EIN START KEINE SCHWELLE ZEIGT (server.ts#fassungLaufwerte): der Steward, ein Agent außerhalb von
+// Fleets Übergabe-Band (server/succession.ts#onHandoverBand), der Hauptschalter, oder eine Basis 0 für diese
+// Art. null = die Schwelle gilt. Dieselben Worte wie in der Fassung, geprüft im Zaun (fassung-umfeld.test.ts).
+export function schwelleAus(f: { steward: boolean; onBand: boolean; fleetPct: number; art: string;
+  basePct: number; from: Threshold["from"] }): string | null {
+  if (f.steward) return "the steward does not hand over";
+  if (!f.onBand) return "this agent is not on Fleet's handover track";
+  if (f.fleetPct <= 0) return "FLEET_MIGRATE_PCT is 0, Fleet has no handover tick";
+  if (f.basePct <= 0) return f.from === "session" ? "switched off for this session"
+    : f.from === "setup" ? "own setup — Fleet types no note and does not hand over until you pick a threshold (field schwelle)"
+    : `${f.art === "lane" ? "FLEET_LANE_MIGRATE_PCT" : "FLEET_MIGRATE_PCT"} is 0`;
+  return null;
 }
 export interface WarmFakten {
   readonly an: boolean; readonly von: "session" | "fleet"; readonly ausGrund: string | null; readonly ruheMin: number; readonly text: string;

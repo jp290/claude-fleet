@@ -3,7 +3,7 @@
 // Datei (ein Aufruf je Block: erst der Selbsttest des Zauns am /usr/bin/true, dann pi). Ein anderer Harness bleibt abgelehnt.
 // Jedes `life` ist ein Leben des Servers in eigenem Prozess (branches.drive.ts).
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit, persisted, post } from "./branches-testkit";
 
@@ -17,9 +17,12 @@ afterAll(cleanup);
 
 // der Zaun ist ohne Verbotswurzeln nicht zu bauen (server.ts#PI_ZAI_DENY_ROOTS); alles Private liegt im Temp-Ordner dieses Laufs
 const ZAUN = { FLEET_PI_ZAI_BWRAP: join(BIN, "bwrap"), FLEET_PI_ZAI_DENY_ROOTS: join(TMP, "deny-test"),
-  FLEET_PI_ZAI_AGENT_DIR: join(TMP, "pi-zai-agent"), FLEET_PI_ZAI_KEY_FILE: join(TMP, "pi-zai.key") };
+  FLEET_PI_ZAI_AGENT_DIR: join(TMP, "pi-zai-agent"), FLEET_PI_ZAI_KEY_FILE: join(TMP, "pi-zai.key"),
+  // pi-deepseek sitzt im selben Zaun (dieselben bwrap- und Verbots-Schalter), mit eigenem Agent-Verzeichnis und Schlüssel
+  FLEET_PI_DEEPSEEK_AGENT_DIR: join(TMP, "pi-deepseek-agent"), FLEET_PI_DEEPSEEK_KEY_FILE: join(TMP, "pi-deepseek.key") };
 // die Wache der Zeile verlangt eine nicht leere Schlüsseldatei; hier ein Platzhalter, nie ein echter Schlüssel
 writeFileSync(ZAUN.FLEET_PI_ZAI_KEY_FILE, "platzhalter\n");
+writeFileSync(ZAUN.FLEET_PI_DEEPSEEK_KEY_FILE, "platzhalter\n");
 const tokenOf = (f: ReturnType<typeof fixture>, slot: number): string => {
   const t = (persisted(f).slots as Record<string, { selfToken?: string }> | undefined)?.[String(slot)]?.selfToken;
   if (!t) throw new Error(`kein Self-Token für Slot ${slot}`);
@@ -54,14 +57,37 @@ describe("ein Claude-Sitz öffnet über die Self-Tür einen pi-zai-Sitz", () => 
     expect(binds).not.toContain(realpathSync(f.repo));
   }, 90_000);
 
+  // Owner 2026-10-29 („[Zitat entfernt]“): derselbe Weg für den gezäunten DeepSeek-Sitz
+  test("pi-deepseek: die Startzeile trägt denselben Zaun, und pi spricht mit deepseek", async () => {
+    // die Aufruf-Dateien gehören dem Slot, und der erste freie Slot ist in jedem Test derselbe: die des pi-zai-Tests weg
+    for (const name of readdirSync(ARGV)) rmSync(join(ARGV, name));
+    const f = fixture();
+    const [b, o] = await life(f, [post("/api/branches", { repo: f.repo, name: "DeepSeek-Sitz" }),
+      post("/api/slots/12/open", { cwd: f.repo, label: "Claude-Öffnerin" }), "save"], ZAUN);
+    expect([b?.status, o?.status]).toEqual([201, 200]);
+    const [c] = await life(f, [als(tokenOf(f, 12), post("/api/self/branches/open",
+      { branch: String(b?.body.branch), harness: "pi-deepseek", model: "deepseek-v4-pro" })), "save"], ZAUN);
+    expect(c?.status).toBe(200);
+    const slot = Number(c?.body.slot);
+    expect((persisted(f).slots as Record<string, { harness?: string }>)[String(slot)]?.harness).toBe("pi-deepseek");
+    const [selbsttest, pi] = await aufrufe(slot);
+    expect(selbsttest?.at(-1)).toBe("/usr/bin/true");
+    expect(pi).toContain("--unshare-all");
+    expect(pi?.slice(pi.indexOf("pi"), pi.indexOf("pi") + 3)).toEqual(["pi", "--provider", "deepseek"]);
+    const worktree = realpathSync(String(c?.body.path ?? c?.body.cwd));
+    const binds = (pi ?? []).flatMap((a, i, all) => (a === "--bind" ? [all[i + 1]] : []));
+    expect(binds).toContain(worktree);
+    expect(binds).not.toContain(realpathSync(f.repo));
+  }, 90_000);
+
   test("ein anderer Harness bleibt abgelehnt, mit dem heutigen Satz", async () => {
     const f = fixture();
     const [b, o] = await life(f, [post("/api/branches", { repo: f.repo, name: "Kein anderer" }),
       post("/api/slots/12/open", { cwd: f.repo, label: "Claude-Öffnerin" }), "save"], ZAUN);
     expect([b?.status, o?.status]).toEqual([201, 200]);
-    const antworten = await life(f, [...["pi-zai-unfenced", "pi", "pi-deepseek", "codex"].map((harness) =>
+    const antworten = await life(f, [...["pi-zai-unfenced", "pi", "pi-unfenced", "codex"].map((harness) =>
       als(tokenOf(f, 12), post("/api/self/branches/open", { branch: String(b?.body.branch), harness }))), "save"], ZAUN);
-    for (const [i, harness] of ["pi-zai-unfenced", "pi", "pi-deepseek", "codex"].entries()) {
+    for (const [i, harness] of ["pi-zai-unfenced", "pi", "pi-unfenced", "codex"].entries()) {
       expect(antworten[i]?.status).toBe(409);
       expect(String(antworten[i]?.body.error)).toContain(`harness ${harness} is not yours (claude)`);
     }

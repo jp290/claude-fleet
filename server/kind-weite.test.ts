@@ -17,8 +17,8 @@ describe("eine Öffnerin unter dem Klassifizierer", () => {
       expect(r.ok ? "geöffnet" : r.error).toContain("harness codex is not yours (claude)");
     }
   });
-  test("öffnet keinen anderen Harness, auch keinen unbekannten — außer dem gezäunten pi-zai-Sitz", () => {
-    for (const harness of ["pi", "pi-unfenced", "pi-zai-unfenced", "pi-deepseek", "container", "gibtsnicht"]) {
+  test("öffnet keinen anderen Harness, auch keinen unbekannten — außer den gezäunten pi-zai- und pi-deepseek-Sitzen", () => {
+    for (const harness of ["pi", "pi-unfenced", "pi-zai-unfenced", "container", "gibtsnicht"]) {
       const r = kindNieWeiter(AUTO, { branch: "b", harness });
       expect(r.ok ? "geöffnet" : r.error).toContain(`harness ${harness} is not yours (claude)`);
     }
@@ -30,13 +30,23 @@ describe("eine Öffnerin unter dem Klassifizierer", () => {
       expect(r).toEqual({ ok: true, body: { branch: "b", goal: "g", harness: "pi-zai", rechte: null } });
     }
   });
-  test("die Aufgaben-Türen (spawnNieWeiter) öffnen weiter kein pi-zai: die Ausnahme gilt der Branch-Tür", () => {
-    expect(spawnNieWeiter(AUTO, { harness: "pi-zai" }).ok).toBe(false);
+  // Owner 2026-10-29 („[Zitat entfernt]“): pi-deepseek sitzt im selben Zaun wie pi-zai
+  test("öffnet einen pi-deepseek-Sitz: ein ok, und der Body behält pi-deepseek", () => {
+    for (const modus of ["auto", null] as const) {
+      const r = kindNieWeiter({ ...AUTO, modus }, { branch: "b", goal: "g", harness: "pi-deepseek" });
+      expect(r).toEqual({ ok: true, body: { branch: "b", goal: "g", harness: "pi-deepseek", rechte: null } });
+    }
   });
-  test("die pi-zai-Ausnahme gilt nur für die Claude-Öffnerin; Codex öffnet kein pi-zai", () => {
+  test("die Aufgaben-Türen (spawnNieWeiter) öffnen weiter kein pi-zai und kein pi-deepseek: die Ausnahme gilt der Branch-Tür", () => {
+    expect(spawnNieWeiter(AUTO, { harness: "pi-zai" }).ok).toBe(false);
+    expect(spawnNieWeiter(AUTO, { harness: "pi-deepseek" }).ok).toBe(false);
+  });
+  test("die Ausnahme gilt nur für die Claude-Öffnerin; Codex öffnet weder pi-zai noch pi-deepseek", () => {
     for (const o of [CODEX("danger-full-access", "on-request"), CODEX("workspace-write", "never"), CODEX("read-only", "on-request")]) {
-      const r = kindNieWeiter(o, { branch: "b", harness: "pi-zai" });
-      expect(r.ok ? "geöffnet" : r.error).toContain("harness pi-zai is not yours (codex)");
+      for (const harness of ["pi-zai", "pi-deepseek"]) {
+        const r = kindNieWeiter(o, { branch: "b", harness });
+        expect(r.ok ? "geöffnet" : r.error).toContain(`harness ${harness} is not yours (codex)`);
+      }
     }
   });
   test("die Rechte des pi-zai-Kindes werden weiter verglichen: nicht freier als die der Öffnerin", () => {

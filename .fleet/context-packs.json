@@ -211,6 +211,25 @@
     "personal": true
   },
   {
+    "id": "proaktiv-arbeiten",
+    "useWhen": "Read at your start, and whenever you catch yourself about to ask for a step you could decide yourself.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "proaktiv-arbeiten.text", "path": "docs/packs/proaktiv-arbeiten.md", "anchor": "# Working proactively for this owner", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2953,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active",
+    "personal": true
+  },
+  {
     "id": "how-fleet-remembers",
     "useWhen": "When you have learned something and must decide where the note belongs.",
     "scope": "repo-contract",
@@ -315,6 +334,24 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 4572,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "gezaeunter-sitz",
+    "useWhen": "Read when a step fails like the environment: a fixture wanting ~/claude-fleet, no /var, no USB, fleet.json as a device.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "gezaeunter-sitz.text", "path": "docs/packs/gezaeunter-sitz.md", "anchor": "# Working inside Fleet's fence", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 2287,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

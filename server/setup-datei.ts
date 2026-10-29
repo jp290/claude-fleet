@@ -422,19 +422,23 @@ export function roleStein(id: string, dir: string | null | undefined, root = FLE
 }
 
 /** Rolle und Konzepte, die ein eigener Agent als Steine wählt: aus dem Regal oder aus Fleet's Rollen, die Konzepte aus Regal oder Ledger. */
-export function steineFuerAgentWahl(wahlen: Wahlen | null | undefined, dir: string | null | undefined, root = FLEET_ROOT, konzeptRoot: string | null = null):
-  { role: SetupRole | null; concepts: SetupConcept[]; block: string | null } {
+export function steineFuerAgentWahl(wahlen: Wahlen | null | undefined, dir: string | null | undefined, root = FLEET_ROOT, konzeptRoot: string | null = null,
+  ohnePersoenliches = false): { role: SetupRole | null; concepts: SetupConcept[]; block: string | null; weggelassen: string[] } {
   const role = typeof wahlen?.rolle === "string" ? roleStein(wahlen.rolle, dir, root)?.role ?? null : null;
   const ids = Array.isArray(wahlen?.konzepte) ? wahlen.konzepte.filter((x): x is string => typeof x === "string") : [];
   const shelf = ids.length && dir ? liesShelf(dir) : null;
+  const weggelassen: string[] = [];
   const concepts = ids.flatMap((id): SetupConcept[] => {
     const ausShelf = shelf?.concepts.find((c) => c.id === id && c.text !== null);
+    // die Datengrenze am Text (server/datengrenze.ts): ein Sitz, der nicht Anthropic ist, bekommt kein persönliches Konzept
+    if (ausShelf && ohnePersoenliches && ausShelf.personal === true) { weggelassen.push(id); return []; }
     if (ausShelf) return [ausShelf];
     const c = liesKonzept(konzeptRoot, id);
+    if (c && ohnePersoenliches && c.personal) { weggelassen.push(id); return []; }
     return c ? [{ kind: "concept", id: c.id, version: c.version, hash: c.hash, text: c.text, ...(c.personal ? { personal: true as const } : {}),
       ...(c.author ? { author: c.author } : {}), ...(c.purpose ? { purpose: c.purpose } : {}), ...(c.validity ? { validity: c.validity } : {}) }] : [];
   });
-  return { role, concepts, block: role || concepts.length ? startBlockAusSteinen(role, concepts) : null };
+  return { role, concepts, block: role || concepts.length ? startBlockAusSteinen(role, concepts) : null, weggelassen };
 }
 
 /** Der leere Platz der Richtung, wie ein Sitz ihn in seinem Start liest: die Person füllt ihn, oder der Sitz startet ohne. */

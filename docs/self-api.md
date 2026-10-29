@@ -3655,7 +3655,9 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | `{kind:"session",slot}` auf einen Slot ohne lebende Session | 400 | `to session slot <n> holds no live session — without openedAt the address names the session in that slot now` |
 | Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
 | GET/read ohne jede Adresse | 409 | `not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator` |
-| Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo, programId — […] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` |
+| Fremder Body-Schlüssel | 400 | `body reads only to, payload, idempotencyKey, replyTo, programId, personal — […] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` |
+| `personal` kein Boolean | 400 | `personal must be true or false` |
+| `personal:true` an einen Sitz, der nicht Anthropic ist (Harness ≠ Claude oder Modell nicht im Register unter claude; Unbekanntes zählt als nicht Anthropic) | 409 | `personal message <key> is not delivered to a non-Anthropic seat: <harness>/<model>` — die Nachricht wird nicht geschrieben (server/datengrenze.ts) |
 | `payload.kind` unbekannt | 400 | `payload kind must be one of text` |
 | `payload.text` leer/über 2000 | 400 | `payload text must be a non-empty string of at most 2000 chars` |
 | `idempotencyKey` leer/über 200 | 400 | `idempotencyKey must be a non-empty string of at most 200 chars` |

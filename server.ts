@@ -16,6 +16,7 @@ import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
 import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, selbstGeerbt, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
+import { istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
@@ -3241,9 +3242,9 @@ const samePayload = (a: MessagePayload, b: MessagePayload): boolean =>
 // inbox producers (recordLand, writeAuditInboxEntries) scan live entries for the same reason and
 // carry the same limit. This is explicitly NOT an exactly-once promise; docs/self-api.md says so.
 function appendMessage(from: MessageAddress, to: MessageAddress, payload: MessagePayload,
-  idempotencyKey: string, replyTo: string | null): Message {
+  idempotencyKey: string, replyTo: string | null, personal = false): Message {
   const entry: Message = { id: randomBytes(12).toString("hex"), from, to, at: Date.now(),
-    payload, idempotencyKey, replyTo, readBy: null, readAt: null };
+    payload, idempotencyKey, replyTo, readBy: null, readAt: null, ...(personal ? { personal: true as const } : {}) };
   let entries = [...messages.entries, entry];
   let dropped = messages.dropped;
   while (entries.length > MESSAGES_MAX) {
@@ -4308,9 +4309,12 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
     type BorrowCatalog = { head: string | null; repoRoot: string; plans: ContextPlan[]; origins: readonly string[];
       blobShas: ReadonlyMap<string, string>; blobModes: ReadonlyMap<string, string>; programId: string | null };
     const catalogs: BorrowCatalog[] = [];
+    // the packs of Fleet's library that carry the personal mark: a seat that is not Anthropic borrows none of them (server/datengrenze.ts)
+    const personalIds = new Set<string>();
     if (isSeat(s)) {
       if (!s.cwd) throw new Error("this session names no folder");
       const seat = await seatKnowledgeFor(s.cwd, s.harness ?? null, true);
+      for (const pack of seat.knowledge.packs) if (pack.personal === true) personalIds.add(pack.id);
       catalogs.push({ head: seat.knowledge.head, repoRoot: seat.knowledge.repoRoot, plans: [seat.plan], origins: ["fleet-manifest"],
         blobShas: seat.blobShas, blobModes: seat.blobModes, programId: null });
     } else {
@@ -4325,6 +4329,7 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
       if (s.cwd && harnessFamilie(s.harness ?? "claude") === "pi") {
         try {
           const seat = await seatKnowledgeFor(s.cwd, s.harness ?? null, true);
+          for (const pack of seat.knowledge.packs) if (pack.personal === true) personalIds.add(pack.id);
           catalogs.push({ head: seat.knowledge.head, repoRoot: seat.knowledge.repoRoot, plans: [seat.plan], origins: ["fleet-manifest"],
             blobShas: seat.blobShas, blobModes: seat.blobModes, programId: null });
         } catch { /* no Fleet library at this folder: the lane keeps its own catalogue */ }
@@ -4346,6 +4351,8 @@ async function contextBorrowRoute(req: Request, url: URL, id: string): Promise<R
     }
     origin = catalog.origins[selected.index]!;
     const pack = selected.pack;
+    if ((personalIds.has(id) || CONTEXT_PACKS.some((seed) => seed.id === id && (seed as { personal?: true }).personal === true))
+      && !istAnthropic(s.harness, s.model)) return refused("personal-text", persoenlichAbgelehnt(`pack ${id}`, s.harness, s.model));
     const resolved: BorrowSource[] = [];
     if (!Array.isArray(pack.sources)) {
       const source = readPrivatePack(KONZEPT_ROOT,
@@ -10506,12 +10513,12 @@ const withPaneEnv = (env: { line: string } | null, cmd: string): string =>
 // an der es sie braucht; dieser Rumpf wird in fleet-e2e-harness.ts als Text geschnitten, darum hält der Fixture-Scope den Namen.
 type AgentSteine = { readonly block: string | null; readonly role: boolean; readonly richtung: string | null };
 async function agentSteineFuer(agent: AgentBezug | null | undefined, cwd: string | null,
-  harness: string | null | undefined): Promise<AgentSteine | null> {
+  harness: string | null | undefined, model: string | null = null): Promise<AgentSteine | null> {
   if (!agent || !cwd) return null;
   // in Fleet's own tree the orchestrator start keeps its branch; outside an own agent carries its role and concepts
   if (harnessOf(harness).id === "claude" && (await fleetBaumVon(resolve(expandCwd(cwd)))) !== null) return null;
   const wahl = liesAgenten(STATE_DIR).find((a) => a.id === agent.id)?.wahlen ?? null;
-  const steine = steineFuerAgentWahl(wahl, STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR, process.env.FLEET_KONZEPT_ROOT ?? null);
+  const steine = steineFuerAgentWahl(wahl, STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR, process.env.FLEET_KONZEPT_ROOT ?? null, !istAnthropic(harness, model));
   return { block: steine.block, role: steine.role !== null, richtung: steine.role ? RICHTUNG_PLATZ : null };
 }
 
@@ -10674,7 +10681,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // a pi seat is called on every spawn even with the library off: its skill folder belongs to its adapter, and the
           // spawn is where the skills of an earlier spawn go away (server/sitz-skills.ts#piSkillsWrite)
           if (an || dazu.length || pi) {
-            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an);
+            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an, occupant.model);
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
         } catch (e) { logError("ensureSlot:seat-library", e); }
@@ -10683,7 +10690,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // EIN EIGENER AGENT, DER EINE ROLLE UND KONZEPTE WÄHLT, trägt sie als Steine in seinen Start — auch außerhalb von
       // Fleets Repo. Fleet's eigener Orchestratorin-Start bleibt unberührt: in Fleet's Repo und für ihre eingebaute Rolle
       // liest der Zweig unten weiterhin docs/start/orchestrator.md, Systemkonzept und die fünf Packs.
-      const steine = await agentSteineFuer(s.agent, s.cwd, s.harness);
+      const steine = await agentSteineFuer(s.agent, s.cwd, s.harness, s.model);
       const agentSteine = steine?.block ?? null;
       // die Richtung eines mitgereisten Sitzes steht in seinem Startblock (server/sitz-reise.ts#leererPlatzZeilen)
       const richtung = steine?.richtung ?? null;
@@ -15092,7 +15099,7 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
 
 // DIE STEINE DER VORGÄNGERIN FÜR EINEN HARNESS OHNE FLEETS SYSTEMPROMPT (Owner 2026-10-26: „[Zitat entfernt]“). Der Zweck und die Packs werden aus Fleets eigenem Baum gelesen, nicht aus dem Ordner
 // des Sitzes; fehlt ein Text, sagt der Brief es, statt den Stein still zu verlieren.
-async function nachfolgeSteineFuer(carried: SlotSelbst | null, cwd: string, harness: string | null): Promise<string | null> {
+async function nachfolgeSteineFuer(carried: SlotSelbst | null, cwd: string, harness: string | null, model: string | null = null): Promise<string | null> {
   if (!carried) return null;
   const { jetzt } = carried;
   const steine: NachfolgeStein[] = [];
@@ -15107,6 +15114,8 @@ async function nachfolgeSteineFuer(carried: SlotSelbst | null, cwd: string, harn
         steine.push({ id, text: `(context pack ${id} could not be read from Fleet's tree at ${knowledge?.head.slice(0, 12) ?? "an unknown commit"} — read it later with GET /api/self/context/${id})` });
         continue;
       }
+      // DIE DATENGRENZE AM TEXT (server/datengrenze.ts, Tür 14): ein persönlicher Pack steht für eine Nachfolgerin, die nicht Anthropic ist, als Zeile, nicht als Text
+      if (pack.personal === true && !istAnthropic(harness, model)) { steine.push({ id, text: weggelassenZeile(`pack ${id}`, harness, model) }); continue; }
       const quelle = pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
       steine.push({ id, text: `--- ${id} (${quelle}) ---\n${pack.text}` });
     }
@@ -15166,7 +15175,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const vorher = holeFassung(STATE_DIR, s.id, predecessorIdentity.openedAt)?.fassung ?? null;
   const claudeZiel = harnessOf(harness).id === "claude";
   const selbstZeile = claudeZiel ? nachfolgeZeile(carriedSelbst) : null;
-  const steineBlock = claudeZiel ? null : await nachfolgeSteineFuer(carriedSelbst, predecessor.cwd, harness);
+  const steineBlock = claudeZiel ? null : await nachfolgeSteineFuer(carriedSelbst, predecessor.cwd, harness, opts.spawn.model);
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
   const mitSelbst = [ritual, selbstZeile, steineBlock].filter(Boolean).join("\n\n");
@@ -18315,6 +18324,9 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
 
 const NO_MESSAGE_ADDRESS = "not a principal with an address — this rail answers a bound Program-MAIN or the unique live Orchestrator";
 function messageInboundFor(s: Slot, m: Message, mine = messageAddressesFor(s)): boolean {
+  // DIE DATENGRENZE AM TEXT (server/datengrenze.ts): ein als persönlich markierter Text ist für einen Sitz, der nicht Anthropic ist,
+  // nie eingegangen — nicht für den Tick, nicht für die Ansicht, nicht fürs Lesen, auch wenn der Platz erst nach dem Senden so besetzt wurde
+  if (m.personal === true && !istAnthropic(s.harness, s.model)) return false;
   if (mine.some((a) => sameAddress(a, m.to))) return true;
   const reached = resolveMessageAddress(m.to);
   return reached.ok && reached.escalatedTo === "orchestrator" && reached.holder === s;
@@ -18496,10 +18508,12 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   const sender = messageSenderFor(s, choice.ok ? choice.programId : undefined);
   if (!sender.ok) return sender.response;
   if (!body) return json({ error: "body must be an object" }, 400);
-  const extra = Object.keys(body).filter((k) => !["to", "payload", "idempotencyKey", "replyTo", "programId"].includes(k));
+  const extra = Object.keys(body).filter((k) => !["to", "payload", "idempotencyKey", "replyTo", "programId", "personal"].includes(k));
   if (extra.length)
-    return json({ error: `body reads only to, payload, idempotencyKey, replyTo, programId — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` }, 400);
+    return json({ error: `body reads only to, payload, idempotencyKey, replyTo, programId, personal — [${extra.join(", ")}] is not read: the SENDER is derived from this session's binding (programId only picks among its own programs) and can never be named in a body` }, 400);
   if (!choice.ok) return json({ error: choice.error }, 400);
+  if (body.personal !== undefined && typeof body.personal !== "boolean") return json({ error: "personal must be true or false" }, 400);
+  const personal = body.personal === true;
   const to = messageTargetOf(body.to);
   if (typeof to === "string") return json({ error: to }, 400);
   const payload = loadMessagePayload(body.payload, "payload");
@@ -18520,7 +18534,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     // Same key, different act: a CONFLICT rather than a second message. The key is the caller's
     // claim that this is the same act; honouring two different acts under one key would silently
     // lose one of them.
-    if (!sameAddress(prior.to, to) || !samePayload(prior.payload, payload) || prior.replyTo !== replyTo)
+    if (!sameAddress(prior.to, to) || !samePayload(prior.payload, payload) || prior.replyTo !== replyTo || (prior.personal === true) !== personal)
       return json({ error: `idempotencyKey ${key} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
     return json({ ok: true, existing: true, message: prior });
   }
@@ -18573,7 +18587,11 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
       return json({ error: "replyTo names no message addressed to this sender" }, 409);
   }
 
-  const entry = appendMessage(sender.from, to, payload, key, replyTo);
+  // DIE DATENGRENZE AM TEXT (server/datengrenze.ts): ein markierter Text geht an keinen Sitz, der nicht Anthropic ist. Die Abweisung
+  // kommt, bevor die Nachricht in den Ring geschrieben wird: der Text steht nirgends im Postfach des Empfängers.
+  if (personal && resolved.holder && !istAnthropic(resolved.holder.harness, resolved.holder.model))
+    return json({ error: persoenlichAbgelehnt(`message ${key}`, resolved.holder.harness, resolved.holder.model) }, 409);
+  const entry = appendMessage(sender.from, to, payload, key, replyTo, personal);
   // the Orchestratorin reads along: the edge keeps the id of every message it let through (GET /api/self/kanten)
   if (viaKante) kantenBook = kanteMerkt(kantenBook, viaKante.id, entry.id);
   if (resolved.escalatedTo === "owner") {
@@ -18614,7 +18632,8 @@ async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Res
   const now = Date.now();
   const view = (k: Kante) => ({ id: k.id, between: [k.a.slot, k.b.slot], why: k.why, at: k.at, until: k.until, endedAt: k.endedAt,
     live: kanteLebt(k, now), untilText: uhrzeit(k.endedAt ?? k.until),
-    messages: k.messages.map((mid) => messages.entries.find((m) => m.id === mid)).filter((m): m is Message => !!m)
+    messages: k.messages.map((mid) => messages.entries.find((m) => m.id === mid))
+      .filter((m): m is Message => !!m && !(m.personal === true && !istAnthropic(s.harness, s.model)))
       .map((m) => ({ id: m.id, at: m.at, from: m.from.kind === "session" ? m.from.slot : null,
         to: m.to.kind === "session" ? m.to.slot : null, text: m.payload.text })) });
   if (req.method === "GET") {
@@ -21831,7 +21850,7 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
   if (s.label === STEWARD_LABEL) return [unknownAbschnitt("wissen", "der Steward hat keinen Kontextplan")];
   return fassungSeatWissen(cwd, s.harness ?? null, s.bibliothek, { slot: s.id, openedAt: s.openedAt,
     spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz, eigen,
-    s.selbst?.jetzt.packs ?? []);
+    s.selbst?.jetzt.packs ?? [], s.model);
 }
 
 // EIN SITZ OHNE STEHENDE ROLLE (server/sitz-wissen.ts): was sein Start wörtlich trägt und welche Skills er bekommt, je
@@ -21840,7 +21859,7 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
 // `dazu`: the packs the seat gave itself (Slot.selbst), read as the spawn reads them
 async function fassungSeatWissen(cwd: string, harness: string | null, wahl: BibliothekWahl | null,
   laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }, sitz: SitzStart | null = null,
-  eigen = false, dazu: readonly string[] = []): Promise<FassungAbschnittEingang[]> {
+  eigen = false, dazu: readonly string[] = [], model: string | null = null): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
     const pi = harnessFamilie(harness ?? "claude") === "pi";
@@ -21850,13 +21869,14 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     if (!an && !dazu.length)
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an, model);
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn (Claude Code);
     // pi appends the file on every spawn, so its block is effective as spawned.
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
     return [...seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, start.skillOrt),
-      ...(start.leer.length ? [textAbschnitt("wissen", "server/sitz-reise.ts#leererPlatzZeilen", start.leer.join("\n"), false)] : [])];
+      ...(start.leer.length ? [textAbschnitt("wissen", "server/sitz-reise.ts#leererPlatzZeilen", start.leer.join("\n"), false)] : []),
+      ...(start.weggelassen.length ? [textAbschnitt("wissen", "server/datengrenze.ts#weggelassenZeile", start.weggelassen.join("\n"), false)] : [])];
   } catch (e) {
     return [unknownAbschnitt("wissen", `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}`)];
   }
@@ -22202,7 +22222,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   // Konzepte und den leeren Richtungsplatz. In Fleets Repo bleibt der Orchestratorin-Start unverändert.
   const agentWahl = s.agent ? liesAgenten(STATE_DIR).find((a) => a.id === s.agent!.id)?.wahlen ?? null : null;
   const steine = agentWahl && fleetBaum === null ? steineFuerAgentWahl(agentWahl, STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR,
-    process.env.FLEET_KONZEPT_ROOT ?? null) : null;
+    process.env.FLEET_KONZEPT_ROOT ?? null, !istAnthropic(spawnPick.harness, spawnPick.model)) : null;
   const steinVoll = steine?.role ? roleStein(String(agentWahl?.rolle), STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR) : null;
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
@@ -22217,6 +22237,8 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ...projektregelnDerLage(s, { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau }, s.weglassen),
     ...(steine?.role ? (steinVoll?.packs ?? []).filter((p) => p.text !== null).map((p) => textAbschnitt("wissen",
       `server/setup-datei.ts#roleStein (${p.id})`, p.text as string, false)) : await fassungWissen(s, rolle, cwd, eigen)),
+    ...(steine?.weggelassen.length ? [textAbschnitt("wissen", "server/datengrenze.ts#weggelassenZeile",
+      steine.weggelassen.map((id) => weggelassenZeile(`concept ${id}`, spawnPick.harness, spawnPick.model)).join("\n"), false)] : []),
     ...(await fassungKorrekturZeiger(rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil || null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
@@ -43067,13 +43089,19 @@ async function halteBestandFest(): Promise<number[]> {
 // `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
-  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
-    skillOrt: SkillOrt | null; zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[] }> {
+  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true, model: string | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
+    skillOrt: SkillOrt | null; zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[]; weggelassen: string[] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
   // a carried seat may start without a readable library; its own block still gives sitzWissen the carried packs
   const eigene = sitz?.block ? await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null) : null;
-  const voll: SeatKnowledge = sitz?.block ? sitzWissen(sitz, eigene) : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  // DIE DATENGRENZE AM TEXT (server/datengrenze.ts): ein Sitz, der nicht Anthropic ist, bekommt keinen Pack mit der Marke — weder im Start
+  // noch als Skill noch im Katalog des Startfensters; das Erben der Öffnerin und die Steine der Vorgängerin laufen durch dieselbe Stelle
+  const roh: SeatKnowledge = sitz?.block ? sitzWissen(sitz, eigene) : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  const voll = wissenFuerSitz(roh, harness, model);
   const knowledge = bibliothekGewaehlt(voll, wahl, dazu, an);
+  // ...und was der Sitz ohne die Grenze bekommen hätte, steht in der Fassung als Zeile, nicht still weg
+  const weggelassen = voll === roh ? [] : bibliothekGewaehlt(roh, wahl, dazu, an).packs.filter((pack) => pack.personal === true)
+    .map((pack) => weggelassenZeile(`pack ${pack.id}`, harness, model));
   // die leeren persönlichen Plätze und, bei einer Rolle, die Richtung: sie stehen im Start UND unter „Wissen“ der Fassung
   const leer = sitz?.block ? leererPlatzZeilen(sitz, eigene) : [];
   // WO DIE SKILLS DIESES SITZES HIN GEHEN (server/sitz-wissen.ts#SkillOrt): Claude Code in den Ordner seiner Belegung
@@ -43090,7 +43118,7 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   if (write && skillOrt?.art === "pi" && skillOrt.agentDir) piSkillsWrite(skillOrt.agentDir, files);
   // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
   const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
-  return { knowledge, text: [renderSeatStart(knowledge, skillOrt?.art !== "pi"), ...leer].filter(Boolean).join("\n\n"), files, skillsDir, skillOrt, zurWahl, voll: voll.packs, leer };
+  return { knowledge, text: [renderSeatStart(knowledge, skillOrt?.art !== "pi"), ...leer].filter(Boolean).join("\n\n"), files, skillsDir, skillOrt, zurWahl, voll: voll.packs, leer, weggelassen };
 }
 // what a seat's claude line carries: the start block and the folder its library skills come from
 interface SeatStart { readonly text: string; readonly skillsDir: string | null }

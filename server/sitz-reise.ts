@@ -55,14 +55,15 @@ export function sitzStartGeladen(raw: unknown, harness: string): SitzStart | nul
 }
 
 const alsSeatPack = (p: SitzPack): SeatPack => ({ id: p.id, useWhen: p.wofuer, sources: p.quellen.map((q) => ({ path: q.pfad, anchor: q.anker })),
-  text: p.text, weg: p.weg, ...(p.author ? { autor: p.author } : {}) });
+  text: p.text, weg: p.weg, ...(p.author ? { autor: p.author } : {}), ...(p.personal ? { personal: true as const } : {}) });
 // DAS WISSEN EINES MITGEREISTEN SITZES: seine Packs aus der Datei; ein persönlicher Platz mit dem, was der Importierende hineinschrieb, sonst mit
 // dem Pack gleichen Namens aus seiner eigenen Bibliothek (`eigene`, null wenn sie nicht lesbar ist), sonst bleibt er leer
 export function sitzWissen(s: SitzStart, eigene: SeatKnowledge | null): SeatKnowledge {
   const gefuellt = s.persoenlich.flatMap((p): SeatPack[] => {
-    if (p.text) return [alsSeatPack({ ...p, text: p.text })];
+    // ein persönlicher Platz ist persönlich, ob die Marke an ihm steht oder nur die Liste (server/datengrenze.ts nimmt ihn einem Sitz, der nicht Anthropic ist)
+    if (p.text) return [{ ...alsSeatPack({ ...p, text: p.text }), personal: true as const }];
     const da = eigene?.packs.find((x) => x.id === p.id && x.text !== null);
-    return da ? [{ ...da, weg: p.weg }] : [];
+    return da ? [{ ...da, weg: p.weg, personal: true as const }] : [];
   });
   return { tree: eigene?.tree ?? "foreign", repoRoot: "mitgereist", head: s.herkunft ?? "", packs: [...s.liest.map(alsSeatPack), ...gefuellt] };
 }

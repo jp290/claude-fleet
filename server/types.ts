@@ -2762,6 +2762,7 @@ interface Message {
   replyTo: string | null;           // the answer edge — a field, never a convention
   readBy: { slot: number; openedAt: number; sessionId: string | null } | null;
   readAt: number | null;            // null exactly when readBy is null
+  personal?: true;                  // the sender marked the text personal: it is delivered to no non-Anthropic seat (server/datengrenze.ts)
 }
 interface Messages { v: 1; entries: Message[]; dropped: number }
 // The cap is on the RECORD, like PROGRAM_INBOX_MAX and for its reason: a hand-written file cannot
@@ -2823,9 +2824,11 @@ const loadMessagePayload = (value: unknown, what: string): MessagePayload | stri
 const loadMessageEntry = (value: unknown, index: number): Message | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
   const r = value as Record<string, unknown>;
-  if (Object.keys(r).some((k) => !MESSAGE_ENTRY_KEYS.includes(k))
-    || Object.keys(r).length !== MESSAGE_ENTRY_KEYS.length)
-    return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")}`;
+  // `personal` is the one optional key: absent on an unmarked message, so a record written before the mark stays valid
+  const keys = Object.keys(r).filter((k) => k !== "personal");
+  if (keys.some((k) => !MESSAGE_ENTRY_KEYS.includes(k)) || keys.length !== MESSAGE_ENTRY_KEYS.length)
+    return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")} (and optionally personal)`;
+  if (r.personal !== undefined && r.personal !== true) return `entry ${index} personal must be true or absent`;
   if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
     return `entry ${index} id must be 24 hex characters`;
   const from = loadMessageAddress(r.from, `entry ${index} from`, true);
@@ -2865,7 +2868,7 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
   return { id: r.id, from, to, at: r.at, payload, idempotencyKey: r.idempotencyKey,
     replyTo: r.replyTo as string | null,
     readBy: by === null ? null : { slot: by.slot, openedAt: by.openedAt, sessionId: by.sessionId },
-    readAt: r.readAt as number | null };
+    readAt: r.readAt as number | null, ...(r.personal === true ? { personal: true as const } : {}) };
 };
 
 // CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramInbox's discipline and for its reason: a record

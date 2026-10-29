@@ -606,14 +606,24 @@ const CLAUDE_CONTEXT_WINDOWS: Readonly<Record<string, number | undefined>> = {
   // measured — including the ones that package source would let us guess at.
   "claude-bridge/claude-opus-5": CONTEXT_WINDOW_1M,
 };
+// The pi adapters' denominators are the register's, read out of model-register.ts#displayWindow — the
+// SAME number the start window shows beside that model, so a row added for a pi harness arrives with
+// its fill and no second table can drift from the first. Written as a filter and not as a list of
+// numbers on purpose: the claim "this model's window is X" lives in the register and here only ever
+// as a lookup. Codex is out: its denominator comes from the rollout file (server.ts, `windowFromFile`),
+// and the gpt rows below are its USABLE share, not the nominal window the register displays. Claude
+// keeps its own path below, whose suffix and alias rules are not a per-id claim.
+const PI_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.fromEntries(
+  MODEL_REGISTER.filter((entry) => entry.harness.startsWith("pi") && entry.displayWindow !== undefined)
+    .map((entry) => [entry.id, entry.displayWindow!]),
+);
 export function contextWindowFor(model: string | null): number | null {
   if (!model) return null;
-  if (model === "glm-5.3") return CONTEXT_WINDOW_GLM_5_3;
-  // flash's window is a fact of THIS repo: server.ts#PI_ZAI_HARNESS injects contextWindow 1000000 for it.
-  if (model === "glm-5.3-flash") return CONTEXT_WINDOW_GLM_5_3;
   if (/(?:^|\/)gpt-[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9_-]+)?$/i.test(model)) {
     return CONTEXT_WINDOW_GPT;
   }
+  const pi = PI_CONTEXT_WINDOWS[model];
+  if (pi !== undefined) return pi;
   const m = /^(claude-[^[]+|fable)(?:\[([A-Za-z0-9]{1,8})\])?$/.exec(model);
   if (!m) return null;
   // An explicit suffix still wins over the table, and still only for a suffix this file recognises.

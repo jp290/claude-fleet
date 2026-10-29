@@ -82,6 +82,16 @@ export function mitNaechstem(s: SlotSelbst | null, naechster: SelbstStart): Slot
 }
 const gleicherStart = (a: SelbstStart, b: SelbstStart): boolean => a.zweck === b.zweck && a.packs.join("\n") === b.packs.join("\n");
 
+/** DIE PACKS, DIE EINE ÖFFNERIN IHREM KIND MITGIBT (Owner 28.10.: „[Zitat entfernt]“):
+ *  ein Sitz, den eine Session auf einem Branch öffnet, startet sonst ohne Wissen und entdeckt die Welt jedes Mal neu. Er bekommt
+ *  ihre Packs als Text — die, mit denen sie läuft, und die, die sie sich für ihre Nachfolgerin gab —, nie ihren Zweck (der bleibt
+ *  ihre). Rechte, Modell, Effort und Sandbox stehen nicht in dieser Form und gehen darum nie mit. Rein. */
+export function selbstGeerbt(s: SlotSelbst | null): SlotSelbst | null {
+  const packs = [...new Set([...(s?.jetzt.packs ?? []), ...(s?.naechster?.packs ?? [])])];
+  if (!packs.length) return null;
+  return { jetzt: { packs, zweck: null }, naechster: null, neu: [] };
+}
+
 /** WAS DIE NACHFOLGERIN TRÄGT: der nächste Start wird ihr jetziger, und `neu` nennt, was sie gegenüber der Vorgängerin mehr hat. */
 export function selbstDerNachfolge(s: SlotSelbst | null): SlotSelbst | null {
   if (!s) return null;

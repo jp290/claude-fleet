@@ -69,7 +69,8 @@ A session opens another seat through a board branch, not by launching an agent i
 What the child gets: its own worktree on that branch, the branch's Board-Name as its label, its own start (the branch
 session file its harness reads, and on Claude Code Fleet's library if it is on), your slot recorded as its opener, and
 your `goal` as its first message. It does not get your conversation as such (without `fresh` it continues the newest
-conversation already in that worktree), your purpose, your packs, your rights or your model: its harness, sandbox and
+conversation already in that worktree), your purpose, your rights or your model — but it inherits your library choice and
+the packs you gave yourself (`Slot.selbst`) as text, shown in its start and in Info → Setup. Its harness, sandbox and
 rights are never wider than yours. It is a seat without a standing role, so it can
 hand over, succeed, retire, read and write its own branch, and borrow packs.
 

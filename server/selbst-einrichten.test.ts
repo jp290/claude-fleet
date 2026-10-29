@@ -1,7 +1,7 @@
 // DIE TÜR, DIE NUR TEXT DAZUGIBT (server/selbst-einrichten.ts): was eine Session ihrer Nachfolgerin setzt, was die Nachfolge daraus macht,
 // und was das Board als neu zählt
 import { describe, expect, test } from "bun:test";
-import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeZeile, neuGegenueber, selbstDerNachfolge, slotSelbstGeladen, type SlotSelbst } from "./selbst-einrichten";
+import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeZeile, neuGegenueber, selbstDerNachfolge, selbstGeerbt, slotSelbstGeladen, type SlotSelbst } from "./selbst-einrichten";
 
 const naechster = (body: unknown, s: SlotSelbst | null = null) => {
   const r = einrichtenDerTuer(body, s);
@@ -54,6 +54,13 @@ describe("die Nachfolge", () => {
   test("ein geänderter Zweck ist neu, derselbe nicht", () => {
     expect(neuGegenueber({ packs: [], zweck: "B" }, { packs: [], zweck: "A" })).toEqual(["purpose"]);
     expect(neuGegenueber({ packs: [], zweck: "A" }, { packs: [], zweck: "A" })).toEqual([]);
+  });
+  test("ein Kind erbt die Packs der Öffnerin, aber nicht ihren Zweck", () => {
+    expect(selbstGeerbt(null)).toBeNull();
+    expect(selbstGeerbt({ jetzt: { packs: [], zweck: "Z" }, naechster: null, neu: [] })).toBeNull();
+    // was sie mitbringt und was sie ihrer Nachfolgerin gab, je einmal; der Zweck bleibt ihre
+    expect(selbstGeerbt({ jetzt: { packs: ["a"], zweck: "Z" }, naechster: { packs: ["b", "a"], zweck: "Y" }, neu: [] }))
+      .toEqual({ jetzt: { packs: ["a", "b"], zweck: null }, naechster: null, neu: [] });
   });
   test("aus fleet.json nur eine lesbare Form", () => {
     const s: SlotSelbst = { jetzt: { packs: ["a"], zweck: "Z" }, naechster: { packs: [], zweck: null }, neu: ["a"] };

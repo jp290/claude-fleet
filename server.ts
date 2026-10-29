@@ -14,7 +14,7 @@ import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./serv
 import { halteFassung, halteVorgaengerin, holeFassung, holeVorgaengerin, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
-import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
+import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, selbstGeerbt, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
@@ -9084,6 +9084,13 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   if (!wr.ok) return json({ error: wr.error }, 409);
   const bib = bibliothekDerTuer(body, null, opener);
   if (!bib.ok) return json({ error: bib.error }, 400);
+  // DIE PACKS DER ÖFFNERIN GEHEN MIT (Owner 28.10.: „[Zitat entfernt]“): ein Sitz,
+  // den eine Session öffnet, startete ohne Wissen und entdeckte die Welt jedes Mal neu. Sie gibt ihm ihre Bibliothekswahl und die
+  // Packs, die sie sich selbst gab, als Text mit — eine eigene Wahl im Body gilt vor ihrer. Rechte, Modell, Effort, Sandbox und
+  // Harness bleiben, wie sie sind: das Kind trägt davon nie mehr als die Öffnerin.
+  const erbe = opener === "self" && by
+    ? { bibliothek: body.bibliothek === undefined ? by.bibliothek ?? null : bib.wahl, selbst: selbstGeerbt(by.selbst) }
+    : { bibliothek: bib.wahl, selbst: null };
   const bibFehlt = await packAuswahlAnDerTuer(bib.wahl, ro.repo, ho.harness);
   if (bibFehlt) return json({ error: bibFehlt }, 400);
   // a branch session always sits on its board branch, so "branch" needs no further look here
@@ -9128,7 +9135,7 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
       if (sd.notizbuch) await saeSitzNotizbuch(path, agentMd, sd.notizbuch);
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
         null, rc.remote, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, agentMd,
-        null, bib.wahl, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, null,
+        null, erbe.bibliothek, undefined, sd.sitz, sw.schwelle, nb.wahl, pm.wahl, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, erbe.selbst,
         { repo: ro.repo, branch: body.branch });
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");

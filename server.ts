@@ -267,7 +267,9 @@ import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
 import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatKatalog, seatPacks, seatSkillFiles, seatSkillsDir,
-  seatSkillsVerwaist, bibliothekQuelle, bibliothekGewaehlt, bibliothekWahlGeladen, packAuswahlFehlt, type BibliothekWahl, type SeatKnowledge, type SeatTree } from "./server/sitz-wissen";
+  seatSkillsVerwaist, bibliothekQuelle, bibliothekGewaehlt, bibliothekWahlGeladen, packAuswahlFehlt, type BibliothekWahl, type SeatKnowledge, type SeatTree, type SkillOrt } from "./server/sitz-wissen";
+// die Skill-Ordner selbst: Claude Codes einer je Belegung, pi's `skills/` im Agent-Verzeichnis seines Adapters
+import { piSkillsWrite, seatSkillsRemove, seatSkillsWrite } from "./server/sitz-skills";
 import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
@@ -10669,7 +10671,9 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         try {
           // ...and the packs it gave itself (Slot.selbst), even where its library is off
           const an = seatLibraryOn(occupant.bibliothek, eigen, !!occupant.sitz), dazu = occupant.selbst?.jetzt.packs ?? [];
-          if (an || dazu.length) {
+          // a pi seat is called on every spawn even with the library off: its skill folder belongs to its adapter, and the
+          // spawn is where the skills of an earlier spawn go away (server/sitz-skills.ts#piSkillsWrite)
+          if (an || dazu.length || pi) {
             const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an);
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
@@ -21851,7 +21855,7 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     // pi appends the file on every spawn, so its block is effective as spawned.
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
-    return [...seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, pi),
+    return [...seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, start.skillOrt),
       ...(start.leer.length ? [textAbschnitt("wissen", "server/sitz-reise.ts#leererPlatzZeilen", start.leer.join("\n"), false)] : [])];
   } catch (e) {
     return [unknownAbschnitt("wissen", `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}`)];
@@ -43024,39 +43028,6 @@ function seatLibraryOn(wahl: BibliothekWahl | null, eigen = false, ausDatei = fa
 // spawn, removed with the occupancy (teardownSlotOccupant), and what no occupancy holds is removed at boot. Not
 // `bibliothek/`: that name is the library's own tracked folder to come, and the state dir is the Fleet checkout by default.
 const SEAT_SKILLS_ROOT = `${STATE_DIR}/sitz-skills`;
-// A SEAT MAY HAVE CHANGED ITS OWN FOLDER (it runs in auto): taken a write bit away, or put a link where a folder was. lstat
-// first: chmod follows a link and would loosen its target; a link or file is unlinked, never followed.
-function seatSkillsRemove(path: string): void {
-  try {
-    const st = lstatSync(path, { throwIfNoEntry: false });
-    if (!st) return;
-    if (st.isDirectory()) {
-      chmodSync(path, 0o755);
-      for (const name of readdirSync(path)) seatSkillsRemove(`${path}/${name}`);
-      rmdirSync(path);
-    } else unlinkSync(path);
-  } catch (e) { logError("seat-library:remove", e); }
-}
-function seatSkillsWrite(dir: string, files: readonly { pfad: string; text: string }[]): void {
-  const stamp = `${process.pid}-${Date.now()}`;
-  const tmp = `${dir}.tmp-${stamp}`;
-  for (const file of files) {
-    mkdirSync(dirname(`${tmp}/${file.pfad}`), { recursive: true });
-    writeFileSync(`${tmp}/${file.pfad}`, file.text);
-  }
-  // the old folder steps aside first (a rename onto a non-empty folder fails); its removal comes after the new one stands,
-  // and a removal that fails is logged, never the spawn's failure
-  const old = lstatSync(dir, { throwIfNoEntry: false }) ? `${dir}.alt-${stamp}` : null;
-  if (old) {
-    if (lstatSync(dir).isDirectory()) chmodSync(dir, 0o755);
-    renameSync(dir, old);
-  }
-  try { renameSync(tmp, dir); } catch (e) {
-    seatSkillsRemove(tmp);
-    throw e;
-  }
-  if (old) seatSkillsRemove(old);
-}
 // AT BOOT, after the state is loaded: a library folder no occupancy holds — its end came while no server ran
 function reapSeatSkills(): void {
   if (!existsSync(SEAT_SKILLS_ROOT)) return;
@@ -43097,7 +43068,7 @@ async function halteBestandFest(): Promise<number[]> {
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
   sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
-    zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[] }> {
+    skillOrt: SkillOrt | null; zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
   // a carried seat may start without a readable library; its own block still gives sitzWissen the carried packs
   const eigene = sitz?.block ? await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null) : null;
@@ -43105,15 +43076,21 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   const knowledge = bibliothekGewaehlt(voll, wahl, dazu, an);
   // die leeren persönlichen Plätze und, bei einer Rolle, die Richtung: sie stehen im Start UND unter „Wissen“ der Fassung
   const leer = sitz?.block ? leererPlatzZeilen(sitz, eigene) : [];
-  // Claude Code reads the library's skills from --add-dir; a pi seat reads the start block alone (pi 1.0.2 has no Claude skill
-  // folder), so its chosen packs come as box parts and no skill folder is written for it.
-  const pi = harnessFamilie(harness ?? "claude") === "pi";
-  const files = pi ? [] : seatSkillFiles(knowledge);
-  const skillsDir = belegung && files.length ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
+  // WO DIE SKILLS DIESES SITZES HIN GEHEN (server/sitz-wissen.ts#SkillOrt): Claude Code in den Ordner seiner Belegung
+  // (--add-dir), ein pi-Sitz in `skills/` des Agent-Verzeichnisses, das sein Adapter ihm gibt (PI_ZAI_AGENT_DIR,
+  // PI_DEEPSEEK_AGENT_DIR — pi docs/configuration.md). Ein Harness ohne beides (codex) liest keine Skill-Dateien.
+  const familie = harnessFamilie(harness ?? "claude");
+  const skillOrt: SkillOrt | null = familie === "claude" ? { art: "claude" }
+    : familie === "pi" ? { art: "pi", agentDir: piAgentDirOf(harness ?? "") } : null;
+  const files = skillOrt ? seatSkillFiles(knowledge, skillOrt) : [];
+  // Claude Code lädt Skills aus einem --add-dir in der laufenden Session neu, darum bekommt jede Belegung ihren eigenen
+  // Ordner; der Skill-Ordner eines pi-Adapters gehört dem Adapter und wird an Ort und Stelle aufgeräumt (piSkillsWrite)
+  const skillsDir = belegung && files.length && skillOrt?.art === "claude" ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
+  if (write && skillOrt?.art === "pi" && skillOrt.agentDir) piSkillsWrite(skillOrt.agentDir, files);
   // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
   const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
-  return { knowledge, text: [renderSeatStart(knowledge, !pi), ...leer].filter(Boolean).join("\n\n"), files, skillsDir, zurWahl, voll: voll.packs, leer };
+  return { knowledge, text: [renderSeatStart(knowledge, skillOrt?.art !== "pi"), ...leer].filter(Boolean).join("\n\n"), files, skillsDir, skillOrt, zurWahl, voll: voll.packs, leer };
 }
 // what a seat's claude line carries: the start block and the folder its library skills come from
 interface SeatStart { readonly text: string; readonly skillsDir: string | null }
@@ -43477,9 +43454,11 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
   // ...except a seat in its own setup (server/eigenes-setup.ts): outside Fleet's repo the library is off until the window switches it on
   const familie = harnessFamilie(harness);
   const eigenPlan = o.rolle === "nur-ordner" && familie === "claude" && (await fleetBaumVon(fp.repoRoot)) === null;
-  // a pi seat reads the same library block (server.ts#piStartDatei); it has no Claude skill folder, so seatPacks names no skills for it
+  // a pi seat reads the same library block and — as `<agent-dir>/skills/<id>/SKILL.md` — the same skills as Claude Code,
+  // but only where its adapter gives it an agent directory (piAgentDirOf; pi and pi-unfenced have none: no skill is written)
+  // (server/sitz-wissen.ts#seatSkillFiles); the window names both for it, as it does for a Claude seat
   const bibliothek = o.rolle === "nur-ordner" && (familie === "claude" || familie === "pi")
-    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude") }),
+    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude" || familie === "pi" && piAgentDirOf(o.harness ?? "") !== null) }),
       (e: unknown) => ({ grund: `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}` }))
     : null;
   const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills] : []);
@@ -45084,11 +45063,16 @@ function seatStartDatei(text: string): string {
 // start stays beside a Claude seat's. `--append-system-prompt` resolves an existing path to its contents, and the file
 // carries no key — the key stays the pane shell's `$(cat …)` and the fence's deny rule.
 function piStartDatei(harness: string, text: string): string {
+  const dir = piAgentDirOf(harness);
+  return startDateiUnter(dir ? `${dir}/fleet-start` : SEAT_START_ROOT, text);
+}
+/** DAS AGENT-VERZEICHNIS, DAS EIN PI-ADAPTER SEINEM SITZ GIBT (das PI_CODING_AGENT_DIR seiner Zeile): pi-zai und
+ *  pi-zai-unfenced teilen eins, pi-deepseek hat sein eigenes. Die übrigen pi-Adapter (pi, pi-unfenced) setzen keins —
+ *  dort läge pi's eigenes Zuhause des Users, das Fleet nicht füllt. `null` = kein eigenes Agent-Verzeichnis. */
+function piAgentDirOf(harness: string): string | null {
   const id = harnessOf(harness).id;
-  const root = id === "pi-zai" || id === "pi-zai-unfenced" ? `${PI_ZAI_AGENT_DIR}/fleet-start`
-    : id === "pi-deepseek" ? `${PI_DEEPSEEK_AGENT_DIR}/fleet-start`
-    : SEAT_START_ROOT;
-  return startDateiUnter(root, text);
+  return id === "pi-zai" || id === "pi-zai-unfenced" ? PI_ZAI_AGENT_DIR
+    : id === "pi-deepseek" ? PI_DEEPSEEK_AGENT_DIR : null;
 }
 const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
 function orchestratorStartDatei(cwd: string): string {

@@ -6,13 +6,15 @@
 // EIN ZEIGER ALLEIN KOMMT NICHT AN: Claude-Lanes öffneten einen Pack-Zeiger 0 von 13 Mal
 // (docs/messungen/2026-10-08-pack-zeiger-gelesen.md). Darum zwei Wege, je Pack entschieden:
 // - BOX: was ein Sitz von seinem ersten Akt an braucht, steht wörtlich in seinem Start (SEAT_BOX).
-// - SKILL: der Rest wird ein Claude-Code-Skill (Owner-Ja 22.10. über Slot 16). Im Kontext steht nur die Beschreibung
-//   (die useWhen-Zeile), der Text lädt, wenn Claude sie aufruft. Fleet schreibt die Skills in ein Verzeichnis und gibt
+// - SKILL: der Rest wird ein Skill (Owner-Ja 22.10. über Slot 16). Im Kontext steht nur die Beschreibung (die useWhen-Zeile),
+//   den Text lädt die Session, wenn sie die Skill aufruft. Bei Claude Code schreibt Fleet die Skills in ein Verzeichnis und gibt
 //   es mit `--add-dir` (Probe an claude 2.1.308: die Skill steht im init und wird über das Skill-Werkzeug geladen;
 //   ohne `--add-dir` fehlt sie). Ob Claude sie aufruft, misst skillAufrufe am Transkript.
-// Andere Harnesses lesen weder Start-Block noch Skills; sie leihen über GET /api/self/context/<id>. EIN pi-Sitz ist die Ausnahme: pi 1.0.2
-// kennt `--append-system-prompt <Text oder Datei>` und liest damit denselben Start-Block wie Claude Code (server.ts#piStartDatei); Claude-Skills
-// bleiben Claude Code allein.
+//   EIN pi-Sitz bekommt DIESELBEN Dateien unter `<agent-dir>/skills/<id>/SKILL.md`, in dem Agent-Verzeichnis, das sein Adapter
+//   ihm gibt (server.ts#PI_ZAI_AGENT_DIR, #PI_DEEPSEEK_AGENT_DIR): pi nennt Name und Beschreibung im Systemprompt und lädt den
+//   Text beim Aufruf, wie Claude (docs/configuration.md und docs/skills.md des installierten Pakets). Die Fassung zeigt sie ihm.
+// Andere Harnesses lesen weder Start-Block noch Skills; sie leihen über GET /api/self/context/<id>. Ein pi-Sitz liest den
+// Start-Block über `--append-system-prompt` (server.ts#piStartDatei).
 //
 // WELCHE PACKS (Owner 22.10. über Slot 16: „[Zitat entfernt]“
 // , „[Zitat entfernt]“): einer aus Fleets Register (`.fleet/context-packs.json` im Fleet-Baum) erreicht einen solchen
@@ -122,7 +124,8 @@ const boxBlock = (pack: SeatPack): string => {
 };
 
 /** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt.
- *  `withSkills` false = ein pi-Sitz: er liest den Block, aber keine Claude-Skills, darum nennt der Kopf keine. */
+ *  `withSkills` false = ein pi-Sitz: pi listet seine Skills selbst in seinem Systemprompt (Name und Beschreibung),
+ *  darum nennt der Kopf keine. */
 export function renderSeatStart(k: SeatKnowledge, withSkills = true): string {
   if (!boxOf(k).length && !(withSkills && skillsOf(k).length)) return "";
   return [headOf(k, withSkills), ...boxOf(k).map(boxBlock)].join("\n\n");
@@ -130,8 +133,8 @@ export function renderSeatStart(k: SeatKnowledge, withSkills = true): string {
 
 const skillZeile = (pack: SeatPack): string => `- ${pack.id}: ${pack.useWhen}`;
 /** Was ein Sitz aus der Bibliothek bekommt, je Weg die Packs: wörtlich im Start, als Skill (mit der Zeile, die Claude in
- *  seiner Skill-Liste sieht). Der Gründungsplan zeigt damit, was der Spawn gibt. `withSkills` false = ein pi-Sitz,
- *  der keine Claude-Skills lädt; seine Packs kommen über den Start-Block. */
+ *  seiner Skill-Liste sieht). Der Gründungsplan zeigt damit, was der Spawn gibt. `withSkills` false = ein Harness, der
+ *  keine Skill-Dateien liest (codex, container); ein pi-Sitz liest sie als `<agent-dir>/skills/` und darum true. */
 export function seatPacks(k: SeatKnowledge, withSkills = true): { box: string[]; skills: string[]; skillListe: string } {
   return { box: boxOf(k).map((pack) => pack.id), skills: withSkills ? skillsOf(k).map((pack) => pack.id) : [],
     skillListe: withSkills ? skillsOf(k).map(skillZeile).join("\n") : "" };
@@ -170,9 +173,31 @@ export function renderSkillFile(pack: SeatPack, head: string): string {
     + `From Fleet's library: ${quelleOf(pack)} at commit ${head.slice(0, 12)}.\n\n${pack.text}`;
 }
 
-/** Die Skill-Dateien dieses Sitzes, relativ zum Verzeichnis, das `--add-dir` bekommt. */
-export function seatSkillFiles(k: SeatKnowledge): { readonly pfad: string; readonly text: string }[] {
-  return skillsOf(k).map((pack) => ({ pfad: `.claude/skills/${pack.id}/SKILL.md`, text: renderSkillFile(pack, k.head) }));
+/** WO DIE SKILLS EINES SITZES LIEGEN: Claude Code im Ordner seiner Belegung, den der Start mit `--add-dir` bekommt
+ *  (`<ordner>/.claude/skills`); pi in `skills/` seines Agent-Verzeichnisses (docs/configuration.md des installierten
+ *  Pakets: `<agent-dir>/skills/` — „User skills and supporting files“, ohne weitere Einstellung geladen).
+ *  `agentDir: null` heißt: dieser pi-Adapter (pi, pi-unfenced) gibt seinem Sitz kein eigenes Agent-Verzeichnis, dann gibt
+ *  es auch keinen Skill-Ordner. `null` als Ganzes: der Harness liest weder Start-Block noch Skills (codex). */
+export type SkillOrt = { readonly art: "claude" } | { readonly art: "pi"; readonly agentDir: string | null };
+/** Der Ordner, unter dem dieses Harness seine Skills sucht; null = es liest keine (der Sitz bekommt keine Dateien). */
+const skillBasis = (ort: SkillOrt | null): string | null =>
+  ort === null ? null : ort.art === "claude" ? ".claude/skills" : ort.agentDir ? `${ort.agentDir}/skills` : null;
+
+/** Die Skill-Dateien dieses Sitzes, Kopf und Text für beide Harnesses aus demselben Renderer: relativ zum Verzeichnis,
+ *  das `--add-dir` bekommt (Claude Code), oder absolut unter `skills/` im Agent-Verzeichnis des pi-Adapters. Leer, wenn
+ *  dieses Harness keine Skills liest oder der Sitz keine Skill-Packs hat (Bibliothek aus). */
+export function seatSkillFiles(k: SeatKnowledge, ort: SkillOrt = { art: "claude" }): { readonly pfad: string; readonly text: string }[] {
+  const basis = skillBasis(ort);
+  return basis ? skillsOf(k).map((pack) => ({ pfad: `${basis}/${pack.id}/SKILL.md`, text: renderSkillFile(pack, k.head) })) : [];
+}
+
+/** WAS FLEET IM AGENT-VERZEICHNIS EINES PI-SITZES RÄUMT, BEVOR ES NEU SCHREIBT: `skills/` dort gehört dem Adapter, nicht
+ *  der Belegung — Fleet merkt sich in `<agent-dir>/fleet-skills.json`, was es schrieb, und nimmt beim nächsten Spawn nur,
+ *  was nicht mehr dazugehört. Ein eigener Skill des Owners unter anderem Namen bleibt so stehen. Zwei Belegungen
+ *  DESSELBEN Adapters teilen den Ordner und überschreiben einander: docs/neuaufbau/maengel.md, Mangel 153. */
+export function piSkillsWeg(alt: readonly string[], jetzt: readonly string[]): string[] {
+  const neu = new Set(jetzt);
+  return alt.filter((id) => !neu.has(id));
 }
 
 /** DER SKILL-ORDNER GEHÖRT EINER BELEGUNG (Abnahme 22.10., FIX): Claude Code lädt Skills aus einem --add-dir in der laufenden
@@ -190,6 +215,8 @@ export function seatSkillsVerwaist(names: readonly string[], belegt: readonly { 
  *  ) — die Ids in der Reihenfolge der Tür, je eine einmal. Eine Liste schaltet die Bibliothek an und lässt jeden anderen Pack weg. */
 export type BibliothekWahl = boolean | readonly string[];
 const PACK_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
+/** Hat diese Id die Form einer Pack-Id (kleine Buchstaben, Ziffern, Bindestrich) — nur so wird sie ein Ordnername unter `skills/`. */
+export const packIdGueltig = (id: unknown): id is string => typeof id === "string" && PACK_ID.test(id);
 const PACKS_MAX = 64;
 /** Eine Liste aus einem Body oder dem Stand: lauter Pack-Ids, je eine einmal; sonst null. Leer ist „keine Packs“, also aus. Rein. */
 export function packAuswahlVon(v: unknown): readonly string[] | false | null {
@@ -238,10 +265,12 @@ export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste
  *  sieht. Die Bytes eines Abschnitts sind die, die immer im Kontext stehen; was eine Skill beim Aufruf lädt, steht im
  *  Grund. `skillsDir` ist der Ordner, den der Start mit `--add-dir` bekommt; null vor dem Start (er gehört der Belegung). `nichtWirksam`: warum der Start-Block in der
- *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. `pi`: pi liest den
- *  Start-Block über `--append-system-prompt`, aber keine Claude-Skills. */
-export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string, pi = false): FassungAbschnittEingang[] {
-  if (!claude && !pi) {
+ *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. `skillOrt`: wo die Skills
+ *  dieses Harness liegen (server/sitz-wissen.ts#SkillOrt) — für Claude Code im --add-dir-Ordner, für pi in `skills/`
+ *  seines Agent-Verzeichnisses; null = ein Harness, der weder Start-Block noch Skills liest (codex). */
+export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string,
+  skillOrt: SkillOrt | null = null): FassungAbschnittEingang[] {
+  if (!claude && skillOrt === null) {
     // Ein Harness ohne Fleets Systemprompt bekommt die Steine seiner Vorgängerin im Übergabebrief, nicht als Start-Block
     // (Owner 2026-10-26: „[Zitat entfernt]“).
     // Die Fassung zeigt sie trotzdem hier, damit Info → Setup dieselbe + Zeile mit Autor hat wie bei Claude Code.
@@ -251,17 +280,22 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
     ...steine.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, `im Übergabebrief: ${pack.autor}`))];
   }
-  const box = boxOf(k), skills = pi ? [] : skillsOf(k);
+  const box = boxOf(k);
+  // pi liest seine Skills wie Claude Code (nur aus einem anderen Ordner): die Fassung zeigt sie ihm (Info → Setup),
+  // statt sie zu verschweigen. Claude Code: der Ordner der Belegung; pi: `skills/` im Agent-Verzeichnis seines Adapters.
+  const piBasis = claude ? null : skillBasis(skillOrt);
+  const skills = claude || piBasis !== null ? skillsOf(k) : [];
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"
       ? "Fleet-Repo" : "anderes Repo"}, ${k.head.slice(0, 8)})`)];
+  const skillsPfad = claude ? `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills` : piBasis!;
   return [
-    textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k, !pi), false, undefined, undefined,
+    textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k, claude), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`
         : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : "so mitgereist")}`)),
-    ...skills.map((pack) => textAbschnitt("wissen", `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills/${pack.id}/SKILL.md\n`
+    ...skills.map((pack) => textAbschnitt("wissen", `${skillsPfad}/${pack.id}/SKILL.md\n`
       + pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,
       `Skill: im Kontext steht diese Beschreibung, beim Aufruf lädt sie ${groesse(Buffer.byteLength(renderSkillFile(pack, k.head)))}`)),

@@ -13,16 +13,17 @@ Scope and sources, so the omissions are not silent:
 - A directory's sentence is maintained in `tools/repo-map.ts#DIRECTORY_NOTES`.
 - A file's sentence is that file's own first comment line, read from the file.
 - Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,
-  `SYSTEM.md`, `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `package.json`, `bun.lock`,
+  `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `package.json`, `bun.lock`,
   `tsconfig.json`, `LICENSE`.
 - A row with no sentence available says so in the row. It is never dropped.
 
-## Directories (15)
+## Directories (16)
 
 - `.claude/` — Session-scoped Claude Code commands (`⚙ steward`'s five pulses) and the repo-local skills — `graphify`, `kriterium-grill`, `mess-notiz`, `unslop`.
 - `.codex/` — Repo-local Codex agent roles only (`agents/`, e.g. `erdung.toml`), loaded when the project is trusted; the machine-local `hooks.json` beside them stays gitignored.
 - `.fleet/` — This repo's own context manifest (`context-packs.json`) — the pointers a target repo publishes about itself, validated by e2e/pins.ts before every land.
 - `attic/` — Retired material kept tracked rather than deleted: briefs whose lane is long gone, the working-circle atlas, the learning bench, the studio kit, the portable prompt-compiler commands, and the scripts nothing runs any more (`attic/atlas.sh`, `attic/steward-arena.sh`, `attic/worker-deepseek.py`, `attic/find-conv.py`).
+- `beweise/` — **no sentence** — this directory has no entry in `tools/repo-map.ts#DIRECTORY_NOTES`; add one.
 - `briefs/` — Founding and task briefs handed to lanes, kept as tracked prose so a dispatched instruction stays readable after its pane is gone.
 - `ci/` — The merge check: `bun ci/merge-check.ts <branch>` rebuilds the tree main would have after the merge and runs pins, typecheck, build, the unit tests of `ci/` and `server/` and the gate suites on the helper machine (`merge-check-run.sh`), plus `band-run.sh` for hand runs on a reserved port band there.
 - `docs/` — The knowledge shelf: how to brief a session, what a green gate attests, which failures are the machine's — including `docs/messungen/` for tracked measurement notes.
@@ -35,7 +36,7 @@ Scope and sources, so the omissions are not silent:
 - `src/` — Modules shared across the server, the browser bundle and the suites — protocol types, the client, share rendering, shell quoting, markdown, backoff.
 - `tools/` — Command-line tools run by hand with `bun tools/<name>.ts`, none of which the server imports: ledger and land reports (`land-log`, `land-quality`, `lane-context-cost`, `briefstats`), the tree sensors (`review-sweep`, `repo-map`, `capability-map`, `graph-coverage`), `handoff-rotate` and the browser `perf-probe`.
 
-## Top-level `.ts` and `.sh` files (64)
+## Top-level `.ts` and `.sh` files (65)
 
 - `acceptance-probe.sh` — ACP-25 REAL-TUI ACCEPTANCE PROBE — not a gate. It boots an isolated Fleet instance on its own
 - `acceptance-probe.ts` — ACP-25 real-TUI acceptance probe (driver: acceptance-probe.sh). Every check below is against the
@@ -75,7 +76,6 @@ Scope and sources, so the omissions are not silent:
 - `program-phase.ts` — --- WHERE A PROGRAM ROW SITS ON THE RAIL, as a pure function over facts Fleet already holds.
 - `promote-program.sh` — Ein vorgeschlagenes Programm ansehen und (mit --go) bestaetigen + aktivieren.
 - `register.sh` — Fleet's open WORK, computed at read time — the counterpart to state.sh, which does the same for
-- `rulebook.ts` — HOW TO CHANGE A RULE, now that CLAUDE.md is a GENERAT: edit the FRAGMENT, then re-render. A hand
 - `scratch-reap.sh` — scratch-reap.sh — the owner of the e2e-isolated scratch heap.
 - `server.ts` — **no sentence** — this file opens with no header comment; add one as its first line so this row stops reading as empty.
 - `session-agents.ts` — session-agents.ts — pure session AGENTS rendering with measured part receipts.
@@ -91,6 +91,8 @@ Scope and sources, so the omissions are not silent:
 - `task-metadata.ts` — Deterministic, read-only task surface projection.
 - `task-notes.ts` — Deterministic, read-only join: the pending `notiz` rows standing on a task's file surface.
 - `task-waves.ts` — Deterministic, read-only queue wave projection.
+- `testinstanz-agent.sh` — WHAT RUNS IN A TEST INSTANCE'S PANE — sourced by testinstanz.sh (ti_serve), and by
+- `testinstanz-claude.sh` — THE `claude` OF A TEST INSTANCE WITH REAL SEATS ($DIR/bin/claude, first on every pane's PATH). testinstanz.sh
 - `testinstanz.sh` — A STANDING test instance of this checkout, for looking at the left bar with a browser.
 - `titlebytes.ts` — Is a stream increment NOTHING BUT window-title updates? Pure so the fixtures in e2e/slots.ts pin
 - `trace-index.ts` — One task's life as TraceEvents, projected from the ledgers every writer already keeps (Overhaul S5, first cut).

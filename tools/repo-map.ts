@@ -105,7 +105,7 @@ export function renderRepoMap(facts: RepoMapFacts): string {
     "- A directory's sentence is maintained in `tools/repo-map.ts#DIRECTORY_NOTES`.",
     "- A file's sentence is that file's own first comment line, read from the file.",
     "- Top-level files that are not `.ts` or `.sh` are out of scope by design: `README.md`, `AGENTS.md`,",
-    "  `SYSTEM.md`, `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `package.json`, `bun.lock`,",
+    "  `OWNER.md`, `SHARING.md`, `HANDOFF.md`, `package.json`, `bun.lock`,",
     "  `tsconfig.json`, `LICENSE`.",
     "- A row with no sentence available says so in the row. It is never dropped.",
     "",

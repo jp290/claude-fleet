@@ -46,8 +46,8 @@ how the shelf grew to 52 docs whose claims nobody re-derived.
 
 ## Current system entry points
 
-- **`../SYSTEM.md`** — owner-ausgerichtetes Zielmodell für Rollen, Kernobjekte, Kontextschichten
-  und Ende-zu-Ende-Lebenszyklus. Es ist kein Runtime-Inventar.
+- **`start/system-concept.md`** — what Fleet is: the system concept every agent reads (setup, rights, knowledge,
+  sharing). The August target model `SYSTEM.md` that it replaced lies in `../attic/SYSTEM.md`; no start reads it.
 - **`agentic-control-plane-program-2026-08-20.md`** — datierter Outside-in-Program Brief mit
   Journeys, Acts, Agentenbriefing, Write-Leases und Canaries. Nach Umsetzung bleibt er Snapshot.
 - **`kontextschicht-analyse-2026-08-20.md`** — gemessener Ist-Befund, Korrekturen und offene

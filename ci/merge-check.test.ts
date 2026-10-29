@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, diffPaths, helperEnv, helperOf, helperRun, hiddenLayerOf,
   mainAuditOf, mainVerdict, mergeBaseOf, mergeCheck, namesInTree, pushCandidate, runOnHelper } from "./merge-check";
+import { repairProofOf } from "./repair-proof";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -131,6 +132,60 @@ describe("namesInTree und diffPaths: der Beleg der Reparatur-Tür", () => {
       expect(namesInTree(g("rev-parse", "HEAD"), "ein Satz, den kein Quelltext trägt", dir)).toEqual([]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  // DER FALL, AN DEM DIE TÜR BLIND WAR (branch/rechte-block, d3a0af04): die Nadel selbst trägt
+  // Anführungszeichen. Im Quelltext steht der Satz als TS-String, dort ist jedes `"` escaped — die
+  // wörtliche Suche fand ihn nicht. Gesucht wird darum beides: die Nadel und ihre Quelltext-Escape-Form.
+  describe("eine Nadel mit Anführungszeichen oder Backslash: wörtlich und escaped", () => {
+    const CLAIM = 'die Vorschau trägt rechte { stufe: "lesen", an: [], aus: [] } als gewählte Stufe';
+    const NAME = `rechte DOM 1440x900 lane: ${CLAIM}`;
+    const dirs: string[] = [];
+    afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+    const repo = (file: string, text: string): { dir: string; sha: string } => {
+      const dir = mkdtempSync(`${tmpdir()}/mc-repair-escape-`);
+      dirs.push(dir);
+      const g = (...a: string[]): string => {
+        const r = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a]);
+        if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+        return r.stdout.toString().trim();
+      };
+      g("init", "-q", "-b", "main");
+      mkdirSync(join(dir, "e2e"));
+      writeFileSync(join(dir, file), text);
+      g("add", "-A");
+      g("commit", "-q", "-m", "baum");
+      return { dir, sha: g("rev-parse", "HEAD") };
+    };
+    const red = (name: string) => ({ at: 1793110000000, result: "red", mainSha: "m".repeat(40), fails: [name] });
+
+    test("die Quelle nennt sie escaped: der Beleg nennt die Datei", () => {
+      // der Satz steht im Quelltext als TS-String: jedes `"` escaped, die wörtliche Nadel trifft nicht
+      const source = 'verdicts.rechte = satz === "die Vorschau trägt rechte { stufe: \\"lesen\\", an: [], aus: [] } als gewählte Stufe";\n';
+      expect(source).not.toContain(CLAIM);
+      const { dir, sha } = repo("e2e/start-dom.ts", source);
+      const p = repairProofOf({ row: red(NAME), diff: ["e2e/start-dom.ts"], namesIn: (n) => namesInTree(sha, n, dir) });
+      expect(p.ok).toBe(true);
+      expect(p.files).toEqual(["e2e/start-dom.ts"]);
+      expect(p.why).toContain("behebt den roten Audit");
+    });
+
+    test("eine Nadel, die niemand nennt, bleibt unbelegt", () => {
+      const { dir, sha } = repo("e2e/start-dom.ts", 'const satz = "etwas ganz anderes";\n');
+      const p = repairProofOf({ row: red(NAME), diff: ["e2e/start-dom.ts"], namesIn: (n) => namesInTree(sha, n, dir) });
+      expect(p.ok).toBe(false);
+      expect(p.why).toContain("kein Quelltext nennt diese Prüfung");
+    });
+
+    test("ein Backslash in der Nadel: die doppelt escapte Quelle belegt sie", () => {
+      const pfad = 'der Pfad C:\\x steht so in der Vorschau der Prüfung';
+      const source = 'const satz = "der Pfad C:\\\\x steht so in der Vorschau der Prüfung";\n';
+      expect(source).not.toContain(pfad);
+      const { dir, sha } = repo("e2e/start-dom.ts", source);
+      const p = repairProofOf({ row: red(`pfad DOM lane: ${pfad}`), diff: ["e2e/start-dom.ts"], namesIn: (n) => namesInTree(sha, n, dir) });
+      expect(p.ok).toBe(true);
+      expect(p.files).toEqual(["e2e/start-dom.ts"]);
+    });
+  });
+
   test("diffPaths nennt die Dateien, die der Branch gegen main ändert", () => {
     const { dir, g } = repo();
     try {

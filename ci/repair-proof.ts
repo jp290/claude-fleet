@@ -8,7 +8,8 @@
 // aus dem Body wäre die falsche Antwort: dann dürfte jeder Branch sich selbst zum Reparateur erklären.
 // Darum entscheidet der CHECK, und zwar aus zwei Dingen, die er selbst lesen kann:
 //   · der jüngsten roten Audit-Zeile auf main — ihre `fails` sind die Namen der roten Prüfungen;
-//   · dem Kandidatenbaum — er nennt zu jedem Namen die Datei(en), in denen der Name WÖRTLICH steht.
+//   · dem Kandidatenbaum — er nennt zu jedem Namen die Datei(en), in denen der Name WÖRTLICH oder in der
+//     Escape-Form eines Quelltext-Strings steht (eine Nadel mit `"` oder `\` findet sonst nichts).
 // Ein Name, den keine Datei nennt, ist nicht zugeordnet; ein Name, den zu viele nennen, ist keine
 // Zuordnung. Beides ist „nicht belegt" und der Check läuft ohne repair.
 //
@@ -29,7 +30,7 @@ export interface RepairCheck {
   name: string;
   /** das Stück des Namens, nach dem im Baum gesucht wurde (der Satz der Prüfung, sonst der Name) */
   needle: string;
-  /** die Dateien des Baums, die `needle` wörtlich nennen (leer = nicht belegt) */
+  /** die Dateien des Baums, die `needle` nennen (wörtlich oder escaped) (leer = nicht belegt) */
   files: string[];
   touched: boolean;
   /** warum diese Prüfung nicht als behoben gilt — fehlt, wenn sie es ist */
@@ -50,7 +51,7 @@ export interface RepairInput {
   row: Record<string, unknown> | null;
   /** was der Branch gegen main ändert (git diff --name-only main..kandidat) */
   diff: readonly string[];
-  /** die Dateien des Kandidatenbaums, die `needle` wörtlich nennen — der Beleg selbst */
+  /** die Dateien des Kandidatenbaums, die `needle` nennen — der Beleg selbst (wörtlich oder escaped) */
   namesIn: (needle: string) => readonly string[];
 }
 

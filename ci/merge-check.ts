@@ -204,12 +204,24 @@ export function mainVerdict(audits: readonly Record<string, unknown>[], onMain: 
 // DIE DATEIEN, DIE EINE PRÜFUNG NENNT — der Beleg der Reparatur-Tür. `git grep -F` im Kandidatenbaum,
 // über den QUELLTEXT: eine Messnotiz, die den Satz einer Prüfung zitiert, belegt keine Reparatur.
 const REPAIR_SCOPE = ["*.ts", "*.tsx", "*.js", "*.mjs", "*.css", "*.html"] as const;
+// Die Form, in der ein Satz als Quelltext-String steht: `\` zuerst, dann `"`. Ein Satz der Prüfung
+// trägt oft selbst Anführungszeichen ("stufe: "lesen""); im Quelltext ist jedes davon escaped.
+export function sourceEscapedOf(needle: string): string {
+  return needle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 export function namesInTree(sha: string, needle: string, dir = REPO_DIR): string[] {
-  const r = Bun.spawnSync(["git", "-C", dir, "grep", "-l", "-F", "-z", "-e", needle, sha, "--", ...REPAIR_SCOPE]);
-  // 1 = kein Treffer, alles andere = nicht lesbar. Beides heißt: keine Datei nennt diese Prüfung.
-  if (r.exitCode !== 0) return [];
-  // `-z`: Einträge sind NUL-getrennt und tragen den Rev vor dem Pfad
-  return r.stdout.toString().split("\0").filter(Boolean).map((l) => l.replace(/^[^:]*:/, ""));
+  // BEIDE FORMEN, vereinigt (branch/rechte-block, d3a0af04): eine Nadel mit `"` oder `\` findet im
+  // Quelltext nur ihre Escape-Form. Ohne diese beiden Zeichen sind die Formen gleich — dann ein Lauf.
+  const escaped = sourceEscapedOf(needle);
+  const found = new Set<string>();
+  for (const form of escaped === needle ? [needle] : [needle, escaped]) {
+    const r = Bun.spawnSync(["git", "-C", dir, "grep", "-l", "-F", "-z", "-e", form, sha, "--", ...REPAIR_SCOPE]);
+    // 1 = kein Treffer, alles andere = nicht lesbar. Beides heißt: diese Form nennt keine Datei.
+    if (r.exitCode !== 0) continue;
+    // `-z`: Einträge sind NUL-getrennt und tragen den Rev vor dem Pfad
+    for (const l of r.stdout.toString().split("\0")) if (l) found.add(l.replace(/^[^:]*:/, ""));
+  }
+  return [...found];
 }
 // was der Branch gegen main ändert — dieselbe Sicht, aus der bigUnitsOf seine Units ableitet
 export function diffPaths(from: string, to: string, dir = REPO_DIR): string[] {

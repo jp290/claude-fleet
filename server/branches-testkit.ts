@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 export interface Answer { status: number; body: Record<string, unknown> }
-export interface Fixture { repo: string; state: string; token: string; sock: string }
+export interface Fixture { repo: string; state: string; token: string; sock: string; suiteLock: string }
 export type BranchRow = { branch: string; name: string; text: string; rev: number; path: string | null; head: string;
   session: { slot: number; openedAt: number } | null;
   seen: { head: string; via: string } | null; distance: { ahead: number; behind: number } | null;
@@ -98,7 +98,9 @@ export function branchTestkit() {
     sh(repo, "commit", "-q", "-m", "start");
     const sock = `fb${process.pid % 1000}x${fixtures}`;
     sockets.push(sock);
-    return { repo, state, token: `owner-${process.pid}-${fixtures}`, sock };
+    // Die Suite-Sperre gehört der Fixture, wie die übrigen Pfade: sonst nimmt dieser Server die Sperre des
+    // GANZEN Rechners, und ein Audit, das dort läuft, macht den Test rot — für einen Grund, der nicht seiner ist.
+    return { repo, state, token: `owner-${process.pid}-${fixtures}`, sock, suiteLock: join(state, "suite-lock") };
   }
   // `extra`: Umgebung nur für dieses Leben, etwa ein Tier-2-Audit-Befehl (FLEET_POSTLAND_AUDIT_CMD)
   async function life(f: Fixture, steps: unknown[], extra: Record<string, string> = {}): Promise<Answer[]> {
@@ -108,6 +110,7 @@ export function branchTestkit() {
     const proc = Bun.spawn([process.execPath, DRIVE, JSON.stringify(steps)], { cwd: f.state, stdout: "pipe", stderr: "pipe",
       env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude",
         PATH: PANE_PATH, FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo,
+        FLEET_SUITE_LOCK: f.suiteLock,
         GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", ...extra } });
     const deadline = setTimeout(() => proc.kill("SIGKILL"), LIFE_DEADLINE_MS);
     const code = await proc.exited;

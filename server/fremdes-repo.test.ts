@@ -4,7 +4,7 @@
 // 2. ein gepinntes Repo ist ein Arbeitsort ohne laufende Session; abgeheftet ist es wieder fremd (server.ts#pinnedRepos);
 // 3. das Ziel einer Branch-Session wartet, solange Claude Code nach Vertrauen fragt, und das Board zeigt die Frage.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { basename, join } from "node:path";
 import { type Answer, branchTestkit, commitIn, type Fixture, get, LIFE_DEADLINE_MS, persisted, post, rowsOf, sh } from "./branches-testkit";
@@ -46,15 +46,106 @@ type CheckCommand = { way: string; cmd: string | null; by?: string | null; at?: 
 const commandOf = (a: Answer | undefined, repo: string): CheckCommand =>
   ((a?.body.repos as { repo: string; checkCommand: CheckCommand }[]).find((r) => r.repo === repo))!.checkCommand;
 
+// Die Suite-Sperre des Rechners, wie ctl.sh sie hält: ein VERZEICHNIS mit pid, birth, held-by-fleet-server und Warteschlange.
+// Ein readFileSync darauf stürbe mit EISDIR und verdeckte den Grund des roten Laufs; also beide Formen, und nie werfen.
+function suiteLockLine(lockPath: string): string {
+  let stat: ReturnType<typeof statSync>;
+  try { stat = statSync(lockPath); } catch { return `${lockPath} absent`; }
+  if (!stat.isDirectory()) {
+    try { return `${lockPath} held (Datei): ${readFileSync(lockPath, "utf8").slice(0, 300).replace(/\s+/g, " ")}`; }
+    catch (e) { return `${lockPath} held (Datei), nicht lesbar: ${String(e).slice(0, 160)}`; }
+  }
+  const rd = (name: string): string | null => {
+    try { return readFileSync(join(lockPath, name), "utf8").trim() || null; } catch { return null; }
+  };
+  const pid = rd("pid"), birth = rd("birth")?.replace(/\s+/g, " ") ?? null, owner = rd("held-by-fleet-server");
+  const halter = pid ? `Halter pid ${pid}` : "kein Halter (pid fehlt)";
+  const selbst = owner === null ? "held-by-fleet-server nein, also nicht die Sperre des Fleet-Servers"
+    : owner === pid ? "held-by-fleet-server ja, also die Sperre des Fleet-Servers selbst"
+      : `held-by-fleet-server ja (pid ${owner}), aber nicht die Sperre des Fleet-Servers`;
+  let inhalt = "unlesbar";
+  try { inhalt = readdirSync(lockPath).join(", ") || "leer"; } catch { /* unlesbar */ }
+  return `${lockPath} held (Verzeichnis): ${halter}; ${selbst}; birth ${birth ?? "fehlt"}; Inhalt ${inhalt}`;
+}
+
 // Wartet das Audit nach dem Land auf eine Datei, die nie kommt (408), sagt der Fehler, was das Audit gerade tut und ob die Suite-Sperre
 // des Rechners im Spiel ist: der Audit-Stand aus Schritt 10 und 12, was im Zustandsordner liegt, die Sperre und ihr Halter.
 function auditDiagnosis(f: Fixture, r: (Answer | undefined)[]): string {
-  const lockPath = process.env.FLEET_SUITE_LOCK ?? "/tmp/fleet-e2e.lock";
-  const lock = existsSync(lockPath) ? `${lockPath} held: ${readFileSync(lockPath, "utf8").slice(0, 300).replace(/\s+/g, " ")}` : `${lockPath} absent`;
+  const lock = suiteLockLine(f.suiteLock);
   const look = (a: Answer | undefined) => JSON.stringify({ status: a?.status, body: a?.body }).slice(0, 1200);
   return `Audit nach dem Land: Schritt 11 endete mit ${r[11]?.status}. Schritt 10 ${look(r[10])}. Schritt 12 ${look(r[12])}. `
     + `Zustandsordner: ${readdirSync(f.state).join(", ")}. Suite-Sperre: ${lock}. Last: ${loadavg().map((n) => n.toFixed(1)).join(" ")}.`;
 }
+
+describe("0 · die Suite-Sperre", () => {
+  const ort = (name: string): string => { const p = join(TMP, "sperr-diagnose", name); mkdirSync(p, { recursive: true }); return p; };
+  test("als Verzeichnis mit pid und held-by-fleet-server: der Satz nennt Form und Halter, die Diagnose wirft nicht", () => {
+    const lock = ort("verzeichnis");
+    writeFileSync(join(lock, "pid"), "4711\n");
+    writeFileSync(join(lock, "birth"), "Tue Sep  1 10:00:00 2026\n");
+    writeFileSync(join(lock, "held-by-fleet-server"), "4711\n");
+    mkdirSync(join(lock, "t1.1"));
+    const satz = suiteLockLine(lock);
+    expect([satz.includes(lock), satz.includes("Verzeichnis"), satz.includes("Halter pid 4711")]).toEqual([true, true, true]);
+    expect(satz).toContain("held-by-fleet-server ja");
+    expect(satz).toContain("Sperre des Fleet-Servers selbst");
+    expect(satz).toContain("Tue Sep 1 10:00:00 2026");
+  });
+  test("als Verzeichnis ohne pid und ohne held-by-fleet-server: was fehlt, wird als fehlend genannt", () => {
+    const lock = ort("leeres-verzeichnis");
+    const satz = suiteLockLine(lock);
+    expect([satz.includes("Verzeichnis"), satz.includes("pid fehlt"), satz.includes("birth fehlt")]).toEqual([true, true, true]);
+    expect(satz).toContain("held-by-fleet-server nein");
+    expect(satz).toContain("nicht die Sperre des Fleet-Servers");
+  });
+  test("als Datei: gelesen wie bisher", () => {
+    const lock = join(TMP, "sperr-diagnose", "datei.lock");
+    mkdirSync(join(TMP, "sperr-diagnose"), { recursive: true });
+    writeFileSync(lock, "pid 0815\n");
+    const satz = suiteLockLine(lock);
+    expect([satz.includes(lock), satz.includes("Datei"), satz.includes("pid 0815")]).toEqual([true, true, true]);
+  });
+  test("fehlt sie: absent", () => {
+    const satz = suiteLockLine(join(TMP, "sperr-diagnose", "gibt-es-nicht"));
+    expect(satz).toContain("absent");
+    expect(satz).not.toContain("held");
+  });
+  // Der Fixture-Server nimmt die Sperre SEINER Fixture, nicht die des Rechners. Sonst wartet er auf ein Audit,
+  // das gerade die Maschine hält, und wird rot für einen Grund, der mit dem Test nichts zu tun hat.
+  test("eine fremde, gehaltene FLEET_SUITE_LOCK erreicht ihn nicht: er liest seine eigene, und das Land läuft", async () => {
+    const fremd = join(TMP, "sperr-diagnose", "fremd");
+    mkdirSync(fremd, { recursive: true });
+    const birth = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C" } })
+      .stdout.toString().trim().replace(/\s+/g, " ");
+    writeFileSync(join(fremd, "pid"), `${process.pid}\n`);
+    writeFileSync(join(fremd, "birth"), `${birth}\n`);
+    expect(suiteLockLine(fremd)).toContain(`Halter pid ${process.pid}`); // gehalten, nicht frei: ein Warten darauf wäre echt
+    const vorher = process.env.FLEET_SUITE_LOCK;
+    process.env.FLEET_SUITE_LOCK = fremd;
+    try {
+      const f = fixture();
+      mkdirSync(f.suiteLock); // die eigene Sperre der Fixture liegt da und ist geparkt
+      const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sperre" })]);
+      const [, lane] = await life(f, [post("/api/repo-check", { repo: f.repo, cmd: "true" }),
+        post("/api/lanes", { repo: f.repo, attach: String(made?.body.path) })]);
+      const self = tokenOf(f, slotOf(lane));
+      // was der Server als SEINE Sperre liest: die geparkte der Fixture — nicht die fremde, gehaltene des Laufs
+      const r = await life(f, [as(self, get("/api/self/gate"))]);
+      const sicht = r[0]?.body.suiteLock as { state?: string; pid?: number | null } | null;
+      expect([r[0]?.status, sicht?.state, sicht?.pid]).toEqual([200, "parked", null]);
+      // …und frei hält sie ihn nicht auf: der Branch landet, während die fremde Sperre gehalten bleibt
+      rmSync(f.suiteLock, { recursive: true, force: true });
+      const tip = commitIn(String(made?.body.path), "a.txt", "gut");
+      const l = await life(f, [post("/api/branches/seen", { repo: f.repo, branch: "branch/sperre", head: tip }),
+        as(self, post("/api/self/branches/check", {})), { until: ledger(f.repo), ms: 20_000 },
+        as(self, post("/api/self/branches/land", { subject: "Sperre" }))], { FLEET_VERIFY_WAIT_MS: "1000" });
+      expect(l[3]).toMatchObject({ status: 200, body: { ok: true } });
+      expect(suiteLockLine(fremd)).toContain(`Halter pid ${process.pid}`); // die fremde Sperre hat niemand angerührt
+    } finally {
+      if (vorher === undefined) delete process.env.FLEET_SUITE_LOCK; else process.env.FLEET_SUITE_LOCK = vorher;
+    }
+  }, LIFE_DEADLINE_MS * 2);
+});
 
 describe("1 · der Prüfbefehl je Repo", () => {
   test("eine Session schlägt vor, nichts läuft; der Owner setzt ihn, der Check läuft ihn gegen den Kandidaten, grün landet die Session selbst", async () => {

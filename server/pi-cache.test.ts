@@ -53,10 +53,21 @@ describe("eine Usage-Zeile ohne Zeitstempel (e2e/watch.ts, e2e/security.ts: pi-F
   });
 });
 
+describe("das Etikett der Dauer sagt, was belegt ist und was gewählt", () => {
+  // 391 Aufrufe belegen Treffer bis 8,75 h, nicht eine Lebensdauer von 6 h: die 6 h sind eine vorsichtige Wahl darunter (Leitung 29.10.)
+  test("deepseek: die Quelle nennt den beobachteten Wert und die gewählte Dauer getrennt", () => {
+    const m = measuredCacheLifetime("deepseek")!;
+    expect(m.ttlSec).toBe(6 * 3600);
+    expect(m.quelle).toContain("Treffer bis 8,75 h beobachtet");
+    expect(m.quelle).toContain("6 h vorsichtig gewählt");
+    expect(m.quelle).not.toMatch(/^gemessen/);
+  });
+});
+
 describe("warm, kalt, unbekannt", () => {
   test("deepseek mit Cache-Anteil ist warm und nennt die Quelle der Dauer", () => {
     const fact = piCacheFact(piLastUsage(PI_SESSION_DEEPSEEK));
-    expect(fact).toEqual({ at: LAST_AT, ttlSec: 6 * 3600, ttlQuelle: "gemessen 2026-10-29, 391 Aufrufe, deepseek-flash" });
+    expect(fact).toEqual({ at: LAST_AT, ttlSec: 6 * 3600, ttlQuelle: "Treffer bis 8,75 h beobachtet (2026-10-29, 391 Aufrufe, deepseek-flash), 6 h vorsichtig gewählt" });
     expect(piCacheState(fact, LAST_AT + 5 * H)).toBe("warm");
     expect(piCacheState(fact, LAST_AT + 6 * H)).toBe("kalt");
   });

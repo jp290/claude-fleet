@@ -3,11 +3,13 @@
 // request's timestamp. That is the fact the board's cache reading needs: when the newest model call
 // ran, whether it hit the cache, and how long the provider's cache survives.
 //
-// The lifetime is NEVER guessed. It is a table of measurements, keyed by the provider the session
-// file names; a provider without a row stays unknown, and the board says "unbekannt" rather than
-// inventing a number. DeepSeek is measured (2026-10-29, 391 calls on deepseek-flash: cacheRead share
-// 0.99–1.00 through pauses up to 60 min, hits up to 8.75 h); its own guide says "usually within a few
-// hours to a few days". GLM (zai) has no measurement on this host, so it has no row.
+// The lifetime is NEVER guessed. It is a table keyed by the provider the session file names, and each
+// row says WHAT backs its number; a provider without a row stays unknown, and the board says "unbekannt"
+// rather than inventing a number. DeepSeek: observed (2026-10-29, 391 calls on deepseek-flash: cacheRead
+// share 0.99–1.00 through pauses up to 60 min, hits up to 8.75 h) — an observed hit is a lower bound on
+// the lifetime, not the lifetime, so 6 h is a CAUTIOUS CHOICE below it, and the row says so. Its own
+// guide says "usually within a few hours to a few days". GLM (zai) has no measurement on this host, so
+// it has no row.
 export interface PiUsage {
   // message.timestamp when the file carries it, else the line's own timestamp (Unix ms); null when the
   // row carries neither — the counters still count (the context numerator reads them), only the cache
@@ -21,13 +23,13 @@ export interface PiUsage {
 
 export interface MeasuredCacheLifetime {
   ttlSec: number;
-  // where the number comes from — carried on the fact (DeliveryCacheFact.ttlQuelle) so a reader can
-  // see the measurement instead of taking the number on faith
+  // what the number rests on — carried on the fact (DeliveryCacheFact.ttlQuelle) so a reader can see
+  // the observation and the choice made from it instead of taking the number on faith
   quelle: string;
 }
 
 const MEASURED_CACHE_LIFETIME: Readonly<Record<string, MeasuredCacheLifetime>> = {
-  deepseek: { ttlSec: 6 * 3600, quelle: "gemessen 2026-10-29, 391 Aufrufe, deepseek-flash" },
+  deepseek: { ttlSec: 6 * 3600, quelle: "Treffer bis 8,75 h beobachtet (2026-10-29, 391 Aufrufe, deepseek-flash), 6 h vorsichtig gewählt" },
 };
 
 export function measuredCacheLifetime(provider: string | null | undefined): MeasuredCacheLifetime | null {

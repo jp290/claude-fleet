@@ -6943,8 +6943,8 @@ Eine abgewiesene Zustellung an den lebenden Insassen bleibt im Buendel. Ein bere
 `send-uncertain` persistierter Versuch bleibt an seinen `openedAt`-Insassen gebunden.
 `send` im Audit nennt
 `deliveryClass`, `ttlSec`, `ttlQuelle` (`1h`, `5m`, `codex`, `unknown` — oder für einen
-Pi-Anbieter die Quelle seiner gemessenen Dauer, z. B. `gemessen 2026-10-29, 391 Aufrufe,
-deepseek-flash`) und `cache` (`warm` oder `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung,
+Pi-Anbieter die Quelle seiner Dauer, z. B. `Treffer bis 8,75 h beobachtet (2026-10-29,
+391 Aufrufe, deepseek-flash), 6 h vorsichtig gewählt`) und `cache` (`warm` oder `kalt`); `delivery_bundle_*` trennt Queue, Send, Abweisung,
 Umleitung und Drop.
 
 Ein sofortiger Owner-Send nimmt mit, was für seinen Empfänger wartet, unter welcher Adresse es

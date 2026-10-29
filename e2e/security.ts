@@ -107,6 +107,12 @@ const PRE_AUTH_ROUTES = [
   // server-authored line, it fires at most once per subscription, and WATCH_MAX_PER_SLOT caps how
   // many can be armed. Its subscriber rule runs the OTHER way to the original lane-only routes below:
   // a lane is refused 409 here. The opposite-scope 409s are pinned in self-token.ts/watch.ts.
+  // FERNPOST (2026-10-29): the door a NEIGHBOUR fleet writes through, with a badge of its own — never the owner token or a
+  // self token (server/nachbarn.ts refuses both as a badge). What bounds it: without ~/.config/claude-fleet/nachbarn.json there
+  // is no neighbour and every call is a 401; the badge is compared (timingSafeEqual) BEFORE a byte of the body is read, a wrong
+  // one costs a fixed pause and counts per source; a known neighbour may only file one text message from a slot pair the
+  // receiving owner listed under `erlaubt`, into the Postfach of a plain session. It starts, lands and deploys nothing.
+  '= /api/fleet-nachbar/messages',
   '= /api/self/watch',    // same credential: subscribe your OWN pane to a lane's done-looking
   // The three Clarification operations share two pathname shapes: GET+POST on the collection,
   // then one dynamic reply route. All remain pre-owner-gate because their exact self principal is

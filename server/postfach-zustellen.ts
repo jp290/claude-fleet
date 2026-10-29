@@ -18,7 +18,9 @@
 export type PostfachTarget =
   | { kind: "session" | "lane"; slot: number; openedAt: number }
   | { kind: "role"; role: string }
-  | { kind: "program"; id: string };
+  | { kind: "program"; id: string }
+  // ein Sitz einer anderen Fleet (FERNPOST): nie das Ziel einer Zustellung hier, nur die Anschrift einer ausgehenden Zeile
+  | { kind: "remote"; fleet: string; slot: number };
 
 export interface PostfachEntry {
   id: string;

@@ -61,6 +61,8 @@ export type AuditActor =
   | Exclude<Principal, { kind: "owner" }>
   | { kind: "owner" }
   | { kind: "unknown" }
+  // FERNPOST: eine Nachbar-Fleet, erkannt an ihrem Ausweis (server/nachbar-tuer.ts)
+  | { kind: "nachbar"; fleet: string }
   | (Extract<Principal, { kind: "session" }> & { label: string; via: "owner-bearer" });
 
 export function resolveSelfPrincipal(req: Request): Extract<Principal, { kind: "session" }> | null {

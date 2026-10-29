@@ -424,6 +424,8 @@ type AuditEvent =
   | "messages_unreadable"
   // an edge the Orchestratorin granted or closed early (server/kanten.ts): the two slots, the end, the edge id — never the reason
   | "kante_grant"
+  // FERNPOST (server/nachbar-tuer.ts): what the neighbour door took or turned away — fleet name, slots, message id; never a badge
+  | "nachbar_nachricht" | "nachbar_paar_abgewiesen" | "nachbar_ausweis_abgewiesen"
   // the owner granted server rights to one seat (server.ts, POST /api/slots/:id/rechte); detail names the
   // granted ids and the effective set, so a later reader can see what changed without re-deriving it
   | "rechte_grant"

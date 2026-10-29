@@ -1,0 +1,22 @@
+// Kindprozess des Fernpost-Tests (server/fernpost.test.ts): ein Server, der WIRKLICH auf seinem Port lauscht, damit zwei davon einander
+// über HTTP erreichen (server/branches.drive.ts ruft den Handler nur im Prozess auf). Zustand laden, Token übernehmen, Bun.serve, und
+// der Takt der Postfach-Zustellung, den der echte Start als Timer fährt. Meldet sich mit einer JSON-Zeile und lebt, bis der Test ihn beendet.
+import { join } from "node:path";
+const stateDir = process.env.FLEET_STATE_DIR;
+if (!stateDir || !process.env.FLEET_PORT || !process.env.FLEET_TOKEN) throw new Error("FLEET_STATE_DIR, FLEET_PORT und FLEET_TOKEN fehlen");
+const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, tickPostfachZustellung, slotFrom, meldeNachbarProbleme } = await import("../server");
+await loadStateAndReap(join(stateDir, "fleet.json"));
+await settleBranchBook();
+adoptTokens();
+const server = Bun.serve(serveOptions as Parameters<typeof Bun.serve>[0]);
+// wie der echte Start: was an der Bindung nicht stimmt, steht im Log
+meldeNachbarProbleme();
+let tick = false;
+setInterval(() => {
+  // der poll-Takt des echten Starts hält fest, wann eine Pane zuletzt etwas ausgab; hier gilt jede besetzte Pane als seit zehn Sekunden still
+  for (let n = 1; n <= 16; n++) { const s = slotFrom(n); if (s?.cwd && s.lastOutput === 0) s.lastOutput = Date.now() - 10_000; }
+  if (tick) return;
+  tick = true;
+  void tickPostfachZustellung().catch((e) => console.error("postfach-takt:", e instanceof Error ? e.message : e)).finally(() => { tick = false; });
+}, 300);
+process.stdout.write(`${JSON.stringify({ bereit: server.port })}\n`);

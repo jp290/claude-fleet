@@ -44,7 +44,8 @@ More computers and the helper need it.
 is enough, because the models run in the cloud; it needs macOS or Linux, Bun, tmux and an agent CLI. The person
 gets more agents at once, and work goes on while the other machine sleeps. A chip in the
 title row switches between the boards in one click. **What it isn't:** one Fleet spread over two machines. Sessions,
-mailbox, token and ledgers stay on each machine. What joins them is git and whoever steers.
+mailbox, token and ledgers stay on each machine. What joins them is git, whoever steers, and mail between
+seats (below).
 
 ### Steering one from the other
 
@@ -55,6 +56,24 @@ mailbox, token and ledgers stay on each machine. What joins them is git and whoe
   works for `get <route>`, `send --orchestrator <file>` and `dispatch`, and `curl` reaches any owner route, such as
   opening a session. So an orchestrator on one machine can run work on the other. Keep the other token in a file
   only the person can read, and never print it.
+
+### Seats writing to seats of the other Fleet
+
+A seat writes to a seat of the other Fleet through its own self door, with
+`POST /api/self/messages {"to":{"kind":"remote","fleet":"<name>","slot":<n>}, …}`. The message lands in the
+other seat's mailbox and pane like a local one, with the sender `Fleet <name> Slot <n>`, and a `replyTo` answer
+finds its way back. The RECEIVING Fleet decides: it refuses every pair it hasn't released (409 with the reason)
+and an unknown badge (401). Each Fleet keeps this in its local binding, never in the repository
+(`server/nachbarn.ts` names every field):
+
+- `~/.config/claude-fleet/nachbarn.json`: per neighbour its `name`, its `url`, the badge file this Fleet shows
+  (`ausweisAus`), the one the neighbour must show (`ausweisEin`), and `erlaubt`: the pairs `{"von":<slot there>,
+  "an":<slot here>}` it may write. An answer needs the reverse pair in the other Fleet's list.
+- `~/.config/claude-fleet/secrets/<file>`: one badge per direction, at least 24 random characters, `chmod 600`.
+  A badge is never the owner token or a self token; the binding refuses both. It goes into no message, log or
+  report.
+
+The file is read on every request, so a released pair holds without a restart.
 
 ### How git moves between them
 

@@ -15,6 +15,7 @@ export type BranchRow = { branch: string; name: string; text: string; rev: numbe
   chargeBase: string | null; chargeCommits: number | null; check: { state: string; at: number | null; why: string | null } | null };
 export const LIFE_DEADLINE_MS = 30_000;
 const DRIVE = join(import.meta.dir, "branches.drive.ts");
+const SERVE = join(import.meta.dir, "nachbar.drive.ts");
 
 export function sh(cwd: string, ...args: string[]): string {
   const r = Bun.spawnSync(["git", "-C", cwd, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
@@ -119,10 +120,51 @@ export function branchTestkit() {
     if (code !== 0) throw new Error(`Leben endete mit ${code}: ${(await new Response(proc.stderr).text()).slice(-2000)}`);
     return JSON.parse(stdout.trim().split("\n").at(-1) ?? "[]") as Answer[];
   }
+  // Ein Server, der auf einem Port lauscht und lebt, bis `stop` ihn beendet (server/nachbar.drive.ts): zwei davon sind zwei Fleets,
+  // die einander über HTTP erreichen. `log` ist alles, was er auf stdout und stderr schrieb.
+  const served: { stop: () => Promise<void> }[] = [];
+  async function serve(f: Fixture, extra: Record<string, string> = {}): Promise<{ port: number; url: string; log: () => string; stop: () => Promise<void>;
+    call: (path: string, init?: { method?: string; body?: unknown; owner?: boolean; self?: string; headers?: Record<string, string> }) => Promise<Answer> }> {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env))
+      if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
+    const port = freePort();
+    const proc = Bun.spawn([process.execPath, SERVE], { cwd: f.state, stdout: "pipe", stderr: "pipe",
+      env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude",
+        PATH: PANE_PATH, FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo,
+        FLEET_SUITE_LOCK: f.suiteLock, FLEET_BINDUNG_DIR: join(f.state, "bindung"), FLEET_POSTFACH_FENSTER_SEC: "0",
+        FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500",
+        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", ...extra } });
+    let out = "", err = "";
+    const pump = async (stream: ReadableStream<Uint8Array>, into: (t: string) => void) => {
+      const reader = stream.getReader();
+      for (;;) { const r = await reader.read(); if (r.done) return; into(new TextDecoder().decode(r.value)); }
+    };
+    void pump(proc.stdout, (t) => { out += t; });
+    void pump(proc.stderr, (t) => { err += t; });
+    const deadline = Date.now() + LIFE_DEADLINE_MS;
+    while (!out.includes("bereit")) {
+      if (proc.exitCode !== null || Date.now() > deadline) { proc.kill("SIGKILL"); throw new Error(`Server kam nicht hoch: ${err.slice(-1500)}`); }
+      await Bun.sleep(50);
+    }
+    const stop = async () => { proc.kill("SIGTERM"); await Promise.race([proc.exited, Bun.sleep(3000)]); proc.kill("SIGKILL"); };
+    served.push({ stop });
+    const url = `http://127.0.0.1:${port}`;
+    const call = async (path: string, init: { method?: string; body?: unknown; owner?: boolean; self?: string; headers?: Record<string, string> } = {}) => {
+      const res = await fetch(`${url}${path}`, { method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+        headers: { ...(init.owner === false || init.self ? {} : { authorization: `Bearer ${f.token}` }), ...(init.self ? { "x-fleet-self-token": init.self } : {}),
+          ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
+      return { status: res.status, body: await res.json().catch(() => ({})) as Record<string, unknown> };
+    };
+    return { port, url, log: () => out + err, stop, call };
+  }
+  async function cleanupServers(): Promise<void> { for (const x of served) await x.stop(); }
   function cleanup(): void {
+    void cleanupServers();
     for (const sock of sockets) Bun.spawnSync(["tmux", "-L", sock, "kill-server"], { env: { ...process.env, TMUX_TMPDIR: SOCKETS } });
     rmSync(TMP, { recursive: true, force: true });
     rmSync(SOCKETS, { recursive: true, force: true });
   }
-  return { TMP, PROJECTS, BIN, SOCKETS, fixture, life, cleanup };
+  return { TMP, PROJECTS, BIN, SOCKETS, fixture, life, serve, cleanup };
 }

@@ -2740,7 +2740,10 @@ type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner";
 // and a later owner-promoted binding is a resolver change instead of a record migration. A MAIN
 // that wants to reach the Controller today addresses the Program the Controller is MAIN of.
 const MESSAGE_ROLES: MessageRole[] = [ "orchestrator", "controller", "owner"];
-type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole } | { kind: "session"; slot: number; openedAt: number } | { kind: "lane"; slot: number; openedAt: number };
+// `remote`: ein Sitz einer ANDEREN Fleet (FERNPOST, server/nachbarn.ts) — `fleet` ist der Name, unter dem diese Fleet den Nachbarn in ihrer
+// lokalen Bindung führt, `slot` sein Sitz dort. Ohne openedAt: wer in dem Slot sitzt, weiß nur die andere Fleet.
+type MessageAddress = { kind: "program"; id: string } | { kind: "role"; role: MessageRole } | { kind: "session"; slot: number; openedAt: number } | { kind: "lane"; slot: number; openedAt: number } | { kind: "remote"; fleet: string; slot: number };
+const NACHBAR_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 // CLOSED BY KIND, with exactly one member today. An unknown kind is a named refusal rather than a
 // tolerated extra — but the honest limit of what that buys: it keeps TODAY's text records stably
 // readable, and it does NOT prove a second payload type will land without migration. Only the
@@ -2794,7 +2797,16 @@ const loadMessageAddress = (value: unknown, what: string, legacy = false): Messa
       return `${what} ${r.kind} openedAt must be a positive number`;
     return { kind: r.kind, slot: r.slot, openedAt: r.openedAt };
   }
-  return `${what} kind must be one of program, role, session, lane`;
+  if (r.kind === "remote") {
+    if (Object.keys(r).some((k) => !["kind", "fleet", "slot"].includes(k)) || Object.keys(r).length !== 3)
+      return `${what} remote must contain exactly kind, fleet, slot`;
+    if (typeof r.fleet !== "string" || !NACHBAR_NAME_RE.test(r.fleet))
+      return `${what} remote fleet must be a neighbour name (lowercase letters, digits, dashes; at most 32 chars)`;
+    if (typeof r.slot !== "number" || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > MAX_SLOTS)
+      return `${what} remote slot must be an integer in 1..${MAX_SLOTS}`;
+    return { kind: "remote", fleet: r.fleet, slot: r.slot };
+  }
+  return `${what} kind must be one of program, role, session, lane, remote`;
 };
 
 const loadMessagePayload = (value: unknown, what: string): MessagePayload | string => {
@@ -3681,7 +3693,7 @@ export {
   loadProgramInboxEntry, loadProgramInbox,
   PROGRAM_TEXT_FIELDS, PROGRAM_TEXT_PROPOSAL_STATUSES, PROGRAM_DECISIONS_MAX, PROGRAM_TEXT_PROPOSALS_MAX,
   PROGRAM_TEXT_REASON_MAX, loadProgramDecisionLog, loadProgramTextProposals,
-  MESSAGE_ROLES, MESSAGE_PAYLOAD_KINDS, MESSAGE_ENTRY_KEYS, MESSAGE_IDEMPOTENCY_KEY_MAX,
+  MESSAGE_ROLES, NACHBAR_NAME_RE, MESSAGE_PAYLOAD_KINDS, MESSAGE_ENTRY_KEYS, MESSAGE_IDEMPOTENCY_KEY_MAX,
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS, PROGRAM_HANDOVER_SETTLED_HOWS,
   loadProgramHandover, loadProgramRecordLoss,

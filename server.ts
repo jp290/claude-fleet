@@ -227,6 +227,8 @@ import { expandPaneInboxText } from "./server/pane-inbox";
 import { safetyClassifierOwn, safetySystemNote } from "./src/safety-note";
 import { createTranscriptPush } from "./server/transcript-push";
 import { RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
+import { ladeNachbarn } from "./server/nachbarn";
+import { sendeAnNachbar, nimmNachbarAn, fehlversuchZaehler, type EinDeps } from "./server/nachbar-tuer";
 import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
   type PostfachEntry, type PostfachPlan } from "./server/postfach-zustellen";
 import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
@@ -3214,11 +3216,12 @@ function appendProgramInbox(program: Program, kind: ProgramInboxKind, ref: strin
 // === THE ADDRESSED MESSAGE RAIL — the one writer (ACP-18) =======================================
 const addressLabel = (a: MessageAddress): string =>
   a.kind === "program" ? `program:${a.id}` : a.kind === "role" ? `role:${a.role}`
-    : `${a.kind}:${a.slot}:${a.openedAt}`;
+    : a.kind === "remote" ? `remote:${a.fleet}:${a.slot}` : `${a.kind}:${a.slot}:${a.openedAt}`;
 const sameAddress = (a: MessageAddress, b: MessageAddress): boolean =>
   a.kind === "program" ? b.kind === "program" && a.id === b.id
     : a.kind === "role" ? b.kind === "role" && a.role === b.role
-      : b.kind === a.kind && a.slot === b.slot && a.openedAt === b.openedAt;
+      : a.kind === "remote" ? b.kind === "remote" && a.fleet === b.fleet && a.slot === b.slot
+        : b.kind === a.kind && "openedAt" in b && a.slot === b.slot && a.openedAt === b.openedAt;
 const samePayload = (a: MessagePayload, b: MessagePayload): boolean =>
   a.kind === "text" && b.kind === "text" && a.text === b.text;
 
@@ -18292,6 +18295,7 @@ function resolveMessageAddress(a: MessageAddress): AddressResolution {
 
     return { ok: false, error: "unknown message role" };
   }
+  if (a.kind === "remote") return { ok: false, error: "a remote address is delivered by the neighbour door (server/nachbar-tuer.ts), not resolved here" };
   const program = programs.find((p) => p.id === a.id);
   if (!program) return { ok: false, error: `unknown program ${a.id}` };
   if (program.status !== "active")
@@ -18425,6 +18429,60 @@ const SESSION_COUNTERPART = "an unbound session may address only the Orchestrato
   + "(the session that opened its branch through POST /api/branches/open, or the session on a branch it opened); "
   + "a session destination is otherwise only an Orchestrator reply";
 
+// FERNPOST · a message to a seat of a neighbour fleet (server/nachbarn.ts, server/nachbar-tuer.ts). The row is stored only once the
+// neighbour has taken it: a refusal or an unreachable neighbour leaves nothing behind, and the same idempotencyKey may be sent again.
+// A reply (replyTo) must answer a message that came from exactly this remote seat; the neighbour learns which of ITS messages is
+// answered through the idempotencyKey it chose itself.
+// Badges never pass through here: the only secrets this function touches stay inside sendeAnNachbar's Authorization header.
+const nachbarVerboten = (): string[] => [TOKEN, ...slots.map((x) => x.selfToken).filter((t): t is string => !!t)];
+async function sendRemoteMessage(s: Slot, from: MessageAddress, to: MessageAddress & { kind: "remote" }, payload: MessagePayload,
+  key: string, replyTo: string | null): Promise<Response> {
+  let replyRef: string | null = null;
+  if (replyTo !== null) {
+    const parent = messages.entries.find((m) => m.id === replyTo);
+    if (!parent || !messageInboundFor(s, parent) || !sameAddress(parent.from, to))
+      return json({ error: "replyTo names no message addressed to this sender" }, 409);
+    replyRef = parent.idempotencyKey;
+  }
+  const sent = await sendeAnNachbar({ nachbarn: ladeNachbarn(nachbarVerboten()), fleet: to.fleet, vonSlot: s.id, anSlot: to.slot,
+    payload, key, replyRef });
+  if (!sent.ok) return json({ error: sent.error, ...(sent.neighbour ? { neighbour: sent.neighbour } : {}) }, sent.status);
+  const entry = appendMessage(from, to, payload, key, replyTo);
+  await saveStateNow();
+  return json({ ok: true, existing: false, message: entry, holder: sent.holder === null ? null : { fleet: to.fleet, slot: sent.holder },
+    note: null, escalatedTo: null });
+}
+// FERNPOST · the receiving half: who may write whom is decided here and only here (nimmNachbarAn)
+const nachbarFehlversuch = fehlversuchZaehler();
+// NOTHING SILENT: what is wrong with the binding is logged at start — file names and reasons, never a badge (server/nachbarn.ts)
+function meldeNachbarProbleme(): string[] {
+  const probleme = ladeNachbarn(nachbarVerboten()).probleme;
+  for (const p of probleme) console.error(`fernpost: binding problem — ${p}`);
+  return probleme;
+}
+const nachbarEinDeps = (): EinDeps => ({
+  nachbarn: () => ladeNachbarn(nachbarVerboten()),
+  ziel: (slot) => {
+    const live = slotFrom(slot);
+    const mine = live ? messageAddressesFor(live).find((a) => a.kind === "session") : undefined;
+    return mine?.kind === "session" ? { ok: true, to: mine }
+      : { ok: false, error: `slot ${slot} holds no plain session that reads a Postfach — a neighbour writes to sessions, not to lanes or empty slots` };
+  },
+  frueher: (from, key) => messages.entries.find((m) => sameAddress(m.from, from) && m.idempotencyKey === key),
+  antwortAuf: (to, fleet, vonSlot, ref) => {
+    const live = slotFrom(to.slot);
+    const mine = live ? messageAddressesFor(live) : [to];
+    return messages.entries.find((m) => m.idempotencyKey === ref && m.to.kind === "remote" && m.to.fleet === fleet && m.to.slot === vonSlot
+      && mine.some((a) => sameAddress(a, m.from)))?.id ?? null;
+  },
+  anhaengen: appendMessage,
+  speichern: saveStateNow,
+  fehlschlag: nachbarFehlversuch,
+  pause: (ms) => Bun.sleep(ms),
+  audit: (was, text) => audit(was, undefined, text),
+  alsNachbar: (fleet, fn) => withAuditActor({ kind: "nachbar", fleet }, fn),
+});
+
 // POST /api/self/messages — the send half.
 // GUARD ORDER is STN-1's (401 at the dispatcher → 409 not-a-principal → 400 body → 409 policy):
 // a caller that cannot address anyone is told THAT, before its body is graded on a rail it may not
@@ -18462,6 +18520,9 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
       return json({ error: `idempotencyKey ${key} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
     return json({ ok: true, existing: true, message: prior });
   }
+
+  // FERNPOST: a seat of ANOTHER fleet is written through the neighbour door; the receiving fleet checks who may write whom
+  if (to.kind === "remote") return await sendRemoteMessage(s, sender.from, to, payload, key, replyTo);
 
   // SESSION ADDRESSES SPEAK ONLY TO THEIR COUNTERPART: an unbound session writes to the Orchestrator,
   // the Orchestrator answers it, and the two ends of a branch door write to each other (K13) — the
@@ -28172,6 +28233,7 @@ function postfachSenderLabel(a: MessageAddress): string {
   if (a.kind === "program") return `Program ${a.id}`;
   if (a.kind === "role") return a.role === "owner" ? "Owner"
     : a.role === "orchestrator" ? "Orchestrator" : `Role ${a.role}`;
+  if (a.kind === "remote") return `Fleet ${a.fleet} Slot ${a.slot}`;
   return `${a.kind === "lane" ? "Lane" : "Session"} Slot ${a.slot}`;
 }
 function postfachEntryOf(m: Message): PostfachEntry {
@@ -51733,6 +51795,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       return await sendMessageFor(s, await readJson(req));
     }
 
+    // FERNPOST: the door a NEIGHBOUR fleet writes through — its own badge (server/nachbarn.ts), never the owner token or a self token.
+    // Spelled as a literal so e2e/security.ts §1 reads it; it equals server/nachbarn.ts#FERN_TUER, which the sending half uses
+    if (url.pathname === "/api/fleet-nachbar/messages" && req.method === "POST")
+      return await nimmNachbarAn(nachbarEinDeps(), tokenFrom(req), shareSource(req, server.requestIP(req)?.address ?? ""),
+        () => readJson(req), loadMessagePayload);
+
     // EDGES: the Orchestratorin lets two sessions write each other directly for a while (kantenTuer, server/kanten.ts)
     const selfKante = /^\/api\/self\/kanten(?:\/([0-9a-f]{16}))?$/.exec(url.pathname);
     if (selfKante && (req.method === "GET" || req.method === "POST" || req.method === "DELETE")) {
@@ -57384,6 +57452,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
 if (import.meta.main) {
 Bun.serve<WSData>(serveOptions);
 console.log(`claude-fleet: http://${HOST}:${PORT}  (tmux -L ${SOCK}, slots 1..${MAX_SLOTS})`);
+meldeNachbarProbleme();
 // only print the token to a real terminal — with stdout redirected (the documented
 // tmux `>> server.log` setup) it would land in a file created at the shell's default
 // umask, undoing the 600/700 discipline everything else applies to the token
@@ -57399,4 +57468,4 @@ if (process.stdout.isTTY) {
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
-  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap };
+  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme };

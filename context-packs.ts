@@ -206,6 +206,8 @@ interface ContextPackBase {
   /** nur mit dem Auslöser seat-choice: wer diesen Pack wählt, bekommt den hier genannten nicht (eine Variante, kein Nachfolger) */
   readonly statt?: string;
   readonly fassung?: ContextPackFassung;
+  /** die Marke am Wissen: der Text bleibt daheim, in einer geteilten Datei steht nur der leere Platz */
+  readonly personal?: true;
 }
 
 export interface PublicContextPack extends ContextPackBase {

@@ -10,11 +10,12 @@ import { importKonst } from "../src/k15-import";
 import { baueFassung } from "./fassung";
 import { fassungsHash } from "./konst-fassungen";
 import type { Lauf } from "./laeufe";
-import { dateiFuer, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzWissen, type DateiQuellen, type SitzStart } from "./sitz-reise";
+import { dateiFuer, leerePlaetze, leererPlatzZeilen, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzWissen, type DateiQuellen, type SitzStart } from "./sitz-reise";
 import type { Oeffnerin } from "./kind-weite";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { rechteRegeln, type Rechte } from "../session-rechte";
 import { seatFassungAbschnitte, type SeatKnowledge } from "./sitz-wissen";
+import { RICHTUNG_PLATZ } from "./setup-datei";
 
 const PERSOENLICH_TEXT = "# Working with the owner\n\nA private sentence this test writes, so no real owner text stands in the tree.";
 const BIBLIOTHEK: SeatKnowledge = { tree: "fleet", repoRoot: "/r", head: "c0ffee", packs: [
@@ -69,7 +70,8 @@ describe("die Datei trägt den Sitz ganz", () => {
       wofuer: "Read this when you talk with the owner.", text: null }]);
     expect(sitz.darf).toEqual({ rechte: null, modus: "auto" });
     expect(sitz.notizbuch).toEqual({ index: "- [Lauf-Dauer](lauf-dauer.md) — zwei Stunden", notizen: [{ datei: "lauf-dauer.md", text: NOTIZ_PROJEKT }], daheim: 1 });
-    expect(ps.find((p) => p.id === "pruefer")?.sitz).toBeUndefined();
+    // a role seat now travels with its Sitz-Block like any other (Runde 3); only a bare reference or a non-Claude seat has none
+    expect(ps.find((p) => p.id === "pruefer")?.sitz).toBeDefined();
   });
   test("abgeleitetVon ist der Hash der Fassung, aus der exportiert wurde, und ein beendeter Lauf reist als Bericht ohne Ordner", async () => {
     const { obj, text } = await datei();
@@ -130,6 +132,21 @@ describe("die empfangende Fleet nimmt, was ankam", () => {
       { id: "fremd", useWhen: "x", sources: [], text: "nicht mitgereist" }] };
     expect(sitzWissen(s, eigene).packs.map((p) => [p.id, p.text?.slice(-7)])).toEqual([["who-it-is-for", "nobody meets it.".slice(-7)],
       ["how-fleet-remembers", "l look.".slice(-7)], ["working-with-the-owner", "Meiner."]]);
+  });
+  test("die leeren persönlichen Plätze stehen als Zeilen im Start; mit einer Rolle kommt die Richtung dazu", async () => {
+    const s = ankunft((await datei()).text, "bauer");
+    const mit = { ...s, rolle: "lane", richtung: { text: null, personal: true as const },
+      konzepte: [{ id: "k-personal", version: null, hash: null, text: null, personal: true as const }] } satisfies SitzStart;
+    expect(leerePlaetze(mit, null)).toEqual([{ kind: "pack", id: "working-with-the-owner" }, { kind: "concept", id: "k-personal" }]);
+    const zeilen = leererPlatzZeilen(mit, null);
+    expect(zeilen).toHaveLength(3);
+    expect([zeilen[0]!.includes("working-with-the-owner"), zeilen[0]!.includes("the person's own"), zeilen[0]!.includes("empty here"),
+      zeilen[0]!.includes("fills it"), zeilen[1]!.includes("k-personal"), zeilen[1]!.includes("concept")]).toEqual([true, true, true, true, true, true]);
+    expect(zeilen[2]).toBe(RICHTUNG_PLATZ);
+    // was der Importierende füllt, ist kein leerer Platz mehr; die eigene Bibliothek füllt den Pack gleichen Namens
+    expect(leerePlaetze({ ...mit, persoenlich: mit.persoenlich.map((p) => ({ ...p, text: "mein Text" })) }, null))
+      .toEqual([{ kind: "concept", id: "k-personal" }]);
+    expect(leerePlaetze(mit, BIBLIOTHEK)).toEqual([{ kind: "concept", id: "k-personal" }]);
   });
   test("ein persönlicher Pack unter liest wird abgelehnt", async () => {
     const o = JSON.parse((await datei()).text);

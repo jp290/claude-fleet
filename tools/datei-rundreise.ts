@@ -1,17 +1,22 @@
-// DIE RUNDREISE EINER KONSTELLATION über zwei Testinstanzen (Auftrag datei-traegt 22.10., docs/start/direction.md Schritt 3 und 5): A hat eine
-// Konstellation mit zwei Sitzen, deren persönlichen Platz A's Owner gefüllt hat; beide Sitze starten, ihre Fassung (GET /api/slots/:n/fassung)
-// wird gemessen. A exportiert die Datei (GET /api/k15/konst/:id/datei). B, frisch, importiert sie so, wie das Fenster es tut (k15-import.ts →
-// Speicher), startet dieselben Sitze und misst. Erwartet: je Sitz unterscheidet sich die Fassung nur im persönlichen Platz; füllt B ihn mit
-// demselben Text, ist der Hash gleich. Die Datei enthält A's persönlichen Text nicht, und abgeleitetVon ist A's Fassung der Konstellation.
+// DIE RUNDREISE EINES SETUPS über zwei Testinstanzen (Schritt 3, Runde 4): A hat einen Aufbau aus zwei Sitzen, einer mit
+// Rollenstein, einer ohne; ein geteilter Pack, ein persönlicher Pack, ein persönliches Konzept und eine persönliche Notiz,
+// verschiedene Rechte und eine Kante. A exportiert ihn durch GET /api/setups/<id>/datei. Die Datei darf keinen persönlichen
+// Text aus A enthalten. B, ein frisches Zustandsverzeichnis, importiert sie durch POST /api/setups/import (Vorschau, dann
+// Schreiben), bestätigt das Rollenbündel durch POST /api/k15/freigabe und startet dieselben Sitze. Die Starttexte beider
+// Seiten werden über GET /api/slots/:n/fassung verglichen: jeder nicht-persönliche Text byte-gleich, jeder persönliche Platz
+// auf B leer oder B's eigener. Danach ändert B einen Text, exportiert erneut, und ein drittes frisches Zustandsverzeichnis
+// importiert die Kette; derivedFrom/derivedFromLine müssen erhalten bleiben. Zuletzt startet ein eigener Agent in einem
+// Nicht-Fleet-Repo mit Rolle und Konzept als Steinen.
 //
 //   bun tools/datei-rundreise.ts <worktree A> <worktree B> [freier Slot] [zweiter freier Slot] [--datei <pfad>]
-// Beide Worktrees haben eine laufende Testinstanz (./testinstanz.sh up). Die Instanz B bleibt mit der importierten Konstellation stehen.
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+// Beide Worktrees haben eine laufende Testinstanz OHNE --real-seats (FLEET_CMD=true, kein echtes Modell).
+// Das dritte Zustandsverzeichnis und das fremde Repo entstehen als temporäre Ordner im Prozess; es braucht keinen dritten Server.
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PROFILE0, alle, exportObjekt, type Konst, type Profil } from "../src/k15-entwurf-modell";
-import { importKonst } from "../src/k15-import";
-import type { Rechte } from "../session-rechte";
+import { SPEICHER_DATEI } from "../src/k15-speicher";
+import { RICHTUNG_PLATZ, SETUP_FORMAT, hashText, importiereSetup, mitSetupHash, pruefeSetupDatei, roleStein,
+  setupAusKonstellation, type SetupConcept, type SetupDatei, type SetupPack, type SetupSeat } from "../server/setup-datei";
 
 const args = process.argv.slice(2);
 const dateiArg = args.indexOf("--datei");
@@ -21,160 +26,284 @@ if (!A || !B) { console.error("usage: bun tools/datei-rundreise.ts <worktree A> 
 const SLOTS = [Number(s1), Number(s2)];
 const REPO = join(import.meta.dir, "..");
 
-let n = 0;
-function probe(wt: string, method: string, path: string, body?: unknown): { status: number; json: Record<string, unknown> } {
-  const args = [join(wt, "testinstanz.sh"), "probe", method, path, "--as", "owner"];
+let n = 0, failed = 0;
+function check(ok: boolean, satz: string, detail = ""): boolean {
+  console.log(`${ok ? "PASS" : "FAIL"}  ${satz}${detail ? ` — ${detail}` : ""}`);
+  if (!ok) failed++;
+  return ok;
+}
+function need(ok: boolean, satz: string, detail = ""): asserts ok {
+  if (!check(ok, satz, detail)) { console.error("Abbruch: eine Voraussetzung der Rundreise fehlt."); process.exit(1); }
+}
+function probe(wt: string, method: string, path: string, body?: unknown): { status: number; json: Record<string, any> } {
+  const a = [join(wt, "testinstanz.sh"), "probe", method, path, "--as", "owner"];
   if (body !== undefined) {
     const f = join(tmpdir(), `rundreise-${process.pid}-${n++}.json`);
     writeFileSync(f, JSON.stringify(body));
-    args.push("--body", f);
+    a.push("--body", f);
   }
-  const r = Bun.spawnSync(args, { cwd: wt });
+  const r = Bun.spawnSync(a, { cwd: wt });
   const out = r.stdout.toString();
   const status = Number(/^HTTP (\d+)/.exec(out)?.[1] ?? 0);
-  let json: Record<string, unknown> = {};
+  let json: Record<string, any> = {};
   try { json = JSON.parse(out.replace(/^HTTP \d+\n/, "")); } catch { json = { roh: out.slice(0, 300) }; }
   return { status, json };
 }
-const muss = (ok: boolean, satz: string): void => { if (!ok) { console.error(`FEHLER: ${satz}`); process.exit(1); } };
+const kurz = (v: unknown): string => JSON.stringify(v).slice(0, 300);
+const gleiche = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-// DIE AUSGANGSDATEI, wie eine Fleet mit git-Bibliothek sie exportiert hätte: zwei Sitze ohne Rolle mit Agent-MD, Packs aus docs/packs als Text
-const pack = (id: string, weg: "start" | "skill", wofuer: string) => {
-  const pfad = `docs/packs/${id}.md`, text = readFileSync(join(REPO, pfad), "utf8").trim();
-  return { id, weg, quellen: [{ pfad, anker: text.split("\n")[0]! }], wofuer, text };
-};
-const liest = [pack("who-it-is-for", "start", "Read this when you choose, brief or build work that someone will use."),
-  pack("how-fleet-remembers", "skill", "Wenn du etwas gelernt hast und entscheiden musst, wohin die Notiz gehört.")];
-const persoenlich = [{ ...pack("working-with-the-owner", "start", "Read this when you talk with the owner."), text: null }];
-const NOTIZ = "---\nname: rundreise\ndescription: was der Bauer über Läufe weiß\nmetadata:\n  type: project\n---\nEin Lauf dieser Konstellation dauert etwa zwei Stunden.";
-const profil = (id: string, name: string, md: string) => ({ id, version: 1, name, glyph: "file", kurz: name, satz: name, autor: "du", rolle: "nur-ordner",
-  schiene: "session", agent: "claude", modell: null, effort: null, uebergabeAb: null, einV: 1, rechteV: 1, werte: {},
-  datei: { titel: `${id}.md`, v: 1, pfad: "eigene Datei", abschnitte: [{ titel: `# ${name}`, text: md }] } });
-const SEED = { format: 1, fleet: "konstellation", name: "Bauer und Prüferin", version: 1, satz: "eine baut, eine prüft", autor: "du",
-  aufgabe: { ziel: "Eine kleine Änderung bauen und prüfen.", fertig: "Die Prüferin hat jede Änderung gelesen." },
-  positionen: [
-    { id: "bauer", name: "Bauer", profil: profil("bauer-rr", "Bauer", "Du baust, was die Aufgabe sagt."),
-      sitz: { liest, persoenlich, darf: { rechte: null, modus: null },
-        notizbuch: { index: "- [Rundreise](rundreise.md) — was der Bauer über Läufe weiß", notizen: [{ datei: "rundreise.md", text: NOTIZ }], daheim: 0 } } },
-    { id: "pruefer", name: "Prüferin", meldetAn: "bauer", profil: profil("pruefer-rr", "Prüferin", "Du prüfst, was der Bauer baut."),
-      sitz: { liest, persoenlich, darf: { rechte: null, modus: null }, notizbuch: null } },
-  ] };
-
-// SO TUT ES DAS FENSTER: importieren (k15-import.ts#importKonst), als eigene Konstellation in den Speicher (k15-zustand.ts#konstForm, #sende)
-// `aendere`: was der Owner danach im Fenster an der Konstellation setzt (etwa „[Zitat entfernt]“ je Session, k15-mitgereist.ts#darfWahl)
-function importiere(wt: string, text: string, eigenes: string | null, aendere: (k: Konst) => void = () => {}): string {
-  const imp = importKonst(text, PROFILE0, Date.now());
-  muss(typeof imp !== "string", `Import auf ${wt}: ${String(imp)}`);
-  if (typeof imp === "string") throw new Error(imp);
-  const k: Konst = imp.k;
-  if (eigenes) for (const q of alle(k.wurzeln)) for (const p of q.sitz?.persoenlich ?? []) p.text = eigenes;
-  aendere(k);
-  const profile: Profil[] = [...PROFILE0, ...imp.neueProfile];
-  const form = { id: k.id, ...exportObjekt({ ebene: "konst", voll: true, konst: [k], k, profile, q: null, p: profile[0]! }) };
-  const voll = (p: Profil) => (exportObjekt({ ebene: "session", voll: true, konst: [k], k, profile, q: null, p }) as { profil: unknown }).profil;
-  const r = probe(wt, "PUT", "/api/k15/eigenes", { fassungen: [], packs: [], profile: imp.neueProfile.filter((p) => p.datei).map(voll), konstellationen: [form] });
-  muss(r.status === 200, `Speicher auf ${wt}: ${JSON.stringify(r.json).slice(0, 200)}`);
-  return k.id;
-}
-// DER ORDNER, IN DEM DIE SITZE STARTEN: das HOME der Instanz (testinstanz.sh: $TI_ROOT/fleet-testinstanz-<hash>/home), als realpath. Start und
-// Fassung lesen das Notizbuch sonst unter zwei Namen desselben Ordners (/tmp und /private/tmp auf macOS) und zeigen verschiedene
+// DER ORDNER, IN DEM DIE SITZE STARTEN: das HOME der Instanz, als realpath (Start und Fassung lesen das Notizbuch sonst
+// unter zwei Namen desselben Ordners). Für die Rundreise ein frischer Unterordner, damit kein altes Gedächtnis mitzählt.
 function heim(wt: string): string {
   const st = Bun.spawnSync([join(wt, "testinstanz.sh"), "status"], { cwd: wt }).stdout.toString();
+  need(!/^real seats:/m.test(st), `${wt}: Testinstanz ohne --real-seats`, "sonst startet die Rundreise ein echtes Modell");
   const h = /socket fleetti(\d+)/.exec(st)?.[1];
-  muss(!!h, `${wt}: keine laufende Testinstanz`);
+  need(!!h, `${wt}: eine laufende Testinstanz`);
   return realpathSync(join(process.env.FLEET_TI_ROOT ?? "/tmp", `fleet-testinstanz-${h}`, "home"));
 }
-// je Abschnitt Teil/Kennung und Text; verglichen wird als Menge, damit ein fehlender Abschnitt die übrigen nicht verschiebt
-interface Gemessen { hash: string; abschnitte: string[] }
-function starteUndMiss(wt: string, kid: string, rechte: Record<string, Rechte> = {}): Gemessen[] {
-  return (["bauer", "pruefer"] as const).map((pos, i) => {
-    const slot = SLOTS[i]!;
-    probe(wt, "POST", `/api/slots/${slot}/kill`, {});
-    const o = probe(wt, "POST", `/api/slots/${slot}/open`, { cwd: heim(wt), harness: "claude", profil: `${pos}-rr`, sitz: `${kid}/${pos}`,
-      ...(rechte[pos] ? { rechte: rechte[pos] } : {}) });
-    muss(o.status === 200, `open ${pos} auf ${wt}: ${JSON.stringify(o.json).slice(0, 300)}`);
-    const f = probe(wt, "GET", `/api/slots/${slot}/fassung?anlass=laufend`);
-    muss(f.status === 200 && typeof f.json.hash === "string", `fassung ${pos}: ${JSON.stringify(f.json).slice(0, 200)}`);
-    const abschnitte = (f.json.teile as { id: string; abschnitte: { id: string; text: string | null }[] }[])
-      .flatMap((t) => t.abschnitte.map((a) => `${t.id}/${a.id}: ${a.text ?? "(fehlt)"}`));
-    return { hash: f.json.hash as string, abschnitte };
-  });
+function startOrdner(wt: string): string {
+  const d = join(heim(wt), `rundreise-${process.pid}`);
+  mkdirSync(d, { recursive: true });
+  return d;
 }
-const nurIn = (x: Gemessen, y: Gemessen): string[] => x.abschnitte.filter((a) => !y.abschnitte.includes(a));
-const kurz = (a: string): string => a.split("\n")[0]!.slice(0, 90);
-
-const EIGENES_A = "PERSOENLICH-A: Der Owner von A will jede Antwort in drei Sätzen und liest nachts. Das gehört nur nach A.";
-console.log("A: Ausgangsdatei importieren, persönlichen Platz mit A's Eigenem füllen, Sitze starten");
-// die Datei bringt keine Rechte mit; A's Owner setzt sie im Fenster, und so startet das Fenster die Sitze (k15-start.ts#auftrag schickt q.rechte)
-// der Bauer darf auf A landen: mehr als „bauen“, also deckelt B ihn, bis B's Owner es freigibt (src/sitz.ts#sitzRechte)
-const RECHTE_A: Record<string, Rechte> = { bauer: { stufe: "landen", an: [], aus: [] }, pruefer: { stufe: "lesen", an: [], aus: [] } };
-const kidA = importiere(A, JSON.stringify(SEED), EIGENES_A, (k) => { for (const q of alle(k.wurzeln)) q.rechte = RECHTE_A[q.id]; });
-const a = starteUndMiss(A, kidA, RECHTE_A);
-const aktivA = probe(A, "GET", `/api/k15/konst/${kidA}/fassungen`).json.aktiv;
-console.log(`A: Konstellation ${String(aktivA).slice(0, 12)} · Bauer ${a[0]!.hash.slice(0, 12)} · Prüferin ${a[1]!.hash.slice(0, 12)}`);
-
-// EIN LAUF AUF A: der Bauer an einen Lauf gebunden und der Lauf beendet (server/laeufe.ts); er reist als Bericht mit
-const lauf = probe(A, "POST", "/api/k15/laeufe", { konst: kidA, pos: "bauer", slot: SLOTS[0] });
-const laufId = (lauf.json.lauf as { id?: string } | undefined)?.id ?? lauf.json.id;
-muss(lauf.status >= 200 && lauf.status < 300 && typeof laufId === "string", `Lauf auf A: ${JSON.stringify(lauf.json).slice(0, 200)}`);
-muss(probe(A, "POST", `/api/k15/laeufe/${String(laufId)}/ende`, {}).status < 300, "der Lauf auf A endet nicht");
-const ex = probe(A, "GET", `/api/k15/konst/${kidA}/datei`);
-muss(ex.status === 200, `Export: ${JSON.stringify(ex.json).slice(0, 300)}`);
-const datei = JSON.stringify(ex.json.datei, null, 2);
-if (dateiZiel) writeFileSync(dateiZiel, datei);
-const d = ex.json.datei as Record<string, unknown>;
-muss(Array.isArray(d.laeufe) && (d.laeufe as { fassung: string }[]).some((l) => l.fassung === aktivA), "der Lauf von A reist nicht mit");
-console.log(`Datei: ${datei.length} Zeichen · ${(d.laeufe as unknown[]).length} Lauf als Bericht · abgeleitetVon ${String(d.abgeleitetVon).slice(0, 12)} · persönlicher Text von A darin: ${datei.includes("PERSOENLICH-A") ? "JA" : "nein"}`);
-muss(d.abgeleitetVon === aktivA, "abgeleitetVon ist nicht A's Fassung der Konstellation");
-muss(!datei.includes("PERSOENLICH-A"), "die Datei enthält persönlichen Text");
-for (const h of (ex.json.hinweise as string[] | undefined) ?? []) console.log(`  Hinweis: ${h}`);
-// was A's Sitze dürfen, reist im Sitz-Block, und die Datei bleibt unter der Grenze, die der Import liest (k15-import.ts#MAX_DATEI_BYTES)
-const ps = d.positionen as { id: string; rechte?: unknown; sitz?: { darf: { rechte: unknown } } }[];
-console.log(`Darf in der Datei: ${ps.map((p) => `${p.id} ${JSON.stringify(p.sitz?.darf.rechte)}`).join(" · ")} · ${new TextEncoder().encode(datei).length} Bytes`);
-muss(ps.every((p) => JSON.stringify(p.sitz?.darf.rechte) === JSON.stringify(RECHTE_A[p.id]) && p.rechte === undefined), "die Rechte von A reisen nicht im Sitz-Block");
-muss(new TextEncoder().encode(datei).length < 1_000_000, "die Datei ist größer, als ein Import liest");
-
-console.log("B: Datei importieren, Platz leer lassen, Sitze starten");
-const kidB = importiere(B, datei, null);
-const b = starteUndMiss(B, kidB);
-const kB = probe(B, "GET", `/api/k15/konst/${kidB}/fassungen`).json.aktiv;
-const gespeichertB = probe(B, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen: { abgeleitetVon?: string; laeufe?: unknown[] }[] };
-console.log(`B: gespeichert mit abgeleitetVon ${String(gespeichertB.konstellationen[0]?.abgeleitetVon).slice(0, 12)} und ${gespeichertB.konstellationen[0]?.laeufe?.length ?? 0} Lauf`);
-muss(gespeichertB.konstellationen[0]?.abgeleitetVon === aktivA && gespeichertB.konstellationen[0]?.laeufe?.length === 1, "B hat abgeleitetVon oder den Lauf nicht gespeichert");
-muss(kB === aktivA, `die Konstellation auf B hat nicht A's Fassung (${String(kB).slice(0, 12)} statt ${String(aktivA).slice(0, 12)})`);
-console.log(`B: Konstellation ${String(kB).slice(0, 12)} (gleich A: ${kB === aktivA}) · Bauer ${b[0]!.hash.slice(0, 12)} · Prüferin ${b[1]!.hash.slice(0, 12)}`);
-const ok: boolean[] = [];
-for (const [i, name] of ["Bauer", "Prüferin"].entries()) {
-  const nurA = nurIn(a[i]!, b[i]!), nurB = nurIn(b[i]!, a[i]!);
-  console.log(`  ${name}: Hash gleich ${a[i]!.hash === b[i]!.hash}; nur auf A: ${nurA.map(kurz).join(" | ") || "nichts"}; nur auf B: ${nurB.map(kurz).join(" | ") || "nichts"}`);
-  // A trägt den gefüllten Platz und nennt ihn im Kopf der Bibliothek; B hat ihn leer und nennt ihn nicht. Beim Bauer dazu sein Darf: A „Landen“,
-  // B gedeckelt auf „Bauen“
-  const wA = nurA.filter((x) => !x.startsWith("darf/")), wB = nurB.filter((x) => !x.startsWith("darf/"));
-  const dA = nurA.filter((x) => x.startsWith("darf/")), dB = nurB.filter((x) => x.startsWith("darf/"));
-  const darfOk = i === 0 ? dA.length === 1 && dA[0]!.includes("level “land”") && dB.length === 1 && dB[0]!.includes("level “build”") : !dA.length && !dB.length;
-  ok.push(darfOk && wA.length === 2 && wA.some((x) => x.includes("PERSOENLICH-A")) && wA.every((x) => x.startsWith("liest/wissen:")) && wB.length === 1
-    && wB[0]!.startsWith("liest/wissen: FLEET LIBRARY") && !wB[0]!.split("\n")[0]!.includes("working-with-the-owner"));
+function keineKonstellation(wt: string): boolean {
+  const e = probe(wt, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen?: unknown[] } | null;
+  return !e || !Array.isArray(e.konstellationen) || e.konstellationen.length === 0;
 }
-muss(ok.every(Boolean), "B unterscheidet sich von A nicht nur im persönlichen Platz und im gedeckelten Darf des Bauers");
+function formVon(wt: string, kid: string): Record<string, any> | null {
+  const e = probe(wt, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen?: Record<string, any>[] } | null;
+  return e?.konstellationen?.find((k) => k.id === kid) ?? null;
+}
 
-console.log("B: persönlichen Platz mit demselben Text füllen, Sitze neu starten");
-console.log("  … und B's Owner gibt das Landen des Bauers frei");
-const kidB2 = importiere(B, datei, EIGENES_A);
-// die Freigabe hat ihre eigene Tür (server/k15-speicher.ts#k15Freigabe): ein PUT des Speichers bringt sie nicht mit
-muss(probe(B, "POST", "/api/k15/freigabe", { konst: kidB2, pos: JSON.parse(datei).positionen[0].id }).status === 200, "Freigabe auf B");
-const b2 = starteUndMiss(B, kidB2);
-for (const [i, name] of ["Bauer", "Prüferin"].entries()) console.log(`  ${name}: A ${a[i]!.hash.slice(0, 12)} · B ${b2[i]!.hash.slice(0, 12)} · gleich ${a[i]!.hash === b2[i]!.hash}`);
-muss(b2.every((x, i) => x.hash === a[i]!.hash), "mit demselben persönlichen Text ist der Hash auf B nicht der von A");
-// DER DECKEL an der Tür: dieselbe Datei, aber der Bauer darf darin „deployen“
-const fremd = JSON.parse(datei);
-fremd.positionen[0].sitz.darf.rechte = { stufe: "deployen", an: [], aus: [] };
-const kidF = importiere(B, JSON.stringify(fremd), null);
-probe(B, "POST", `/api/slots/${SLOTS[0]}/kill`, {});
-muss(probe(B, "POST", `/api/slots/${SLOTS[0]}/open`, { cwd: heim(B), harness: "claude", profil: "bauer-rr", sitz: `${kidF}/bauer` }).status === 200, "open mit deployen");
-const darfF = ((probe(B, "GET", `/api/slots/${SLOTS[0]}/fassung?anlass=laufend`).json.teile as { id: string; abschnitte: { text: string | null }[] }[])
-  .find((t) => t.id === "darf")?.abschnitte[0]?.text ?? "").split(";")[0]!;
-console.log(`B: Bauer mit „deployen“ aus der Datei startet mit: ${darfF}`);
-muss(/level “build”/.test(darfF) && !/ctl\.sh land|api\/deploy|discard/.test(darfF), "der Deckel greift nicht");
-console.log("B: zurück auf den leeren Platz, damit der Owner die Ankunft so sieht, wie sie kommt");
-starteUndMiss(B, importiere(B, datei, null));
+type Fassung = { hash: string; teile: { id: string; abschnitte: { id: string; text: string | null }[] }[]; wahlen?: Record<string, unknown> };
+function starteMit(wt: string, slot: number, body: Record<string, unknown>, satz: string): Fassung {
+  probe(wt, "POST", `/api/slots/${slot}/kill`, {});
+  const o = probe(wt, "POST", `/api/slots/${slot}/open`, body);
+  need(o.status === 200, `${satz}: open`, kurz(o.json));
+  const f = probe(wt, "GET", `/api/slots/${slot}/fassung?anlass=laufend`);
+  need(f.status === 200 && typeof f.json.hash === "string", `${satz}: Fassung`, kurz(f.json));
+  return f.json as Fassung;
+}
+const starteSitz = (wt: string, kid: string, pos: string, slot: number, cwd: string): Fassung =>
+  starteMit(wt, slot, { cwd, harness: "claude", sitz: `${kid}/${pos}` }, `${pos} auf ${wt}`);
+const texte = (f: Fassung): string[] => f.teile.flatMap((t) => t.abschnitte.flatMap((a) => typeof a.text === "string" ? [a.text] : []));
+const ohnePrivat = (f: Fassung, privat: readonly string[]): string[] => texte(f).filter((t) => !privat.some((p) => t.includes(p))).sort();
+
+// ---------------------------------------------------------------- der Aufbau, der reisen soll
+const SHARED_TEXT = "# Shared pack\n\nThis text travels with its hash and starts on both sides.";
+const CONCEPT_TEXT = "# Shared concept\n\nA concept that travels as a stone.";
+const NOTE_TEXT = "---\nname: shared-note\ndescription: a shared note\nmetadata:\n  type: project\n---\nA note both sides start with.";
+const PRIVATE_A = "PRIVATE-A: this sentence belongs only to A's owner and may never stand in a shared setup file.";
+const PERSONAL_PACK = "personal-pack", PERSONAL_CONCEPT = "k-personal", SHARED_CONCEPT = "k-shared";
+const ROLE_SEAT = "bauer", PLAIN_SEAT = "pruefer", ROLE_ID = "lane";
+
+const stein = roleStein(ROLE_ID, null, REPO);
+need(!!stein, `Rollenstein ${ROLE_ID} lesbar`);
+const role = stein!.role;
+const shared: SetupPack = { kind: "pack", id: "shared-pack", hash: hashText(SHARED_TEXT), text: SHARED_TEXT,
+  useWhen: "Read this on both sides.", sources: [{ path: "docs/packs/shared-pack.md", anchor: "# Shared pack" }], way: "start" };
+const personal: SetupPack = { kind: "pack", id: PERSONAL_PACK, hash: null, text: null, personal: true,
+  useWhen: "Read this when you talk with the owner.", sources: [{ path: "docs/packs/personal-pack.md", anchor: "# Personal pack" }], way: "start" };
+const sharedConcept: SetupConcept = { kind: "concept", id: SHARED_CONCEPT, version: 1, hash: hashText(CONCEPT_TEXT), text: CONCEPT_TEXT,
+  author: "owner", purpose: "A concept both sides start with." };
+const personalConcept: SetupConcept = { kind: "concept", id: PERSONAL_CONCEPT, version: null, hash: null, text: null, personal: true,
+  purpose: "A private concept place." };
+const ref = (kind: "pack" | "concept", b: SetupPack | SetupConcept) => ({ kind, id: b.id, hash: b.hash });
+const roleSeat: SetupSeat = { id: ROLE_SEAT, name: "Bauer", who: { harness: "claude", model: null, effort: null },
+  start: { purpose: { titel: "Bauer.md", text: "You build what the task says." }, role: ROLE_ID, direction: { text: null, personal: true } },
+  reads: [ref("pack", shared), ref("pack", personal), ref("concept", sharedConcept), ref("concept", personalConcept)],
+  may: { rechte: { stufe: "lesen", an: [], aus: [] }, permissionMode: "auto" }, worksWith: {},
+  notebook: { index: "- [Shared note](shared-note.md)", notes: [
+    { id: "shared-note.md", hash: hashText(NOTE_TEXT), text: NOTE_TEXT },
+    { id: "private-note.md", hash: null, text: null, personal: true }], home: 1 } };
+const plainSeat: SetupSeat = { id: PLAIN_SEAT, name: "Prüferin", who: { harness: "claude", model: null, effort: null },
+  start: { purpose: { titel: "Pruefer.md", text: "You review what the builder builds." } },
+  reads: [ref("pack", shared), ref("concept", sharedConcept)],
+  may: { rechte: { stufe: "bauen", an: [], aus: [] }, permissionMode: "auto" }, worksWith: { reportsTo: ROLE_SEAT }, notebook: null };
+const datei: SetupDatei = mitSetupHash({ format: SETUP_FORMAT, name: "Rundreise: Bauer und Prüferin", setupHash: "", derivedFrom: null,
+  derivedFromLine: [], seats: [roleSeat, plainSeat], edges: [{ from: PLAIN_SEAT, to: ROLE_SEAT, kind: "reports-to" }],
+  packs: [shared, personal], concepts: [sharedConcept, personalConcept], roles: [role] });
+const geprueft = pruefeSetupDatei(datei);
+need(typeof geprueft !== "string", "die Ausgangsdatei ist ein gültiges fleet-setup/1", typeof geprueft === "string" ? geprueft : "");
+
+// ---------------------------------------------------------------- A: importieren, persönlichen Platz füllen, exportieren
+need(keineKonstellation(A), "A ist ein frisches Zustandsverzeichnis (keine gespeicherte Konstellation)");
+const preA = probe(A, "POST", "/api/setups/import", { datei });
+need(preA.status === 200 && preA.json.geschrieben === false, "A: die Vorschau schreibt nichts", kurz(preA.json));
+check(preA.json.vorschau?.seats === 2, "A: die Vorschau sieht zwei Sitze", String(preA.json.vorschau?.seats));
+check(keineKonstellation(A), "A: nach der Vorschau steht keine Konstellation im Speicher");
+const wroteA = probe(A, "POST", "/api/setups/import", { datei, schreiben: true });
+need(wroteA.status === 201, "A: der Import schreibt den Aufbau", kurz(wroteA.json));
+const kidA = String(wroteA.json.konstellation?.id ?? "");
+need(!!kidA, "A: der Import nennt die Konstellation", kurz(wroteA.json));
+const reqA = wroteA.json.vorschau?.requestedRoles as { id: string; rights: string[] }[] | undefined;
+check(!!reqA?.some((r) => r.id === ROLE_ID && r.rights.length > 0), "A: der Rollenstein erbittet sein Rechtebündel", kurz(reqA));
+const freiA = probe(A, "POST", "/api/k15/freigabe", { konst: kidA, pos: ROLE_SEAT });
+check(freiA.status === 200, "A: der Owner bestätigt das Rollenbündel", kurz(freiA.json));
+
+// A's persönlicher Platz bekommt A's eigenen Text (so wie der Owner ihn im Fenster füllt); der Export muss ihn herausnehmen.
+const eigenesA = probe(A, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen: Record<string, any>[] };
+const aForm = eigenesA.konstellationen.find((k) => k.id === kidA);
+let gefuellt = 0;
+for (const p of aForm?.positionen ?? []) for (const q of p.sitz?.persoenlich ?? []) if (q.id === PERSONAL_PACK) { q.text = PRIVATE_A; gefuellt++; }
+need(gefuellt === 1, "A: der persönliche Platz für den eigenen Text ist da", String(gefuellt));
+const putA = probe(A, "PUT", "/api/k15/eigenes", eigenesA);
+need(putA.status === 200, "A: der eigene persönliche Text ist gespeichert", kurz(putA.json));
+
+const exA = probe(A, "GET", `/api/setups/${encodeURIComponent(kidA)}/datei`);
+need(exA.status === 200 && exA.json.datei, "A: GET /api/setups/<id>/datei liefert die Datei", kurz(exA.json));
+const aFile = exA.json.datei as SetupDatei;
+if (dateiZiel) writeFileSync(dateiZiel, JSON.stringify(aFile, null, 2));
+const aFileText = JSON.stringify(aFile);
+check(aFile.format === SETUP_FORMAT && aFile.seats.length === 2, "A: die Datei ist ein fleet-setup/1 mit zwei Sitzen", `${aFile.format}, ${aFile.seats.length}`);
+check(aFile.edges.length === 1 && aFile.edges[0]!.from === PLAIN_SEAT && aFile.edges[0]!.to === ROLE_SEAT, "A: die eine Kante reist mit", kurz(aFile.edges));
+check(aFile.roles.length === 1 && aFile.seats.find((s) => s.id === ROLE_SEAT)?.start.role === ROLE_ID,
+  "A: der Rollensitz trägt seinen Rollenstein", `${aFile.roles.length} Rolle(n)`);
+check(aFile.packs.find((p) => p.id === shared.id)?.text === SHARED_TEXT, "A: der geteilte Pack reist mit Text und Hash");
+check(aFile.concepts.find((c) => c.id === SHARED_CONCEPT)?.text === CONCEPT_TEXT, "A: das geteilte Konzept reist mit Text und Hash");
+const privPack = aFile.packs.find((p) => p.id === PERSONAL_PACK), privConcept = aFile.concepts.find((c) => c.id === PERSONAL_CONCEPT);
+const privNote = aFile.seats.find((s) => s.id === ROLE_SEAT)?.notebook?.notes.find((x) => x.personal === true);
+check(!!privPack && privPack.text === null && privPack.hash === null && privPack.personal === true, "A: der persönliche Pack ist ein leerer Platz");
+check(!!privConcept && privConcept.text === null && privConcept.hash === null && privConcept.personal === true, "A: das persönliche Konzept ist ein leerer Platz");
+check(!!privNote && privNote.text === null && privNote.hash === null, "A: die persönliche Notiz ist ein leerer Platz");
+check(!aFileText.includes(PRIVATE_A), "A: kein persönlicher Text von A steht in der Datei");
+
+const cwdA = startOrdner(A);
+const aRole = starteSitz(A, kidA, ROLE_SEAT, SLOTS[0]!, cwdA);
+const aPlain = starteSitz(A, kidA, PLAIN_SEAT, SLOTS[1]!, cwdA);
+check(texte(aRole).some((t) => t.includes(role.start.text.trim())), "A: der Rollensitz startet mit dem Rollentext");
+check(texte(aRole).some((t) => t.includes(CONCEPT_TEXT)), "A: der Rollensitz startet mit dem Konzept");
+check(texte(aRole).some((t) => t.includes(PRIVATE_A)), "A: der persönliche Platz ist auf A mit A's Text gefüllt");
+check(texte(aRole).some((t) => t.includes(role.rights[0]!)), "A: der Rollensitz trägt das bestätigte Recht", role.rights[0]);
+check(!texte(aPlain).some((t) => t.includes(role.start.text.trim())), "A: der Sitz ohne Rolle trägt keinen Rollentext");
+
+// ---------------------------------------------------------------- B: importieren, Rolle bestätigen, Starttexte vergleichen
+need(keineKonstellation(B), "B ist ein frisches Zustandsverzeichnis (keine gespeicherte Konstellation)");
+const preB = probe(B, "POST", "/api/setups/import", { datei: aFile });
+need(preB.status === 200 && preB.json.geschrieben === false, "B: die Vorschau schreibt nichts", kurz(preB.json));
+check(keineKonstellation(B), "B: nach der Vorschau steht keine Konstellation im Speicher");
+const wroteB = probe(B, "POST", "/api/setups/import", { datei: aFile, schreiben: true });
+need(wroteB.status === 201, "B: der Import schreibt den Aufbau", kurz(wroteB.json));
+const kidB = String(wroteB.json.konstellation?.id ?? "");
+need(!!kidB, "B: der Import nennt die Konstellation", kurz(wroteB.json));
+const bForm = formVon(B, kidB);
+const bRolePos = bForm?.positionen?.find((p: Record<string, any>) => p.id === ROLE_SEAT);
+const bPlainPos = bForm?.positionen?.find((p: Record<string, any>) => p.id === PLAIN_SEAT);
+check(bForm?.positionen?.length === 2, "B: der Aufbau hat zwei Sitze", String(bForm?.positionen?.length));
+check(bPlainPos?.meldetAn === ROLE_SEAT, "B: die Kante ist angekommen", String(bPlainPos?.meldetAn));
+check(bRolePos?.profil?.rolle !== "orchestratorin", "B: der Rollensitz trägt keinen eingebauten Rollennamen", String(bRolePos?.profil?.rolle));
+check(Array.isArray(bRolePos?.sitz?.darf?.rolle) && bRolePos.sitz.darf.rolle.length > 0 && bRolePos.sitz.darf.bestaetigt === undefined,
+  "B: das Rollenbündel kommt als erbetene Rechte an, nicht als gewährte", kurz(bRolePos?.sitz?.darf));
+const freiB = probe(B, "POST", "/api/k15/freigabe", { konst: kidB, pos: ROLE_SEAT });
+check(freiB.status === 200, "B: der Owner bestätigt das Rollenbündel durch POST /api/k15/freigabe", kurz(freiB.json));
+
+const cwdB = startOrdner(B);
+const bRole = starteSitz(B, kidB, ROLE_SEAT, SLOTS[0]!, cwdB);
+const bPlain = starteSitz(B, kidB, PLAIN_SEAT, SLOTS[1]!, cwdB);
+check(texte(bRole).some((t) => t.includes(PERSONAL_PACK) && t.includes("person's own") && t.includes("empty here")),
+  "B: der Rollensitz nennt seinen leeren persönlichen Pack-Platz");
+check(texte(bRole).some((t) => t.includes(PERSONAL_CONCEPT) && t.includes("person's own") && t.includes("empty here")),
+  "B: der Rollensitz nennt seinen leeren persönlichen Konzept-Platz");
+check(texte(bRole).some((t) => t.includes(RICHTUNG_PLATZ)), "B: der Rollensitz nennt den leeren Richtungsplatz");
+check(texte(aRole).some((t) => t.includes(`author: ${sharedConcept.author}`)), "A: der Start nennt den Autor des Konzepts");
+check(texte(bRole).some((t) => t.includes(`author: ${sharedConcept.author}`)), "B: der Start nennt denselben Autor des Konzepts");
+// der Rollensitz wird erst verglichen, wenn B seinen persönlichen Platz selbst gefüllt hat (unten)
+const aPlainClean = ohnePrivat(aPlain, [PRIVATE_A]), bPlainClean = ohnePrivat(bPlain, [PRIVATE_A]);
+// bei einer Abweichung nennt die Zeile die erste Stelle, die sich unterscheidet, mit beiden Fassungen
+const ersteAbweichung = (a: unknown[], b: unknown[]): string => {
+  const i = a.findIndex((x, k) => JSON.stringify(x) !== JSON.stringify(b[k]));
+  if (i < 0) return `${a.length}/${b.length}`;
+  const x = String(a[i] ?? ""), y = String(b[i] ?? "");
+  let c = 0; while (c < x.length && x[c] === y[c]) c++;
+  const um = (t: string) => JSON.stringify(t.slice(Math.max(0, c - 60), c + 120));
+  return `${a.length}/${b.length}, erste Abweichung in Text [${i}] bei Zeichen ${c}: A ${um(x)} · B ${um(y)}`;
+};
+check(gleiche(aPlainClean, bPlainClean), "B: die nicht-persönlichen Starttexte des Sitzes ohne Rolle sind byte-gleich mit A", ersteAbweichung(aPlainClean, bPlainClean));
+check(!texte(bRole).some((t) => t.includes(PRIVATE_A)), "B: A's persönlicher Text steht nicht im Start");
+check(Array.isArray(bRolePos?.sitz?.persoenlich) && bRolePos.sitz.persoenlich.some((p: Record<string, any>) => p.id === PERSONAL_PACK && p.text === null),
+  "B: der persönliche Pack-Platz ist leer (kein Text aus der Datei)");
+check(Array.isArray(bRolePos?.sitz?.konzepte) && bRolePos.sitz.konzepte.some((c: Record<string, any>) => c.id === PERSONAL_CONCEPT && c.personal === true && c.text === null),
+  "B: der persönliche Konzept-Platz ist leer (kein Text aus der Datei)");
+check(texte(bRole).some((t) => t.includes(role.rights[0]!)), "B: der Rollensitz startet nach der Freigabe mit dem Rollenrecht", role.rights[0]);
+
+// B's Owner füllt den persönlichen Platz mit seinem eigenen Text, wie A's Owner es tat. Erst dann ist der Rollensitz mit A
+// vergleichbar: sein Start nennt die gefüllten Plätze beim Namen, ein leerer Platz fehlt dort (beides gewollt). Verglichen wird
+// alles außer den zwei persönlichen Texten, also auch die Zeile, die die Plätze aufzählt.
+const PRIVATE_B = "PRIVATE-B: this sentence belongs only to B's owner.";
+const eigenesB = probe(B, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen: Record<string, any>[] };
+let gefuelltB = 0;
+for (const p of eigenesB.konstellationen.find((k) => k.id === kidB)?.positionen ?? [])
+  for (const q of p.sitz?.persoenlich ?? []) if (q.id === PERSONAL_PACK) { q.text = PRIVATE_B; gefuelltB++; }
+need(gefuelltB === 1, "B: der leere persönliche Platz lässt sich mit B's eigenem Text füllen", String(gefuelltB));
+need(probe(B, "PUT", "/api/k15/eigenes", eigenesB).status === 200, "B: B's eigener persönlicher Text ist gespeichert");
+const bRoleEigen = starteSitz(B, kidB, ROLE_SEAT, SLOTS[0]!, cwdB);
+check(texte(bRoleEigen).some((t) => t.includes(PRIVATE_B)) && !texte(bRoleEigen).some((t) => t.includes(PRIVATE_A)),
+  "B: der persönliche Platz startet mit B's eigenem Text, nie mit A's");
+const aRoleOhne = ohnePrivat(aRole, [PRIVATE_A, PRIVATE_B]), bRoleOhne = ohnePrivat(bRoleEigen, [PRIVATE_A, PRIVATE_B]);
+check(gleiche(aRoleOhne, bRoleOhne), "B: die nicht-persönlichen Starttexte des Rollensitzes sind byte-gleich mit A", ersteAbweichung(aRoleOhne, bRoleOhne));
+
+// ---------------------------------------------------------------- die Kette: B ändern, exportieren, C importieren
+const bEigenes = probe(B, "GET", "/api/k15/eigenes").json.eigenes as { konstellationen: Record<string, any>[] };
+const bEdit = bEigenes.konstellationen.find((k) => k.id === kidB);
+const changed = "You review what the builder builds after B changed this one text.";
+const plainInB = bEdit?.positionen?.find((p: Record<string, any>) => p.id === PLAIN_SEAT);
+need(!!plainInB?.profil?.datei?.abschnitte?.[0], "B: der Text, den die Kette ändert, ist da");
+plainInB.profil.datei.abschnitte[0].text = changed;
+const putB = probe(B, "PUT", "/api/k15/eigenes", bEigenes);
+need(putB.status === 200, "B: die eine Textänderung ist gespeichert", kurz(putB.json));
+const exB = probe(B, "GET", `/api/setups/${encodeURIComponent(kidB)}/datei`);
+need(exB.status === 200 && exB.json.datei, "B: der zweite Export liefert die Datei", kurz(exB.json));
+const bFile = exB.json.datei as SetupDatei;
+check(bFile.setupHash !== aFile.setupHash, "Kette: B's geänderter Körper hat einen anderen setupHash");
+check(bFile.concepts.find((c) => c.id === SHARED_CONCEPT)?.author === sharedConcept.author,
+  "Kette: das Konzept behält seinen Autor im zweiten Export", String(bFile.concepts.find((c) => c.id === SHARED_CONCEPT)?.author));
+check(bFile.seats.find((s) => s.id === PLAIN_SEAT)?.start.purpose?.text === changed, "Kette: der geänderte Text reist im zweiten Export");
+check(bFile.derivedFrom === aFile.setupHash, "Kette: B's Datei nennt A's setupHash als derivedFrom", `${String(bFile.derivedFrom).slice(0, 12)} / ${aFile.setupHash.slice(0, 12)}`);
+const erwarteteLinie = [...new Set([...(aFile.derivedFrom ? [aFile.derivedFrom] : []), ...(aFile.derivedFromLine ?? [])])];
+check(gleiche(bFile.derivedFromLine, erwarteteLinie), "Kette: B's derivedFromLine trägt A's Kopf und Linie", kurz(bFile.derivedFromLine));
+
+const dirC = mkdtempSync(join(tmpdir(), "fleet-rundreise-c-"));
+try {
+  const impC = await importiereSetup(bFile, { dir: dirC }, { schreiben: true });
+  need(impC.status === 201, "C: das dritte frische Zustandsverzeichnis importiert B's Datei", kurz(impC.body));
+  const cState = JSON.parse(readFileSync(join(dirC, SPEICHER_DATEI), "utf8")) as { konstellationen?: Record<string, any>[] };
+  const cForm = cState.konstellationen?.[0];
+  need(!!cForm, "C: die importierte Konstellation steht da");
+  const cErwarteteLinie = [...new Set([...(bFile.derivedFrom ? [bFile.derivedFrom] : []), ...(bFile.derivedFromLine ?? [])])];
+  check(cForm.setupHash === bFile.setupHash, "C: B's setupHash ist der abgelegte Ursprung", `${String(cForm.setupHash).slice(0, 12)} / ${bFile.setupHash.slice(0, 12)}`);
+  check(cForm.abgeleitetVon === bFile.derivedFrom, "C: B's derivedFrom ist abgelegt", `${String(cForm.abgeleitetVon).slice(0, 12)} / ${String(bFile.derivedFrom).slice(0, 12)}`);
+  check(gleiche(cForm.derivedFromLine, cErwarteteLinie), "C: B's Kopf und derivedFromLine sind abgelegt", kurz(cForm.derivedFromLine));
+  const cExp = setupAusKonstellation(cForm, cForm, [], { dir: dirC });
+  if (typeof cExp === "string") check(false, "C: der Export des unveränderten Aufbaus geht", cExp);
+  else {
+    check(cExp.datei.derivedFrom === bFile.derivedFrom && gleiche(cExp.datei.derivedFromLine, cErwarteteLinie),
+      "C: ein unveränderter Export führt dieselbe Kette weiter", `${String(cExp.datei.derivedFrom).slice(0, 12)}`);
+    const cRole = cExp.datei.roles.find((r) => r.id === ROLE_ID);
+    check(cRole?.hash === role.hash && cExp.datei.seats.find((s) => s.id === ROLE_SEAT)?.start.role === ROLE_ID,
+      "C: die Datei trägt denselben Rollenstein wie A", `${String(cRole?.hash).slice(0, 12)} / ${role.hash.slice(0, 12)}`);
+  }
+} finally { rmSync(dirC, { recursive: true, force: true }); }
+
+// ---------------------------------------------------------------- eigener Agent im fremden Repo: Rolle und Konzept als Steine
+const ownRepo = mkdtempSync(join(tmpdir(), "fleet-own-repo-"));
+try {
+  const git = (a: string[]) => Bun.spawnSync(["git", ...a], { cwd: ownRepo, env: { ...process.env, GIT_AUTHOR_NAME: "rundreise", GIT_AUTHOR_EMAIL: "rundreise@invalid",
+    GIT_COMMITTER_NAME: "rundreise", GIT_COMMITTER_EMAIL: "rundreise@invalid" } });
+  need(git(["init", "-q", "-b", "main"]).exitCode === 0, "eigenes Repo: git init");
+  writeFileSync(join(ownRepo, "README.md"), "# own repo\n");
+  git(["add", "README.md"]);
+  need(git(["commit", "-q", "-m", "start"]).exitCode === 0, "eigenes Repo: erster Commit");
+  const ag = probe(B, "POST", "/api/agenten", { name: "Stein-Agent", wahlen: { rolle: ROLE_ID, konzepte: [SHARED_CONCEPT], permissionMode: "auto" } });
+  need(ag.status === 201 && ag.json.agent?.id, "eigener Agent: mit Rolle und Konzept angelegt", kurz(ag.json));
+  const aid = String(ag.json.agent.id);
+  const own = starteMit(B, SLOTS[0]!, { cwd: ownRepo, agent: aid }, "eigener Agent im fremden Repo");
+  const ownTexts = texte(own);
+  check(ownTexts.some((t) => t.includes(role.start.text.trim())), "eigener Agent: der Start zeigt den Rollentext");
+  check(ownTexts.some((t) => t.includes(CONCEPT_TEXT)), "eigener Agent: der Start zeigt das Konzept als Stein");
+  check(ownTexts.some((t) => t.includes(RICHTUNG_PLATZ)), "eigener Agent: der Start zeigt den leeren Richtungsplatz");
+  check(own.wahlen?.permissionMode !== "bypassPermissions" && !JSON.stringify(own).includes("bypassPermissions"),
+    "eigener Agent: er läuft nicht in bypass", String(own.wahlen?.permissionMode ?? "kein Modus"));
+} finally { rmSync(ownRepo, { recursive: true, force: true }); }
+
+if (failed) { console.error(`${failed} Prüfung(en) rot — RUNDREISE ROT`); process.exit(1); }
 console.log("RUNDREISE GRÜN");

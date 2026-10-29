@@ -25,7 +25,7 @@ const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
 // Sitz liest, misst je Sitz seine Fassung (server/fassung.ts). Was er darf, zählt hier, gleich ob es an der Position steht (hier gesetzt) oder in
 // ihrem Sitz-Block (mitgereist): so hat A, wo es gesetzt wurde, denselben Hash wie B, wo es ankam
 export function fassungsHash(form: Record<string, unknown>): string {
-  const { id: _id, version: _v, abgeleitetVon: _a, laeufe: _l, ...inhalt } = form;
+  const { id: _id, version: _v, abgeleitetVon: _a, derivedFromLine: _d, setupHash: _s, laeufe: _l, ...inhalt } = form;
   const positionen = Array.isArray(inhalt.positionen) ? inhalt.positionen.map((p: unknown) => {
     if (!p || typeof p !== "object" || Array.isArray(p)) return p;
     const { sitz, rechte, ...rest } = p as Record<string, unknown>;
@@ -82,7 +82,9 @@ export function merkeFassungen(konstellationen: readonly unknown[], dir: string,
       const hash = fassungsHash(form);
       const v = buch[form.id] ?? { aktiv: null, fassungen: [] };
       if (v.fassungen.some((f) => f.hash === hash)) { out[form.id] = { hash, neu: false }; continue; }
-      const neu: Fassung = { hash, at: jetzt, version: typeof form.version === "number" ? form.version : null, name: typeof form.name === "string" ? form.name : form.id, form };
+      // Die Kette steht im gespeicherten Setup (k15-eigenes.json), nicht in der festen Fassung: sie ist Herkunft, kein Inhalt.
+      const { abgeleitetVon: _ab, derivedFromLine: _dl, setupHash: _sh, ...formInhalt } = form;
+      const neu: Fassung = { hash, at: jetzt, version: typeof form.version === "number" ? form.version : null, name: typeof form.name === "string" ? form.name : form.id, form: formInhalt };
       let fassungen = [...v.fassungen, neu];
       while (fassungen.length > MAX_FASSUNGEN_JE) {
         const i = fassungen.findIndex((f) => f.hash !== v.aktiv);

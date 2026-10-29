@@ -6,6 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Answer, branchTestkit, get, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
+import { hashText, RICHTUNG_PLATZ, roleStein, schreibShelf } from "./setup-datei";
 
 const { SOCKETS, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -55,6 +56,27 @@ describe("ein Slot öffnet aus einem Agenten", () => {
     ok(ohne);
     expect(ok(ohneFassung).agent).toBeUndefined();
     expect((ok(liste).agenten as { id: string }[]).map((a) => a.id)).toEqual(["repo", "orchestratorin", "pruefer", "pruefer-haiku"]);
+  }, LIFE_DEADLINE_MS * 2);
+
+  test("ein eigener Agent mit Rolle und Konzept startet im fremden Repo mit beiden Steinen, nicht in bypass", async () => {
+    const f = fixture();
+    const stein = roleStein("lane", null);
+    if (!stein) throw new Error("role stone missing");
+    const konzeptText = "# Bauen\n\nSo baust du.";
+    schreibShelf(f.state, { version: 1, packs: stein.packs,
+      concepts: [{ kind: "concept", id: "k-bau", version: 1, hash: hashText(konzeptText), text: konzeptText, author: "owner" }], roles: [stein.role] });
+    const [made, offen, fassung] = await life(f, [
+      post("/api/agenten", { id: "stein", name: "Stein", wahlen: { rolle: "lane", konzepte: ["k-bau"], permissionMode: "auto" } }),
+      post("/api/slots/1/open", { cwd: f.repo, agent: "stein" }),
+      get("/api/slots/1/fassung?anlass=laufend"),
+    ]);
+    ok(made); ok(offen);
+    const texte = ((ok(fassung).teile as { abschnitte: { text: string | null }[] }[] | undefined) ?? [])
+      .flatMap((t) => t.abschnitte.flatMap((a) => typeof a.text === "string" ? [a.text] : [])).join("\n");
+    expect(texte).toContain(stein.role.start.text.trim());
+    expect(texte).toContain(konzeptText);
+    expect(texte).toContain(RICHTUNG_PLATZ);
+    expect(ok(fassung).wahlen.permissionMode).toBe("auto");
   }, LIFE_DEADLINE_MS * 2);
 
   test("ein laufender Sitz wird gespeichert und startet als Agent wieder mit seinen Wahlen", async () => {

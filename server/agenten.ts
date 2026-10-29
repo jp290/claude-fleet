@@ -27,7 +27,7 @@ export const AGENT_FORMAT = "fleet-agent/1";
 export const MAX_AGENTEN = 100;
 
 /** Die Wahlen, die jede Tür liest, mit ihrem Türnamen. */
-export const WAHL_FELDER = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek", "notizbuch",
+export const WAHL_FELDER = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek", "konzepte", "notizbuch",
   "remote", "autoModeEnvironment", "schwelle"] as const;
 /** Bezüge auf einen Ort dieser Fleet: ein Profil oder eine Position des Fensters, oder die Rolle (nur die Orchestratorin ist eingebaut). */
 export const BEZUG_FELDER = ["profil", "sitz", "rolle"] as const;
@@ -51,6 +51,10 @@ export interface Agent {
   readonly kopieVon?: KopieVon;
   /** der Hash, den die Datei trug, aus der er importiert wurde („derived from“) */
   readonly abgeleitetVon?: string;
+  /** der Setup-Hash dieses Stands (Schritt 3; Schritt 4 macht ihn zum Setup-Hash) */
+  readonly setupHash?: string;
+  /** die Kette hinter abgeleitetVon, neueste zuerst */
+  readonly derivedFromLine?: readonly string[];
   /** aus einer Datei gekommen und seither nicht vom Owner geändert: startet nie in bypass */
   readonly importiert?: true;
   readonly am: number;
@@ -71,6 +75,42 @@ export function wahlenSauber(w: Wahlen): Wahlen {
 }
 export const agentHash = (wahlen: Wahlen, agentMd: AgentMdTeil | null): string =>
   sha(JSON.stringify(kanon({ wahlen: wahlenSauber(wahlen), agentMd })));
+/** DIE KETTE IST EINE REINE REGEL (Schritt 3, Runde 3): ein Import (und eine Kopie) legt die Herkunft ab; ein Export rechnet
+ *  aus ihr und dem aktuellen Körper, was „derived from“ sagt. Kein Speichern schreibt einen Link, kein Export schreibt etwas. */
+export interface Herkunft {
+  /** der Setup-Hash dessen, woraus dieser Stand kam */
+  readonly setupHash?: string;
+  /** dessen eigener „derived from“-Hash: der Kopf der Linie */
+  readonly abgeleitetVon?: string;
+  /** die Linie hinter ihm, neueste zuerst */
+  readonly derivedFromLine?: readonly string[];
+}
+const HEX64 = /^[0-9a-f]{64}$/;
+/** Der Kopf der Herkunft, dann ihre Linie; ohne Doppel, ohne Löcher. */
+export function herkunftLinie(h: Herkunft | null | undefined): string[] {
+  if (!h) return [];
+  return [...new Set([...(h.abgeleitetVon ? [h.abgeleitetVon] : []), ...(h.derivedFromLine ?? [])])]
+    .filter((x) => HEX64.test(x));
+}
+/** Was ein Import aus einer Datei als Herkunft ablegt: ihren Setup-Hash, ihre Linie, und ihr eigenes „derived from“ als Kopf. */
+export function herkunftAusDatei(d: { setupHash?: string | null; derivedFrom?: string | null; derivedFromLine?: readonly string[] | null }): Herkunft {
+  const setupHash = typeof d.setupHash === "string" && HEX64.test(d.setupHash) ? d.setupHash : undefined;
+  const kopf = typeof d.derivedFrom === "string" && HEX64.test(d.derivedFrom) ? d.derivedFrom : undefined;
+  const linie = herkunftLinie({ abgeleitetVon: kopf, derivedFromLine: d.derivedFromLine ?? [] });
+  return { ...(setupHash ? { setupHash } : {}), ...(kopf ? { abgeleitetVon: kopf } : {}), ...(linie.length ? { derivedFromLine: linie } : {}) };
+}
+/** Der Export: gleicher Körper = derselbe Stand, seine eigene Herkunft; anderer Körper = der Ursprung als „derived from“ und
+ *  dessen Kopf vor dessen Linie. Ohne Ursprung: kein „derived from“. `currentHash` ist der Hash des aktuellen Setup-Körpers. */
+export function ketteFuerExport(origin: Herkunft | null | undefined, currentHash: string):
+  { derivedFrom: string | null; derivedFromLine: string[] } {
+  // Ein alter Bestand trug nur `abgeleitetVon`; er ist dann selbst der Ursprung, den der Export nennen kann.
+  const ursprung = origin?.setupHash && HEX64.test(origin.setupHash) ? origin.setupHash
+    : origin?.abgeleitetVon && HEX64.test(origin.abgeleitetVon) ? origin.abgeleitetVon : null;
+  if (!ursprung) return { derivedFrom: null, derivedFromLine: [] };
+  if (ursprung === currentHash)
+    return { derivedFrom: origin?.abgeleitetVon ?? null, derivedFromLine: [...(origin?.derivedFromLine ?? [])].filter((x) => HEX64.test(x)) };
+  return { derivedFrom: ursprung, derivedFromLine: herkunftLinie(origin) };
+}
 export const bezugVon = (a: Agent): AgentBezug => ({ id: a.id, name: a.name, hash: a.hash,
   ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}) });
 /** Der Satz, mit dem die Fassung die Herkunft nennt. */
@@ -112,7 +152,7 @@ function wahlenAus(v: unknown): Wahlen | string {
 
 /** Ein eigener Agent aus einem Eingang { id?, name, wahlen, agentMd? } — die Tür prüft die Wahlen, bevor er gespeichert wird. */
 export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now(),
-  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; importiert?: true } = {}): Agent | string {
+  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true } = {}): Agent | string {
   const r = rec(eingang);
   if (!r) return "expected { name, wahlen, agentMd? }";
   const name = typeof r.name === "string" ? r.name.trim() : "";
@@ -123,7 +163,10 @@ export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben:
   const wahlen = wahlenAus(r.wahlen);
   if (typeof wahlen === "string") return wahlen;
   if (wahlen.profil !== undefined) return "a saved agent carries its Agent-MD itself (agentMd), not a profil reference";
-  if (wahlen.rolle !== undefined && !(typeof wahlen.rolle === "string" && ROLLEN[wahlen.rolle])) return `rolle must be one of ${Object.keys(ROLLEN).join(", ")}`;
+  // eine Rolle ist ein Stein aus dem Regal, nicht nur Fleet's eingebaute: jede sichere Kennung darf hier stehen,
+  // aufgelöst wird sie beim Start (server/setup-datei.ts#roleStein, server.ts#ensureSlot).
+  if (wahlen.rolle !== undefined && !(typeof wahlen.rolle === "string" && /^[a-z][a-z0-9-]{0,79}$/.test(wahlen.rolle)))
+    return "rolle must be a role id of lowercase letters, digits and dashes";
   const md = agentMdAus(r.agentMd, id);
   if (typeof md === "string") return md;
   if (md && wahlen.sitz !== undefined) return "a seat of a constellation brings its Agent-MD from the file — no agentMd beside sitz";
@@ -152,7 +195,10 @@ export function kopie(original: AgentAnsicht, aenderung: unknown, pruefe: Wahlen
   const wahlen = { ...ohneProfil, ...patch };
   const agentMd = r.agentMd === undefined ? original.agentMd : r.agentMd;
   return eigenerAgent({ id: r.id, name: typeof r.name === "string" ? r.name : `copy of ${original.name}`, wahlen, agentMd }, pruefe, vergeben, am,
-    { kopieVon: { id: original.id, name: original.name, hash: original.hash } });
+    // eine Kopie legt ihren Ursprung ab wie ein Import: den Stand, von dem sie kopiert, und dessen Kopf vor dessen Linie
+    { kopieVon: { id: original.id, name: original.name, hash: original.hash },
+      setupHash: original.setupHash ?? original.hash, abgeleitetVon: original.abgeleitetVon,
+      derivedFromLine: herkunftLinie(original) });
 }
 
 // DER SPEICHER: eine Datei, atomar geschrieben; eine unlesbare Datei ist eine leere Liste, nie ein Fehler beim Start
@@ -169,7 +215,11 @@ export function liesAgenten(dir: string): Agent[] {
     if (typeof wahlen === "string" || typeof md === "string") return [];
     const b = agentBezugGeladen({ ...a, hash: "" });
     return [{ id: a.id, name: a.name, wahlen, agentMd: md, ...(b?.kopieVon ? { kopieVon: b.kopieVon } : {}),
-      ...(typeof a.abgeleitetVon === "string" ? { abgeleitetVon: a.abgeleitetVon } : {}), ...(a.importiert === true ? { importiert: true as const } : {}),
+      ...(typeof a.abgeleitetVon === "string" ? { abgeleitetVon: a.abgeleitetVon } : {}),
+      ...(typeof a.setupHash === "string" && /^[0-9a-f]{64}$/.test(a.setupHash) ? { setupHash: a.setupHash } : {}),
+      ...(Array.isArray(a.derivedFromLine) && a.derivedFromLine.every((x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x))
+        ? { derivedFromLine: a.derivedFromLine as string[] } : {}),
+      ...(a.importiert === true ? { importiert: true as const } : {}),
       am: a.am, hash: agentHash(wahlen, md) }];
   });
 }
@@ -443,8 +493,11 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
     const body = await lies();
     // eine Änderung durch den Owner ist sein Blick auf einen importierten Agenten: danach trägt er die Marke nicht mehr
     const neu = eigenerAgent({ name: body?.name ?? a.name, wahlen: body?.wahlen ?? a.wahlen, agentMd: body?.agentMd === undefined ? a.agentMd : body.agentMd, id: a.id },
-      q.pruefe, vergeben.filter((x) => x !== a.id), a.am, { ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}) });
+      q.pruefe, vergeben.filter((x) => x !== a.id), a.am, { ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}),
+        ...(a.setupHash ? { setupHash: a.setupHash } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}),
+        ...(a.derivedFromLine?.length ? { derivedFromLine: a.derivedFromLine } : {}) });
     if (typeof neu === "string") return antwort({ error: neu }, 400);
+    // ein Speichern ändert nur den Körper; die abgelegte Herkunft bleibt, bis ein Import oder eine Kopie sie ersetzt
     schreibAgenten(q.dir, eigene.map((x) => x.id === a.id ? neu : x));
     return antwort({ agent: eigeneAnsicht(neu) });
   }

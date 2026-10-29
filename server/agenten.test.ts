@@ -27,7 +27,7 @@ const gitRepo = (): string => {
   return d;
 };
 const gut = () => null;
-const ALLE: readonly WahlFeld[] = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek", "notizbuch",
+const ALLE: readonly WahlFeld[] = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek", "konzepte", "notizbuch",
   "remote", "autoModeEnvironment", "schwelle", "profil", "sitz", "rolle"];
 const ansicht = (eingang: unknown): AgentAnsicht => {
   const a = eigenerAgent(eingang, gut, []);
@@ -146,6 +146,11 @@ describe("die Tür nimmt den Agenten ganz", () => {
   test("eine Tür, die eine seiner Wahlen nicht liest, lehnt ab, statt sie still fallen zu lassen", () => {
     const r = agentAnDerTuer({ agent: "a" }, [a], ALLE.filter((k) => k !== "remote"));
     expect(r.ok ? "" : r.error).toContain("does not read remote");
+  });
+  test("eine Konzeptwahl reist als Teil des Agenten, wenn die Tür sie liest", () => {
+    const c = ansicht({ id: "c", name: "C", wahlen: { konzepte: ["k-bau"] } });
+    const r = agentAnDerTuer({ agent: "c" }, [c], ALLE);
+    expect(r.ok && r.tuer.body).toEqual({ konzepte: ["k-bau"] });
   });
   test("ohne agent bleibt der Body, wie er ist", () => {
     const body = { cwd: "/r", model: "claude-sonnet-5-5" };

@@ -87,6 +87,8 @@ export interface SeatPack {
   readonly statt?: string;
   /** wer ihn diesem Start gab (die Vorgängerin über POST /api/self/einrichten), für die + Zeile mit Autor */
   readonly autor?: string;
+  /** die Marke am Wissen: sein Text bleibt in einer geteilten Datei daheim */
+  readonly personal?: true;
 }
 
 export interface SeatKnowledge {
@@ -114,7 +116,10 @@ const headOf = (k: SeatKnowledge, withSkills = true): string => {
     skills.length ? `As skills, open one when its description fits your moment (Skill tool): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
     .filter(Boolean).join(" ");
 };
-const boxBlock = (pack: SeatPack): string => `--- ${pack.id} (${quelleOf(pack)}${pack.autor ? ` · author: ${pack.autor}` : ""}) ---\n${pack.text}`;
+const boxBlock = (pack: SeatPack): string => {
+  const herkunft = [quelleOf(pack), pack.autor ? `author: ${pack.autor}` : ""].filter(Boolean).join(" · ");
+  return `--- ${pack.id}${herkunft ? ` (${herkunft})` : ""} ---\n${pack.text}`;
+};
 
 /** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt.
  *  `withSkills` false = ein pi-Sitz: er liest den Block, aber keine Claude-Skills, darum nennt der Kopf keine. */

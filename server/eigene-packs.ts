@@ -27,6 +27,8 @@ export interface EigenerPack {
   /** wer ihn geschrieben hat, etwa „Slot 8“; null bei einer Datei von Hand */
   readonly von: string | null;
   readonly am: number | null;
+  /** die Marke am Wissen: dieser Text bleibt daheim und wird in einer geteilten Datei ein leerer Platz */
+  readonly personal?: true;
 }
 
 export const eigenePacksDir = (stateDir: string): string => join(stateDir, EIGENE_PACKS_ORDNER);
@@ -48,7 +50,7 @@ export function eigenerPackAus(id: string, roh: string, pfad: string): EigenerPa
   const bytes = Buffer.byteLength(text);
   if (typeof kopf.useWhen !== "string" || !titel || bytes > EIGENER_PACK_MAX_BYTES) return null;
   return { id, useWhen: kopf.useWhen, text, titel, pfad, bytes, von: typeof kopf.von === "string" ? kopf.von : null,
-    am: typeof kopf.am === "number" ? kopf.am : null };
+    am: typeof kopf.am === "number" ? kopf.am : null, ...(kopf.personal === true ? { personal: true as const } : {}) };
 }
 
 /** Alle eigenen Packs, nach Id; eine Datei, die keiner ist, wird übersprungen. */
@@ -69,11 +71,13 @@ export function liesEigenePacks(stateDir: string): EigenerPack[] {
  *  schattet keinen von dort. Den privaten Pack des Owners schreibt nur die Orchestratorin (`orchestratorin`): er steht in ihrem Start,
  *  und sie läuft ohne Classifier, also wäre er sonst eine Tür jeder Session in ihren Start (Slot 1, 26.10.). Rein. */
 export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>, orchestratorin = false):
-  { ok: true; pack: { id: string; useWhen: string; text: string } } | { ok: false; error: string } {
+  { ok: true; pack: { id: string; useWhen: string; text: string; personal?: true } } | { ok: false; error: string } {
   const b = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
   if (!b) return { ok: false, error: 'expected { "id", "useWhen", "text" }' };
-  const fremd = Object.keys(b).filter((k) => !["id", "useWhen", "text"].includes(k));
-  if (fremd.length) return { ok: false, error: `a pack is only text — the door reads id, useWhen, text, not ${fremd.join(", ")}` };
+  const fremd = Object.keys(b).filter((k) => !["id", "useWhen", "text", "personal"].includes(k));
+  if (fremd.length) return { ok: false, error: `a pack is only text — the door reads id, useWhen, text, personal, not ${fremd.join(", ")}` };
+  if (b.personal !== undefined && typeof b.personal !== "boolean") return { ok: false, error: "personal must be true or false" };
+  if (b.personal === true && b.id === PRIVATER_OWNER_PACK_ID && !orchestratorin) return { ok: false, error: `„${b.id}“ is the owner's private pack — only the Orchestratorin writes it` };
   if (typeof b.id !== "string" || !PACK_ID.test(b.id)) return { ok: false, error: "id must be lowercase letters, digits and hyphens (at most 80)" };
   if (register.has(b.id)) return { ok: false, error: `„${b.id}“ is a pack of Fleet's register — give yours its own id` };
   if (b.id === PRIVATER_OWNER_PACK_ID && !orchestratorin) return { ok: false, error: `„${b.id}“ is the owner's private pack — only the Orchestratorin writes it` };
@@ -82,7 +86,7 @@ export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>,
   if (typeof b.text !== "string" || !titelVon(b.text)) return { ok: false, error: "text must begin with its title line `# …`" };
   const text = b.text.trim();
   if (Buffer.byteLength(text) > EIGENER_PACK_MAX_BYTES) return { ok: false, error: `text is larger than ${EIGENER_PACK_MAX_BYTES / 1000} KB` };
-  return { ok: true, pack: { id: b.id, useWhen: b.useWhen.trim(), text } };
+  return { ok: true, pack: { id: b.id, useWhen: b.useWhen.trim(), text, ...(b.personal === true ? { personal: true as const } : {}) } };
 }
 
 /** THE OWNER'S PRIVATE PACK (owner 26.10.: the personal part of working-with-the-owner must not be published). The pack itself lives
@@ -91,14 +95,14 @@ export function eigenerPackDerTuer(body: unknown, register: ReadonlySet<string>,
 export const PRIVATER_OWNER_PACK_ID = "working-with-this-owner";
 
 /** Schreibt den Pack, ganz oder gar nicht; `ersetzt`, wenn es ihn schon gab. */
-export function schreibEigenenPack(stateDir: string, pack: { id: string; useWhen: string; text: string }, von: string, am = Date.now()):
+export function schreibEigenenPack(stateDir: string, pack: { id: string; useWhen: string; text: string; personal?: true }, von: string, am = Date.now()):
   { pack: EigenerPack; ersetzt: boolean } {
   const dir = eigenePacksDir(stateDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const pfad = join(dir, `${pack.id}.md`);
   let ersetzt = true;
   try { readFileSync(pfad); } catch { ersetzt = false; }
-  const roh = `---\nuseWhen: ${JSON.stringify(pack.useWhen)}\nvon: ${JSON.stringify(von)}\nam: ${am}\n---\n${pack.text}\n`;
+  const roh = `---\nuseWhen: ${JSON.stringify(pack.useWhen)}\nvon: ${JSON.stringify(von)}\nam: ${am}\n${pack.personal === true ? "personal: true\n" : ""}---\n${pack.text}\n`;
   const tmp = `${pfad}.${process.pid}.tmp`;
   writeFileSync(tmp, roh, { mode: 0o600 });
   renameSync(tmp, pfad);

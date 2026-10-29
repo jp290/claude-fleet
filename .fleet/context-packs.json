@@ -207,7 +207,8 @@
     "estimatedBytes": 2345,
     "evidence": "tree-anchor",
     "owner": "owner",
-    "status": "active"
+    "status": "active",
+    "personal": true
   },
   {
     "id": "how-fleet-remembers",

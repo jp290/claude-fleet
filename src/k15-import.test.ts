@@ -188,11 +188,16 @@ describe("Rechte an einer Position kommen nur aus dem eigenen Speicher", () => {
   });
 });
 
-// Sicherheitsprüfung Lauf 2, F3 (beweise/r2f3.sh): eine importierte Session mit dem Profil der Orchestratorin lief in bypassPermissions
+// Sicherheitsprüfung Lauf 2, F3 (beweise/r2f3.sh): eine importierte Session mit dem Profil der Orchestratorin lief in bypassPermissions.
+// Der Rollenname wird gestrichen, gleich auf welcher Schiene das Profil ankommt: die Starttür bildet nur nach `rolle` ab.
 describe("ein Import startet nie als Orchestratorin", () => {
   const orch = PROFILE0.find((p) => p.id === "orchestratorin")!;
   test.each([
     ["ein mitgereistes Profil mit der Rolle", { ...orch, id: "fremde-orchestratorin", name: "Fremde" }],
+    ["dieselbe Rolle auf der Schiene session", { ...orch, id: "fremde-session", name: "Fremde Session", schiene: "session" }],
+    ["dieselbe Rolle auf der Schiene lane", { ...orch, id: "fremde-lane", name: "Fremde Lane", schiene: "lane" }],
+    ["dieselbe Rolle auf der Schiene bau", { ...orch, id: "fremde-bau", name: "Fremde Bau", schiene: "bau" }],
+    ["dieselbe Rolle auf der Schiene program-main", { ...orch, id: "fremde-main", name: "Fremde MAIN", schiene: "program-main" }],
     ["ein Verweis auf das Profil dieser Fleet", "orchestratorin@2"],
   ])("%s kommt ohne Rolle an, mit einem Satz dazu", (_, profil) => {
     const r = imp(k([{ id: "o", name: "Leitung", profil }, { id: "o2", name: "Zweite", profil }]));

@@ -17,7 +17,7 @@ import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./se
 import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
 import { modellVerlauf } from "./src/modell-verlauf";
-import { dateiFuer, geschwister, leerePlaetze, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
+import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -267,8 +267,9 @@ import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderS
 import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
-import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, type AgentBezug, type Wahlen as AgentWahlen,
+import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, liesAgenten, type AgentBezug, type Wahlen as AgentWahlen,
   type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
+import { RICHTUNG_PLATZ, SETUP_ROUTE, liesKonzept, roleStein, setupRoute, steineFuerAgentWahl, type SetupServer } from "./server/setup-datei";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
@@ -8947,7 +8948,7 @@ const laufServer: LaufServer = {
 // Eine Rolle gibt nur die Slot-Tür (ihr Label); an der Branch-Tür ist der Board-Name das Label, und eine Rolle bleibt dort abgelehnt —
 // das ist die Sicherheitsgrenze, die eine Session an der Self-Tür nicht überschreitet. Die Vorschau rechnet keinen Rollen-Agenten.
 const AGENT_TUER_SLOT: readonly AgentWahlFeld[] = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek",
-  "notizbuch", "remote", "autoModeEnvironment", "schwelle", "profil", "sitz", "rolle"];
+  "konzepte", "notizbuch", "remote", "autoModeEnvironment", "schwelle", "profil", "sitz", "rolle"];
 const AGENT_TUER_BRANCH: readonly AgentWahlFeld[] = AGENT_TUER_SLOT.filter((k) => k !== "rolle");
 const AGENT_TUER_VORSCHAU: readonly AgentWahlFeld[] = AGENT_TUER_SLOT.filter((k) => k !== "rolle");
 const k15Gespeichert = (): Promise<unknown> => Bun.file(`${STATE_DIR}/${K15_SPEICHER_DATEI}`).json().catch(() => null);
@@ -8992,6 +8993,29 @@ const agentenServer: AgentenServer = {
   historie: () => liesHistorie(STATE_DIR, HISTORIE_MAX),
   ort: (p) => realpathLoose(resolve(expandCwd(p))),
   fleetCommonDir: () => FLEET_GIT_COMMON,
+};
+// EINE DATEI FÜR EIN SETUP (server/setup-datei.ts): Export aus einem eigenen Agenten oder einer gespeicherten
+// Konstellation, Import mit Vorschau und dann Schreiben. Die Türen liegen hinter demselben Owner-Tor wie K15.
+const setupServer: SetupServer = {
+  get dir() { return STATE_DIR; },
+  get repoRoot() { return BIBLIOTHEK?.root ?? REPO_DIR; },
+  bibliothek: async () => (await seatKnowledgeFor(BIBLIOTHEK?.root ?? REPO_DIR, "claude")).knowledge,
+  eigenePacks: async () => liesEigenePacks(STATE_DIR),
+  notizbuch: async (profil) => {
+    const repo = BIBLIOTHEK?.root ?? REPO_DIR;
+    const n = await notizbuchFuerStart(repo, "generic", profil);
+    return n.art === "eigen" && n.pfad ? liesNotizbuch(n.pfad) : null;
+  },
+  konzept: async (id) => liesKonzept(process.env.FLEET_KONZEPT_ROOT ?? null, id),
+  agenten: async () => agentenKatalog(STATE_DIR, await k15Gespeichert()).filter((a) => a.art === "eigen"),
+  konstellation: async (id) => {
+    const gespeichert = await k15Gespeichert();
+    const liste = gespeichert && typeof gespeichert === "object" && "konstellationen" in gespeichert && Array.isArray(gespeichert.konstellationen)
+      ? gespeichert.konstellationen : [];
+    const form = liste.find((k: unknown) => !!k && typeof k === "object" && (k as Record<string, unknown>).id === id);
+    return form && typeof form === "object" ? form as Record<string, unknown> : null;
+  },
+  konstellationDatei: (id, repo) => konstellationDateiFor(id, repo),
 };
 // a SESSION on a board branch (POST /api/branches/open, and its self door): a session without a role (like "Nur Ordner")
 // in the branch's worktree, labelled with its Board-Name; a branch without a worktree is checked out first. It continues the
@@ -10464,6 +10488,19 @@ async function paneEnvFile(slot: number, openedAt: number, cwd: string): Promise
 const withPaneEnv = (env: { line: string } | null, cmd: string): string =>
   !env ? cmd : env.line + (PATH_EXPORT && cmd.startsWith(PATH_EXPORT) ? cmd.slice(PATH_EXPORT.length) : cmd);
 
+// DIE STEINE EINES EIGENEN AGENTEN (Rolle, Konzepte, Richtungsplatz): ensureSlot rechnet sie selbst, an der Stelle,
+// an der es sie braucht; dieser Rumpf wird in fleet-e2e-harness.ts als Text geschnitten, darum hält der Fixture-Scope den Namen.
+type AgentSteine = { readonly block: string | null; readonly role: boolean; readonly richtung: string | null };
+async function agentSteineFuer(agent: AgentBezug | null | undefined, cwd: string | null,
+  harness: string | null | undefined): Promise<AgentSteine | null> {
+  if (!agent || !cwd) return null;
+  // in Fleet's own tree the orchestrator start keeps its branch; outside an own agent carries its role and concepts
+  if (harnessOf(harness).id === "claude" && (await fleetBaumVon(resolve(expandCwd(cwd)))) !== null) return null;
+  const wahl = liesAgenten(STATE_DIR).find((a) => a.id === agent.id)?.wahlen ?? null;
+  const steine = steineFuerAgentWahl(wahl, STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR, process.env.FLEET_KONZEPT_ROOT ?? null);
+  return { block: steine.block, role: steine.role !== null, richtung: steine.role ? RICHTUNG_PLATZ : null };
+}
+
 // `cause` only picks which audit event the rebuild is booked under; the rebuild itself is
 // identical either way. "heal" = the pane died on us, "restart" = the owner asked for it.
 async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" = "heal",
@@ -10627,14 +10664,22 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
         } catch (e) { logError("ensureSlot:seat-library", e); }
         if (!current()) return;
       }
+      // EIN EIGENER AGENT, DER EINE ROLLE UND KONZEPTE WÄHLT, trägt sie als Steine in seinen Start — auch außerhalb von
+      // Fleets Repo. Fleet's eigener Orchestratorin-Start bleibt unberührt: in Fleet's Repo und für ihre eingebaute Rolle
+      // liest der Zweig unten weiterhin docs/start/orchestrator.md, Systemkonzept und die fünf Packs.
+      const steine = await agentSteineFuer(s.agent, s.cwd, s.harness);
+      const agentSteine = steine?.block ?? null;
+      // die Richtung eines mitgereisten Sitzes steht in seinem Startblock (server/sitz-reise.ts#leererPlatzZeilen)
+      const richtung = steine?.richtung ?? null;
       // THE ORCHESTRATORIN'S START, read at the head on every spawn like the library; her briefs then carry the rest (orchestratorStartImSystemprompt)
       // ...and a seat's own start — Fleet's library, the owner's purpose and the purpose its predecessor wrote (Slot.selbst) — in a file the
       // same way: with building-an-agent in SEAT_BOX the line of a seat in Fleet's repo outgrew what tmux takes in one message (16 KB,
       // new-session exited 1). A pi seat gets the owner's purpose here too: its system-prompt addition is this file.
       const seatZweck = h.id === "claude" || pi ? occupant.selbst?.jetzt.zweck ?? null : null;
       const seatStart = [pi ? (occupant.agentMd ? agentMdBlock(occupant.agentMd) : null) : null,
-        seatZweck ? zweckBlock(seatZweck) : null, seat?.text || null].filter(Boolean).join("\n\n");
-      const startDatei = listRole === "orchestrator" && IS_CLAUDE ? orchestratorStartDatei(occupant.cwd)
+        seatZweck ? zweckBlock(seatZweck) : null, agentSteine, richtung, seat?.text || null].filter(Boolean).join("\n\n");
+      const fleetStart = listRole === "orchestrator" && IS_CLAUDE && !(steine?.role && !fleetRepo);
+      const startDatei = fleetStart ? orchestratorStartDatei(occupant.cwd)
         : seatStart ? (pi ? piStartDatei(h.id, seatStart) : seatStartDatei(seatStart)) : null;
       // A SEAT IN ITS OWN SETUP gets its user's login environment (server/login-umgebung.ts, Mangel 136): a file the pane reads and deletes
       const paneEnv = eigen && PANE_LOGIN_ENV ? await paneEnvFile(s.id, occupant.openedAt, occupant.cwd) : null;
@@ -21736,7 +21781,8 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     // pi appends the file on every spawn, so its block is effective as spawned.
     const nichtWirksam = !laufend || !claude || !start.text ? undefined
       : bibliothekNichtWirksam(laufend.spawn, sha256Of(start.text), laufend.compactionAt);
-    return seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, pi);
+    return [...seatFassungAbschnitte(start.knowledge, claude, start.skillsDir, nichtWirksam, pi),
+      ...(start.leer.length ? [textAbschnitt("wissen", "server/sitz-reise.ts#leererPlatzZeilen", start.leer.join("\n"), false)] : [])];
   } catch (e) {
     return [unknownAbschnitt("wissen", `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}`)];
   }
@@ -22078,17 +22124,25 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
   const modell = spawnPick.model ?? (harnessFamilie(spawnPick.harness) === "claude" && modelPinned(eigen) ? DEFAULT_MODEL : null);
   const pi = harnessFamilie(spawnPick.harness) === "pi";
+  // EIN EIGENER AGENT AUSSERHALB VON FLEETS REPO zeigt seine gewählten Steine auch in der Fassung: Rollentext, Rechte,
+  // Konzepte und den leeren Richtungsplatz. In Fleets Repo bleibt der Orchestratorin-Start unverändert.
+  const agentWahl = s.agent ? liesAgenten(STATE_DIR).find((a) => a.id === s.agent!.id)?.wahlen ?? null : null;
+  const steine = agentWahl && fleetBaum === null ? steineFuerAgentWahl(agentWahl, STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR,
+    process.env.FLEET_KONZEPT_ROOT ?? null) : null;
+  const steinVoll = steine?.role ? roleStein(String(agentWahl?.rolle), STATE_DIR, BIBLIOTHEK?.root ?? REPO_DIR) : null;
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
       remote: !!s.remote, packMcp: s.packMcp.map((m) => m.name), autoModeEnvironment: s.autoModeEnvironment === true, tools: s.tools }), s.permissionMode,
     s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree), spawnPick.harness);
   const liest: FassungAbschnittEingang[] = [
-    ...fassungRolleKarte(rolle, repoRoot),
+    ...(steine?.role ? [textAbschnitt("rolle", "server/setup-datei.ts#steineFuerAgentWahl (role stone)", steine.block ?? "", false),
+      textAbschnitt("richtung", "server/setup-datei.ts#RICHTUNG_PLATZ", RICHTUNG_PLATZ, false)] : fassungRolleKarte(rolle, repoRoot)),
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
     ...projektregelnDerLage(s, { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau }, s.weglassen),
-    ...(await fassungWissen(s, rolle, cwd, eigen)),
+    ...(steine?.role ? (steinVoll?.packs ?? []).filter((p) => p.text !== null).map((p) => textAbschnitt("wissen",
+      `server/setup-datei.ts#roleStein (${p.id})`, p.text as string, false)) : await fassungWissen(s, rolle, cwd, eigen)),
     ...(await fassungKorrekturZeiger(rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil || null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
@@ -42795,11 +42849,13 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
   const head = BIBLIOTHEK.head ?? headRead!.out;
   const tree = await seatTreeOf(cwd);
   const { repoPlan: plan, blobShas, blobModes, manifest } = await repoManifestContextPlan(fleetRoot, head, seatContextFacts(tree, harness, borrow));
-  // what the plan does not carry: whether a pack only comes chosen (trigger seat-choice), and which one it takes the place of
-  const wahlVon = new Map((manifest.kind === "packs" ? manifest.packs : []).flatMap((raw): [string, { zurWahl: boolean; statt?: string }][] =>
+  // what the plan does not carry: whether a pack only comes chosen (trigger seat-choice), which one it takes the place of,
+  // and whether the pack itself carries the personal mark (then its text stays home in a shared file)
+  const wahlVon = new Map((manifest.kind === "packs" ? manifest.packs : []).flatMap((raw): [string, { zurWahl: boolean; statt?: string; personal?: true }][] =>
     raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string" ? [[(raw as { id: string }).id, {
       zurWahl: Array.isArray((raw as { triggers?: unknown }).triggers) && ((raw as { triggers: unknown[] }).triggers).includes("seat-choice"),
-      ...(typeof (raw as { statt?: unknown }).statt === "string" ? { statt: (raw as { statt: string }).statt } : {}) }]] : []));
+      ...(typeof (raw as { statt?: unknown }).statt === "string" ? { statt: (raw as { statt: string }).statt } : {}),
+      ...((raw as { personal?: unknown }).personal === true ? { personal: true as const } : {}) }]] : []));
   // each source once and side by side (Abnahme 22.10. (b): read one after the other, a spawn waited for every read in turn);
   // raw, as the borrow door reads it (contextBorrowRoute): the size here is what a borrow delivers
   const root = fleetRoot;
@@ -42822,9 +42878,11 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
       if (section === null) unread = true;
       else sections.push(section);
     }
-    const wahl = wahlVon.get(pack.id);
+    const wahl = wahlVon.get(pack.id), personal = wahl?.personal === true
+      || (CONTEXT_PACKS.find((seed) => seed.id === pack.id) as { personal?: true } | undefined)?.personal === true;
     packs.push({ id: pack.id, useWhen: pack.useWhen ?? null,
       sources: pack.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: unread ? null : sections.join("\n"),
+      ...(personal ? { personal: true as const } : {}),
       // chosen, it goes word for word into the start like a pack of one's own: the start brief shows what the stone added
       ...(wahl?.zurWahl ? { weg: "start" as const, zurWahl: true as const, ...(wahl.statt ? { statt: wahl.statt } : {}) } : {}) });
   }
@@ -42832,7 +42890,7 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
   // (bibliothekGewaehlt); one that shares an id with the register stays out — the register's comes first
   for (const eigen of liesEigenePacks(STATE_DIR)) if (!packs.some((pack) => pack.id === eigen.id))
     packs.push({ id: eigen.id, useWhen: eigen.useWhen, sources: [{ path: tildePfad(eigen.pfad), anchor: `# ${eigen.titel}` }], text: eigen.text,
-      weg: "start", privat: true });
+      weg: "start", privat: true, ...(eigen.personal === true ? { personal: true as const } : {}) });
   return { knowledge: { tree, repoRoot: fleetRoot, head, packs }, plan, blobShas, blobModes };
 }
 // the ids of Fleet's register as its folder holds it now: a pack of its own may not take one (server/eigene-packs.ts#eigenerPackDerTuer)
@@ -42947,11 +43005,14 @@ async function halteBestandFest(): Promise<number[]> {
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
   sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
-    zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"] }> {
+    zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
-  const voll = sitz?.block ? sitzWissen(sitz, await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null))
-    : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  // a carried seat may start without a readable library; its own block still gives sitzWissen the carried packs
+  const eigene = sitz?.block ? await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null) : null;
+  const voll: SeatKnowledge = sitz?.block ? sitzWissen(sitz, eigene) : (await seatKnowledgeFor(cwd, harness)).knowledge;
   const knowledge = bibliothekGewaehlt(voll, wahl, dazu, an);
+  // die leeren persönlichen Plätze und, bei einer Rolle, die Richtung: sie stehen im Start UND unter „Wissen“ der Fassung
+  const leer = sitz?.block ? leererPlatzZeilen(sitz, eigene) : [];
   // Claude Code reads the library's skills from --add-dir; a pi seat reads the start block alone (pi 1.0.2 has no Claude skill
   // folder), so its chosen packs come as box parts and no skill folder is written for it.
   const pi = harnessFamilie(harness ?? "claude") === "pi";
@@ -42960,7 +43021,7 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   if (write && skillsDir) seatSkillsWrite(skillsDir, files);
   // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
   const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
-  return { knowledge, text: renderSeatStart(knowledge, !pi), files, skillsDir, zurWahl, voll: voll.packs };
+  return { knowledge, text: [renderSeatStart(knowledge, !pi), ...leer].filter(Boolean).join("\n\n"), files, skillsDir, zurWahl, voll: voll.packs, leer };
 }
 // what a seat's claude line carries: the start block and the folder its library skills come from
 interface SeatStart { readonly text: string; readonly skillsDir: string | null }
@@ -43259,21 +43320,27 @@ async function notizbuchAnDerTuer(v: unknown, cwd: string): Promise<{ ok: true; 
 }
 // DIE DATEI EINER GESPEICHERTEN KONSTELLATION (server/sitz-reise.ts#dateiFuer): was ihre Sitze lesen, aus Fleets Bibliothek im Repo `repo` (sonst
 // Fleets eigenem), ihre Notizbücher dort, ihre Läufe aus dem Laufbuch; der Mode ist der eines Sitzes ohne Rolle (session-start.ts#PERMISSION_MODE)
-async function konstDatei(id: string, repoRaw: string | null): Promise<Response> {
+async function konstellationDateiFor(id: string, repoRaw: string | null): Promise<{ datei: Record<string, unknown>; hinweise: string[] } | string> {
   const repo = repoRaw ? resolve(expandCwd(repoRaw)) : BIBLIOTHEK?.root ?? import.meta.dir;
-  if (!existsSync(repo) || !statSync(repo).isDirectory()) return json({ error: `repo ${repoRaw} is no directory here` }, 400);
+  if (!existsSync(repo) || !statSync(repo).isDirectory()) return `repo ${repoRaw} is no directory here`;
   const gespeichert: unknown = await Bun.file(`${STATE_DIR}/${K15_SPEICHER_DATEI}`).json().catch(() => null);
   const liste = gespeichert && typeof gespeichert === "object" && "konstellationen" in gespeichert && Array.isArray(gespeichert.konstellationen) ? gespeichert.konstellationen : [];
   const form: unknown = liste.find((k: unknown) => !!k && typeof k === "object" && (k as Record<string, unknown>).id === id);
-  if (!form || typeof form !== "object") return json({ error: `keine gespeicherte Konstellation „${id}“` }, 404);
+  if (!form || typeof form !== "object") return `keine gespeicherte Konstellation „${id}“`;
   const laeufe = (await liesLaeufe(STATE_DIR).catch(() => [])).filter((l) => l.konst === id);
   // im eigenen Setup (ein Repo, das nicht Fleets ist) startet ein Sitz ohne Rolle mit dem Modus seines Nutzers, auf einer Testinstanz mit `auto`
   const eigen = (await fleetBaumVon(repo)) === null;
   const modus = !eigen ? PERMISSION_MODE.generic : NO_BYPASS ? "auto" : eigenerModus(repo, process.env.CLAUDE_CONFIG_DIR || `${homedir()}/.claude`);
-  const d = await dateiFuer(form as Record<string, unknown>, { laeufe, modus, eigenesSetup: eigen,
+  return await dateiFuer(form as Record<string, unknown>, { laeufe, modus, eigenesSetup: eigen,
     bibliothek: async () => (await seatKnowledgeFor(repo, "claude")).knowledge,
     notizbuch: async (profil) => { const n = await notizbuchFuerStart(repo, "generic", profil); return n.art === "eigen" && n.pfad ? liesNotizbuch(n.pfad) : null; } });
-  return typeof d === "string" ? json({ error: d }, 409) : json(d);
+}
+async function konstDatei(id: string, repoRaw: string | null): Promise<Response> {
+  const d = await konstellationDateiFor(id, repoRaw);
+  // 404: no such constellation; 400: the named repo is no directory here; 409: every other refusal of dateiFuer,
+  // including its private-text probe (a file that would carry private text never goes out).
+  if (typeof d === "string") return json({ error: d }, d.startsWith("keine gespeicherte") ? 404 : d.startsWith("repo ") ? 400 : 409);
+  return json(d);
 }
 // DAS NOTIZBUCH EINES MITGEREISTEN SITZES (server/sitz-reise.ts): gesät in das Notizbuch, mit dem er startet, nur wenn es sein eigenes ist
 // (ein Profil mit Agent-MD) und noch leer; ein geteiltes Notizbuch des Projekts bekommt nie fremde Notizen
@@ -52981,6 +53048,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     if (url.pathname === K15_LAEUFE_ROUTE || url.pathname.startsWith(`${K15_LAEUFE_ROUTE}/`)) return await k15Laeufe(req, url, laufServer, STATE_DIR);
     // DIE AGENTEN (server/agenten.ts): gespeicherte Setups mit Namen, die eine Tür mit `agent` öffnet
     if (url.pathname === AGENTEN_ROUTE || url.pathname.startsWith(`${AGENTEN_ROUTE}/`)) return await agentenRoute(req, url, agentenServer);
+    // EIN SETUP, EINE DATEI (server/setup-datei.ts): Export und Import (Vorschau, dann Schreiben), Owner-Tor wie K15
+    if (url.pathname === `${SETUP_ROUTE}/import` || url.pathname.startsWith(`${SETUP_ROUTE}/`)) return await setupRoute(req, url, setupServer);
 
     if (url.pathname === "/api/worktrees" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);

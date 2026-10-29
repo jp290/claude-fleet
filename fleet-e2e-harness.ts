@@ -1392,6 +1392,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
         spawnCmd:(o)=>{${adapter}}};
       const harnessOf = () => h;
       const isSeat = () => false;
+      // a codex fixture opens from no agent, so the extracted ensureSlot body carries no stones
+      const agentSteineFuer = async () => null;
       const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
       const fleetCheckoutForSpawn=()=>false;
       ${validators}

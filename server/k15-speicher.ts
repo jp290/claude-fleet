@@ -30,14 +30,14 @@ async function ersetze(datei: string, text: string): Promise<void> {
 // Rechte der Position dieselben sind; jede andere fällt
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
 const darfVon = (pos: Record<string, unknown> | null): Record<string, unknown> | null => rec(rec(pos?.sitz)?.darf);
-const freiKey = (konst: unknown, pos: unknown, rechte: unknown): string => JSON.stringify([konst, pos, rechte]);
+const freiKey = (konst: unknown, pos: unknown, rechte: unknown, rolle: unknown): string => JSON.stringify([konst, pos, rechte, rolle ?? []]);
 function freigaben(alt: unknown): Set<string> {
   const frei = new Set<string>();
   const liste = rec(alt)?.konstellationen;
   for (const k of Array.isArray(liste) ? liste.map(rec) : []) {
     for (const p of Array.isArray(k?.positionen) ? k.positionen.map(rec) : []) {
       const d = darfVon(p);
-      if (d?.bestaetigt === true) frei.add(freiKey(k?.id, p?.id, d.rechte));
+      if (d?.bestaetigt === true) frei.add(freiKey(k?.id, p?.id, d.rechte, d.rolle));
     }
   }
   return frei;
@@ -48,7 +48,7 @@ function ohneNeueFreigabe(liste: unknown[], frei: Set<string>): unknown[] {
     if (!kr || !Array.isArray(kr.positionen)) return k;
     return { ...kr, positionen: kr.positionen.map((p) => {
       const pr = rec(p), d = darfVon(pr);
-      if (!pr || !d || d.bestaetigt === undefined || (d.bestaetigt === true && frei.has(freiKey(kr.id, pr.id, d.rechte)))) return p;
+      if (!pr || !d || d.bestaetigt === undefined || (d.bestaetigt === true && frei.has(freiKey(kr.id, pr.id, d.rechte, d.rolle)))) return p;
       const { bestaetigt: _, ...ohne } = d;
       return { ...pr, sitz: { ...rec(pr.sitz), darf: ohne } };
     }) };
@@ -80,12 +80,28 @@ export async function k15Speicher(req: Request, dir: string): Promise<Response> 
   const behalten = alt && typeof alt === "object" && "konstellationen" in alt && Array.isArray(alt.konstellationen) ? alt.konstellationen : null;
   const neu: unknown = o && typeof o === "object" && "konstellationen" in o ? o.konstellationen : null;
   const liste = Array.isArray(neu) ? ohneNeueFreigabe(neu, freigaben(alt)) : null;
-  try { await ersetze(datei, ohne && behalten ? JSON.stringify({ ...ohne, konstellationen: behalten }) : liste ? JSON.stringify({ ...rec(o), konstellationen: liste }) : text); } catch (e) {
+  // EIN PUT SCHREIBT KEINEN KETTENGLIED (Schritt 3, Runde 3): ein Fenster, das die neuen Felder nicht kennt, darf aber die
+  // abgelegte Herkunft nicht verlieren. Fehlt ein Feld im neuen Stand, bleibt der gespeicherte Wert; sonst gilt der neue.
+  const altListe = Array.isArray(rec(alt)?.konstellationen) ? rec(alt)!.konstellationen as unknown[] : [];
+  const bewahreHerkunft = (vorher: Record<string, unknown>, neu: Record<string, unknown>): Record<string, unknown> => ({
+    ...neu,
+    ...(typeof neu.setupHash !== "string" && typeof vorher.setupHash === "string" ? { setupHash: vorher.setupHash } : {}),
+    ...(typeof neu.abgeleitetVon !== "string" && typeof vorher.abgeleitetVon === "string" ? { abgeleitetVon: vorher.abgeleitetVon } : {}),
+    ...(!(Array.isArray(neu.derivedFromLine) && neu.derivedFromLine.length) && Array.isArray(vorher.derivedFromLine) && vorher.derivedFromLine.length
+      ? { derivedFromLine: vorher.derivedFromLine } : {}),
+  });
+  const gekettet = liste?.map((k) => {
+    const kr = rec(k);
+    if (!kr || typeof kr.id !== "string") return k;
+    const vorher = altListe.map(rec).find((x) => x?.id === kr.id) ?? null;
+    return vorher ? bewahreHerkunft(vorher, kr) : kr;
+  }) ?? null;
+  try { await ersetze(datei, ohne && behalten ? JSON.stringify({ ...ohne, konstellationen: behalten }) : gekettet ? JSON.stringify({ ...rec(o), konstellationen: gekettet }) : text); } catch (e) {
     return json({ error: `nicht gespeichert: ${e instanceof Error ? e.message : "Schreibfehler"}` }, 500);
   }
   // je Konstellation eine feste Fassung (server/konst-fassungen.ts); misslingt das, ist der Speicher trotzdem geschrieben und die Antwort sagt es
-  if (!liste) return json({ ok: true });
-  try { return json({ ok: true, fassungen: await merkeFassungen(liste, dir) }); } catch (e) {
+  if (!gekettet) return json({ ok: true });
+  try { return json({ ok: true, fassungen: await merkeFassungen(gekettet, dir) }); } catch (e) {
     return json({ ok: true, fassungenFehler: e instanceof Error ? e.message : "Schreibfehler" });
   }
 }
@@ -103,7 +119,8 @@ export async function k15Freigabe(req: Request, dir: string): Promise<Response> 
   const p = Array.isArray(k?.positionen) ? k.positionen.map(rec).find((x) => x?.id === body.pos) : undefined;
   const d = darfVon(p ?? null);
   if (!k || !p) return json({ error: `keine gespeicherte Position „${body.konst}/${body.pos}“` }, 404);
-  if (!d?.rechte) return json({ error: `„${body.pos}“ trägt keine Rechte aus einer Datei, es gibt nichts freizugeben` }, 400);
+  // die Freigabe gilt den Rechten des Sitzes UND dem Bundel einer mitgereisten Rolle: beides ist erbeten, nie gewährt
+  if (!d?.rechte && !(Array.isArray(d?.rolle) && d.rolle.length)) return json({ error: `„${body.pos}“ trägt keine Rechte aus einer Datei, es gibt nichts freizugeben` }, 400);
   const frei = liste.map((x) => x !== null && rec(x)?.id === body.konst
     ? { ...k, positionen: (k.positionen as unknown[]).map((q) => rec(q)?.id === body.pos ? { ...p, sitz: { ...rec(p.sitz), darf: { ...d, bestaetigt: true } } } : q) }
     : x);

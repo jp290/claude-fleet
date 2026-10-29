@@ -18,7 +18,7 @@ import { aspekt } from "../src/k15-entwurf-modell";
 import { laufBerichteAus, MAX_LAEUFE, type LaufBericht } from "../src/lauf-bericht";
 import type { ModellAbschnitt } from "../src/modell-verlauf";
 import {
-  istPersoenlich, notizbuchZumTeilen, persoenlichIn, sitzAus, sitzRechte, sitzZumTeilen, type PersoenlichPlatz, type Sitz, type SitzNotizbuch, type SitzPack,
+  istPersoenlich, notizbuchZumTeilen, notizIstPersoenlich, persoenlichIn, sitzAus, sitzRechte, sitzZumTeilen, type PersoenlichPlatz, type Sitz, type SitzKonzept, type SitzNotizbuch, type SitzPack, type SitzRichtung,
 } from "../src/sitz";
 import { rechteAus, type Rechte } from "../session-rechte";
 import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
@@ -26,6 +26,7 @@ import { fassungsHash } from "./konst-fassungen";
 import { kindNieWeiter, type Oeffnerin } from "./kind-weite";
 import type { Lauf } from "./laeufe";
 import { seatPacks, type SeatKnowledge, type SeatPack } from "./sitz-wissen";
+import { RICHTUNG_PLATZ } from "./setup-datei";
 
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
 
@@ -33,7 +34,8 @@ const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "o
 // `block`: die Position trug einen Sitz-Block; ohne ihn liest der Sitz diese Fleet Bibliothek. `auftrag`: ihre eigene Datei, die Aufgabe
 // seiner Fassung und seine erste Nachricht
 export interface SitzAuftrag { titel: string; text: string }
-export interface SitzStart { konst: string; pos: string; herkunft: string | null; liest: SitzPack[]; persoenlich: PersoenlichPlatz[]; block: boolean; auftrag: SitzAuftrag | null }
+export interface SitzStart { konst: string; pos: string; herkunft: string | null; liest: SitzPack[]; persoenlich: PersoenlichPlatz[]; block: boolean; auftrag: SitzAuftrag | null;
+  richtung?: SitzRichtung | null; konzepte?: SitzKonzept[]; rolle?: string }
 
 const auftragAus = (v: unknown): SitzAuftrag | null => {
   const r = rec(v);
@@ -42,15 +44,18 @@ const auftragAus = (v: unknown): SitzAuftrag | null => {
 export function sitzStartGeladen(raw: unknown, harness: string): SitzStart | null {
   const r = rec(raw);
   if (harness !== "claude" || !r || typeof r.konst !== "string" || typeof r.pos !== "string") return null;
-  const s = sitzAus({ liest: r.liest, persoenlich: r.persoenlich, darf: {}, notizbuch: null });
+  const s = sitzAus({ liest: r.liest, persoenlich: r.persoenlich, darf: {}, notizbuch: null,
+    ...(r.richtung !== undefined ? { richtung: r.richtung } : {}), ...(r.konzepte !== undefined ? { konzepte: r.konzepte } : {}),
+    ...(r.rolle !== undefined ? { rolle: r.rolle } : {}) });
   if (typeof s === "string") return null;
   // ein Slot von vor dem Auftrag hatte immer einen Block (die Tür verlangte ihn)
   return { konst: r.konst, pos: r.pos, herkunft: typeof r.herkunft === "string" ? r.herkunft : null, liest: s.liest, persoenlich: s.persoenlich,
-    block: r.block !== false, auftrag: auftragAus(r.auftrag) };
+    block: r.block !== false, auftrag: auftragAus(r.auftrag), richtung: s.richtung ?? null, konzepte: s.konzepte ?? [],
+    ...(s.rolle ? { rolle: s.rolle } : {}) };
 }
 
 const alsSeatPack = (p: SitzPack): SeatPack => ({ id: p.id, useWhen: p.wofuer, sources: p.quellen.map((q) => ({ path: q.pfad, anchor: q.anker })),
-  text: p.text, weg: p.weg });
+  text: p.text, weg: p.weg, ...(p.author ? { autor: p.author } : {}) });
 // DAS WISSEN EINES MITGEREISTEN SITZES: seine Packs aus der Datei; ein persönlicher Platz mit dem, was der Importierende hineinschrieb, sonst mit
 // dem Pack gleichen Namens aus seiner eigenen Bibliothek (`eigene`, null wenn sie nicht lesbar ist), sonst bleibt er leer
 export function sitzWissen(s: SitzStart, eigene: SeatKnowledge | null): SeatKnowledge {
@@ -61,9 +66,23 @@ export function sitzWissen(s: SitzStart, eigene: SeatKnowledge | null): SeatKnow
   });
   return { tree: eigene?.tree ?? "foreign", repoRoot: "mitgereist", head: s.herkunft ?? "", packs: [...s.liest.map(alsSeatPack), ...gefuellt] };
 }
-// welche persönlichen Plätze leer starten: kein eigener Text und kein Pack dieses Namens in der eigenen Bibliothek
-export const leerePlaetze = (s: SitzStart, eigene: SeatKnowledge | null): string[] =>
-  s.persoenlich.filter((p) => !p.text && !eigene?.packs.some((x) => x.id === p.id && x.text !== null)).map((p) => p.id);
+// welche persönlichen Plätze leer starten: kein eigener Text und kein Pack dieses Namens in der eigenen Bibliothek;
+// ein persönliches Konzept ist leer, solange es keinen Text trägt
+export interface LeererPlatz { kind: "pack" | "concept"; id: string }
+export const leerePlaetze = (s: SitzStart, eigene: SeatKnowledge | null): LeererPlatz[] => [
+  ...s.persoenlich.filter((p) => !p.text && !eigene?.packs.some((x) => x.id === p.id && x.text !== null))
+    .map((p): LeererPlatz => ({ kind: "pack", id: p.id })),
+  ...(s.konzepte ?? []).filter((c) => c.personal === true && c.text === null && c.hash === null)
+    .map((c): LeererPlatz => ({ kind: "concept", id: c.id })),
+];
+// EINE ZEILE JE LEEREM PLATZ: die Kennung, dass der Platz der Person gehört und hier leer ist, und was ihn füllt. Eine
+// mitgereiste Rolle bekommt dazu den Richtungsplatz, denn die Richtung ist immer der Person eigen.
+export const leererPlatzZeilen = (s: SitzStart, eigene: SeatKnowledge | null): string[] => [
+  ...leerePlaetze(s, eigene).map((p) => p.kind === "pack"
+    ? `EMPTY PLACE ${p.id} — the person's own pack, empty here; the importer fills it with their own text or the pack of that name in their library.`
+    : `EMPTY PLACE ${p.id} — the person's own concept, empty here; the importer fills it with their own concept of that name.`),
+  ...(s.rolle || s.richtung ? [RICHTUNG_PLATZ] : []),
+];
 
 // DIE POSITION HINTER `sitz`: "<konst>/<position>" einer gespeicherten Konstellation, oder an der Self-Tür nur "<position>" in der Konstellation
 // der Öffnerin (`eigene`, ihr Slot.sitz.konst)
@@ -120,13 +139,15 @@ export async function sitzDerTuer(body: Record<string, unknown> | null, harness:
   const v = body?.sitz;
   if (v === undefined || v === null) return { ok: true, sitz: null, rechte: null, notizbuch: null, agentMd: null };
   if (harness !== "claude") return { ok: false, error: `harness ${harness} takes no sitz — what it reads goes into Claude Code's start` };
-  // ein importierter Aufbau startet nie in bypass (system-concept.md: „never in bypass, until its owner has looked at it“); die Orchestratorin tut es
-  if (label && orchLabel(label)) return { ok: false, error: "an imported seat never starts as the orchestrator — she runs in bypassPermissions" };
   const g = await sitzPosition(v, dir, eigene, selbst);
   if ("error" in g) return { ok: false, error: g.error };
   const posId = String(g.pos.id);
   const s = g.pos.sitz === undefined || g.pos.sitz === null ? null : sitzAus(g.pos.sitz);
   if (typeof s === "string") return { ok: false, error: `sitz of „${posId}“: ${s}` };
+  // DIE EINE REGEL (Runde 3): ein importierter Sitz startet nie in bypass. Eine Rolle ist kein Bypass; nur der Modus, den
+  // die Datei selbst verlangt, wird abgelehnt. (Ein Orchestrator-Label setzt Fleet sonst auf bypass, darum bleibt es unten verboten.)
+  if (s?.darf.modus === "bypassPermissions") return { ok: false, error: "an imported seat never starts in bypass — the file asks for bypassPermissions" };
+  if (label && orchLabel(label)) return { ok: false, error: "an imported seat never starts as the orchestrator — she runs in bypassPermissions" };
   const herkunft = typeof g.form.abgeleitetVon === "string" ? g.form.abgeleitetVon : null;
   const p = profilVon(g.pos);
   const md = p?.datei === undefined ? null : agentMdText(p.datei);
@@ -142,8 +163,9 @@ export async function sitzDerTuer(body: Record<string, unknown> | null, harness:
   const agentMd: AgentMd | null = md ? { profil: profilId, titel: md.titel, text: md.text, sha256: new Bun.CryptoHasher("sha256").update(md.text).digest("hex"),
     ...(typeof p?.name === "string" ? { name: p.name } : {}) } : null;
   // die Rechte aus der Datei gedeckelt, außer der Owner hier hat sie bestätigt (src/sitz.ts#sitzRechte)
-  return { ok: true, sitz: { konst: g.konst, pos: posId, herkunft, liest: s?.liest ?? [], persoenlich: s?.persoenlich ?? [], block: s !== null, auftrag: datei },
-    rechte: s ? sitzRechte(s.darf) : null, notizbuch: s?.notizbuch ?? null, agentMd };
+  return { ok: true, sitz: { konst: g.konst, pos: posId, herkunft, liest: s?.liest ?? [], persoenlich: s?.persoenlich ?? [], block: s !== null, auftrag: datei,
+      richtung: s?.richtung ?? null, konzepte: s?.konzepte ?? [], ...(s?.rolle ? { rolle: s.rolle } : {}) }, rechte: s ? sitzRechte(s.darf) : null,
+    notizbuch: s?.notizbuch ?? null, agentMd };
 }
 
 // DIE ANDEREN SITZE DERSELBEN KONSTELLATION mit ihrem Auftrag: so nennt Fleet einem Sitz, wen er öffnen kann, und erkennt ein Ziel, das der
@@ -234,10 +256,12 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
   for (const p of positionen as Record<string, unknown>[]) {
     const profil = rec(p.profil);
     const name = typeof p.name === "string" ? p.name : String(p.id);
-    if (!profil || profil.rolle !== "nur-ordner" || !istClaude(profil.agent)) {
+    // A ROLE SEAT NOW TRAVELS LIKE ANY OTHER (Runde 3): its role block carries start text, rights and packs; dateiFuer no
+    // longer strips it to "nur-ordner". Only a non-Claude seat or a bare reference still has no Sitz-Block.
+    if (!profil || !istClaude(profil.agent)) {
       const { sitz: _s, rechte: _r, ...ohne } = p;
       mitSitz.push(ohne);
-      hinweise.push(`${name}: ${!profil ? "nur als Verweis exportiert" : profil.rolle !== "nur-ordner" ? `was eine ${String(profil.rolle)} liest, gibt ihre Rolle in der Fleet, die sie startet` : "liest Fleets Packs nicht im Start (kein Claude Code)"}; kein Sitz-Block`);
+      hinweise.push(`${name}: ${!profil ? "nur als Verweis exportiert" : "liest Fleets Packs nicht im Start (kein Claude Code)"}; kein Sitz-Block`);
       continue;
     }
     const da = p.sitz === undefined ? null : sitzAus(p.sitz);
@@ -256,16 +280,21 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
           // ein eigener Pack dieser Maschine reist nicht mit: geteilt wird, was im Register steht (Slot 1, 26.10.)
           if (pk.privat) { hinweise.push(`${name}: ${pk.id} ist ein eigener Pack dieser Maschine und bleibt daheim`); continue; }
           const quellen = pk.sources.map((s) => ({ pfad: s.path, anker: s.anchor }));
-          if (istPersoenlich(pk.id)) persoenlich.push({ id: pk.id, weg, quellen, wofuer: pk.useWhen, text: null });
+          if (istPersoenlich(pk.id, pk.personal === true)) persoenlich.push({ id: pk.id, weg, quellen, wofuer: pk.useWhen, text: null });
           else liest.push({ id: pk.id, weg, quellen, wofuer: pk.useWhen, text: pk.text });
         }
       }
     }
     // das Notizbuch: ein Sitz mit Agent-MD hat sein eigenes (server/notizbuch.ts, profil-<id>); was es hier weiß, geht vor dem, was mitreiste
     let notizbuch: SitzNotizbuch | null = da?.notizbuch ?? null;
+    let persoenlicheNotizen: string[] | undefined = da?.persoenlicheNotizen;
     if (profil.datei && typeof profil.id === "string") {
       const nb = await q.notizbuch(profil.id).catch(() => null);
-      if (nb && (nb.index.trim() || nb.dateien.length)) notizbuch = notizbuchZumTeilen(nb.index, nb.dateien);
+      if (nb && (nb.index.trim() || nb.dateien.length)) {
+        notizbuch = notizbuchZumTeilen(nb.index, nb.dateien);
+        const daheim = nb.dateien.filter((d) => notizIstPersoenlich(d.text)).map((d) => d.datei);
+        if (daheim.length) persoenlicheNotizen = daheim;
+      }
     }
     if (notizbuch?.daheim) hinweise.push(`${name}: ${notizbuch.daheim} Notiz${notizbuch.daheim === 1 ? "" : "en"} über den Owner ${notizbuch.daheim === 1 ? "bleibt" : "bleiben"} daheim`);
     // was er darf: was hier an ihm gesetzt ist (Position.rechte, so startet ihn das Fenster), sonst was mit ihm hierher reiste
@@ -273,7 +302,9 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
     // DER PLATZ FÜR DAS EIGENE DES OWNERS IN CLAUDE CODE: was die Fassung mit `eigentum: „[Zitat entfernt]“` zeigt (seine Hooks, Plugins, Einstellungen,
     // ~/.claude/CLAUDE.md; server/fassung-umfeld.ts), reist heute nicht mit; wer importiert, startet mit seinem eigenen. Ob es mitreist,
     // entscheidet der Owner, und dann gehört es hierher, als Platz unter `persoenlich` ohne Text.
-    const sitz: Sitz = sitzZumTeilen({ liest, persoenlich, darf: { rechte, modus: q.modus }, notizbuch });
+    const sitz: Sitz = sitzZumTeilen({ liest, persoenlich, darf: { rechte, modus: q.modus }, notizbuch,
+      ...(da?.rolle ? { rolle: da.rolle } : {}),
+      ...(da?.konzepte?.length ? { konzepte: da.konzepte } : {}), ...(persoenlicheNotizen?.length ? { persoenlicheNotizen } : {}) });
     const { rechte: _r, ...ohneRechte } = p;
     mitSitz.push({ ...ohneRechte, sitz });
   }
@@ -288,7 +319,7 @@ export async function dateiFuer(form: Record<string, unknown>, q: DateiQuellen):
   const text = JSON.stringify(datei);
   const k = await liesBibliothek();
   const persoenlicheTexte = [
-    ...(typeof k === "string" ? [] : k.packs.filter((pk) => (istPersoenlich(pk.id) || pk.privat) && pk.text !== null).map((pk) => pk.text as string)),
+    ...(typeof k === "string" ? [] : k.packs.filter((pk) => (istPersoenlich(pk.id, pk.personal === true) || pk.privat) && pk.text !== null).map((pk) => pk.text as string)),
     ...positionen.flatMap((p) => { const s = p?.sitz === undefined ? null : sitzAus(p.sitz); return s && typeof s !== "string" ? s.persoenlich.flatMap((x) => x.text ? [x.text] : []) : []; }),
   ];
   const fund = persoenlichIn(text, persoenlicheTexte);

@@ -237,6 +237,8 @@ import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfac
   type PostfachFehlerwort, type PostfachWeg } from "./server/postfach-fehler";
 import { postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
   restorePostfachVersuche } from "./server/postfach-versuche";
+import { dieselbeSperre, loescheSperre, postfachHindernis,
+  type PostfachGate, type PostfachHindernis } from "./server/postfach-befund";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
@@ -18537,7 +18539,10 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
     // lose one of them.
     if (!sameAddress(prior.to, to) || !samePayload(prior.payload, payload) || prior.replyTo !== replyTo || (prior.personal === true) !== personal)
       return json({ error: `idempotencyKey ${key} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
-    return json({ ok: true, existing: true, message: prior });
+    // EIN REPLAY ANTWORTET WIE DAS ERSTE MAL, und dazu gehört, was damals über die Zustellung
+    // gesagt wurde: sonst verschwände der Grund genau dann, wenn jemand ihn nachliest.
+    return json({ ok: true, existing: true, message: prior,
+      ...(prior.delivery ? { delivery: prior.delivery } : {}) });
   }
 
   // FERNPOST: a seat of ANOTHER fleet is written through the neighbour door; the receiving fleet checks who may write whom
@@ -18613,9 +18618,25 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   // EIN LAUF BEHÄLT DIE NACHRICHTEN SEINER SESSIONS selbst, nicht nur im Ring (server/laeufe.ts, Harness 2.0 4b)
   const laeufe = [s.lauf?.id, resolved.ok ? resolved.holder?.lauf?.id : undefined].filter((x): x is string => !!x);
   if (laeufe.length) await merkeLaufNachricht(laeufe, { id: entry.id, at: entry.at, from: entry.from, to: entry.to, text: entry.payload.text, replyTo: entry.replyTo }, STATE_DIR);
+  // LAUT STATT STILL (Owner 28.10.: „[Zitat entfernt]“). Die
+  // Nachricht liegt jetzt im Record; ob sie in eine Pane kommt, entscheidet der Postfach-Takt, und
+  // sein Urteil (canDeliver) sah der Absender nie. Hier wird es gestellt — mit DENSELBEN Toren und
+  // DERSELBEN Schwelle, mit denen zustellePostfachDirekt tippt. Nichts wird getippt und kein Tor
+  // aufgeweicht: nur benannt, und am Eintrag vermerkt, damit das Board es zeigt. Ein Ziel OHNE
+  // Besatzer (Program, Rolle ohne Sitz) hat keine Pane und damit kein Tor — dort bleibt es beim
+  // `note`, das schon sagt, dass gespeichert und nicht zugestellt wurde.
+  let hindernis = isDirectPostfachTarget(to) && resolved.ok && resolved.holder
+    ? await postfachHindernisFuer(resolved.holder, entry.at) : null;
+  // Der Takt kann sie inzwischen getippt haben (er läuft alle POSTFACH_TICK_MS): eine Quittung ist
+  // die Ankunft, und dann ist „nicht zugestellt“ keine wahre Antwort mehr — weder am Eintrag noch hier.
+  if (hindernis && entry.readBy === null) {
+    entry.delivery = hindernis;
+    await saveStateNow();
+  } else hindernis = null;
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
   return json({ ok: true, existing: false, message: entry,
+    ...(hindernis ? { delivery: hindernis } : {}),
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
     note: resolved.note, escalatedTo: resolved.escalatedTo });
 }
@@ -20758,6 +20779,16 @@ async function canDeliver(s: Slot, opts: {
   // a pane this very call woke is idle by construction — its repaint is not a turn in progress
   if (!woke && opts.idleMs && opts.now - s.lastOutput < opts.idleMs) return { ok: false, gate: "busy" };
   return { ok: true };
+}
+
+// DIE FRAGE DER SENDETÜR AN DENSELBEN TAKT: kann diese Pane die Nachricht jetzt bekommen? Es sind die
+// Tore und die Schwelle von zustellePostfachDirekt — harness und quiet-hours sind für Postfach-Post
+// aus (eine Nachricht ist keine unbeaufsichtigte Arbeit), kill-switch, alive, blocked-screen und idle
+// gelten. Die Antwort ist die benannte Sperre oder null; getippt wird hier nichts.
+const POSTFACH_GATE = { idleMs: REPORT_DECISION_IDLE_MS, harness: false, quietHours: false } as const;
+async function postfachHindernisFuer(holder: Slot, at: number): Promise<PostfachHindernis | null> {
+  const verdict = await canDeliver(holder, { now: Date.now(), ...POSTFACH_GATE });
+  return verdict.ok ? null : postfachHindernis(verdict.gate, holder.id, at, verdict.detail ?? null);
 }
 
 let autoTickBusy = false;
@@ -28287,6 +28318,34 @@ function forgetPostfachQueued(s: Slot, ids: readonly string[]): void {
   for (const id of ids) row.ids.delete(id);
   if (!row.ids.size) postfachQueued.delete(s.id);
 }
+// WAS DER TAKT NICHT ANNEHMEN KANN, STEHT AM EINTRAG (Owner 28.10.: „[Zitat entfernt]“). Dieselbe
+// Sperre, die die Sendetür dem Absender nennt, steht am ungelesenen Eintrag, damit das Board „[Zitat entfernt]“
+//  zeigt — auch wenn ein Sitz erst NACH dem Senden unzustellbar wird. Geschrieben
+// wird nur, wenn sich das Tor ändert: ein dauerhaft toter Sitz schreibt nicht jede Takt-Runde
+// dieselbe Zeile in fleet.json. Kein Tippen, kein Versäumnis: die Nachricht bleibt angeboten.
+async function merkePostfachHindernis(s: Slot, ids: readonly string[],
+  verdict: { gate: PostfachGate; detail?: string }): Promise<void> {
+  let changed = false;
+  for (const id of ids) {
+    const entry = messages.entries.find((m) => m.id === id && m.readBy === null);
+    if (!entry) continue;
+    const hindernis = postfachHindernis(verdict.gate, s.id, Date.now(), verdict.detail ?? null);
+    if (dieselbeSperre(entry.delivery, hindernis)) continue;
+    entry.delivery = hindernis;
+    changed = true;
+  }
+  if (changed) await saveStateNow();
+}
+// DIE ANKUNFT LÖSCHT DIE SPERRE, nicht ihr Ablauf: was getippt wurde, ist kein „nicht zugestellt“
+// mehr (eine Ankunft behauptet der Eintrag damit nicht — das tut nur die Quittung).
+function vergissPostfachHindernisse(ids: readonly string[]): boolean {
+  let cleared = false;
+  for (const id of ids) {
+    const entry = messages.entries.find((m) => m.id === id);
+    if (entry && loescheSperre(entry)) cleared = true;
+  }
+  return cleared;
+}
 // WHAT WAS TYPED IS NOT OFFERED AGAIN, even when acceptance was unobservable: the message stays unread
 // in the record (no receipt without observation), but a second paste of the same text would be noise.
 // A cancelled send never reaches this, so a message that did not land is still retried. The same
@@ -28360,7 +28419,9 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
     postfachVersuche.vergessen(current.id);
     forgetPostfachQueued(current, ids);
     rememberPostfachAttempt(current, ids);
-    if (acknowledgePostfach(current, plan.entries, acceptance))
+    const receipted = acknowledgePostfach(current, plan.entries, acceptance);
+    const cleared = vergissPostfachHindernisse(ids);
+    if (receipted || cleared)
       void saveStateNow().catch((e: unknown) => logError("postfachReceipt", e));
     current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(current);
@@ -28386,9 +28447,14 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
 // idle gate as the announcement before it. A held field parks the paste instead of dropping it.
 async function zustellePostfachDirekt(s: Slot, plan: PostfachPlan, session: string, openedAt: number,
   ids: readonly string[], stillThere: (current: Slot) => boolean): Promise<void> {
-  const verdict = await canDeliver(s, { now: Date.now(), idleMs: REPORT_DECISION_IDLE_MS,
-    harness: false, quietHours: false });
-  if (!verdict.ok || !s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) return;
+  const verdict = await canDeliver(s, { now: Date.now(), ...POSTFACH_GATE });
+  if (!verdict.ok) {
+    // DIE STILLE WAR DER FEHLER: was der Takt nicht tippen kann, wird benannt (am Eintrag und beim
+    // nächsten Senden auch am Absender) und bleibt angeboten — die Tore selbst bleiben unberührt.
+    await merkePostfachHindernis(s, ids, verdict);
+    return;
+  }
+  if (!s.cwd || s.openedAt !== openedAt || backlogSessionKey(s) !== session) return;
   if (!stillThere(s)) return;
   pendingPostfach.add(s.id);
   const h = postfachHandlers(s, plan, session, openedAt, ids, stillThere);

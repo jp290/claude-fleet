@@ -3217,6 +3217,8 @@
   #board .bmsgread { flex: none; box-sizing: border-box; width: 7px; height: 7px; border: 1px solid var(--chat-mute); border-radius: 50%; }
   #board .bmsgread.seen { display: grid; place-items: center; width: 8px; height: 8px; border: 0; color: var(--chat-mute); }
   #board .bmsgread svg { width: 10px; height: 10px; }
+  /* nicht zugestellt, Grund X: das Wort neben der Zeit, der ganze Satz im title (src/postfach.ts) */
+  #board .bmsgnicht { flex: none; font-size: 10.5px; color: var(--amber); white-space: nowrap; }
   #board .bmsgfirst { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #board .bmsg.open .bmsgfirst { display: none; }
   #board .bmsgtx { padding: 0 8px 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--chat-ink); font-size: 12px; line-height: 1.45; }

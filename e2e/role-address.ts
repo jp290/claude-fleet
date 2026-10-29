@@ -68,6 +68,9 @@ export async function messageDeliveryChecks(): Promise<void> {
     readFileSync(`${ROOT}/server/zustellung.ts`, "utf8").replace(/^export /gm, "").replace(/^import .*$/gm, ""),
     // the failure leaf decides what stays on offer and how often a repeat is said
     readFileSync(`${ROOT}/server/postfach-fehler.ts`, "utf8").replace(/^export /gm, ""),
+    // the obstacle leaf names the gate a message did not get through, and the tick writes it at the
+    // entry (the gate options object itself rides the canDeliver section below)
+    readFileSync(`${ROOT}/server/postfach-befund.ts`, "utf8").replace(/^export /gm, ""),
     section("const sameAddress =", "const samePayload ="),
     section("function messageAddressesFor(", "const NO_MESSAGE_ADDRESS ="),
     section("function messageInboundFor(", "function programMessageStatus("),

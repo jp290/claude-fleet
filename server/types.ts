@@ -24,6 +24,8 @@ import type { ContextPackMcpServer } from "../context-packs";
 import type { CodexFirstTurn } from "./conversation-read";
 import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX, HELPER_REPOS_BYTES_MAX,
   HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
+import { POSTFACH_GATES, POSTFACH_REASON_MAX, POSTFACH_TORE,
+  type PostfachGate, type PostfachHindernis, type PostfachTor } from "./postfach-befund";
 
 export function helperReposFrom(raw: unknown): HelperReposReading | null {
   const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -2752,6 +2754,12 @@ type MessagePayload = { kind: "text"; text: string };
 const MESSAGE_PAYLOAD_KINDS = ["text"];
 const MESSAGE_IDEMPOTENCY_KEY_MAX = 200;
 const MESSAGE_ENTRY_KEYS = ["id", "from", "to", "at", "payload", "idempotencyKey", "replyTo", "readBy", "readAt"];
+// DIE ZWEI SCHLÜSSEL, DIE FEHLEN DÜRFEN. `personal` (nur true) markiert den Text als persönlich
+// (server/datengrenze.ts). `delivery` (server/postfach-befund.ts#PostfachHindernis) steht am Eintrag,
+// solange die Nachricht NICHT zugestellt ist, und verschwindet mit dem Tippen; eine Zeile ohne ihn
+// behauptet keine Ankunft — das tut nur die Quittung `readBy`. Ein Record von vor dem 28.10. hat
+// keinen der beiden und lädt unverändert.
+const MESSAGE_ENTRY_OPTIONAL_KEYS = ["personal", "delivery"];
 interface Message {
   id: string;                       // 24 hex, minted by appendMessage
   from: MessageAddress;             // DERIVED from the sender's binding or owner credential, never from a body
@@ -2763,6 +2771,7 @@ interface Message {
   readBy: { slot: number; openedAt: number; sessionId: string | null } | null;
   readAt: number | null;            // null exactly when readBy is null
   personal?: true;                  // the sender marked the text personal: it is delivered to no non-Anthropic seat (server/datengrenze.ts)
+  delivery?: PostfachHindernis;     // absent = no obstacle known; present = not delivered, and why
 }
 interface Messages { v: 1; entries: Message[]; dropped: number }
 // The cap is on the RECORD, like PROGRAM_INBOX_MAX and for its reason: a hand-written file cannot
@@ -2821,13 +2830,40 @@ const loadMessagePayload = (value: unknown, what: string): MessagePayload | stri
   return { kind: "text", text: r.text };
 };
 
+// DIE SPERRE AM EINTRAG, gelesen mit denselben geschlossenen Regeln wie alles andere im Record: ein
+// unbekanntes Tor oder ein fehlender Satz ist ein kaputter Eintrag, kein unbekannter Grund. Die
+// Grenze ist die des Satzes selbst (server/postfach-befund.ts#POSTFACH_REASON_MAX): was dort gekürzt
+// wird, kann hier nie abgelehnt werden.
+const loadPostfachHindernis = (value: unknown, what: string): PostfachHindernis | string => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${what} must be an object`;
+  const r = value as Record<string, unknown>;
+  if (Object.keys(r).some((k) => !["state", "gate", "tor", "slot", "at", "reason"].includes(k))
+    || Object.keys(r).length !== 6)
+    return `${what} must contain exactly state, gate, tor, slot, at, reason`;
+  if (r.state !== "not-delivered") return `${what} state must be not-delivered`;
+  if (!POSTFACH_GATES.includes(r.gate as PostfachGate))
+    return `${what} gate must be one of ${POSTFACH_GATES.join(", ")}`;
+  if (!POSTFACH_TORE.includes(r.tor as PostfachTor))
+    return `${what} tor must be one of ${POSTFACH_TORE.join(", ")}`;
+  if (typeof r.slot !== "number" || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > MAX_SLOTS)
+    return `${what} slot must be an integer in 1..${MAX_SLOTS}`;
+  if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0)
+    return `${what} at must be a positive number`;
+  if (typeof r.reason !== "string" || r.reason === "" || r.reason.length > POSTFACH_REASON_MAX)
+    return `${what} reason must be a non-empty string of at most ${POSTFACH_REASON_MAX} chars`;
+  return { state: "not-delivered", gate: r.gate as PostfachGate, tor: r.tor as PostfachTor,
+    slot: r.slot, at: r.at, reason: r.reason };
+};
+
 const loadMessageEntry = (value: unknown, index: number): Message | string => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return `entry ${index} must be an object`;
   const r = value as Record<string, unknown>;
-  // `personal` is the one optional key: absent on an unmarked message, so a record written before the mark stays valid
-  const keys = Object.keys(r).filter((k) => k !== "personal");
-  if (keys.some((k) => !MESSAGE_ENTRY_KEYS.includes(k)) || keys.length !== MESSAGE_ENTRY_KEYS.length)
-    return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")} (and optionally personal)`;
+  // `personal` and `delivery` are the two optional keys: absent on a message without a mark or an obstacle, so a record
+  // written before either stays valid
+  const keys = Object.keys(r);
+  if (keys.some((k) => !MESSAGE_ENTRY_KEYS.includes(k) && !MESSAGE_ENTRY_OPTIONAL_KEYS.includes(k))
+    || MESSAGE_ENTRY_KEYS.some((k) => !keys.includes(k)))
+    return `entry ${index} must contain exactly ${MESSAGE_ENTRY_KEYS.join(", ")} (and optionally ${MESSAGE_ENTRY_OPTIONAL_KEYS.join(", ")}: personal only when the sender marked the text, delivery only when the message is not delivered)`;
   if (r.personal !== undefined && r.personal !== true) return `entry ${index} personal must be true or absent`;
   if (typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id))
     return `entry ${index} id must be 24 hex characters`;
@@ -2865,10 +2901,19 @@ const loadMessageEntry = (value: unknown, index: number): Message | string => {
   if ((r.readBy === null) !== (r.readAt === null))
     return `entry ${index} readBy and readAt must be null together`;
   const by = r.readBy as { slot: number; openedAt: number; sessionId: string | null } | null;
+  const hindernis = r.delivery === undefined ? null : loadPostfachHindernis(r.delivery, `entry ${index} delivery`);
+  if (typeof hindernis === "string") return hindernis;
+  // ZWEI FAKTEN, DIE SICH AUSSCHLIESSEN: eine Quittung ist die Ankunft, eine Sperre ist ihr Fehlen.
+  // Der Takt löscht die Sperre mit dem Tippen (loescheSperre); stehen beide da, ist der Eintrag
+  // kaputt und wird benannt abgelehnt statt in eine der zwei Lesarten geraten.
+  if (hindernis && r.readBy !== null)
+    return `entry ${index} delivery is present on a receipted message — a receipt is the arrival, an obstacle is its absence`;
   return { id: r.id, from, to, at: r.at, payload, idempotencyKey: r.idempotencyKey,
     replyTo: r.replyTo as string | null,
     readBy: by === null ? null : { slot: by.slot, openedAt: by.openedAt, sessionId: by.sessionId },
-    readAt: r.readAt as number | null, ...(r.personal === true ? { personal: true as const } : {}) };
+    readAt: r.readAt as number | null,
+    ...(r.personal === true ? { personal: true as const } : {}),
+    ...(hindernis ? { delivery: hindernis } : {}) };
 };
 
 // CLOSED, VERSIONED, DEFAULT-ABSENT, in loadProgramInbox's discipline and for its reason: a record

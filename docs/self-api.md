@@ -3534,7 +3534,9 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Land- oder Deploy-Berechtigung reist mit ihr, und keine Route liest sie als Anweisung.
 
 **Antwort GET:** `{addresses, unread, droppedFleetWide, entries: [{id, from, to, at, payload,
-idempotencyKey, replyTo, readBy, readAt}], unknown: []}`, **neueste zuerst**. `addresses` sind die
+idempotencyKey, replyTo, readBy, readAt, delivery?}], unknown: []}`, **neueste zuerst**. `delivery`
+steht nur am Eintrag, solange er nicht zugestellt ist (siehe unten); fehlt der Schlüssel, ist kein
+Hindernis bekannt — eine Ankunft behauptet nur `readBy`. `addresses` sind die
 Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen. Die eigene steht
 zuerst, dahinter die geerbten ihrer Linie.
 
@@ -3585,6 +3587,7 @@ Sätze, ihre Ausgabe ist unverändert.
 | Gültige Adresse ohne lebenden Halter (Program) | 200 mit `note`, `escalatedTo:"orchestrator"`, `holder` = Orchestratorin; ohne genau eine lebende Orchestratorin `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse — der nächste Halter liest sie weiter |
 | `role:"orchestrator"` ohne genau eine lebende Orchestratorin | 200 mit `escalatedTo:"owner"`, `holder:null` und Owner-Inbox-Zeile | **ja**, unter der ursprünglichen Adresse |
 | Gültige Adresse mit lebendem Halter | 200, `holder:{slot,openedAt}` | ja |
+| Gültige Adresse mit lebendem Halter, dessen Pane jetzt nichts annimmt | 200, `holder:{slot,openedAt}` **und `delivery`** mit `state:"not-delivered"`, `gate`, `tor`, `slot`, `at`, `reason` | ja, ungelesen; der Takt bietet sie weiter an |
 
 `programStatusView` zeigt daneben `messages:{unread,oldestAt}` für ungelesene Nachrichten an die
 Program-Adresse. Der Standard-Nachfolgebrief nennt diese Nachrichten mit `GET /api/self/messages`;
@@ -3599,6 +3602,35 @@ Satz ungelesener IDs erhält in derselben Session keinen zweiten Hinweis; ein sp
 Halter kann die gespeicherte Nachricht und den Hinweis erhalten. Das Senden selbst tippt nichts
 in die Pane. Derselbe Tick liefert auch den Hinweis für Session- und Lane-Adressen; alive-,
 busy- und draft-Gates sowie die Occupant-Prüfung vor dem Einfügen bleiben wirksam.
+
+**Die nicht zugestellte Nachricht sagt warum (`server.ts#sendMessageFor`, `server/postfach-befund.ts`).**
+Owner 28.10.: „[Zitat entfernt]“ Am 28.10. nach dem
+Neustart geschahen genau das: drei Antworten `{ok:true}`, keine Zeile in einer Pane, niemand erfuhr
+davon. Darum stellt die Sendetür jetzt dieselbe Frage wie der Takt — `canDeliver` mit den Toren und
+der Schwelle von `zustellePostfachDirekt` (kill-switch, alive, blocked-screen, idle; harness und
+quiet-hours sind für Postfach-Post aus, weil eine Nachricht keine unbeaufsichtigte Arbeit ist) —
+und **tippt weiterhin nichts**. Nimmt die Pane die Nachricht jetzt nicht an, trägt die Antwort
+`delivery`:
+
+```json
+{"ok":true,"existing":false,"message":{…},
+ "delivery":{"state":"not-delivered","gate":"not-alive","tor":"alive","slot":6,"at":1790000000000,
+   "reason":"not delivered to slot 6 — no agent is running in its pane (gate not-alive, alive); the message stays unread in the Postfach and is typed as soon as that gate opens"},
+ "holder":{"slot":6,"openedAt":1790000000000},"note":null,"escalatedTo":null}
+```
+
+`gate` ist das Wort von `canDeliver` (`kill-switch`, `harness`, `not-alive`, `blocked-screen`,
+`quiet-hours`, `busy`), `tor` das Owner-Wort (`alive`, `idle`, `quiet-hours`, `kill-switch`,
+`harness`) — `blocked-screen` ist die Schwester von `not-alive` und heißt darum `alive`, `busy`
+heißt `idle`. Beides steht im Satz. Die Nachricht bleibt **ungelesen im Record des Empfängers**
+(nichts wird verworfen, nichts doppelt getippt; der Takt bietet sie weiter an) und derselbe Grund
+steht am Eintrag (`message.delivery`) — `GET /api/self/messages`, `GET /api/messages` und das
+Board zeigen ihn, dort als „not delivered · <tor>“ mit dem ganzen Satz im `title` und der Zahl im
+Reiter (`postfachSummary`). Getippt der Takt sie, fällt die Sperre; eine Quittung (`readBy`) bleibt
+der einzige Beweis einer Ankunft. Ein Ziel **ohne** Besatzer (Program, Rolle ohne Sitz) hat keine
+Pane und damit kein Tor — dort sagt weiter der `note`, dass gespeichert und nicht zugestellt wurde.
+Die Tore selbst sind unverändert: es wird nichts in eine tote Pane getippt und nichts an einen Sitz
+gegeben, dessen Harness es nicht annehmen darf.
 `ctl.sh send --orchestrator <textfile>` sendet über `POST /api/self/messages` mit
 `FLEET_SELF_TOKEN`; die Owner-Credential wird dafür nicht gelesen.
 

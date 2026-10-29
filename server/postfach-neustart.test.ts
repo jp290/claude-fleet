@@ -28,6 +28,11 @@ const takt = [
   leaf("server/postfach-zustellen.ts"),
   leaf("server/zustellung.ts"),
   leaf("server/postfach-fehler.ts"),
+  // Die Sperre der nicht zugestellten Nachricht: der Takt schreibt sie an den Eintrag
+  // (server/postfach-befund.ts, Owner 28.10.: „[Zitat entfernt]“), und er stellt seine Tore mit
+  // DEMSELBEN Objekt, mit dem die Sendetür den Absender fragt.
+  leaf("server/postfach-befund.ts"),
+  section("const POSTFACH_GATE =", "async function postfachHindernisFuer("),
   section("const postfachAttempted =", "// --- THE HINT AT THE THRESHOLD"),
 ];
 const transpile = (parts: string[]): string =>

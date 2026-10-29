@@ -12,8 +12,11 @@ import { icon } from "./icons";
 import { popover } from "./popover";
 
 interface Address { kind: string; slot?: number; openedAt?: number; id?: string; role?: string }
+// DIE SPERRE AM EINTRAG (server/postfach-befund.ts#PostfachHindernis): sie steht da, solange die
+// Nachricht nicht zugestellt ist, und nennt Tor, Owner-Wort, Sitz und einen Satz.
+interface Delivery { state: string; gate: string; tor: string; slot: number; at: number; reason: string }
 interface Message { id: string; from: Address; to: Address; at: number; payload: { text?: string };
-  replyTo: string | null; readAt: number | null }
+  replyTo: string | null; readAt: number | null; delivery?: Delivery | null }
 
 const FRESH_MS = 15_000;
 // ein langes Gespräch zeigt die neuesten SHOWN, darunter ein Knopf für die früheren
@@ -54,7 +57,10 @@ export function postfachOf(slot: number, openedAt: number): Message[] | null {
 
 export function postfachSummary(list: Message[], slot: number, openedAt: number): string {
   const unread = list.filter((m) => own(m.to, slot, openedAt) && m.readAt === null).length;
-  return `${list.length}${unread ? ` · ${unread} unread` : ""}${stand?.failed ? " · not current" : ""}`;
+  // EINE NICHT ZUGESTELLTE NACHRICHT IST AUF DEM BOARD SICHTBAR (Owner 28.10.: „[Zitat entfernt]“):
+  // ohne diese Zahl liest sich der Reiter wie „[Zitat entfernt]“.
+  const blocked = list.filter((m) => m.delivery && m.readAt === null).length;
+  return `${list.length}${unread ? ` · ${unread} unread` : ""}${blocked ? ` · ${blocked} not delivered` : ""}${stand?.failed ? " · not current" : ""}`;
 }
 
 // der Name einer Adresse und (fürs Hovern) was hinter ihm steht
@@ -259,6 +265,14 @@ function fillConversation(box: HTMLElement, c: Conversation, slot: number, opene
     const at = el("span", "bmsgat", when(m.at));
     at.title = `${new Date(m.at).toLocaleString("en-GB")} · message ${m.id}`;
     hd.appendChild(at);
+    // NICHT ZUGESTELLT, GRUND X — ohne dieses Wort las der Absender „not read yet“ und glaubte,
+    // die Nachricht sei angekommen. Das Owner-Wort steht sichtbar, der ganze Satz im title.
+    const blocked = m.readAt === null ? m.delivery ?? null : null;
+    if (blocked) {
+      const why = el("span", "bmsgnicht", `not delivered · ${blocked.tor}`);
+      why.title = blocked.reason;
+      hd.appendChild(why);
+    }
     if (mine) {
       const seen = el("span", `bmsgread${m.readAt === null ? "" : " seen"}`);
       seen.title = m.readAt === null ? "not read yet" : `read ${when(m.readAt)}`;

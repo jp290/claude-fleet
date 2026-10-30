@@ -33069,6 +33069,9 @@ interface PostLandAuditRow {
   // A row with `quellen` and no run of its own (`ms` near 0, `out` the "geprüft am …" sentence) is a row composed from seals.
   skipUnits?: string[];
   quellen?: SiegelQuelle[];
+  // a row COMPOSED from seals ran nothing: it answers the deploy gate and the watches, but it is no measurement of this machine's — the quiet-window
+  // clock (noteAuditClock) and the duration statistics leave it out
+  zusammengesetzt?: true;
   // Present ONLY on a `nightly` row (withNightlyFacts): every land since the previous nightly — the
   // span the one run with the dom unit answers for.
   nightly?: { lands: { branch: string; mainAfter: string; at: number }[]; landsTotal: number };
@@ -33301,7 +33304,7 @@ const auditKnownRepos = new Map<string, { repo: string; main: string }>();
 function noteAuditClock(row: PostLandAuditRow): void {
   const canon = repoCanon(row.repo);
   auditKnownRepos.set(canon, { repo: row.repo, main: row.main });
-  if (row.proportional === true) return;
+  if (row.proportional === true || row.zusammengesetzt === true) return;
   if (measuredGreen(row) || row.result === "red") auditLastFull.set(canon, Math.max(auditLastFull.get(canon) ?? 0, row.at));
   if (row.trigger === "nightly" && row.at >= (auditLastNightly.get(canon)?.at ?? 0))
     auditLastNightly.set(canon, { at: row.at, mainSha: row.mainSha });
@@ -35269,6 +35272,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     covers: counted, ...(trigger ? { trigger } : {}),
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
     ...(sealPlan?.quellen.length ? { quellen: sealPlan.quellen } : {}),
+    ...(sealPlan && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0 ? { zusammengesetzt: true as const } : {}),
     ...(sealPlan?.gedeckt.length ? { skipUnits: sealPlan.gedeckt } : {}),
   };
   unmeasuredGreenIsUnknown(row);

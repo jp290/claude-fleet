@@ -271,6 +271,25 @@ describe("F5: kein Siegel auf dem falschen Baum, und eine Abrechnung führt nie 
   }, 3 * LIFE_DEADLINE_MS);
 });
 
+describe("F7: eine zusammengesetzte Zeile ohne Lauf bewegt die Ruhe-Uhr nicht", () => {
+  test("nach einer Abrechnung aus Siegeln wartet das nächste Land seine eigene Ruhezeit ab, nicht eine ab der Abrechnung", async () => {
+    const QUIET = 3_600_000;
+    const { f, e, land } = await helferFixture("uhr", { FLEET_AUDIT_QUIET_MS: String(QUIET) }, geforderteUnits(["dom"]));
+    const [made2] = await life(f, [post("/api/branches", { repo: f.repo, name: "uhr-zwei" })], {});
+    commitIn(String(made2?.body.path), "uhr-zwei.txt", "uhr-zwei");
+    const [, , abgerechnet, landed2, audits] = await life(f, [land, { until: join(f.state, "post-land-audit-queue.json"), ms: 3_000 },
+      { abrechnen: { repo: f.repo, trigger: "quiet" } },
+      post("/api/branches/land", { repo: f.repo, branch: "branch/uhr-zwei", subject: "uhr-zwei", unchecked: true }),
+      get("/api/post-land-audits")], e);
+    expect(abgerechnet?.body.abgerechnet).toBe(true);
+    expect(landed2?.status).toBe(200);
+    expect((audits?.body.audits as { quellen?: unknown[] }[]).length).toBe(1);
+    const pending = (audits?.body.pending as { oldestAt: number; releaseAt: number }[])[0]!;
+    // ohne die Zeile als „letzte volle Prüfung“ zählt die Ruhezeit ab dem ältesten wartenden Land, genau eine Ruhezeit
+    expect(pending.releaseAt - pending.oldestAt).toBe(QUIET);
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
 describe("F4: der Siegel-Push hält die Antwort an den Helfer nicht auf", () => {
   test("ein Hub, der den Push 20 s festhält: die Ergebniszeile steht, die Antwort kommt nach höchstens 3 s Push-Wartezeit, das Siegel liegt lokal", async () => {
     const { f, tree, e, land } = await helferFixture("langsamerhub");

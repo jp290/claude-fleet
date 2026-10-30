@@ -398,13 +398,19 @@ export async function runLeisteDom(sourceRoot: string, artifacts?: string,
           await open(v, "voll", { layout: 1, panes: [1], focused: 0, chats: [true] }, { "fleet.board": board });
           await wait(`document.querySelector('#panes > .pane.chat .panechat')?.clientWidth > 0`, 3000);
           await Bun.sleep(300);
-          return evaluate<{ em: number; ok: boolean; side: number }>(`(() => {
+          return evaluate<{ em: number; ok: boolean; plain: number; asked: number; frageSans: boolean | null; side: number }>(`(() => {
             ${NAME_ROW}
-            return { em, ok, side: Math.round(document.getElementById('side').getBoundingClientRect().width) }; })()`);
+            const frage = asked.row?.querySelector('.frage');
+            return { em, ok, plain: plain.em, asked: asked.em, frageSans: frage ? !/mono/i.test(getComputedStyle(frage).fontFamily) : null,
+              side: Math.round(document.getElementById('side').getBoundingClientRect().width) }; })()`);
         };
         const shut = await named("0"), beside = await named("1");
         facts.namen = { shut, beside };
-        claims[LEISTE_CLAIM.namen] = shut.ok && beside.ok && shut.em >= 9.25 && beside.em >= 9.25 && shut.side === beside.side;
+        // „Frage“ is a word a person reads: the sans, and the name beside it no narrower than the plain row's with its ⎇+. At 230px the
+        // mono and 4px more cost the asked row 0.36em and left it at 9.43em, still over 9.25 and over the plain row's 9.36
+        // (30.10.), so the number alone never saw the font come back.
+        claims[LEISTE_CLAIM.namen] = shut.ok && beside.ok && shut.em >= 9.25 && beside.em >= 9.25 && shut.side === beside.side
+          && shut.frageSans === true && beside.frageSans === true && shut.asked >= shut.plain && beside.asked >= beside.plain;
         // 6 · the owner's window (a 1470 pt screen) at three browser zooms: a browser zooms each address on its own, and one board
         // read „[Zitat entfernt]“, the other „[Zitat entfernt]“ (25.10.). The window in CSS px grows as the zoom falls.
         await open(v, "voll", { layout: 1, panes: [1], focused: 0, chats: [true] }, { "fleet.board": "1", "fleet.chatsize": JSON.stringify({ text: 14, code: 12.5, ui: 11, width: 780 }) });

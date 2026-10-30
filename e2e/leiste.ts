@@ -24,7 +24,7 @@ export const LEISTE_CLAIM = {
   markierung: "the highlight follows the slot on screen and in the composer through every door: a stroke and a second finger on a band, a click in the bar, a click and a tap on the other pane, Enter on a row, layout 1 and 2",
   fenster: "the bar and the info column keep one size on the screen at any browser zoom (1470 pt window at 100, 80 and 67 %): the bar 200–260 pt, Info 250–300 pt, and the conversation between them keeps its width",
   info: "with the info column open, Oberfläche 16 leaves the conversation's text column as wide as Oberfläche 11 does (branch/layout, 22.10.)",
-  namen: "on a 1440 laptop the fullest row (a two-digit place, ⎇+ or „Frage“, a two-digit context) leaves the name 9.25em, as wide as „Import-Klassifizierer“ in the Mac's system font, and the bar keeps its width when the info column opens; in the phone's drawer the same row leaves the same (branch/layout, 22.10.)",
+  namen: "on a 1440 laptop the fullest row (a two-digit place, ⎇+ or „Frage“, a two-digit context) leaves the name 9.25em, as wide as „Import-Klassifizierer“ in the Mac's system font, and the bar keeps its width when the info column opens, and „Frage“ stands in the sans, not the mono, leaving the name no narrower than the row with its ⎇+; in the phone's drawer the same row leaves the same (branch/layout, 22.10.)",
 } as const;
 
 type Width = 1440 | 1024 | 820 | 390;

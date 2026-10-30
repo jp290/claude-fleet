@@ -125,6 +125,17 @@ describe("Deckung", () => {
     // heute ist keine Unit gebunden: dasselbe Linux-Siegel deckt für den Mac alles, was es lief
     expect(deckung([linux], ["core", "tmux-locale"], { plattform: "darwin" }).luecke).toEqual([]);
   });
+  test("F4: ein Push, den der Hub verweigert oder der scheitert, wird gemeldet, nicht verschluckt", async () => {
+    const fehler: string[] = [];
+    const alt = console.error;
+    console.error = (...a: unknown[]) => { fehler.push(a.join(" ")); };
+    try {
+      const tree = (await baumVon(wh, "HEAD"))!;
+      await schreibeSiegel(wh, siegel(tree, { lauf: "push-test" }), "wh");
+      expect(await pushSiegel(wh, "gibt-es-nicht", "wh")).toBe(false);
+      expect(fehler.join("\n")).toContain("pruef-siegel: push");
+    } finally { console.error = alt; }
+  });
   test("ein Urteil reist nie: ein unbekanntes Feld fällt beim Lesen weg, Unlesbares ist null", () => {
     const line = JSON.stringify({ ...siegel(T), adjudication: { verdict: "flake" }, verdict: "flake" });
     const s = siegelAusZeile(line)!;

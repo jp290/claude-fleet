@@ -2,7 +2,7 @@
 // Attrappe, die ihre Läufe zählt). Die Regel: derselbe Baum wird über WH-Land und Hub-Push genau einmal voll auditiert, die
 // zweite Fleet zeigt „geprüft am <Rechner>, <Tiefe>“, ein geänderter Baum läuft neu, ein rotes Siegel erfüllt nichts, dom bleibt die Lücke.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit, commitIn, get, LIFE_DEADLINE_MS, post, sh, type Fixture } from "./branches-testkit";
 import { baumVon, deckung, geforderteUnits, leseSiegel, plattformHier, schreibeSiegel } from "./pruef-siegel";
@@ -239,6 +239,25 @@ describe("das Siegel aus der Ergebniszeile eines Helfers", () => {
     const alle = await leseSiegel(f.repo, tree);
     expect(alle.filter((x) => x.tiefe === "audit").map((x) => x.ergebnis)).toEqual(["red"]);
     expect(deckung(alle, geforderteUnits(["dom"])).luecke).toEqual(["lanes"]);
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
+describe("F4: der Siegel-Push hält die Antwort an den Helfer nicht auf", () => {
+  test("ein Hub, der den Push 20 s festhält: die Ergebniszeile steht, die Antwort kommt nach höchstens 3 s Push-Wartezeit, das Siegel liegt lokal", async () => {
+    const { f, tree, e, land } = await helferFixture("langsamerhub");
+    const hub = sh(f.repo, "remote", "get-url", "hub");
+    writeFileSync(join(hub, "hooks", "pre-receive"), "#!/bin/sh\nsleep 20\n");
+    chmodSync(join(hub, "hooks", "pre-receive"), 0o755);
+    const dev = { deviceId: "testgeraet06", name: "testgeraet", features: ["audit-skip-units"] };
+    const t0 = Date.now();
+    const [, , , , result, , audits] = await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet06"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+      post("/api/helper/result", { jobId: "$2.jobs.0.id", exitCode: 0, tail: GRUEN }),
+      { until: reihe(f), ms: 5_000 }, get("/api/post-land-audits")], e);
+    expect(Date.now() - t0).toBeLessThan(8_000);
+    expect(result?.status).toBe(200);
+    expect((audits?.body.audits as { result: string }[])[0]?.result).toBe("green");
+    expect((await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit")).toHaveLength(1);
   }, 3 * LIFE_DEADLINE_MS);
 });
 

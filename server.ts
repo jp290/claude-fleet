@@ -33384,8 +33384,9 @@ async function auditScopeWithSeals(repo: string, sha: string, trigger: AuditTrig
   return { scope: { ...base, skipUnits: [...(base.skipUnits ?? []), ...plan.gedeckt] }, quellen: plan.quellen };
 }
 // The seal an audit row leaves: the units that RAN (the required table minus what the run was told to leave out), under the tree it measured.
-// Written BEFORE the row so that a reader who waits for the row finds the seal; pushed to the hub with a cap, so a hub that does not answer
-// cannot hold the drain. A failure here is a log line: the seal is a memory, not the verdict.
+// Written to the LOCAL note BEFORE the row (a reader who waits for the row finds it); the push to the hub comes AFTER the row (sealPushAfter), so a hub
+// that does not answer never holds a result route (the helper daemon gives up on /api/helper/result after 10 s). A failure here is a log line: the
+// seal is a memory, not the verdict.
 async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string, maschine: string): Promise<void> {
   try {
     if ((row.result !== "green" && row.result !== "red") || row.proportional || row.cmdSource === "check-command"
@@ -33394,12 +33395,17 @@ async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string
     if (!tree) return;
     const ok = await schreibeSiegel(row.repo, { v: 1, tree, units, tiefe: "audit", ergebnis: row.result, maschine, plattform: plattformHier(),
       lauf, at: row.at });
-    if (!ok) { console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} could not be written`); return; }
-    const hub = await sealHub(row.repo);
-    if (hub) await Promise.race([pushSiegel(row.repo, hub), Bun.sleep(10_000).then(() => false)]);
+    if (!ok) console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} could not be written`);
   } catch (e) {
     console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} failed: ${e instanceof Error ? e.message : e}`);
   }
+}
+// …and the push, after the row, waiting at most 3 s: the git push goes on in the background past that, and a refused or failed one is logged by pushSiegel
+async function sealPushAfter(repo: string): Promise<void> {
+  try {
+    const hub = await sealHub(repo);
+    if (hub) await Promise.race([pushSiegel(repo, hub), Bun.sleep(3_000)]);
+  } catch (e) { console.log(`pruef-siegel: push failed: ${e instanceof Error ? e.message : e}`); }
 }
 // The name a helper writes under: the device's own name, cut to what a seal's machine field takes.
 const sealMachineOf = (name: string): string => maschinenName({ FLEET_MACHINE: name });
@@ -35264,6 +35270,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   if (!(sealPlan && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0))
     await sealAuditRow(row, sealPlan ? sealPlan.luecke : geforderteUnits(outOfScope), basename(dir), maschinenName());
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  if (!(sealPlan && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0)) await sealPushAfter(row.repo);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row); // a red addresses the Program whose land it covers — see the writer
@@ -37177,6 +37184,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   // PRÜF-GEDÄCHTNIS: the units this helper job ran (the table minus the scope it was handed) are sealed BEFORE the row
   await sealAuditRow(row, geforderteUnits(claim.scope?.skipUnits ?? []), `helper-${claim.id}`, sealMachineOf(claim.name));
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  await sealPushAfter(row.repo);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row); // the remote red is the same fact — same rail, same writer
@@ -37598,6 +37606,7 @@ async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise
   await sealAuditRow(row, geforderteUnits(run.scope?.skipUnits ?? []), `shards-${jobId ?? row.remote?.jobId ?? run.shards[0]?.jobId ?? "run"}`,
     sealMachineOf(row.remote?.name ?? "helper"));
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
+  await sealPushAfter(row.repo);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
   await writeAuditInboxEntries(row);

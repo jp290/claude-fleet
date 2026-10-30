@@ -181,12 +181,15 @@ export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?:
   return found;
 }
 
-/** Schiebt den eigenen Ref zum Hub (nur Fast-Forward, nur der eigene Ref). Best effort: ohne Remote oder Hub bleibt es lokal. */
+/** Schiebt den eigenen Ref zum Hub (nur Fast-Forward, nur der eigene Ref). Best effort: ohne Remote bleibt es lokal; ein gescheiterter Push wird gemeldet. */
 export async function pushSiegel(repo: string, remote: string, schreiber: string = maschinenName()): Promise<boolean> {
   if (!remote) return false;
   const ref = `${SIEGEL_REF}/${schreiber}`;
   if ((await git(repo, ["rev-parse", "--verify", "--quiet", ref])).code !== 0) return false;
-  return (await git(repo, ["push", "--quiet", remote, `${ref}:${ref}`], 30_000)).code === 0;
+  const r = await git(repo, ["push", "--quiet", remote, `${ref}:${ref}`], 30_000);
+  // A push the hub refuses or that fails is REPORTED, never swallowed: the other fleet only learns of this seal through it
+  if (r.code !== 0) console.error(`pruef-siegel: push of ${ref} to ${remote} failed (exit ${r.code}): ${(r.err || r.out || "no answer").slice(0, 200)}`);
+  return r.code === 0;
 }
 
 let zuletztGeholt = 0;

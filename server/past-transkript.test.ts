@@ -142,4 +142,36 @@ describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkri
     expect(c2.reason).toContain("never wrote a session file");
     expect(d2.absent).toBe("unknown");
   }, 90_000);
+  // Nur der Sessions-Poll liest die Datei einer laufenden pi-Besetzung (server.ts#contextReading); öffnet sie nie jemand im
+  // Chat und verschwindet die Datei, hat Fleet sie trotzdem gesehen — „nie geschrieben" wäre dann gelogen.
+  test("pi-zai: eine Datei, die nur der Sessions-Poll las und die dann verschwand, heißt gelöscht", async () => {
+    const f = fixture();
+    const [open] = await life(f, [{ method: "POST", path: "/api/slots/1/open", body: { cwd: f.repo, harness: "pi-zai" } }], extra);
+    expect(open.status).toBe(200);
+    const staat = JSON.parse(readFileSync(join(f.state, "fleet.json"), "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; lineageHandovers?: unknown[] };
+    const t2 = staat.slots["1"]!.openedAt as number, t1 = t2 - 3_600_000;
+    const sid = crypto.randomUUID();
+    const linie = "7a2".padEnd(24, "0");
+    // die laufende Besetzung trägt die Session; ihre Datei liegt
+    staat.slots["1"]!.lineageId = linie;
+    staat.slots["1"]!.sessionId = sid;
+    staat.lineageHandovers = [...(staat.lineageHandovers ?? []), { v: 1, lineageId: linie, role: "generic", at: t2,
+      from: { slot: 1, openedAt: t1, sessionId: sid, cwd: f.repo }, to: { slot: 1, openedAt: t2 }, obligations: [],
+      intent: "poll-only probe", pointer: null, supersededBy: null }];
+    writeFileSync(join(f.state, "fleet.json"), JSON.stringify(staat, null, 2), { mode: 0o600 });
+    writeFileSync(join(f.state, "transcripts-seen.jsonl"), `${JSON.stringify({ since: t1 - 60_000 })}\n`);
+    const datei = piDatei(f.repo, sid);
+
+    // Leben 2: nur der Poll (GET /api/sessions) — kein Chat, keine Vergangenheit
+    const [poll] = await life(f, [{ method: "GET", path: "/api/sessions" }], extra);
+    expect(poll.status).toBe(200);
+    expect(readFileSync(join(f.state, "transcripts-seen.jsonl"), "utf8")).toContain(sid);
+
+    rmSync(datei, { force: true });
+    const [vorher] = await life(f, [{ method: "GET", path: "/api/slots/1/succession/1/transcript" }], extra);
+    const b = vorher!.body as { source?: string | null; absent?: string };
+    expect(b.source).toBeNull();
+    expect(b.absent).toBe("deleted");
+  }, 90_000);
 });

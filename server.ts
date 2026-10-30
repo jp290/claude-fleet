@@ -49218,6 +49218,8 @@ function contextReading(s: Slot): { ctx: ContextFill | null; apiError: ApiErrorL
   const file = known?.identity === identity ? known.file : reader.file({ cwd: s.cwd, sessionId: s.sessionId });
   if (!file) return none;
   if (known?.identity !== identity) ctxFiles.set(s.id, { identity, file });
+  // this poll is the one reader of a pi file nobody opens in the chat: what it resolved, Fleet has seen
+  transcriptJournal.noteSeen(s.sessionId);
 
   let tail: ContextTail;
   try {

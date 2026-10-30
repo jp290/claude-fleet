@@ -386,6 +386,23 @@ describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalt
     expect(String(refused?.body.reason)).toContain("could not be fetched");
   }, 5 * LIFE_DEADLINE_MS);
 
+  test("F6: trägt der Baum eine andere Unit-Tabelle als der laufende Server, öffnet auch ein grünes Mac-Siegel das Tor nicht", async () => {
+    const { wh, mac } = zweiFleets();
+    const eMac = umgebung(mac, "mac", attrappe(mac.state).cmd);
+    const [made] = await life(mac, [post("/api/branches", { repo: mac.repo, name: "neue-unit" })], eMac);
+    const path = String(made?.body.path);
+    mkdirSync(join(path, "e2e"));
+    commitIn(path, "e2e/ctx.ts", "export const SHARD_UNITS = [{ unit: 'neue-unit' }];");
+    await life(mac, [post("/api/branches/land", { repo: mac.repo, branch: "branch/neue-unit", subject: "neue-unit", unchecked: true }),
+      post("/api/repos/audit-tip", {}), { until: reihe(mac), ms: 20_000 }], eMac);
+    sh(mac.repo, "push", "-q", "hub", "main");
+    sh(wh.repo, "fetch", "-q", "hub");
+    sh(wh.repo, "merge", "-q", "--ff-only", "hub/main");
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ queued: false, state: "unseen" });
+    expect(String(tip?.body.why)).toContain("unit table (e2e/ctx.ts) differs");
+  }, 5 * LIFE_DEADLINE_MS);
+
   test("ein rotes Siegel des Macs: das Tor bleibt zu und nennt das Rot", async () => {
     const wh = await macAuditiert(true);
     const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));

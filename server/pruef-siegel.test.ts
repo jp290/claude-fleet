@@ -2,7 +2,7 @@
 // Die Sätze des Owners als git-Fakten: derselbe Baum wird nur einmal geprüft, auch wenn ein Squash-Land einen neuen Commit daraus macht;
 // ein geänderter Baum läuft neu; ein rotes Siegel erfüllt nichts; ein Urteil reist nie; die zweite Maschine liest „[Zitat entfernt]“.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { baumVon, deckung, geforderteUnits, geprueftAm, holeSiegel, leseSiegel, planFuer, pushSiegel, schreibeSiegel,
@@ -145,6 +145,39 @@ describe("Deckung", () => {
     expect(siegelAusZeile(JSON.stringify({ ...siegel(T), units: ["../etc"] }))).toBeNull();
     expect(siegelAusZeile(JSON.stringify({ ...siegel(T), ergebnis: "ok" }))).toBeNull();
   });
+  test("F6: weicht die Unit-Tabelle (e2e/ctx.ts) im Zielbaum vom laufenden Stand ab, deckt kein Siegel — der Baum könnte eine Unit schulden, die der Server nicht kennt", async () => {
+    const echt = readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"), "utf8");
+    const mitCtx = (name: string, text: string): string => {
+      const dir = join(base, name);
+      mkdirSync(join(dir, "e2e"), { recursive: true });
+      sh(dir, "init", "-q", "-b", "main");
+      writeFileSync(join(dir, "e2e", "ctx.ts"), text);
+      sh(dir, "add", "-A");
+      sh(dir, ...ID, "commit", "-qm", name);
+      return dir;
+    };
+    const planFuerBaum = async (dir: string) => {
+      const tree = (await baumVon(dir, "HEAD"))!;
+      await schreibeSiegel(dir, siegel(tree, { units: ["core"], lauf: name(dir) }), "wh");
+      return planFuer(dir, "HEAD", ["core"]);
+    };
+    const name = (d: string): string => d.slice(d.lastIndexOf("/") + 1);
+    // dieselbe Tabelle wie der laufende Server: das Siegel deckt
+    expect((await planFuerBaum(mitCtx("ctx-gleich", echt))).luecke).toEqual([]);
+    // eine andere Tabelle (etwa eine neue Unit): nichts ist gedeckt, alles läuft
+    const neu = await planFuerBaum(mitCtx("ctx-neu", echt.replace('{ unit: "pure",', '{ unit: "neue-unit", seconds: 1, modules: ["x"] },\n  { unit: "pure",')));
+    expect(neu.gedeckt).toEqual([]);
+    expect(neu.luecke).toEqual(["core"]);
+    // ein Baum ohne e2e/ctx.ts ist keiner von Fleet (ein fremdes Repo): die Tabelle sagt über ihn nichts, das Siegel deckt wie bisher
+    const fremd = join(base, "fremd");
+    mkdirSync(fremd);
+    sh(fremd, "init", "-q", "-b", "main");
+    writeFileSync(join(fremd, "a.txt"), "1\n");
+    sh(fremd, "add", "-A");
+    sh(fremd, ...ID, "commit", "-qm", "fremd");
+    expect((await planFuerBaum(fremd)).luecke).toEqual([]);
+  });
+
   test("ohne lesbaren Baum ist alles Lücke", async () => {
     const p = await planFuer(wh, "deadbeef".repeat(5), ["core"]);
     expect(p.tree).toBeNull();

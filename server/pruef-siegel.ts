@@ -13,7 +13,10 @@
 //     (e2e/ctx.ts#ShardUnit.plattformGebunden, heute keine) verlangt ein Siegel der Plattform des Fragenden (deckung).
 //   · VERTRAUEN: ein Siegel kann schreiben, wer auf den Hub pushen kann; das Deploy-Tor glaubt ihm so, wie es heute dem Helfer glaubt,
 //     und jedes Siegel nennt seinen Lauf (Maschine + Run-Ordner), damit „grün“ nachprüfbar bleibt.
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { join } from "node:path";
 import { SHARD_UNITS } from "../e2e/ctx";
 
 export const SIEGEL_REF = "refs/notes/fleet/seal";
@@ -204,6 +207,20 @@ export async function holeSiegel(repo: string, remote: string, mindestensMs = 30
 /** Nur für Tests: die Abrufsperre zurücksetzen. */
 export const vergesseAbruf = (): void => { zuletztGeholt = 0; };
 
+// DIE TABELLE, GEGEN DIE GEFRAGT WIRD: die geschuldeten Units kommen aus e2e/ctx.ts des LAUFENDEN Servers, nicht aus dem Zielbaum. Ein Baum, der eine neue
+// Unit einführt, gälte sonst als gedeckt, weil der Server sie nicht kennt (fail-open). Darum: trägt der Zielbaum ein e2e/ctx.ts, das vom Stand dieses Servers
+// abweicht (Blob-Hash), deckt kein Siegel — es läuft die volle Prüfung. Ein Baum ohne e2e/ctx.ts ist keiner von Fleet (ein fremdes Repo): über den sagt die
+// Tabelle nichts. Der Hash wird beim Laden des Moduls genommen, denn das ist die Tabelle, die dieser Prozess wirklich benutzt.
+const gitBlobHash = (bytes: Buffer): string => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+const LAUFENDE_TABELLE: string | null = (() => {
+  try { return gitBlobHash(readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"))); } catch { return null; }
+})();
+export async function tabelleStimmt(repo: string, tree: string): Promise<boolean> {
+  const r = await git(repo, ["rev-parse", "--verify", "--quiet", `${tree}:e2e/ctx.ts`]);
+  if (r.code !== 0 || !r.out) return true; // kein e2e/ctx.ts im Baum: kein Fleet-Baum
+  return LAUFENDE_TABELLE !== null && r.out === LAUFENDE_TABELLE;
+}
+
 /**
  * Der Plan eines Audits für einen Stand: was schon gedeckt ist und was noch läuft. `gefordert` sind die Units, die dieser Lauf schulden
  * würde. Ohne lesbaren Baum ist alles Lücke — nicht lesbar heißt ungeprüft.
@@ -211,5 +228,6 @@ export const vergesseAbruf = (): void => { zuletztGeholt = 0; };
 export async function planFuer(repo: string, sha: string, gefordert: readonly string[]): Promise<Deckung & { tree: string | null }> {
   const tree = await baumVon(repo, sha);
   if (!tree) return { tree: null, gedeckt: [], luecke: [...gefordert], quellen: [] };
+  if (!(await tabelleStimmt(repo, tree))) return { tree, gedeckt: [], luecke: [...gefordert], quellen: [] };
   return { tree, ...deckung(await leseSiegel(repo, tree), gefordert) };
 }

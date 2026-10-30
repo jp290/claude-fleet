@@ -281,7 +281,7 @@ import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrt
   type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { RICHTUNG_PLATZ, SETUP_ROUTE, liesKonzept, roleStein, setupRoute, steineFuerAgentWahl, type SetupServer } from "./server/setup-datei";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
-import { geforderteUnits, baumVon, deckung, geprueftAm, leseSiegel, holeSiegel, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
+import { geforderteUnits, baumVon, deckung, geprueftAm, leseSiegel, holeSiegel, tabelleStimmt, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -50752,6 +50752,9 @@ async function deployAuditWithoutCommand(repo: string, target: string, asker: Ti
   if (!fresh) return closed("this server has no audit command of its own, and the seals of the other fleet could not be fetched from the hub just now — a gate that cannot ask stays shut");
   if (!tree) return closed(`this server has no audit command and the tree of ${target.slice(0, 8)} is unreadable — no seal can stand for it`);
   const required = geforderteUnits(auditScopeOf(asker).skipUnits ?? []);
+  // the table this server asks against must be the target tree's own, or a unit it does not know could hide in a "covered" tree (pruef-siegel#tabelleStimmt)
+  if (!(await tabelleStimmt(repo, tree)))
+    return closed("this server has no audit command of its own, and the tree's unit table (e2e/ctx.ts) differs from the one this server runs — no seal can stand for units it does not know");
   const others = await leseSiegel(repo, tree, { fremdFuer: maschinenName() });
   const d = deckung(others, required);
   if (d.quellen.length && d.luecke.length === 0)

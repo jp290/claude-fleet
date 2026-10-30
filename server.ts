@@ -50708,7 +50708,8 @@ type TipAuditAsker = "deploy" | "audit-tip";
 type DeployAuditOf =
   | { state: "seen"; stamp: DeployAuditStamp }
   | { state: "not-applicable" }
-  | { state: "unseen"; repo: string; why: string; queued: boolean; redAt?: number; next: string };
+  // `sealOnly`: the gate of a server with no audit command of its own — only a seal opens it, not even the gate-only walk (deployRun)
+  | { state: "unseen"; repo: string; why: string; queued: boolean; redAt?: number; next: string; sealOnly?: true };
 // A SERVER WITHOUT AN AUDIT COMMAND OF ITS OWN (since the audit switch the workhorse is one: the other fleet audits) used to be "not applicable" and
 // let any tip out. It no longer does when a hub is in play: the deploy gate lets a tip through only if a GREEN seal of another fleet's writer
 // covers the tree of the target for everything a deploy's audit owes (everything but dom), and says whose seal it was; otherwise it stays closed
@@ -50720,7 +50721,7 @@ async function deployAuditWithoutCommand(repo: string, target: string, asker: Ti
   await holeSiegel(repo, hub);
   const tree = await baumVon(repo, target);
   const deploy = asker === "deploy";
-  const closed = (why: string, redAt?: number): DeployAuditOf => ({ state: "unseen", repo, queued: false, ...(redAt ? { redAt } : {}), why,
+  const closed = (why: string, redAt?: number): DeployAuditOf => ({ state: "unseen", repo, queued: false, sealOnly: true, ...(redAt ? { redAt } : {}), why,
     next: `have the other fleet audit this tree (its audit writes the seal that opens this gate), then ${deploy ? "POST /api/deploy again" : "ask again"}` });
   if (!tree) return closed(`this server has no audit command and the tree of ${target.slice(0, 8)} is unreadable — no seal can stand for it`);
   const required = geforderteUnits(auditScopeOf(asker).skipUnits ?? []);
@@ -50924,7 +50925,7 @@ async function deployRun(by: DeployPrincipal, force: boolean): Promise<Response>
   // refusal keeps today's answer. A red tip without a verdict is never walked past, and the owner's
   // explicit force stays what it was: it goes past an unmeasured tip, and the row says so.
   const probe = await deployAuditOf(target, false);
-  const gateOnly = !force && probe.state === "unseen" && probe.redAt === undefined
+  const gateOnly = !force && probe.state === "unseen" && probe.redAt === undefined && !probe.sealOnly
     ? await deployGateOnlyOf(probe.repo, target) : null;
   const tip = gateOnly || force || probe.state !== "unseen" ? probe : await deployAuditOf(target, true);
   // …AND A TIP THAT GOES OUT UNAUDITED STARTS ITS AUDIT NOW (Charge 3 condition 1, Orchestratorin-Ja

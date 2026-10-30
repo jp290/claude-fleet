@@ -312,6 +312,21 @@ describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalt
     expect(String(tip?.body.why)).toContain("geprüft am mac, voller Audit");
   }, 4 * LIFE_DEADLINE_MS);
 
+  test("F2: auch der Gate-only-Umweg lässt ohne Siegel nichts durch (grüne Ledger-Zeile des Vorfahrens + Land-Note der Klasse full)", async () => {
+    const { wh } = zweiFleets();
+    const base = sh(wh.repo, "rev-parse", "HEAD");
+    const head = commitIn(wh.repo, "gate-only.txt", "ein Land");
+    // genau das, was deployGateOnlyOf liest: eine Land-Note mit verify.class full auf dem Tip und eine grüne volle Audit-Zeile am Vorfahren
+    sh(wh.repo, "notes", "--ref=fleet/land", "add", "-m", JSON.stringify({ mainBefore: base, mainAfter: head,
+      verify: { ok: true, class: "full", mainSha: base } }), head);
+    writeFileSync(join(wh.state, "post-land-audits.jsonl"), `${JSON.stringify({ at: Date.now() - 1000, startedAt: Date.now() - 2000, ms: 1000,
+      repo: wh.repo, main: "main", mainSha: base, result: "green", cmd: "x", exitCode: 0, out: "", checks: { ran: 5, failed: 0 }, covers: [] })}\n`);
+    const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.reason)).toContain("tip not audited");
+    expect(String(refused?.body.reason)).toContain("no audit command of its own");
+  }, 3 * LIFE_DEADLINE_MS);
+
   test("ein rotes Siegel des Macs: das Tor bleibt zu und nennt das Rot", async () => {
     const wh = await macAuditiert(true);
     const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));

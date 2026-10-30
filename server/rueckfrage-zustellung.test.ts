@@ -164,8 +164,8 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
 
   // Owner 22.10. 08:30: der Öffner (oder die Orchestratorin) gibt eine wartende Frage BEWUSST frei oder lehnt ab. Bewusst
   // heißt (Abnahme 76c28e2a2): erst den ganzen Dialog lesen (GET, mit Befehl), dann mit dessen Kennung wählen; ein anderer
-  // Dialog — dieselbe Frage mit anderem Befehl — bekommt nichts getippt. Die Orchestratorin nur bei Sitzen mit Öffner.
-  test("die Freigabe-Tür: lesen, an den Dialog gebunden, nur Öffner oder Orchestratorin bei Sitzen mit Öffner", async () => {
+  // Dialog — dieselbe Frage mit anderem Befehl — bekommt nichts getippt. Die Orchestratorin auch bei Sitzen ohne Öffner (Owner 30.10.).
+  test("die Freigabe-Tür: lesen, an den Dialog gebunden, Öffner, und die Orchestratorin auch bei Sitzen ohne Öffner", async () => {
     const f = fixture();
     const ORCH = 9;
     const [, lead, , fremd, orch] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
@@ -195,8 +195,8 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
       tuer(L.slot, { slot: S.slot, kennung: "$1.kennung", wahl: "freigeben" }),                                // 8: alte Kennung
       lies(ORCH, S.slot),                                                                                      // 9: Orchestratorin, Sitz mit Öffner
       tuer(ORCH, { slot: S.slot, kennung: "$9.kennung", wahl: "ablehnen" }),                                   // 10: Esc
-      zeige(F.frame, BASH_FRAGE),                                                                              // 11: Sitz ohne Öffner
-      lies(ORCH, F.slot), tuer(ORCH, { slot: F.slot, kennung: "$1.kennung", wahl: "freigeben" }),              // 12–13
+      zeige(F.frame, BASH_FRAGE),                                                                              // 11: Sitz ohne Öffnerin
+      lies(ORCH, F.slot), tuer(ORCH, { slot: F.slot, kennung: "$12.kennung", wahl: "freigeben" }),             // 12–13: die Orchestratorin darf, der Sitz hat keine Öffnerin
       zeige(S.frame, FERTIG), tuer(L.slot, { slot: S.slot, kennung: "$9.kennung", wahl: "freigeben" }),        // 14–15
       pause(800),
     ]);
@@ -211,16 +211,32 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     expect(String(r[9]?.body.dialog)).toContain("rm -rf ~/claude-fleet");
     expect(r[9]?.body.kennung).not.toBe(r[1]?.body.kennung);
     expect(r[10]?.status).toBe(200);
-    expect([r[12]?.status, r[13]?.status]).toEqual([409, 409]);
+    expect([r[12]?.status, r[13]?.status]).toEqual([200, 200]);
     expect(r[15]?.status).toBe(409);
     expect(String(r[15]?.body.error)).toBe("no permission question on screen — nothing typed");
     expect(readFileSync(getippt, "utf8")).toBe("1\x1b");
-    expect(existsSync(`${F.frame}.getippt`)).toBe(false);
+    expect(readFileSync(`${F.frame}.getippt`, "utf8")).toBe("1");
     const rows = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean)
       .map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string })
       .filter((x) => x.event === "rueckfrage_antwort" && x.slot === S.slot).map((x) => x.detail);
     expect(rows).toContain(`freigeben by slot ${L.slot} (opener) kennung=${String(r[1]?.body.kennung)}: Bash command · Do you want to proceed?`);
     expect(rows).toContain(`ablehnen by slot ${ORCH} (orchestrator) kennung=${String(r[9]?.body.kennung)}: Bash command · Do you want to proceed?`);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // Owner 30.10.: gibt es keine Orchestratorin, bleibt die Tür für einen Sitz ohne Öffner zu: ihn sieht nur der Owner
+  test("ohne Orchestratorin lässt die Tür einen Sitz ohne Öffner niemandem offen, und es wird nichts getippt", async () => {
+    const f = fixture();
+    const [, lead, , frei] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" }),
+      post("/api/branches", { repo: f.repo, name: "Frei" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/frei" })]);
+    const L = opened(lead), F = opened(frei);
+    const r = await life(f, [zeige(F.frame, BASH_FRAGE),
+      { method: "GET", path: `/api/self/rueckfrage?slot=${F.slot}`, token: null, self: tokenOf(f, L.slot) },
+      { ...post("/api/self/rueckfrage", { slot: F.slot, kennung: "0123456789abcdef", wahl: "freigeben" }), token: null, self: tokenOf(f, L.slot) },
+      pause(500)]);
+    expect([r[1]?.status, r[2]?.status]).toEqual([409, 409]);
+    expect(existsSync(`${F.frame}.getippt`)).toBe(false);
   }, LIFE_DEADLINE_MS * 3);
 
   // Abnahme ca46648f5: ein Dialog, höher als die Pane (ein 40-Zeilen-Befehl in 30 Zeilen), verliert oben seinen Anfang;

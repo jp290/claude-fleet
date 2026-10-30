@@ -5572,6 +5572,30 @@ es rotiert nicht, weil eine überschriebene `.1`-Generation wieder ein Löschen 
   `id | kind | status | disposition.grund | erste 100 Zeichen` aus. `—` heißt dabei „kein Grund
   angegeben“. Fehlt die Datei, meldet das Skript UNKNOWN mit Exit 1. Das ist etwas anderes als ein leeres Archiv.
 
+## rueckfrage — `GET /api/self/rueckfrage`, `POST /api/self/rueckfrage`
+
+**Die bewusste Antwort auf Claude Codes Rechte-Frage einer Pane** (Owner 22.10.). Keine Zustellung tippt je in die Frage;
+diese Tür tippt genau eine Taste (`freigeben` = „1“, `ablehnen` = Esc), nur solange genau der Dialog auf dem Schirm steht,
+dessen `kennung` der Aufrufer aus dem GET kennt. Body: nur `slot`, `kennung`, `wahl`.
+
+**Wer meldet, wer darf.** Steht eine Pane länger als `FLEET_WARTE_HINWEIS_SEC` (Standard 180 s) an der Frage, meldet der Server
+sie einmal je Frage per Postfach (`server.ts#tickWarteHinweis`):
+
+- ein Sitz **mit** Öffnerin (`openedBy`) meldet ihr, unter ihrer Session-Adresse, wie bisher;
+- ein Sitz **ohne** Öffnerin (jeder über die Owner-Tür geöffnete) meldet seit 2026-10-30 der **Orchestratorin** seines Fleets,
+  unter ihrer Rollen-Adresse (`{kind:"role", role:"orchestrator"}`). Owner-Wort: „[Zitat entfernt]“ Sie löst sie über diese Tür oder gibt sie an den Owner weiter;
+- ein Sitz meldet sich nie selbst (die Orchestratorin ohne Öffnerin meldet niemandem), und es gibt keine automatische Antwort;
+- lebt **keine** Orchestratorin (null oder zwei Halterinnen der Rolle), geht der Hinweis eines Sitzes ohne Öffnerin an den
+  **Owner**, über den Weg, den es schon gibt: die Nachricht an die Rollen-Adresse `orchestrator` ohne Halterin eskaliert
+  (`server.ts#resolveMessageAddress`, `escalatedTo: "owner"`). Sie steht in seinem Postfach (`GET /api/messages`, Board-Reiter
+  Postfach) und als Zeile `message` in seinem Eingang (`receiverSlot: null`), einmal je Frage. Ist sein Eingang voll
+  (`FLEET_EVENT_MAX_OPEN_OWNER_INBOX`), wartet der Hinweis auf den nächsten Takt. Ein Sitz mit Öffnerin, dessen Öffnerin fort ist,
+  und eine Orchestratorin ohne Öffnerin melden niemandem; die Lane bleibt beim Lane-Hook.
+
+**Lesen und antworten dürfen** die Öffnerin des Sitzes und die Orchestratorin, diese für jeden Sitz, auch ohne Öffnerin. Jede
+andere Session und der Sitz selbst bekommen 409; getippt wird dann nichts. Lebt keine Orchestratorin, bleibt die Tür für einen
+Sitz ohne Öffnerin zu: der Owner antwortet in der Pane des Sitzes. Eine Lane meldet weiter über den Lane-Permission-Hook an ihre MAIN.
+
 ## harness-block — `POST /api/self/harness-block`
 
 **Wer erfährt, dass eine Lane an einem Dialog hängt, den nur ein Mensch beantworten kann.**

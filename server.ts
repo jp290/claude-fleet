@@ -18602,16 +18602,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   const entry = appendMessage(sender.from, to, payload, key, replyTo, personal);
   // the Orchestratorin reads along: the edge keeps the id of every message it let through (GET /api/self/kanten)
   if (viaKante) kantenBook = kanteMerkt(kantenBook, viaKante.id, entry.id);
-  if (resolved.escalatedTo === "owner") {
-    const event: MessageFleetEvent = {
-      id: randomBytes(12).toString("hex"), watchId: null,
-      receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
-      subjectSlot: s.id, kind: "message", payload: { messageId: entry.id, to },
-      createdAt: entry.at, status: "inbox", delivery: "inbox", attempts: 0,
-      deliveredAt: null, acknowledgedAt: null,
-    };
-    fleetEvents = [...fleetEvents, event];
-  }
+  if (resolved.escalatedTo === "owner") mintOwnerMessageEvent(entry, to, s.id);
   await saveStateNow();
   if (to.kind === "session" || to.kind === "lane") {
     const current = resolveMessageAddress(to);
@@ -18712,6 +18703,18 @@ async function kantenTuer(s: Slot, req: Request, id: string | null): Promise<Res
   return json({ ok: true, kante: view(done.kante), told }, 201);
 }
 
+// the owner-inbox row of a message whose address resolves to nobody (escalatedTo "owner"); the message itself stays in the
+// mailbox under its own address, where GET /api/messages shows it to him
+function mintOwnerMessageEvent(entry: Message, to: MessageAddress, subjectSlot: number): void {
+  const event: MessageFleetEvent = {
+    id: randomBytes(12).toString("hex"), watchId: null,
+    receiverSlot: null, receiverOpenedAt: null, receiverSessionId: null, receiverIdleSec: 0,
+    subjectSlot, kind: "message", payload: { messageId: entry.id, to },
+    createdAt: entry.at, status: "inbox", delivery: "inbox", attempts: 0,
+    deliveredAt: null, acknowledgedAt: null,
+  };
+  fleetEvents = [...fleetEvents, event];
+}
 function ownerMessageView(url: URL): Response {
   const unread = url.searchParams.get("unread");
   if (unread !== null && unread !== "true" && unread !== "false")
@@ -49809,8 +49812,12 @@ async function tickRateLimitResume(): Promise<void> {
 // stood 98 minutes on the question after three classifier denials, and the board showed only an aging output time.
 // RECEIVER: the session that opened this one (Slot.openedBy), found by its seat — slot and folder, so the opener's
 // succession stays the receiver, like branchPeers. A session without an opener was opened by the owner, who sees its
-// pane: it waits on him on purpose and gets no notice. A Program lane has no opener; the lane-permission hook already
-// reports its dialogs to its MAIN (openHarnessBlock).
+// pane — but since 2026-10-30 (Owner: „[Zitat entfernt]“) such a seat reports to
+// the Orchestratorin of its Fleet, if there is exactly one (deliveryRecipient), at her role address; with none the notice goes
+// to the OWNER by the mailbox's own escalation — the role address with no holder (Orchestratorin's word 2026-10-30) — never
+// by a door or switch of its own; the answer door stays shut (409), he answers in the pane. She is no receiver for herself,
+// and she answers by the same door (rueckfrageRecht); nothing types an answer by itself. A Program lane has no opener; the lane-permission hook already reports its dialogs to its MAIN
+// (openHarnessBlock).
 // CHANNEL: the mailbox, from the seat's address to the receiver's own (an Orchestratorin reads under her role, a
 // session under its session address). The branch pair already writes there, tickPostfachZustellung types it into the
 // receiver's pane, and an answer goes back to the seat. The episodes are this process's memory: after a restart a
@@ -49839,6 +49846,13 @@ function warteEmpfaenger(s: Slot): Slot | null {
   const r = by ? slotFrom(by.slot) : null;
   return r?.cwd && r.cwd === by?.cwd && r !== s ? r : null;
 }
+// who is TOLD: the opener; a seat without any opener (and no lane) the Orchestratorin — never the seat itself. A seat whose
+// opener is gone keeps today's silence: it HAS an opener, only none alive. The answer door asks warteEmpfaenger alone.
+function warteMelder(s: Slot): Slot | null {
+  if (s.openedBy || s.worktree) return warteEmpfaenger(s);
+  const o = deliveryRecipient({ kind: "orchestrator" });
+  return o && o !== s ? o : null;
+}
 // `now` is a parameter for the route test (server/warte-hinweis-route.test.ts); the ids of the notices written
 async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
   if (warteTickBusy) return [];
@@ -49859,17 +49873,24 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       // the trust question is read on the same capture (vertrauenView); it is no permission question and starts no episode
       if (CLAUDE_TRUST_DIALOG.re.test(cap.out)) vertrauenGesehen.set(s.id, { openedAt, at: Date.now() });
       else vertrauenGesehen.delete(s.id);
-      const receiver = warteEmpfaenger(s);
-      const to = receiver ? messageAddressesFor(receiver)[0] : undefined;
-      const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS, !!to);
+      const receiver = warteMelder(s);
+      // no Orchestratorin lives (none, or two holders of the role): the notice goes to the role address all the same, where
+      // the message rail escalates it to the owner (resolveMessageAddress) — his postfach and his inbox row show it. A full
+      // owner inbox holds the notice back instead of dropping it: the episode stays unreported and the next tick asks again.
+      const anOwner = !receiver && !s.openedBy && !s.worktree && deliveryRecipient({ kind: "orchestrator" }) === null;
+      const to: MessageAddress | undefined = receiver ? messageAddressesFor(receiver)[0]
+        : anOwner ? { kind: "role", role: "orchestrator" } : undefined;
+      const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS,
+        !!to && !(anOwner && ownerInboxDebts() >= FLEET_EVENT_MAX_OPEN_OWNER_INBOX));
       if (step.episode) warteEpisoden.set(s.id, step.episode);
       else warteEpisoden.delete(s.id);
       warteGesehen.set(s.id, Date.now());
       if (!step.melden || !step.episode || !to) continue;
       const from = messageAddressesFor(s)[0] ?? { kind: "session" as const, slot: s.id, openedAt };
-      const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now });
+      const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now, anOwner });
       const entry = appendMessage(from, to, { kind: "text", text }, `warte-hinweis:${s.id}:${openedAt}:${step.episode.seit}`, null);
-      audit("warte_hinweis", s.id, `${entry.id} -> ${addressLabel(to)} since=${step.episode.seit}`);
+      if (anOwner) mintOwnerMessageEvent(entry, to, s.id);
+      audit("warte_hinweis", s.id, `${entry.id} -> ${addressLabel(to)}${anOwner ? " (escalated to owner)" : ""} since=${step.episode.seit}`);
       written.push(entry.id);
     }
     if (written.length) await saveStateNow();
@@ -49882,8 +49903,9 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
 // THE DELIBERATE ANSWER (Owner 22.10. 08:30: „[Zitat entfernt]“
 // ). No delivery ever answers the question (CLAUDE_PERMISSION_QUESTION);
 // this door does, on purpose: it types exactly one key, and only while exactly the question the caller names is on screen.
-// WHO: the seat's opener — the receiver of the waiting notice — and the Orchestratorin, she only for a seat that HAS an
-// opener: a seat the owner opened waits on him on purpose (tickWarteHinweis). Any other session gets 409.
+// WHO: the seat's opener — the receiver of the waiting notice — and the Orchestratorin, for any seat (Owner 30.10.: she
+// solves what hangs in the classifier or hands it on to him; a seat without an opener reports its question to her,
+// tickWarteHinweis). Any other session gets 409; with no single Orchestratorin the door of a seat without an opener stays shut.
 // BOUND TO THE DIALOG: the caller reads it whole (GET, with the command — never through the mailbox) and answers with its
 // `kennung`; a different dialog on screen, even the same question with another command, is 409 and nothing is typed.
 const RUECKFRAGE_TASTE = { freigeben: "1", ablehnen: "Escape" } as const;
@@ -49892,8 +49914,8 @@ const RUECKFRAGE_ZU_HOCH = "the dialog is taller than the pane — its top is no
 function rueckfrageRecht(caller: Slot, s: Slot | null): { ok: true; s: Slot; by: string } | { ok: false; response: Response } {
   if (!s?.cwd || s === caller) return { ok: false, response: json({ error: "slot holds no other live session" }, 409) };
   if (warteEmpfaenger(s) === caller) return { ok: true, s, by: `slot ${caller.id} (opener)` };
-  if (s.openedBy && deliveryRecipient({ kind: "orchestrator" }) === caller) return { ok: true, s, by: `slot ${caller.id} (orchestrator)` };
-  return { ok: false, response: json({ error: "only the seat's opener, or the Orchestratorin for a seat that has an opener, reads or answers its permission question — nothing typed" }, 409) };
+  if (deliveryRecipient({ kind: "orchestrator" }) === caller) return { ok: true, s, by: `slot ${caller.id} (orchestrator)` };
+  return { ok: false, response: json({ error: "only the seat's opener, or the Orchestratorin, reads or answers its permission question — nothing typed" }, 409) };
 }
 async function leseRueckfrage(s: Slot): Promise<RueckfrageDialog | "zu-hoch" | null> {
   const cap = await tmux("capture-pane", "-p", "-J", "-t", paneTarget(sess(s.id)));

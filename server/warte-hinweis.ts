@@ -106,10 +106,13 @@ export function warteSchritt(prev: WarteEpisode | undefined, openedAt: number, f
 }
 
 const uhr = (ms: number): string => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-export function warteHinweisText(o: { slot: number; label: string | null; frage: string; seit: number; now: number }): string {
+// `anOwner`: no Orchestratorin lives, the notice reaches the owner by the mailbox's escalation, and the door is shut to everyone else
+export function warteHinweisText(o: { slot: number; label: string | null; frage: string; seit: number; now: number; anOwner?: boolean }): string {
   const min = Math.floor((o.now - o.seit) / 60_000);
-  return `[fleet · waiting notice] Slot ${o.slot}${o.label ? ` (${o.label})` : ""} has been waiting since ${uhr(o.seit)} (${min} min) `
-    + `for an answer in its pane: "${o.frage}". Fleet types nothing there; deliveries never answer the question. `
+  const kopf = `[fleet · waiting notice] Slot ${o.slot}${o.label ? ` (${o.label})` : ""} has been waiting since ${uhr(o.seit)} (${min} min) `
+    + `for an answer in its pane: "${o.frage}". Fleet types nothing there; deliveries never answer the question. `;
+  if (o.anOwner) return kopf + "No Orchestratorin is live, so this reaches you: answer it in the pane of that slot. This notice comes once per question.";
+  return kopf
     + `To approve or reject on purpose (with your self token, x-fleet-self-token): first read the dialog with its command, `
     + `GET /api/self/rueckfrage?slot=${o.slot}, then POST /api/self/rueckfrage with {"slot":${o.slot},"kennung":"<kennung from the `
     + `GET>","wahl":"freigeben"} or "wahl":"ablehnen". The door types only if exactly this dialog is still showing. `

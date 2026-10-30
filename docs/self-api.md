@@ -5584,13 +5584,16 @@ sie einmal je Frage per Postfach (`server.ts#tickWarteHinweis`):
 - ein Sitz **mit** Öffnerin (`openedBy`) meldet ihr, unter ihrer Session-Adresse, wie bisher;
 - ein Sitz **ohne** Öffnerin (jeder über die Owner-Tür geöffnete) meldet seit 2026-10-30 der **Orchestratorin** seines Fleets,
   unter ihrer Rollen-Adresse (`{kind:"role", role:"orchestrator"}`). Owner-Wort: „[Zitat entfernt]“ Sie löst sie über diese Tür oder gibt sie an den Owner weiter;
-- ein Sitz meldet sich nie selbst (die Orchestratorin ohne Öffnerin meldet niemandem), und es gibt keine automatische Antwort;
+- ein Sitz meldet nie sich selbst als Empfänger, und es gibt keine automatische Antwort;
 - lebt **keine** Orchestratorin (null oder zwei Halterinnen der Rolle), geht der Hinweis eines Sitzes ohne Öffnerin an den
   **Owner**, über den Weg, den es schon gibt: die Nachricht an die Rollen-Adresse `orchestrator` ohne Halterin eskaliert
   (`server.ts#resolveMessageAddress`, `escalatedTo: "owner"`). Sie steht in seinem Postfach (`GET /api/messages`, Board-Reiter
   Postfach) und als Zeile `message` in seinem Eingang (`receiverSlot: null`), einmal je Frage. Ist sein Eingang voll
-  (`FLEET_EVENT_MAX_OPEN_OWNER_INBOX`), wartet der Hinweis auf den nächsten Takt. Ein Sitz mit Öffnerin, dessen Öffnerin fort ist,
-  und eine Orchestratorin ohne Öffnerin melden niemandem; die Lane bleibt beim Lane-Hook.
+  (`FLEET_EVENT_MAX_OPEN_OWNER_INBOX`), wartet der Hinweis auf den nächsten Takt;
+- steht die **Orchestratorin selbst** an einer Rückfrage, geht ihr Hinweis ebenso an den Owner (sie meldet sich nicht selbst; ihr
+  Eintrag im Postfach ist als von ihr gelesen gebucht, damit er nicht in ihre eigene Pane zurückkommt);
+- ein Sitz, dessen Öffnerin **nicht mehr lebt**, gilt wie ein Sitz ohne Öffnerin (Orchestratorin, sonst Owner); eine lebende
+  Öffnerin bleibt die alleinige Empfängerin. Eine Lane bleibt beim Lane-Hook (`harness-block`).
 
 **Lesen und antworten dürfen** die Öffnerin des Sitzes und die Orchestratorin, diese für jeden Sitz, auch ohne Öffnerin. Jede
 andere Session und der Sitz selbst bekommen 409; getippt wird dann nichts. Lebt keine Orchestratorin, bleibt die Tür für einen

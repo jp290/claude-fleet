@@ -49815,8 +49815,10 @@ async function tickRateLimitResume(): Promise<void> {
 // pane — but since 2026-10-30 (Owner: „[Zitat entfernt]“) such a seat reports to
 // the Orchestratorin of its Fleet, if there is exactly one (deliveryRecipient), at her role address; with none the notice goes
 // to the OWNER by the mailbox's own escalation — the role address with no holder (Orchestratorin's word 2026-10-30) — never
-// by a door or switch of its own; the answer door stays shut (409), he answers in the pane. She is no receiver for herself,
-// and she answers by the same door (rueckfrageRecht); nothing types an answer by itself. A Program lane has no opener; the lane-permission hook already reports its dialogs to its MAIN
+// by a door or switch of its own; the answer door stays shut (409), he answers in the pane. The same holds for a seat whose
+// opener is gone, and for the Orchestratorin herself when SHE stands on a question (Leitung 2026-10-30: a session hangs and
+// nobody learns of it): she is no receiver for herself, so hers goes to the owner. A living opener stays the only receiver.
+// She answers by the same door (rueckfrageRecht); nothing types an answer by itself. A Program lane has no opener; the lane-permission hook already reports its dialogs to its MAIN
 // (openHarnessBlock).
 // CHANNEL: the mailbox, from the seat's address to the receiver's own (an Orchestratorin reads under her role, a
 // session under its session address). The branch pair already writes there, tickPostfachZustellung types it into the
@@ -49846,10 +49848,12 @@ function warteEmpfaenger(s: Slot): Slot | null {
   const r = by ? slotFrom(by.slot) : null;
   return r?.cwd && r.cwd === by?.cwd && r !== s ? r : null;
 }
-// who is TOLD: the opener; a seat without any opener (and no lane) the Orchestratorin — never the seat itself. A seat whose
-// opener is gone keeps today's silence: it HAS an opener, only none alive. The answer door asks warteEmpfaenger alone.
+// who is TOLD: a living opener alone, as ever; a seat with none alive (never opened by a session, or its opener is gone) the
+// Orchestratorin — never the seat itself. A lane has no opener and reports through its hook. null: nobody can be told by session,
+// and tickWarteHinweis sends the notice to the owner (anOwner). The answer door asks warteEmpfaenger and the Orchestratorin.
 function warteMelder(s: Slot): Slot | null {
-  if (s.openedBy || s.worktree) return warteEmpfaenger(s);
+  const opener = warteEmpfaenger(s);
+  if (opener || s.worktree) return opener;
   const o = deliveryRecipient({ kind: "orchestrator" });
   return o && o !== s ? o : null;
 }
@@ -49874,10 +49878,10 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       if (CLAUDE_TRUST_DIALOG.re.test(cap.out)) vertrauenGesehen.set(s.id, { openedAt, at: Date.now() });
       else vertrauenGesehen.delete(s.id);
       const receiver = warteMelder(s);
-      // no Orchestratorin lives (none, or two holders of the role): the notice goes to the role address all the same, where
-      // the message rail escalates it to the owner (resolveMessageAddress) — his postfach and his inbox row show it. A full
-      // owner inbox holds the notice back instead of dropping it: the episode stays unreported and the next tick asks again.
-      const anOwner = !receiver && !s.openedBy && !s.worktree && deliveryRecipient({ kind: "orchestrator" }) === null;
+      // nobody to tell by session (no unique Orchestratorin, or the seat IS her): the notice goes to the role address all the
+      // same, where the message rail escalates it to the owner (resolveMessageAddress) — his postfach and his inbox row show
+      // it. A full owner inbox holds the notice back instead of dropping it: the episode stays unreported and the next tick asks again.
+      const anOwner = !receiver && !s.worktree;
       const to: MessageAddress | undefined = receiver ? messageAddressesFor(receiver)[0]
         : anOwner ? { kind: "role", role: "orchestrator" } : undefined;
       const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS,
@@ -49889,7 +49893,12 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       const from = messageAddressesFor(s)[0] ?? { kind: "session" as const, slot: s.id, openedAt };
       const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now, anOwner });
       const entry = appendMessage(from, to, { kind: "text", text }, `warte-hinweis:${s.id}:${openedAt}:${step.episode.seit}`, null);
-      if (anOwner) mintOwnerMessageEvent(entry, to, s.id);
+      if (anOwner) {
+        mintOwnerMessageEvent(entry, to, s.id);
+        // the Orchestratorin stuck herself holds the role: the rail would hand her own notice back to her pane, so it is
+        // booked read by her — the owner finds it in his postfach and his inbox all the same
+        if (deliveryRecipient({ kind: "orchestrator" }) === s) { entry.readBy = { slot: s.id, openedAt, sessionId: s.sessionId }; entry.readAt = Date.now(); }
+      }
       audit("warte_hinweis", s.id, `${entry.id} -> ${addressLabel(to)}${anOwner ? " (escalated to owner)" : ""} since=${step.episode.seit}`);
       written.push(entry.id);
     }

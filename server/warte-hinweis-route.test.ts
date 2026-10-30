@@ -88,9 +88,9 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
   }, LIFE_DEADLINE_MS * 3);
 
   // Owner 30.10.: „[Zitat entfernt]“ Ein Sitz ohne Öffnerin meldet
-  // seine Frage der Orchestratorin unter ihrer Rolle; ein Sitz mit Öffnerin meldet weiter nur ihr; die Orchestratorin
-  // selbst meldet sich nicht; ohne Orchestratorin geht der Hinweis an niemanden (der Test davor).
-  test("ein Sitz ohne Öffner meldet der Orchestratorin, ein Sitz mit Öffner weiter nur seinem Öffner, sie sich selbst nicht", async () => {
+  // seine Frage der Orchestratorin unter ihrer Rolle; ein Sitz mit lebender Öffnerin meldet weiter nur ihr; steht die
+  // Orchestratorin SELBST an einer Frage, geht ihr Hinweis an den Owner (Leitung 30.10.: sonst erfährt es niemand).
+  test("ein Sitz ohne Öffner meldet der Orchestratorin, ein Sitz mit Öffner weiter nur seinem Öffner, und steht sie selbst, erfährt es der Owner", async () => {
     const f = fixture();
     const ORCH = 9;
     const [, lead, orch] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
@@ -108,20 +108,51 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
       zeige(S.frame, BASH_FRAGE, 0), zeige(F.frame, BASH_FRAGE, 0), zeige(O.frame, BASH_FRAGE),
       { warte: 0 }, { warte: W - 1000 }, { warte: W }, { warte: 2 * W },     // 3–6
     ]);
-    expect([3, 4, 5, 6].map((i) => geschrieben(r[i]).length)).toEqual([0, 0, 2, 0]);
+    expect([3, 4, 5, 6].map((i) => geschrieben(r[i]).length)).toEqual([0, 0, 3, 0]);
 
     const all = hinweise(f);
-    expect(all.length).toBe(2);
+    expect(all.length).toBe(3);
     const vonFrei = all.find((m) => m.payload.text.includes(`Slot ${F.slot} (Frei) `));
     const vonSitz = all.find((m) => m.payload.text.includes(`Slot ${S.slot} (Sitz) `));
     expect(vonFrei?.from).toMatchObject({ kind: "session", slot: F.slot });
     expect(vonFrei?.to).toEqual({ kind: "role", role: "orchestrator" });
     expect(vonFrei?.payload.text).toContain(`GET /api/self/rueckfrage?slot=${F.slot}`);
     expect(vonSitz?.to).toEqual({ kind: "session", slot: L.slot, openedAt: L.openedAt });
-    expect(all.some((m) => m.payload.text.includes(`Slot ${O.slot} `))).toBe(false);
-    // mit Orchestratorin geht nichts an den Owner: keine Zeile in seinem Eingang
-    expect(ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null)).toEqual([]);
+    // ihre eigene Frage: ein Hinweis, von ihr, an ihre Rolle — als gelesen gebucht (er käme sonst in ihre eigene Pane zurück) —
+    // und GENAU diese Zeile im Eingang des Owners; die Hinweise der beiden Sitze erreichen ihn nicht
+    const vonOrch = all.find((m) => m.payload.text.includes(`Slot ${ORCH} `));
+    expect(vonOrch?.from).toMatchObject({ kind: "role", role: "orchestrator" });
+    expect(vonOrch?.to).toEqual({ kind: "role", role: "orchestrator" });
+    const zeilen = ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null);
+    expect(zeilen.map((e) => e.subjectSlot)).toEqual([ORCH]);
+    const gelesen = ((persisted(f).messages as { entries?: Array<{ id: string; readBy: unknown }> } | undefined)?.entries ?? [])
+      .find((m) => m.id === zeilen[0]?.payload.messageId);
+    expect(gelesen?.readBy).toMatchObject({ slot: ORCH });
   }, LIFE_DEADLINE_MS * 3);
+
+  // Leitung 30.10.: ein Sitz, dessen Öffnerin nicht mehr lebt, ist wie einer ohne Öffnerin — Orchestratorin, sonst Owner
+  test("ist die Öffnerin des Sitzes fort, erfährt es die Orchestratorin; gibt es sie nicht, der Owner", async () => {
+    for (const mitOrchestratorin of [true, false]) {
+      const f = fixture();
+      const [, lead, orch] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+        post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" }),
+        ...(mitOrchestratorin ? [post("/api/slots/9/open", { cwd: f.repo, label: "🎛 Orchestratorin" })] : [])]);
+      const L = opened(lead);
+      const [, seat] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sitz" }),
+        { ...post("/api/branches/open", { repo: f.repo, branch: "branch/sitz" }), self: tokenOf(f, L.slot) }]);
+      const S = opened(seat);
+      // die Pane der Orchestratorin steht im Ordner des Repos: ein Schirm aus einem früheren Test bleibt in der Datei liegen
+      const r = await life(f, [post(`/api/slots/${L.slot}/kill`, {}), zeige(S.frame, BASH_FRAGE), zeige(join(FRAMES, basename(f.repo)), LEERLAUF),
+        { warte: 0 }, { warte: W - 1000 }, { warte: W }, { warte: 2 * W }]);       // 3–6
+      expect(r[0]?.status).toBe(200);
+      expect([3, 4, 5, 6].map((i) => geschrieben(r[i]).length)).toEqual([0, 0, 1, 0]);
+      const all = hinweise(f);
+      expect(all.map((m) => [m.from.slot, m.to])).toEqual([[S.slot, { kind: "role", role: "orchestrator" }]]);
+      const zeilen = ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null);
+      expect(zeilen.length).toBe(mitOrchestratorin ? 0 : 1);
+      if (mitOrchestratorin) expect(orch?.status).toBe(200);
+    }
+  }, LIFE_DEADLINE_MS * 6);
 
   // UI-Abnahme 22.10., Runde 2: das Board zeigt die Frage, BEVOR der Owner tippt — /api/sessions trägt sie je Session,
   // auch bei einer Session ohne Öffner (sie wartet auf den Owner), und nicht mehr, sobald sie weg ist

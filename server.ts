@@ -33422,7 +33422,12 @@ async function settleFromSeals(repo: string, q: { main: string; covers: AuditCov
     settleAuditEntry(repo);
     markAuditClaimable(repo);
     savePostLandAuditQueue();
-  } finally { auditRunningRepo = null; }
+  } finally {
+    auditRunningRepo = null;
+    // the in-flight view runPostLandAudit set for THIS settlement: only the drain used to clear it, and a settlement is not the drain —
+    // left standing it made deployBlocker say "a post-land audit is running" until the next drain, which an empty queue never starts
+    if (runningPostLandAudit?.repo === repo) runningPostLandAudit = null;
+  }
   return true;
 }
 // THE NIGHTLY TICK — the one timer the cadence owns (armAuditCadenceKick) calls it, and so does boot.

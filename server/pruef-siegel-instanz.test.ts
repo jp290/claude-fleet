@@ -144,13 +144,13 @@ describe("die Tür des Helfers rechnet bei voller Deckung ab", () => {
     const a = attrappe(f.state);
     // die Uhr gibt sofort frei (quiet: ohne dom), der lokale Drain wartet auf einen Helfer
     const e = { ...umgebung(f, "wh", a.cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "" };
-    const [landed, device, jobs, claim, , audits, after] = await life(f, [
+    const [landed, device, jobs, claim, , audits, after, deploys] = await life(f, [
       post("/api/branches/land", { repo: f.repo, branch: "branch/helfer", subject: "helfer", unchecked: true }),
       post("/api/helper/device", { deviceId: "testgeraet01", name: "testgeraet", features: ["audit-skip-units"] }),
       get("/api/helper/jobs?deviceId=testgeraet01"),
       post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: "testgeraet01" }),
       { until: reihe(f), ms: 5_000 },
-      get("/api/post-land-audits"), get("/api/helper/jobs?deviceId=testgeraet01")], e);
+      get("/api/post-land-audits"), get("/api/helper/jobs?deviceId=testgeraet01"), get("/api/deploys")], e);
     expect([landed?.status, device?.status]).toEqual([200, 200]);
     expect((jobs?.body.jobs as unknown[]).length).toBe(1);
     expect(claim?.status).toBe(409);
@@ -161,6 +161,8 @@ describe("die Tür des Helfers rechnet bei voller Deckung ab", () => {
     expect(row?.quellen).toMatchObject([{ maschine: "mac", lauf: "1029-check" }]);
     expect(a.laeufe()).toHaveLength(0);
     expect((after?.body.jobs as unknown[]).length).toBe(0);
+    // F1: nach der Abrechnung läuft nichts mehr, und das Deploy-Tor sagt es auch (kein "a post-land audit is running")
+    expect(deploys?.body.blocked).toBeNull();
   }, 3 * LIFE_DEADLINE_MS);
 });
 

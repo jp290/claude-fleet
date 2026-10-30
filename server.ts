@@ -1369,6 +1369,14 @@ const PI_ZAI_FENCE_FAILED = "pi-zai: pi was NOT started - its read fence (sandbo
 // above the rules are the transcript echo and the spinner, never inside the composer region.
 const PI_COMPOSER = { kind: "rules" } as const;
 
+// pi 1.0.2 starts in `fullscreen` (the alternate screen), where tmux keeps no history: the board's
+// terminal shows one screenful and "Search the scrollback" finds nothing older (measured 2026-10-30:
+// alt=1 hist=0). `regular` draws into the normal screen, so tmux's history, the capture seed and
+// xterm's scrollback all fill. Measured the same day on the same pi: the composer, the readiness
+// gauge and the footer sit between the same rules in both modes. Appended LAST so the leading
+// `pi --session-id` / `pi --provider zai --model` words every reader greps for stay where they were.
+const PI_TUI_REGULAR = " --tui-mode regular";
+
 const PI_HARNESS: Harness = {
   id: "pi",
   // EVIDENCED 2026-09-19 against the shipped reference of the very package these adapters spawn
@@ -1398,6 +1406,7 @@ const PI_HARNESS: Harness = {
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     // Fleet's start block (purpose, chosen packs) as a file pi reads: `--append-system-prompt <path>` expands an existing file.
     if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+    cmd += PI_TUI_REGULAR;
     // Bare, by owner decision 2026-08-12: full local access is the normal operating mode, so pi
     // runs with the owner's own reach — edits, git, Fleet/tmux and network. The trailing
     // `exec ${SHELL}` hands a dead agent's pane back to the owner; what must not happen is an
@@ -1571,6 +1580,7 @@ const PI_ZAI_HARNESS: Harness = {
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     // Fleet's start block (purpose, chosen packs) as a file pi reads inside its fence (server.ts#piStartDatei).
     if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+    cmd += PI_TUI_REGULAR;
     const guard = piZaiSpawnGuard("pi-zai");
     // The fence wraps pi ALONE: `$(cat key)` runs in this outer shell, so the key reaches pi's env
     // while the key FILE stays denied to pi and every child (trap (a) of the measurement). The
@@ -1679,6 +1689,7 @@ const PI_ZAI_UNFENCED_HARNESS: Harness = {
     if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+    cmd += PI_TUI_REGULAR;
     // No fence, no sandbox-exec, no bwrap: this is the whole point of the seat. The guard and the
     // key expansion are the same two words pi-zai uses, so the credential handling cannot drift.
     return `${piZaiSpawnGuard("pi-zai-unfenced")}PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' `
@@ -1754,6 +1765,7 @@ const PI_DEEPSEEK_HARNESS: Harness = {
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     // Fleet's start block (purpose, chosen packs) as a file pi reads inside its fence (server.ts#piStartDatei).
     if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+    cmd += PI_TUI_REGULAR;
     const guard = piDeepseekSpawnGuard();
     // The fence exists only as bwrap on Linux. The machine rule (model-register.ts#harnessOffReason)
     // already keeps this seat off every other platform; when no fence can be built this line says so
@@ -1825,6 +1837,7 @@ const PI_UNFENCED_HARNESS: Harness = {
     if (o.model) cmd += ` --model '${o.model}'`;
     if (o.effort) cmd += ` --thinking ${o.effort}`;
     if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+    cmd += PI_TUI_REGULAR;
     return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
   },
   // Explicit despite the spread: the source-level worker/transcript invariant intentionally reads
@@ -57805,7 +57818,7 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
+export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals };

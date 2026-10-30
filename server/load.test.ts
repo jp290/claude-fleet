@@ -126,6 +126,30 @@ describe("paneApiError, im Prozess importiert", () => {
   });
 });
 
+// Der Owner scrollt im Board-Terminal eines pi-Sitzes bis zur ersten Ausgabe. Das geht nur, wenn pi
+// auf dem normalen Bildschirm laeuft (tmux hat dort Verlauf); pi 1.0.2 startet sonst im Vollbild
+// (alternate screen, gemessen 30.10.: alt=1 hist=0). Jede pi-Startzeile traegt darum den Modus,
+// die Claude-Zeile nicht.
+describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
+  const base = {
+    sessionId: "sess-r1", resume: false, model: null, effort: null, container: "", containerContext: "",
+    cwd: "/tmp/fleet-pi-regular", browserMcp: false, context: null, permissions: null,
+    fleetCheckout: false, remoteName: null, fenceBwrap: "/usr/bin/bwrap" as string | null,
+  };
+  test("pi, pi-unfenced, pi-zai, pi-zai-unfenced und pi-deepseek starten mit --tui-mode regular, claude nicht", async () => {
+    const m = await load();
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-regular-"));
+    try {
+      for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS, m.PI_ZAI_HARNESS, m.PI_ZAI_UNFENCED_HARNESS, m.PI_DEEPSEEK_HARNESS]) {
+        const line = h.spawnCmd({ ...base, cwd });
+        expect(line).toMatch(/(^|[\s;])pi .*--tui-mode regular(\s|;|$)/);
+        expect(line.match(/--tui-mode/g)?.length).toBe(1);
+      }
+      expect(m.CLAUDE_HARNESS.spawnCmd({ ...base, cwd })).not.toContain("--tui-mode");
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+});
+
 // Owner 2026-10-26: die offene GLM-Sitz ist pi-zai ohne Lesezaun, aber mit derselben
 // Schlüssel- und Katalogvorbereitung. Der Test hält die zwei Zusagen der Startzeile fest:
 // der Schlüssel kommt über die Umgebung (nie über argv), und kein sandbox-exec/bwrap steht davor.

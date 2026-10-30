@@ -129,6 +129,66 @@ describe("der Audit fährt nur die Lücke", () => {
   }, 3 * LIFE_DEADLINE_MS);
 });
 
+describe("die Tür des Helfers rechnet bei voller Deckung ab", () => {
+  // Eine Helfer-Bereitstellung wie die echte: das Land reiht ein, der lokale Drain wartet auf einen Helfer (FLEET_AUDIT_HELPER_GRACE_MS).
+  // Der Helfer meldet sich an der Tür und will den Audit abholen; deckt ein Siegel den Baum für alles, was der Audit schuldet, gibt es nichts zu holen.
+  test("volle Deckung: der Claim endet mit 409 „settled from the seals“, die Zeile steht grün mit ihrer Quelle, kein Lauf", async () => {
+    const f = fixture();
+    sh(f.repo, "remote", "add", "hub", neuerHub());
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "helfer" })], {});
+    commitIn(String(made?.body.path), "helfer.txt", "helfer");
+    const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
+    // ein Check hat alles außer dom gefahren; der Audit nach einem Deploy/audit-tip schuldet nur dies (auditScopeOf)
+    await schreibeSiegel(f.repo, { v: 1, tree, units: geforderteUnits(["dom"]), tiefe: "check", ergebnis: "green", maschine: "mac",
+      plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+    const a = attrappe(f.state);
+    // die Uhr gibt sofort frei (quiet: ohne dom), der lokale Drain wartet auf einen Helfer
+    const e = { ...umgebung(f, "wh", a.cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "" };
+    const [landed, device, jobs, claim, , audits, after] = await life(f, [
+      post("/api/branches/land", { repo: f.repo, branch: "branch/helfer", subject: "helfer", unchecked: true }),
+      post("/api/helper/device", { deviceId: "testgeraet01", name: "testgeraet", features: ["audit-skip-units"] }),
+      get("/api/helper/jobs?deviceId=testgeraet01"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: "testgeraet01" }),
+      { until: reihe(f), ms: 5_000 },
+      get("/api/post-land-audits"), get("/api/helper/jobs?deviceId=testgeraet01")], e);
+    expect([landed?.status, device?.status]).toEqual([200, 200]);
+    expect((jobs?.body.jobs as unknown[]).length).toBe(1);
+    expect(claim?.status).toBe(409);
+    expect(String(claim?.body.error)).toContain("settled from the seals");
+    // die Zeile steht grün, ohne Lauf, mit ihrer Quelle; der Eintrag ist verbraucht, der Helfer findet nichts mehr
+    const row = (audits?.body.audits as { result: string; quellen?: { maschine: string; lauf: string }[]; skipUnits?: string[] }[])[0];
+    expect(row?.result).toBe("green");
+    expect(row?.quellen).toMatchObject([{ maschine: "mac", lauf: "1029-check" }]);
+    expect(a.laeufe()).toHaveLength(0);
+    expect((after?.body.jobs as unknown[]).length).toBe(0);
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
+describe("die Tür des Helfers gibt bei teilweiser Deckung nur die Lücke zu fahren", () => {
+  test("der Claim trägt skipUnits: dom (Auslöser) plus alles, was ein Siegel dieses Baums deckt; die Lücke bleibt draußen", async () => {
+    const f = fixture();
+    sh(f.repo, "remote", "add", "hub", neuerHub());
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "teilweise" })], {});
+    commitIn(String(made?.body.path), "teilweise.txt", "teilweise");
+    const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
+    await schreibeSiegel(f.repo, { v: 1, tree, units: geforderteUnits(["dom"]).filter((u) => u !== "lanes"), tiefe: "check", ergebnis: "green",
+      maschine: "mac", plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+    const e = { ...umgebung(f, "wh", attrappe(f.state).cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "" };
+    const [, , jobs, claim] = await life(f, [
+      post("/api/branches/land", { repo: f.repo, branch: "branch/teilweise", subject: "teilweise", unchecked: true }),
+      post("/api/helper/device", { deviceId: "testgeraet02", name: "testgeraet", features: ["audit-skip-units"] }),
+      get("/api/helper/jobs?deviceId=testgeraet02"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: "testgeraet02" })], e);
+    expect((jobs?.body.jobs as unknown[]).length).toBe(1);
+    expect(claim?.status).toBe(200);
+    const skip = (claim?.body.job as { skipUnits: string[] }).skipUnits;
+    expect(skip).toContain("dom");
+    expect(skip).toContain("core");
+    expect(skip).not.toContain("lanes");
+    expect([...skip].sort()).toEqual([...geforderteUnits(["lanes"])].sort());
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
 describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalter)", () => {
   // der WH hat keinen FLEET_POSTLAND_AUDIT_CMD, aber einen Hub; der Mac auditiert und siegelt
   const ohneBefehl = (f: Fixture, name: string): Record<string, string> => ({ FLEET_HUB_REMOTE: "hub", FLEET_REPO_DIR: f.repo, FLEET_MACHINE: name });

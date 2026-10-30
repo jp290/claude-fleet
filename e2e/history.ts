@@ -665,6 +665,9 @@ async function runPastReasons(): Promise<void> {
   // the journal began before the planted occupations (never-written is said only of an occupation
   // that started after it; an older one is "unknown" — transkript-gesehen.ts)
   writeFileSync(`${ROOT}/transcripts-seen.jsonl`, `${JSON.stringify({ since: openedAt - 4 * hour })}\n`);
+  // the reason follows the PREDECESSOR's harness, which the start history keeps per occupation
+  appendFileSync(`${ROOT}/start-historie.jsonl`, [3, 2, 1].map((h) =>
+    `${JSON.stringify({ art: "start", slot, openedAt: openedAt - h * hour, at: openedAt - h * hour, cwd, harness: "pi-zai" })}\n`).join(""));
   await restartSrv();
   type Past = { assigned?: boolean; source?: string | null; absent?: string; reason?: string; entries?: unknown[] };
   const pastOf = async (n: number): Promise<Past> =>

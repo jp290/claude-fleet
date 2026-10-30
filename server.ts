@@ -29237,9 +29237,15 @@ async function pastTranscript(s: Slot, n: number, after: number) {
   const was: Slot = { ...s, cwd: past.who.cwd, sessionId: past.who.sessionId };
   const payload = await transcriptPayload(was, after, false, history);
   // source null on an ASSIGNED session names why, instead of letting the client's blanket line
-  // claim a deletion (transkript-gesehen.ts)
+  // claim a deletion (transkript-gesehen.ts). The reason is about the PREDECESSOR's harness, which a
+  // succession may have changed and the lineage does not keep: the start history holds it per
+  // occupation (slot + openedAt); an occupation it does not name stays unknown.
+  if (payload.source !== null) return { ...base, assigned: true as const, ctx: past.ctx, ...payload };
+  const start = past.occupant
+    ? (await liesHistorie(STATE_DIR, Number.MAX_SAFE_INTEGER)).find((e) => e.slot === past.occupant!.slot && e.openedAt === past.occupant!.openedAt)
+    : undefined;
   return { ...base, assigned: true as const, ctx: past.ctx, ...payload,
-    ...(payload.source === null && transcriptJournal.pastMissingOf(past.who.sessionId, was.harness, past.startedAt)) };
+    ...transcriptJournal.pastMissingOf(past.who.sessionId, start?.harness ?? null, past.startedAt) };
 }
 
 // A FRESH STANDING HANDOVER ENDS THE NUDGE (owner 2026-10-06: every nudge is a turn that re-reads the

@@ -38,6 +38,10 @@ const piDatei = (repo: string, sid: string): string => {
   return datei;
 };
 
+// die Start-Historie hält je Besetzung den Harness, mit dem sie startete (server/start-historie.ts)
+const startZeile = (slot: number, openedAt: number, cwd: string, harness: string): string =>
+  `${JSON.stringify({ art: "start", slot, openedAt, at: openedAt, cwd, harness })}\n`;
+
 describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkriptdatei", () => {
   test("pi-zai: vorhandene Datei zeigt das Transkript, gelöschte heißt gelöscht, nie geschriebene nie geschrieben", async () => {
     const f = fixture();
@@ -65,6 +69,9 @@ describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkri
 
     // Das Journal begann zwischen D und A: D ist älter als es (seine Datei konnte es nie sehen), A bis C jünger.
     writeFileSync(join(f.state, "transcripts-seen.jsonl"), `${JSON.stringify({ since: t0 + stunde / 2 })}\n`);
+
+    writeFileSync(join(f.state, "start-historie.jsonl"),
+      [t0, t1, t2, t3].map((t) => startZeile(1, t, f.repo, "pi-zai")).join(""));
 
     // Dateien: A und B liegen, C nie — C ist der Fall der ersten Besetzung vom 27.10.; D hat auch keine,
     // aber D lebte vor dem Journal: ob ihre Datei je da war, weiß niemand.
@@ -161,6 +168,7 @@ describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkri
       intent: "poll-only probe", pointer: null, supersededBy: null }];
     writeFileSync(join(f.state, "fleet.json"), JSON.stringify(staat, null, 2), { mode: 0o600 });
     writeFileSync(join(f.state, "transcripts-seen.jsonl"), `${JSON.stringify({ since: t1 - 60_000 })}\n`);
+    writeFileSync(join(f.state, "start-historie.jsonl"), startZeile(1, t1, f.repo, "pi-zai"));
     const datei = piDatei(f.repo, sid);
 
     // Leben 2: nur der Poll (GET /api/sessions) — kein Chat, keine Vergangenheit
@@ -173,5 +181,34 @@ describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkri
     const b = vorher!.body as { source?: string | null; absent?: string };
     expect(b.source).toBeNull();
     expect(b.absent).toBe("deleted");
+  }, 90_000);
+  // Die Nachfolge darf den Harness wechseln (die Linie speichert keinen); der Satz über die Vorgängerin richtet sich nach IHREM
+  // Harness aus der Start-Historie, nicht nach dem der laufenden Besetzung.
+  test("pi-zai: eine Claude-Vorgängerin heißt nicht „pi schreibt erst mit der ersten Nachricht“, eine ohne Start-Zeile auch nicht", async () => {
+    const f = fixture();
+    const [open] = await life(f, [{ method: "POST", path: "/api/slots/1/open", body: { cwd: f.repo, harness: "pi-zai" } }], extra);
+    expect(open.status).toBe(200);
+    const staat = JSON.parse(readFileSync(join(f.state, "fleet.json"), "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; lineageHandovers?: unknown[] };
+    const t4 = staat.slots["1"]!.openedAt as number, stunde = 3_600_000;
+    const [t1, t2, t3] = [t4 - 3 * stunde, t4 - 2 * stunde, t4 - stunde];
+    const sidClaude = crypto.randomUUID(), sidOhne = crypto.randomUUID(), sidPi = crypto.randomUUID();
+    const linie = "7a3".padEnd(24, "0");
+    staat.slots["1"]!.lineageId = linie;
+    const satz = (von: number, sessionId: string, zu: number) => ({ v: 1, lineageId: linie, role: "generic", at: zu,
+      from: { slot: 1, openedAt: von, sessionId, cwd: f.repo }, to: { slot: 1, openedAt: zu }, obligations: [],
+      intent: "harness probe", pointer: null, supersededBy: null });
+    staat.lineageHandovers = [...(staat.lineageHandovers ?? []), satz(t1, sidClaude, t2), satz(t2, sidOhne, t3), satz(t3, sidPi, t4)];
+    writeFileSync(join(f.state, "fleet.json"), JSON.stringify(staat, null, 2), { mode: 0o600 });
+    writeFileSync(join(f.state, "transcripts-seen.jsonl"), `${JSON.stringify({ since: t1 - 60_000 })}\n`);
+    // t1 startete als claude, t2 hat keine Zeile, t3 als pi-zai — keine hat eine Datei
+    writeFileSync(join(f.state, "start-historie.jsonl"), startZeile(1, t1, f.repo, "claude") + startZeile(1, t3, f.repo, "pi-zai"));
+    const antworten = await life(f, [1, 2, 3].map((n) => ({ method: "GET", path: `/api/slots/1/succession/${n}/transcript` })), extra);
+    const [claude, ohne, pi] = antworten.map((a) => a.body as { source?: string | null; absent?: string; reason?: string });
+    expect(claude!.source).toBeNull();
+    expect(claude!.absent).toBe("unknown");
+    expect(claude!.reason ?? "").not.toContain("pi writes");
+    expect(ohne!.absent).toBe("unknown");
+    expect(pi!.absent).toBe("never-written");
   }, 90_000);
 });

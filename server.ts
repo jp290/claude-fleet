@@ -50034,6 +50034,9 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       // same, where the message rail escalates it to the owner (resolveMessageAddress) — his postfach and his inbox row show
       // it. A full owner inbox holds the notice back instead of dropping it: the episode stays unreported and the next tick asks again.
       const anOwner = !receiver && !s.worktree;
+      // why nobody is told by session, for the sentence the owner reads: no holder of the role, several, or this seat is the one
+      const wer = orchestratorLabelHolders().length;
+      const grund = wer === 0 ? "keine" as const : wer > 1 ? "mehrere" as const : "selbst" as const;
       const to: MessageAddress | undefined = receiver ? messageAddressesFor(receiver)[0]
         : anOwner ? { kind: "role", role: "orchestrator" } : undefined;
       const step = warteSchritt(warteEpisoden.get(s.id), openedAt, rueckfrageAufSchirm(cap.out), now, WARTE_HINWEIS_MS,
@@ -50043,22 +50046,56 @@ async function tickWarteHinweis(now = Date.now()): Promise<string[]> {
       warteGesehen.set(s.id, Date.now());
       if (!step.melden || !step.episode || !to) continue;
       const from = messageAddressesFor(s)[0] ?? { kind: "session" as const, slot: s.id, openedAt };
-      const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now, anOwner });
-      const entry = appendMessage(from, to, { kind: "text", text }, `warte-hinweis:${s.id}:${openedAt}:${step.episode.seit}`, null);
+      // NO suppression across a restart (Prüfung 30.10.): the question is only „<head> · <question>“ without the command, so every
+      // Bash question of a seat reads the same, and an earlier notice would silence every later hang of that seat. A restart
+      // may repeat a notice for a question still standing — limited and harmless; a silenced hang is the opposite of the owner's word.
+      const key = `warte-hinweis:${s.id}:${openedAt}:${step.episode.seit}`;
+      const text = warteHinweisText({ slot: s.id, label: s.label, frage: step.episode.frage, seit: step.episode.seit, now,
+        anOwner: anOwner ? grund : undefined });
+      const entry = appendMessage(from, to, { kind: "text", text }, key, null);
       if (anOwner) {
         mintOwnerMessageEvent(entry, to, s.id);
         // the Orchestratorin stuck herself holds the role: the rail would hand her own notice back to her pane, so it is
         // booked read by her — the owner finds it in his postfach and his inbox all the same
-        if (deliveryRecipient({ kind: "orchestrator" }) === s) { entry.readBy = { slot: s.id, openedAt, sessionId: s.sessionId }; entry.readAt = Date.now(); }
+        if (grund === "selbst") stampMessageRead(entry, s);
       }
       audit("warte_hinweis", s.id, `${entry.id} -> ${addressLabel(to)}${anOwner ? " (escalated to owner)" : ""} since=${step.episode.seit}`);
       written.push(entry.id);
     }
-    if (written.length) await saveStateNow();
+    if (schliesseWarteZeilen() || written.length) await saveStateNow();
   } finally {
     warteTickBusy = false;
   }
   return written;
+}
+// THE OWNER'S ROW GOES WHEN THE QUESTION DOES. The notices that reach the owner (anOwner) are rows of his operations inbox,
+// which holds 25 and is shared with fleet reports and succession debts: a pile of stale questions would crowd those out.
+// So the tick closes such a row itself (like closeSuccessionDebtEvent) as soon as the seat is gone or its pane, looked at in THIS
+// life, no longer shows that question. A pane not looked at yet (right after a restart) claims nothing; the message stays.
+function schliesseWarteZeilen(): boolean {
+  const zu = new Map<string, string>();
+  for (const e of fleetEvents) {
+    if (e.kind !== "message" || e.receiverSlot !== null || e.status !== "inbox") continue;
+    const m = messages.entries.find((x) => x.id === e.payload.messageId);
+    const k = /^warte-hinweis:(\d+):(\d+):\d+$/.exec(m?.idempotencyKey ?? "");
+    if (!m || !k) continue;
+    const slot = Number(k[1]), occupant = Number(k[2]);
+    const s = slotFrom(slot);
+    const ep = warteEpisoden.get(slot);
+    const gesehen = (warteGesehen.get(slot) ?? 0) >= SERVER_BOOT_AT;
+    // the same question by its words: an episode begun after a restart has another start time than the notice's key
+    const dieselbe = m.payload.kind === "text" && !!ep && ep.openedAt === occupant && m.payload.text.includes(`in its pane: "${ep.frage}".`);
+    if (!s?.cwd || s.openedAt !== occupant) zu.set(e.id, "seat gone");
+    else if (gesehen && !dieselbe) zu.set(e.id, "question off the screen");
+  }
+  if (!zu.size) return false;
+  const at = Date.now();
+  fleetEvents = fleetEvents.map((e) => zu.has(e.id) ? { ...e, status: "acknowledged" as const, acknowledgedAt: at } : e);
+  for (const [id, grund] of zu) {
+    const e = fleetEvents.find((x) => x.id === id);
+    audit("warte_zeile_zu", e && "subjectSlot" in e ? e.subjectSlot : undefined, `${id} ${grund}`);
+  }
+  return true;
 }
 
 // THE DELIBERATE ANSWER (Owner 22.10. 08:30: „[Zitat entfernt]“

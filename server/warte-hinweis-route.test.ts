@@ -4,7 +4,7 @@
 // zweimal, eine neue Frage nach einer Antwort schon. Die Uhr des Takts ist gestellt (Schritt `warte` in branches.drive.ts),
 // die Panes sind echte tmux-Panes, deren Ersatz-claude zeigt, was der Test in seine Datei schreibt.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, type Answer, type Fixture } from "./branches-testkit";
 import { BASH_FRAGE, LEERLAUF } from "./warte-hinweis.fixtures";
@@ -80,6 +80,7 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
     expect(anOwner[0]?.from).toMatchObject({ kind: "session", slot: F.slot, openedAt: F.openedAt });
     expect(anOwner[0]?.payload.text).toContain(`Slot ${F.slot} (Frei) has been waiting since `);
     expect(anOwner[0]?.payload.text).not.toContain("/api/self/rueckfrage");
+    expect(anOwner[0]?.payload.text).toContain("No Orchestratorin is live, so this reaches you");
     const zeilen = ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null);
     expect(zeilen.map((e) => [e.status, e.subjectSlot, e.payload.to])).toEqual([["inbox", F.slot, { kind: "role", role: "orchestrator" }]]);
     const [gesehen] = await life(f, [get("/api/messages")]);
@@ -128,6 +129,11 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
     const gelesen = ((persisted(f).messages as { entries?: Array<{ id: string; readBy: unknown }> } | undefined)?.entries ?? [])
       .find((m) => m.id === zeilen[0]?.payload.messageId);
     expect(gelesen?.readBy).toMatchObject({ slot: ORCH });
+    // die Quittung läuft über dieselbe Stelle wie jede andere (stampMessageRead): sie steht im Audit, nicht von Hand am Eintrag
+    expect(vonOrch?.payload.text).toContain("The Orchestratorin herself is waiting here, so this reaches you");
+    const audit = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string });
+    expect(audit.filter((x) => x.event === "message_read" && x.slot === ORCH && x.detail?.startsWith(String(zeilen[0]?.payload.messageId)))).toHaveLength(1);
   }, LIFE_DEADLINE_MS * 3);
 
   // Leitung 30.10.: ein Sitz, dessen Öffnerin nicht mehr lebt, ist wie einer ohne Öffnerin — Orchestratorin, sonst Owner
@@ -153,6 +159,74 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
       if (mitOrchestratorin) expect(orch?.status).toBe(200);
     }
   }, LIFE_DEADLINE_MS * 6);
+
+  // Folgestück 30.10. (R2, R5): zwei Halter der Rolle sprechen keine an; der Hinweis geht an den Owner, und der Satz sagt es so
+  test("zwei Halter der Orchestratorin-Rolle: der Hinweis eines Sitzes geht an den Owner, ehrlich benannt", async () => {
+    const f = fixture();
+    const [, , o1, o2, , frei] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" }),
+      post("/api/slots/8/open", { cwd: f.repo, label: "🎛 Orchestratorin" }), post("/api/slots/9/open", { cwd: f.repo, label: "🎛 Orchestratorin" }),
+      post("/api/branches", { repo: f.repo, name: "Frei" }), post("/api/branches/open", { repo: f.repo, branch: "branch/frei" })]);
+    expect([o1?.status, o2?.status]).toEqual([200, 200]);
+    const F = opened(frei);
+    const r = await life(f, [zeige(F.frame, BASH_FRAGE), { warte: 0 }, { warte: W }, { warte: 2 * W }]);
+    expect([1, 2, 3].map((i) => geschrieben(r[i]).length)).toEqual([0, 1, 0]);
+    const alle = hinweise(f);
+    expect(alle.map((m) => m.to)).toEqual([{ kind: "role", role: "orchestrator" }]);
+    expect(alle[0]?.payload.text).toContain("More than one session holds the Orchestratorin role");
+    expect(ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null).map((e) => e.subjectSlot)).toEqual([F.slot]);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // Folgestück 30.10. (R4): die Zeile im Eingang des Owners bleibt nur, solange die Frage steht (der Eingang fasst 25 und teilt
+  // sich mit Berichten und Nachfolge-Schulden); eine neue Frage macht eine neue Zeile
+  test("die Zeile des Owners fällt weg, sobald die Frage vom Schirm ist", async () => {
+    const f = fixture();
+    const [, frei] = await life(f, [post("/api/branches", { repo: f.repo, name: "Frei" }), post("/api/branches/open", { repo: f.repo, branch: "branch/frei" })]);
+    const F = opened(frei);
+    const r = await life(f, [zeige(F.frame, BASH_FRAGE), { warte: 0 }, { warte: W },       // 0–2
+      zeige(F.frame, LEERLAUF), { warte: W + 1000 },                                       // 3–4: beantwortet
+      zeige(F.frame, BASH_FRAGE), { warte: 2 * W }, { warte: 3 * W }]);                    // 5–7: dieselbe Frage noch einmal
+    expect([2, 4, 6, 7].map((i) => geschrieben(r[i]).length)).toEqual([1, 0, 0, 1]);
+    const zeilen = ereignisse(f).filter((e) => e.kind === "message" && e.receiverSlot === null);
+    expect(zeilen.map((e) => e.status)).toEqual(["acknowledged", "inbox"]);
+    // ein selbst geschlossene Zeile ist nachvollziehbar: das Audit nennt sie und den Grund
+    const zu = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean)
+      .map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string }).filter((x) => x.event === "warte_zeile_zu");
+    expect(zu.map((x) => [x.slot, x.detail?.slice(25)])).toEqual([[F.slot, "question off the screen"]]);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // Prüfung 30.10.: die Frage ist nur „<Kopf> · <Frage>“ ohne Befehl, jede Bash-Frage eines Sitzes liest sich gleich, und die
+  // Besetzung überlebt den Neustart. Eine Unterdrückung über Leben hinweg würde darum jeden späteren Hänger dieses Sitzes
+  // verschweigen. Nach einem Neustart meldet eine NEUE Frage, nachdem die alte beantwortet war.
+  test("nach einem Neustart meldet eine neue Frage desselben Sitzes, nachdem die alte beantwortet war", async () => {
+    const f = fixture();
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }), post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = opened(lead);
+    const [, seat] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sitz" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/sitz" }), self: tokenOf(f, L.slot) }]);
+    const S = opened(seat);
+    const eins = await life(f, [zeige(S.frame, BASH_FRAGE), { warte: 0 }, { warte: W }]);
+    expect(geschrieben(eins[2]).length).toBe(1);
+    const zwei = await life(f, [zeige(S.frame, LEERLAUF), { warte: 0 }, zeige(S.frame, BASH_FRAGE), { warte: 1000 }, { warte: W + 1000 }]);
+    expect([1, 3, 4].map((i) => geschrieben(zwei[i]).length)).toEqual([0, 0, 1]);
+    expect(hinweise(f).length).toBe(2);
+  }, LIFE_DEADLINE_MS * 4);
+
+  // Folgestück 30.10. (R5): eine Lane meldet im Takt nichts (ihr Hook meldet an die MAIN) — auch nicht dem Owner. Die Lane
+  // entsteht hier, indem der Slot im Zustand zwischen zwei Leben als Lane gezeichnet wird.
+  test("eine Lane bleibt im Warte-Takt still", async () => {
+    const f = fixture();
+    const [, frei] = await life(f, [post("/api/branches", { repo: f.repo, name: "Frei" }), post("/api/branches/open", { repo: f.repo, branch: "branch/frei" })]);
+    const F = opened(frei);
+    const datei = join(f.state, "fleet.json");
+    const zustand = JSON.parse(readFileSync(datei, "utf8")) as { slots: Record<string, { worktree: unknown }> };
+    zustand.slots[String(F.slot)]!.worktree = { repo: f.repo, branch: "branch/frei" };
+    writeFileSync(datei, JSON.stringify(zustand));
+    const r = await life(f, [zeige(F.frame, BASH_FRAGE), { warte: 0 }, { warte: W }, { warte: 2 * W }]);
+    expect((persisted(f).slots as Record<string, { worktree?: unknown }>)[String(F.slot)]?.worktree).toBeTruthy();
+    expect([1, 2, 3].map((i) => geschrieben(r[i]).length)).toEqual([0, 0, 0]);
+    expect(hinweise(f)).toEqual([]);
+  }, LIFE_DEADLINE_MS * 3);
 
   // UI-Abnahme 22.10., Runde 2: das Board zeigt die Frage, BEVOR der Owner tippt — /api/sessions trägt sie je Session,
   // auch bei einer Session ohne Öffner (sie wartet auf den Owner), und nicht mehr, sobald sie weg ist

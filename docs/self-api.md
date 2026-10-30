@@ -5589,7 +5589,13 @@ sie einmal je Frage per Postfach (`server.ts#tickWarteHinweis`):
   **Owner**, über den Weg, den es schon gibt: die Nachricht an die Rollen-Adresse `orchestrator` ohne Halterin eskaliert
   (`server.ts#resolveMessageAddress`, `escalatedTo: "owner"`). Sie steht in seinem Postfach (`GET /api/messages`, Board-Reiter
   Postfach) und als Zeile `message` in seinem Eingang (`receiverSlot: null`), einmal je Frage. Ist sein Eingang voll
-  (`FLEET_EVENT_MAX_OPEN_OWNER_INBOX`), wartet der Hinweis auf den nächsten Takt;
+  (`FLEET_EVENT_MAX_OPEN_OWNER_INBOX`), wartet der Hinweis auf den nächsten Takt. Die Zeile schließt der Takt selbst, sobald der
+  Sitz fort ist oder seine Pane die Frage nicht mehr zeigt, damit diese Zeilen den Eingang (25, geteilt mit Berichten und
+  Nachfolge-Schulden) nicht füllen; der Satz im Hinweis nennt den Grund (keine Halterin der Rolle, mehrere, oder die Orchestratorin
+  selbst). Jedes Schließen steht im Audit (`warte_zeile_zu`, mit dem Grund: Sitz fort oder Frage vom Schirm). Nach einem Neustart
+  des Servers beginnt jede Episode neu; eine noch stehende Frage kann darum ein zweites Mal gemeldet werden, was begrenzt und
+  harmlos ist. Eine Unterdrückung über Leben hinweg gibt es bewusst nicht: die Frage ist nur „Kopf · Frage“ ohne Befehl, jede
+  Bash-Frage eines Sitzes liest sich gleich, und ein alter Hinweis würde jeden späteren Hänger verschweigen;
 - steht die **Orchestratorin selbst** an einer Rückfrage, geht ihr Hinweis ebenso an den Owner (sie meldet sich nicht selbst; ihr
   Eintrag im Postfach ist als von ihr gelesen gebucht, damit er nicht in ihre eigene Pane zurückkommt);
 - ein Sitz, dessen Öffnerin **nicht mehr lebt**, gilt wie ein Sitz ohne Öffnerin (Orchestratorin, sonst Owner); eine lebende

@@ -239,6 +239,22 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     expect(existsSync(`${F.frame}.getippt`)).toBe(false);
   }, LIFE_DEADLINE_MS * 3);
 
+  // Folgestück 30.10. (R5): steht die Orchestratorin selbst an einer Frage, antwortet ihr die Tür nicht zu sich selbst — der Owner antwortet
+  test("die Orchestratorin fragt die Tür nach sich selbst: 409, nichts getippt", async () => {
+    const f = fixture();
+    const ORCH = 9;
+    const [orch] = await life(f, [post(`/api/slots/${ORCH}/open`, { cwd: f.repo, label: "🎛 Orchestratorin" })]);
+    expect(orch?.status).toBe(200);
+    const frame = join(FRAMES, String(orch?.body.cwd).split("/").slice(-3).join("_"));
+    const self = tokenOf(f, ORCH);
+    const r = await life(f, [zeige(frame, BASH_FRAGE),
+      { method: "GET", path: `/api/self/rueckfrage?slot=${ORCH}`, token: null, self },
+      { ...post("/api/self/rueckfrage", { slot: ORCH, kennung: "0123456789abcdef", wahl: "freigeben" }), token: null, self }, pause(500)]);
+    expect([r[1]?.status, r[2]?.status]).toEqual([409, 409]);
+    expect(String(r[1]?.body.error)).toContain("no other live session");
+    expect(existsSync(`${frame}.getippt`)).toBe(false);
+  }, LIFE_DEADLINE_MS * 3);
+
   // Abnahme ca46648f5: ein Dialog, höher als die Pane (ein 40-Zeilen-Befehl in 30 Zeilen), verliert oben seinen Anfang;
   // dann gibt es nichts zu lesen und nichts zu binden, GET und POST antworten 409 mit dem Grund, nichts getippt
   test("ein Dialog, höher als die Pane, wird weder gezeigt noch freigegeben", async () => {

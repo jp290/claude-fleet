@@ -290,6 +290,8 @@ type AuditEvent =
   | "harness_block"
   // a seat's pane stood on Claude Code's permission question and its opener got the mailbox notice (server.ts#tickWarteHinweis)
   | "warte_hinweis"
+  // the tick closed the owner's inbox row of such a notice itself: the seat is gone or its pane no longer shows the question (server.ts#schliesseWarteZeilen)
+  | "warte_zeile_zu"
   // a deliberate answer to a waiting permission question through POST /api/self/rueckfrage, typed or refused (server.ts#beantworteRueckfrage)
   | "rueckfrage_antwort"
   // a ③ verdict for a row that asked for one (server.ts#fileLaneReview): minted, deduplicated or

@@ -106,12 +106,20 @@ export function warteSchritt(prev: WarteEpisode | undefined, openedAt: number, f
 }
 
 const uhr = (ms: number): string => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-// `anOwner`: no Orchestratorin lives, the notice reaches the owner by the mailbox's escalation, and the door is shut to everyone else
-export function warteHinweisText(o: { slot: number; label: string | null; frage: string; seit: number; now: number; anOwner?: boolean }): string {
+// `anOwner`: nobody can be told by session, so the notice reaches the owner by the mailbox's escalation, and the door is shut to
+// everyone else; the value says why, so the sentence is true in each case: no holder of the Orchestratorin role, several, or the
+// waiting seat is the Orchestratorin herself
+export type WarteGrund = "keine" | "mehrere" | "selbst";
+const OWNER_GRUND: Record<WarteGrund, string> = {
+  keine: "No Orchestratorin is live, so this reaches you",
+  mehrere: "More than one session holds the Orchestratorin role, so none of them is addressed and this reaches you",
+  selbst: "The Orchestratorin herself is waiting here, so this reaches you",
+};
+export function warteHinweisText(o: { slot: number; label: string | null; frage: string; seit: number; now: number; anOwner?: WarteGrund }): string {
   const min = Math.floor((o.now - o.seit) / 60_000);
   const kopf = `[fleet · waiting notice] Slot ${o.slot}${o.label ? ` (${o.label})` : ""} has been waiting since ${uhr(o.seit)} (${min} min) `
     + `for an answer in its pane: "${o.frage}". Fleet types nothing there; deliveries never answer the question. `;
-  if (o.anOwner) return kopf + "No Orchestratorin is live, so this reaches you: answer it in the pane of that slot. This notice comes once per question.";
+  if (o.anOwner) return kopf + `${OWNER_GRUND[o.anOwner]}: answer it in the pane of that slot. This notice comes once per question.`;
   return kopf
     + `To approve or reject on purpose (with your self token, x-fleet-self-token): first read the dialog with its command, `
     + `GET /api/self/rueckfrage?slot=${o.slot}, then POST /api/self/rueckfrage with {"slot":${o.slot},"kennung":"<kennung from the `

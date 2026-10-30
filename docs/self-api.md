@@ -600,7 +600,7 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   verweigern würde (`server.ts#lineageAutoTarget` prüft mit demselben Validator, statt die Nachfolge
   zu verweigern). Der Body steht NUR im typisierten Ziel: ein Feld wie `text` direkt am
   Obligation-Objekt macht den Record weiter unlesbar;
-- `intent` (höchstens 10 000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
+- `intent` (höchstens 10 000 Zeichen und 20 000 Bytes — die Paste-Grenze zählt Bytes) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
   Abschnitt, `YYYY-MM-DD` in Pfad oder Anker) — **genau ein Übergabekanal**. Beides = 409, einer davon
   neben `carry` = 409; `intent` über dem Deckel = 400 mit dem Deckel im Text; undatierter/fehlgeformter
   Pointer = 400; Pointer auf uncommittete Datei = 409. Lane- und Program-MAIN-Schiene verweigern
@@ -884,7 +884,7 @@ feststeht." `POST /api/self/succeed` kostet die Vorgängerin einen letzten Turn,
 neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließen die Lücke:
 
 - **`POST /api/self/handover`** (self-token) — `{"intent": "…"}` ODER `{"pointer": "pfad.md#anker"}`,
-  geprüft wie der `succeed`-Body (`server.ts#lineageChannelOf`: `intent` ≤ 10 000 Zeichen, `pointer`
+  geprüft wie der `succeed`-Body (`server.ts#lineageChannelOf`: `intent` ≤ 10 000 Zeichen und 20 000 Bytes, `pointer`
   datiert, getrackt und sauber, sonst 400/409; leerer Body = 400). Überschreibt die vorige; die
   Session hält sie in ohnehin laufenden Turns aktuell. Gespeichert als `Slot.standingHandover
   {at, openedAt, intent, pointer}` (`server/types.ts#StandingHandover`), persistiert, an die Belegung

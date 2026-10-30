@@ -1999,7 +1999,7 @@ const standingHandoverFrom = (raw: unknown, openedAt: number): StandingHandover 
   const r = raw as Record<string, unknown>;
   const str = (v: unknown, max: number): boolean => v === null || (typeof v === "string" && v !== "" && v.length <= max);
   if (typeof r.at !== "number" || !Number.isFinite(r.at) || r.at <= 0 || r.openedAt !== openedAt
-    || !str(r.intent, LINEAGE_INTENT_MAX) || !str(r.pointer, LINEAGE_POINTER_MAX)
+    || !str(r.intent, LINEAGE_INTENT_MAX) || (typeof r.intent === "string" && !lineageIntentFits(r.intent)) || !str(r.pointer, LINEAGE_POINTER_MAX)
     || (r.intent === null) === (r.pointer === null)) return null;
   const ahead = typeof r.ahead === "number" && Number.isInteger(r.ahead) && r.ahead >= 0 ? r.ahead : null;
   return { at: r.at, openedAt, intent: r.intent as string | null, pointer: r.pointer as string | null, ahead };
@@ -3167,10 +3167,16 @@ type LineageObligationKind = "watch" | "auto" | "inbox" | "report";
 const LINEAGE_OBLIGATION_KINDS: LineageObligationKind[] = ["watch", "auto", "inbox", "report"];
 const LINEAGE_ID_RE = /^[0-9a-f]{24}$/;
 // The handover text a seat writes for its successor, whole (owner 2026-10-30: at 2000 characters a succession audit
-// found three things cut). It rides in the line record and the standing handover on fleet.json and the start brief
-// types it verbatim, so the bound protects storage (LINEAGE_RECORDS_MAX x this = 1 MB) and keeps the brief under
-// server.ts#PASTE_MAX_BYTES. Longer prose belongs in a committed, dated section named by `pointer`.
+// found three things cut). It rides in the line record and the standing handover on fleet.json (storage:
+// LINEAGE_RECORDS_MAX x this = 1 MB), and the start brief types it verbatim — so it must leave room in
+// server.ts#PASTE_MAX_BYTES (32 KiB), above which only a pointer line reaches the pane. The paste ceiling counts BYTES, so
+// the cap is two: 10 000 characters and LINEAGE_INTENT_MAX_BYTES (10 000 CJK characters are 30 000 bytes). On the owner's
+// button the transcript rest gives way, never the intent (server.ts#freshSuccessionAppendix gets only the room left).
+// Longer prose belongs in a committed, dated section named by `pointer`.
 const LINEAGE_INTENT_MAX = 10_000;
+const LINEAGE_INTENT_MAX_BYTES = 20_000;
+const lineageIntentFits = (text: string): boolean =>
+  text.length <= LINEAGE_INTENT_MAX && Buffer.byteLength(text, "utf8") <= LINEAGE_INTENT_MAX_BYTES;
 const LINEAGE_POINTER_MAX = 300;
 // wider than any one occupant can owe (5 armed watches + 5 autos + the delivery budget + its
 // undecided reports), and a list past it REFUSES the succession rather than being shortened
@@ -3358,8 +3364,8 @@ const loadLineageHandover = (value: unknown): LineageHandoverRead => {
   if (!from || !to) return fail("from must be exactly {slot, openedAt} or {slot, openedAt, sessionId, cwd}, and to exactly {slot, openedAt}");
   const supersededBy = r.supersededBy === null ? null : lineageOccupantFrom(r.supersededBy);
   if (r.supersededBy !== null && !supersededBy) return fail("supersededBy must be null or exactly {slot, openedAt}");
-  if (!(r.intent === null || (typeof r.intent === "string" && r.intent !== "" && r.intent.length <= LINEAGE_INTENT_MAX)))
-    return fail(`intent must be null or a non-empty string of at most ${LINEAGE_INTENT_MAX} chars`);
+  if (!(r.intent === null || (typeof r.intent === "string" && r.intent !== "" && lineageIntentFits(r.intent))))
+    return fail(`intent must be null or a non-empty string of at most ${LINEAGE_INTENT_MAX} chars and ${LINEAGE_INTENT_MAX_BYTES} bytes`);
   if (!(r.pointer === null || (typeof r.pointer === "string" && r.pointer !== "" && r.pointer.length <= LINEAGE_POINTER_MAX)))
     return fail(`pointer must be null or a non-empty string of at most ${LINEAGE_POINTER_MAX} chars`);
   if (r.intent !== null && r.pointer !== null) return fail("intent and pointer are one channel — at most one may be set");
@@ -3754,7 +3760,7 @@ export {
   MESSAGES_MAX, loadMessageAddress, loadMessagePayload, loadMessageEntry, loadMessages,
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, PROGRAM_HANDOVER_KINDS, PROGRAM_HANDOVER_SETTLED_HOWS,
   loadProgramHandover, loadProgramRecordLoss,
-  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
+  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_INTENT_MAX_BYTES, lineageIntentFits, LINEAGE_POINTER_MAX, LINEAGE_OBLIGATIONS_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, LINEAGE_NOT_REARMED_MAX, standingHandoverFrom, compactionFrom, startCompactFrom, laneStandNudgedFrom, slotPlanFrom,
   foundingOccupantFrom, foundingIdentityFrom,

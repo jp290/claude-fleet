@@ -262,7 +262,7 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
   die übrigen an dessen MAIN.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
   als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):
-  Pflichten nur per ID, dazu `intent` (≤ 10 000 Zeichen) ODER `pointer` auf einen committeten, datierten
+  Pflichten nur per ID, dazu `intent` (≤ 10 000 Zeichen / 20 000 Bytes) ODER `pointer` auf einen committeten, datierten
   Abschnitt. Der Brief nennt den Record; die Nachfolgerin liest ihn in `GET /api/self` → `lineage`.
   `carry` bleibt ein optionaler Satz und ist neben `intent`/`pointer` verweigert.
 - **Game-Maker-Program-MAIN:** behält den frischen, committed `## Current game checkpoint` mit der

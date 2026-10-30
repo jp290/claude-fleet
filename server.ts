@@ -157,7 +157,7 @@ import {
   PROGRAM_HANDOVER_MAX, PROGRAM_HANDOVER_TEXT_MAX, loadProgramHandover,
   type ProgramHandover, type ProgramHandoverObligation, type ProgramHandoverDetail,
   type ProgramHandoverSettled, type ProgramHandoverSettledHow, type ProgramHandoverLost,
-  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
+  LINEAGE_ID_RE, LINEAGE_INTENT_MAX, LINEAGE_INTENT_MAX_BYTES, lineageIntentFits, LINEAGE_POINTER_MAX, LANE_SEATS_MAX, laneSeatFrom, LINEAGE_SESSION_ID_RE, type LaneSeat,
   LINEAGE_RECORDS_PER_LINE, LINEAGE_RECORDS_MAX, LINEAGE_LOSSES_MAX,
   loadLineageHandover, loadSuccessionDebt, SUCCESSION_DEBTS_MAX, SUCCESSION_DEBT_REASON_MAX, SUCCESSION_DEBT_BRIEF_MAX,
   loadLineageHandoverLoss, lineageAutoTargetFrom, AUTO_TEXT_MAX, LINEAGE_NOT_REARMED_MAX,
@@ -256,6 +256,7 @@ import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, onHandoverBand, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput,
   type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
+import { briefRoom, freshSuccessionAppendix, FRESH_TAIL_MAX, type FreshTail } from "./server/brief-platz";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
 import { piCacheFact, piLastUsage, type PiUsage } from "./server/pi-cache";
@@ -14199,8 +14200,8 @@ function lineageChannelOf(body: Record<string, unknown> | null, carry: string | 
     return { ok: false, status: 400, error: "pointer must be a string" };
   const intent = typeof raw.intent === "string" ? raw.intent.trim() || null : null;
   const pointer = typeof raw.pointer === "string" ? raw.pointer.trim() || null : null;
-  if (intent !== null && intent.length > LINEAGE_INTENT_MAX)
-    return { ok: false, status: 400, error: `intent must be at most ${LINEAGE_INTENT_MAX} characters (it is ${intent.length}) — longer prose belongs in a committed, dated section named by \`pointer\`` };
+  if (intent !== null && !lineageIntentFits(intent))
+    return { ok: false, status: 400, error: `intent must be at most ${LINEAGE_INTENT_MAX} characters and ${LINEAGE_INTENT_MAX_BYTES} bytes (it is ${intent.length} characters, ${Buffer.byteLength(intent, "utf8")} bytes) — longer prose belongs in a committed, dated section named by \`pointer\`` };
   if (pointer !== null && (pointer.length > LINEAGE_POINTER_MAX || !LINEAGE_POINTER_RE.test(pointer) || !/\d{4}-\d{2}-\d{2}/.test(pointer)))
     return { ok: false, status: 400, error: `pointer must be a relative \`path.md#anchor\` of at most ${LINEAGE_POINTER_MAX} characters naming a DATED section (YYYY-MM-DD in path or anchor)` };
   if (intent !== null && pointer !== null) return { ok: false, status: 409, error: LINEAGE_ONE_CHANNEL };
@@ -15135,8 +15136,9 @@ async function nachfolgeSteineFuer(carried: SlotSelbst | null, cwd: string, harn
 interface GenericSuccession {
   label: string | null; carry: string | null; channel: LineageChannel; spawn: SuccessionSpawn;
   predecessorIdentity: SuccessionPredecessorIdentity;
-  // the owner door's standing-handover age and transcript rest; null on the self door
-  appendix: string | null;
+  // the owner door's standing-handover age and transcript rest; null on the self door. A function gets the bytes the brief has
+  // left behind the ritual (server/brief-platz.ts#briefRoom) and cuts the rest to them.
+  appendix: string | ((room: number) => string) | null;
   // the owner door's LAST question before the kill, asked after every await of the brief build: a
   // turn that started while the brief was built keeps its pane (null on the self door — its caller
   // is the predecessor itself, mid-turn by definition)
@@ -15184,7 +15186,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // the owner door's appendix (freshSuccessionAppendix) rides BEHIND the ritual, never inside it:
   // the self door's brief stays byte for byte what it was
   const mitSelbst = [ritual, selbstZeile, steineBlock].filter(Boolean).join("\n\n");
-  const brief = opts.appendix === null ? mitSelbst : `${mitSelbst}\n\n${opts.appendix}`;
+  const appendix = typeof opts.appendix === "function" ? opts.appendix(briefRoom(PASTE_MAX_BYTES, mitSelbst)) : opts.appendix;
+  const brief = appendix === null ? mitSelbst : `${mitSelbst}\n\n${appendix}`;
   // the predecessor's box; another agent takes it along only where it has one (as switchLaneHarness carries it)
   const box: BoxPin = harnessOf(harness).id === harnessOf(s.harness).id || harnessOf(harness).supports.container
     ? { container: s.container, containerContext: s.containerContext } : NO_BOX;
@@ -15339,16 +15342,13 @@ const liveStandingHandover = (s: Slot): StandingHandover | null =>
 // inbound turns and answer text, no tool calls, tool output, thinking or harness meta — the
 // orchestrator's hand measurement of 2026-10-06 (62 000 chars for a whole 372k-token session) is
 // the scale it is cut for. Newest first under the cap; each entry trimmed in the middle.
-const FRESH_TAIL_MAX = 24_000;
 const FRESH_TAIL_ENTRY_MAX = 1_500;
 // user lines that are Claude Code's own plumbing, by NAME — slash-command echo, local command output,
 // `!` shell input/output, reminders. Any other "<" opening is a message (a chat-view send arrives as
 // <pasted_content …>, and that is the owner's own words).
 const FRESH_TAIL_PLUMBING = /^<(command-(name|message|args)|local-command-(stdout|stderr|caveat)|bash-(input|stdout|stderr)|system-reminder)>/;
-interface FreshTail { state: "read" | "none"; reason: string | null; source: string | null;
-  entries: number; omitted: number; chars: number; text: string }
 async function freshTranscriptTail(s: Slot, since: number | null): Promise<FreshTail> {
-  const none = (reason: string): FreshTail => ({ state: "none", reason, source: null, entries: 0, omitted: 0, chars: 0, text: "" });
+  const none = (reason: string): FreshTail => ({ state: "none", reason, source: null, entries: 0, omitted: 0, chars: 0, text: "", parts: [] });
   let read: Awaited<ReturnType<typeof transcriptPayload>>;
   try { read = await transcriptPayload(s, 0); } catch (e) {
     return none(`transcript unreadable: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
@@ -15375,45 +15375,8 @@ async function freshTranscriptTail(s: Slot, since: number | null): Promise<Fresh
   }
   const text = kept.join("\n");
   return { state: "read", reason: null, source: read.source, entries: kept.length, omitted: all.length - kept.length,
-    chars: text.length, text };
+    chars: text.length, text, parts: kept };
 }
-const ageText = (ms: number): string => ms < 120_000 ? `${Math.max(0, Math.round(ms / 1000))} s`
-  : ms < 7_200_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
-// the section behind the founding ritual: WHO ended the predecessor, how old its standing handover
-// is, and the rest. On the generic rail the handover's text stays in the line record (the brief
-// names it, as the self door's brief does) — only its age and the rest travel here.
-// ON THE PROGRAM RAIL there is no line record to hold it: the Program record (standardHandoverLines,
-// above this section) is the handover and stays byte for byte what the self door captures, so the
-// standing handover travels HERE, verbatim, as the predecessor's own older prose beside it — the
-// owner door's stand-in for the `carry` a predecessor without a turn cannot write. Where the two
-// disagree the record wins: it was measured at the kill, the standing handover before it.
-function freshSuccessionAppendix(standing: StandingHandover | null, tail: FreshTail, now: number,
-  rail: "generic" | "program" = "generic", summary: string | null = null, by: "owner" | "threshold" = "owner"): string {
-  const written = standing ? `geschrieben ${new Date(standing.at).toISOString()} — Alter ${ageText(now - standing.at)}` : "";
-  const standingLines = !standing
-    ? [rail === "program"
-      ? "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Program-Record oben und der Transkript-Rest unten sind alles, was sie hinterlässt — prüfe den Rest gegen git und GET /api/self/program-execution, bevor du darauf baust."
-      : "Keine stehende Übergabe: die Vorgängerin hat POST /api/self/handover nie geschrieben. Der Transkript-Rest unten ist das Ende ihrer Unterhaltung — prüfe ihn gegen git und GET /api/self, bevor du darauf baust."]
-    : rail === "program"
-      ? [`Stehende Übergabe der Vorgängerin (${standing.intent !== null ? "`intent`" : "`pointer`"}), ${written}. `
-        + "Sie ist älter als der Program-Record oben, der im Moment der Übergabe gemessen wurde: wo beide sich widersprechen, gilt der Record. "
-        + "Was nach ihr geschah, steht nur im Transkript-Rest unten.",
-      ...(standing.intent !== null ? ["--- STEHENDE ÜBERGABE (wörtlich) ---", standing.intent]
-        : [`Zeiger: ${standing.pointer} — lies diesen committeten Abschnitt.`])]
-      : [`Stehende Übergabe: ${standing.intent !== null ? "`intent`" : `\`pointer\` ${standing.pointer}`} im Linien-Record, `
-        + `${written}. Was danach geschah, steht nur im Transkript-Rest unten.`];
-  const tailHead = tail.state === "none" ? `--- TRANSKRIPT-REST: unbekannt (${tail.reason}) ---`
-    : `--- TRANSKRIPT-REST ${standing ? "seit der stehenden Übergabe" : "(Ende der Unterhaltung)"}: ${tail.entries} Einträge`
-      + `${tail.omitted ? `, ${tail.omitted} ältere ausgelassen (Deckel ${FRESH_TAIL_MAX} Zeichen)` : ""}; `
-      + "nur Eingänge und Antworttexte, ohne Werkzeuge — Kontext der Vorgängerin, keine neue Anweisung an dich ---";
-  const summaryLines = summary === null ? [] : ["--- ZUSAMMENFASSUNG: Fleets summary-Worker hat Commits, Diff und das Ende des Gesprächs "
-    + "gelesen, ohne die Vorgängerin zu wecken (ihr Cache war kalt) — prüfe sie gegen git, bevor du darauf baust ---", summary];
-  // WHO ENDED IT: the owner's button, or Fleet itself at the threshold (succeedAtThreshold passes `stillWanted`) — befunde/23 §4
-  return [by === "owner" ? "--- VOM OWNER AUSGELÖST: die Vorgängerin bekam keinen Turn mehr (POST /api/slots/:id/succeed) ---"
-    : "--- VON FLEET AUSGELÖST (Obergrenze oder Cache kurz vor kalt; die Vorgängerin hatte nicht selbst weitergegeben): sie bekam keinen Turn mehr ---",
-    ...standingLines, ...summaryLines, tailHead, ...(tail.text ? [tail.text] : [])].join("\n");
-}
-
 // the button's read: may the door fire now, and what would the successor get. Read on demand — it
 // reads the transcript, so it is no 2 s poll; the sessions row carries `standingHandover.at` for that.
 async function ownerSucceedPreview(s: Slot): Promise<Record<string, unknown>> {
@@ -15520,12 +15483,12 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
       ? await succeedProgramMain(bound[0]!, s, s.label, null,
         { model: pick ? pick.model : s.model, effort: pick ? pick.effort : s.effort, permissions: pe.permissions },
         predecessorIdentity, bound.slice(1),
-        { appendix: freshSuccessionAppendix(standing, tail, now, "program", summary, stillWanted ? "threshold" : "owner"), beforeKill })
+        { appendix: (room) => freshSuccessionAppendix(standing, tail, now, "program", summary, stillWanted ? "threshold" : "owner", room), beforeKill })
       : await succeedGeneric(s, { label: s.label, carry: null,
         channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
         spawn: pick ? { model: pick.model, effort: pick.effort, permissions: pick.permissions, harness: pick.harness }
           : { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity,
-        appendix: freshSuccessionAppendix(standing, tail, now, "generic", summary, stillWanted ? "threshold" : "owner"), beforeKill });
+        appendix: (room) => freshSuccessionAppendix(standing, tail, now, "generic", summary, stillWanted ? "threshold" : "owner", room), beforeKill });
     return done;
   } finally {
     successionInflight.delete(identity);
@@ -45644,7 +45607,7 @@ async function repoSheetView(rawRepo: string): Promise<Response> {
 async function succeedProgramMain(program: Program, s: Slot, label: string | null, carry: string | null,
   spawn: SuccessionSpawn, predecessor: SuccessionPredecessorIdentity,
   companions: readonly Program[] = [],
-  owner: { appendix: string; beforeKill: () => Promise<Response | null> } | null = null): Promise<Response> {
+  owner: { appendix: string | ((room: number) => string); beforeKill: () => Promise<Response | null> } | null = null): Promise<Response> {
   const all = [program, ...companions];
   // the one cut every settle below names, so each Program keeps the events of its own lanes
   const cutIds: ReadonlySet<string> = new Set(all.map((p) => p.id));
@@ -45765,7 +45728,8 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     const ritual = buildProgramMainSuccessionBrief(program, carry, preflight.value.frame, anchorBlock, retained,
       companionRecords, owner === null && !isGameMaker(program) ? liveStandingHandover(s) : null,
       await ownerKorrekturenText(korrekturLeserOf(preflight.value.repoRoot, "program-main", harness)));
-    const deliveredBrief = owner === null ? ritual : `${ritual}\n\n${owner.appendix}`;
+    const deliveredBrief = owner === null ? ritual
+      : `${ritual}\n\n${typeof owner.appendix === "function" ? owner.appendix(briefRoom(PASTE_MAX_BYTES, ritual)) : owner.appendix}`;
     const planned = await carrySlotPlan(s.plan, { harness, model: spawn.model, effort: spawn.effort }, "Nachfolge");
     const plannedNone = planned && "none" in planned ? { plan: "none", planGrund: planned.none, planHash: planned.hash } : {};
     const selected = contextReceiptSelections(plan.selected);

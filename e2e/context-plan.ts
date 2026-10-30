@@ -1857,9 +1857,10 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
       spawnName: (h: string | null, m: string | null, e: string | null) => `${h ?? "claude"}/${m ?? "default"}/${e ?? ""}`,
       // the keepCache latch is a test hook that stands still without FLEET_TEST_KEEP_CACHE_LATCH — so here
       waitForKeepCacheTestLatch: async () => {},
-      succeedGeneric: async (_slot: unknown, options: { spawn: unknown; appendix: string | null; beforeKill: () => Promise<Response | null> }) => {
+      succeedGeneric: async (_slot: unknown, options: { spawn: unknown; appendix: string | ((room: number) => string) | null; beforeKill: () => Promise<Response | null> }) => {
         seen.spawn = options.spawn;
-        seen.appendix = options.appendix;
+        // the appendix is built for the room the brief has left (server/brief-platz.ts); the fixture has all of it
+        seen.appendix = typeof options.appendix === "function" ? options.appendix(1_000_000) : options.appendix;
         if (late) slot.permissions = late;
         const refused = await options.beforeKill();
         if (refused) return refused;

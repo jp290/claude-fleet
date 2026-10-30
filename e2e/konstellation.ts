@@ -312,6 +312,10 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
           for (let n = walk.nextNode(); n; n = walk.nextNode()) for (let i = 0; i < n.data.length; i++) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 1); const b = r.getClientRects()[0]; chars.push({ c: n.data[i], top: b && b.width > 0 ? b.top : null }); }
           let last = null;
           return chars.every((ch, i) => { if (ch.top === null) return true; const neu = last !== null && ch.top > last + 4; last = ch.top; return !neu || /[\\s-]/.test(chars[i - 1].c) || /\\s/.test(ch.c); }); }),
+        // a short value of the width of „Fleet default“, put in the widest tag's row: one line, not two pieces (the fixture's own value there,
+        // „built in“, is short enough to fit even when the tag is not wrapped, so it cannot tell)
+        beside: (() => { const x = p.querySelector('.kv[data-k="cc-systemprompt"] > .kx'); if (!x) return null; const keep = x.textContent; x.textContent = 'Fleet default';
+          const r = x.getBoundingClientRect().height < 1.6 * (parseFloat(getComputedStyle(x).lineHeight) || 18); x.textContent = keep; return r; })(),
         oneLine: ['modell', 'effort', 'befehle', 'maschine', 'cc-systemprompt'].every((k) => { const v = p.querySelector('.kv[data-k="' + k + '"]'); const x = v?.querySelector(':scope > .kx'), t = v?.querySelector(':scope > .kwer');
           return !!x && !!t && Math.abs(x.getBoundingClientRect().top - t.getBoundingClientRect().top) < 6 && t.getBoundingClientRect().left > x.getBoundingClientRect().left
             && x.getBoundingClientRect().height < 1.6 * (parseFloat(getComputedStyle(x).lineHeight) || 18); }),
@@ -333,7 +337,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
     type Props = Record<string, { sections: string[]; vals: Record<string, string | null>; wer: Record<string, string | null>;
       secWer: Record<string, string | null>; untagged: string[]; labels: Record<string, string | null>; words: string[]; standards: number; unsaid: string[]; more: Record<string, string>; links: string[];
       auto: Record<string, { wort: string | null; n: string | null; satz: string | null; punkte: string[] }>; leer: Record<string, string>;
-      gray: boolean; switches: number; hover: Record<string, string>; fass: string | null; autoWhy: string | null; oneLine: boolean; wordWhole: boolean }>;
+      gray: boolean; switches: number; hover: Record<string, string>; fass: string | null; autoWhy: string | null; oneLine: boolean; wordWhole: boolean; beside: boolean | null }>;
     type Peek = { slot: number; vals: Record<string, string | null>; hint: string | null } | null;
     const clear = (c: string) => c === "none" || c === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(c);
     const center = (slot: number) => evaluate<{ x: number; y: number } | null>(`(() => { const r = ${WIN}?.querySelector('.kn[data-slot="${slot}"] > .kline > .krow')?.getBoundingClientRect(); return r ? { x: r.left + Math.min(60, r.width / 2), y: r.top + r.height / 2 } : null; })()`);
@@ -471,7 +475,7 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         && pr(5)?.fass === null && pr(8)?.fass === null;
       // one line where the line stands at the top (Orchestrator, branch session); the lane two levels in has 34 px less, and a wider
       // fallback font (DejaVu Sans on the Linux helper) wraps „Fleet default“ there at its space: allowed, a break inside a word not
-      claims[KONST_CLAIM.phone] = [1, 5].every((n) => pr(n)?.oneLine === true) && pr(3)?.wordWhole === true;
+      claims[KONST_CLAIM.phone] = [1, 5].every((n) => pr(n)?.oneLine === true) && pr(3)?.wordWhole === true && [1, 3, 5].every((n) => pr(n)?.beside === true);
       claims[KONST_CLAIM.maschine] = [1, 3, 4, 6].every((n) => p(n).maschine === "mac" && p(n).isolation === "none"
           && pr(n)?.more.maschine === "other machines possible, not connectedworkhorse" && pr(n)?.more.isolation === "Sandbox/VM possible, not active"
           && JSON.stringify(pr(n)?.links) === JSON.stringify(["workhorse http://workhorse.fixture:8790"]) && pr(n)?.gray === true && pr(n)?.switches === 0);

@@ -99,11 +99,13 @@ if ! bun install --frozen-lockfile > "$RUN/install.log" 2>&1; then
 fi
 TSC="bun run typecheck"
 grep -q "\"typecheck\":" package.json || { echo "merge-check red $(( $(now_ms) - T0 )) — kein typecheck-Skript in package.json"; exit 3; }
-# die Unit-Tests gehören zum Kandidaten: ein Baum ohne ci/*.test.ts und server/*.test.ts hat keine,
-# und das ist „nicht anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
-TESTS=""
-for d in ci server; do ls "$d"/*.test.ts > /dev/null 2>&1 && TESTS="$TESTS ./$d"; done
-if [ -n "$TESTS" ]; then TESTS="bun test$TESTS"; else TESTS="true"; echo "na tests — der Kandidat hat keine ci/*.test.ts oder server/*.test.ts"; fi
+# die Unit-Tests gehören zum Kandidaten und sind die von package.json „test“ (ci/unit-tests.ts): ein Baum ohne Tests in
+# diesen Pfaden hat keine, und das ist „nicht anwendbar“ (eigene Zeile `na`), nie ein grün geprüfter Teil
+if ! TESTS=$(bun -e 'import { unitTestCommand } from "./ci/unit-tests";
+  const r = unitTestCommand("."); if (r.na) console.error(r.na); console.log(r.cmd);' 2> "$RUN/tests.err"); then
+  echo "merge-check red $(( $(now_ms) - T0 )) — Unit-Tests nicht ableitbar: $(cat "$RUN/tests.err")"; exit 3
+fi
+[ "$TESTS" != true ] || echo "na tests — $(cat "$RUN/tests.err")"
 # die geschuldeten Audit-Shards, je Zeile `<k> <sekunden> <units>`, aus der Tabelle des Kandidaten
 SHARDS=""
 if [ "$BIG_RUN" != - ]; then

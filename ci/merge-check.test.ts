@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { auditShardsLine, bigUnitsArg, bigUnitsOf, candidateOf, decide, diffPaths, helperEnv, helperOf, helperRun, hiddenLayerOf,
   mainAuditOf, mainVerdict, mergeBaseOf, mergeCheck, namesInTree, pushCandidate, redOf, runOnHelper } from "./merge-check";
 import { repairProofOf } from "./repair-proof";
+import { unitTestCommand } from "./unit-tests";
 
 const onMain = (sha: string): boolean => sha.startsWith("m");
 const row = (at: number, result: string, mainSha: string, adjudication?: unknown) =>
@@ -836,4 +837,40 @@ describe("die Reparatur eines roten main: belegt oder nicht", () => {
     expect(String(r.row.repairWhy)).toContain("nicht bekannt rot");
     expect(r.row.repairProof).toBeUndefined();
   }, 60_000);
+});
+
+// Ein Rot in src/*.test.ts landete ungesehen, weil der Check seine Verzeichnisse selbst zählte (ci, server) und nicht die
+// von package.json „test“ fuhr. Er fährt jetzt genau die Pfade des Kandidaten, soweit der Baum Tests dort hat.
+describe("die Unit-Tests des Checks sind die von package.json „test“", () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const tree = (test: string | null, files: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), "mc-unit-"));
+    dirs.push(dir);
+    if (test !== null) writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test } }));
+    for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); writeFileSync(join(dir, f), "// test\n"); }
+    return dir;
+  };
+
+  test("src und session-blocks.test.ts laufen mit, wenn package.json sie nennt und der Baum Tests dort hat", () => {
+    const dir = tree("bun test ./server ./ci ./src ./session-blocks.test.ts",
+      ["ci/a.test.ts", "server/b.test.ts", "src/c.test.ts", "session-blocks.test.ts"]);
+    expect(unitTestCommand(dir)).toEqual({ cmd: "bun test ./server ./ci ./src ./session-blocks.test.ts", na: null });
+  });
+  test("ein Pfad ohne Tests im Baum fällt weg, auch wenn er in package.json steht", () => {
+    const dir = tree("bun test ./server ./ci ./src ./session-blocks.test.ts", ["server/b.test.ts", "src/helper.ts"]);
+    expect(unitTestCommand(dir).cmd).toBe("bun test ./server");
+  });
+  test("ohne ein einziges Test im Baum ist es „nicht anwendbar“ und nie ein grün geprüfter Teil", () => {
+    const r = unitTestCommand(tree("bun test ./server ./src", ["src/helper.ts"]));
+    expect(r.cmd).toBe("true");
+    expect(r.na).toContain("keine Tests");
+  });
+  test("ein Baum ohne test-Skript behält ci und server wie bisher", () => {
+    expect(unitTestCommand(tree(null, ["ci/a.test.ts", "server/b.test.ts", "src/c.test.ts"])).cmd).toBe("bun test ./ci ./server");
+  });
+  test("dieser Baum fährt dieselbe Menge wie `bun run test`", () => {
+    const script = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts.test as string;
+    expect(unitTestCommand(join(import.meta.dir, "..")).cmd).toBe(script);
+  });
 });

@@ -3656,7 +3656,7 @@ export async function run(ctx: Ctx): Promise<void> {
   const msgEmptyPayload = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
     payload: { kind: "text", text: "   " }, idempotencyKey: "rail-empty" });
   const msgHugePayload = await selfSend(msgAToken, { to: { kind: "program", id: msgProgramB.id },
-    payload: { kind: "text", text: "x".repeat(2001) }, idempotencyKey: "rail-huge" });
+    payload: { kind: "text", text: "x".repeat(10_001) }, idempotencyKey: "rail-huge" });
   check("message rail: the body may not name a sender, a lane may not address a principal, and the payload union is closed against an unknown kind, an empty text and an oversized one",
     msgForgedSender.status === 400 && msgForgedText.includes("[from] is not read")
       && msgForgedText.includes("derived from this session's binding")

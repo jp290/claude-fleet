@@ -98,7 +98,7 @@ Linien-Absicht, offene Pflichten, Nachrichten-/Inbox-/Attention-Zeilen und die n
 stehen im Einstieg. Volltexte bleiben an den bestehenden Türen; Lesen quittiert und armiert
 nichts. Pflichtgruppen und Grenzen werden nicht hinter einem Zeilen-Cap versteckt: über zwölf
 Zeilen nennt jede Gruppe einen Overflow samt Detailtür und druckt ihre Zeilen weiter. Der eigene
-Linien-Record steht über dem Budget von 80 Zeilen / 10 000 Byte, nie darin: `intent` ganz (bis 2000
+Linien-Record steht über dem Budget von 80 Zeilen / 10 000 Byte, nie darin: `intent` ganz (bis 10 000
 Zeichen) und bis zu zehn `line-obligation`-Zeilen, die mit Ziel (Re-Arm-Body) vor den reinen IDs.
 Eine Lane-Zeile nennt `./ctl.sh task <id>` als Tür.
 `./register.sh --brief` bleibt für bestehende Leser erreichbar, ist aber kein zweiter Pflichtabruf.
@@ -262,7 +262,7 @@ Wo ein Verb `<slot>` nimmt (`ctx`, `watch lane|merge`, `land`, `wait merge`), da
   die übrigen an dessen MAIN.
 - **Ungebundene Legacy-Session, damit auch ein ungebundener Controller:** kein `HANDOFF.md`-Commit mehr
   als Gate (seit e3e5084a). Die Nachfolge schreibt einen Linien-Record (`docs/self-api.md` §Linien-Record):
-  Pflichten nur per ID, dazu `intent` (≤ 2000 Zeichen) ODER `pointer` auf einen committeten, datierten
+  Pflichten nur per ID, dazu `intent` (≤ 10 000 Zeichen) ODER `pointer` auf einen committeten, datierten
   Abschnitt. Der Brief nennt den Record; die Nachfolgerin liest ihn in `GET /api/self` → `lineage`.
   `carry` bleibt ein optionaler Satz und ist neben `intent`/`pointer` verweigert.
 - **Game-Maker-Program-MAIN:** behält den frischen, committed `## Current game checkpoint` mit der

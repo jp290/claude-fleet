@@ -113,9 +113,9 @@ async function schreibeNachfolge(b: LaufBindung, slot: number, openedAt: number,
 
 // DIE NACHRICHTEN EINES LAUFS (4b, Lücke 3: das Postfach ist ein Ring von 200 für die ganze Fleet, eine Auswerterin fände nach kurzer Zeit
 // nichts mehr). Jede Postfach-Nachricht von oder an eine Session eines Laufs geht zusätzlich in seine eigene Datei, nur angehängt. Eine Datei
-// je Lauf, damit fremder Verkehr sie nicht wegrotiert; höchstens LAUF_NACHRICHTEN_MAX Zeilen (bei 2000 Zeichen je Nachricht unter der
+// je Lauf, damit fremder Verkehr sie nicht wegrotiert; höchstens LAUF_NACHRICHTEN_MAX Zeilen (bei 10 000 Zeichen je Nachricht 4 MB, unter der
 // Rotationsgrenze von persist.ts), danach eine Zeile „gekappt“ und nichts mehr. Am besten bemüht wie jedes Ereignisprotokoll.
-export const LAUF_NACHRICHTEN_MAX = 1000;
+export const LAUF_NACHRICHTEN_MAX = 400;
 export const nachrichtenDatei = (dir: string, id: string): string => join(dir, `k15-lauf-${id}.jsonl`);
 export interface LaufNachricht { id: string; at: number; from: unknown; to: unknown; text: string; replyTo: string | null }
 const gezaehlt = new Map<string, Promise<number>>();

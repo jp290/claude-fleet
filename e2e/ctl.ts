@@ -510,7 +510,7 @@ await import(pathToFileURL(process.argv[2]).href);
       {
         const keptRecord = structuredClone(own.lineage.record);
         own.lineage.record.intent = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — "
-          .repeat(30)}`.slice(0, 2000);
+          .repeat(150)}`.slice(0, 10_000);
         const owedBy = "slot 9@1";
         const autoTexts = [1, 2, 3, 4, 5, 6].map((i) => `Check-in ${i}: Audit lesen, Ergebnis an die MAIN, ${"Welle pruefen ".repeat(20)}`);
         const recordRows = [
@@ -527,7 +527,7 @@ await import(pathToFileURL(process.argv[2]).href);
         const out = line.stdout.split("\n");
         const rows = out.filter((l) => l.startsWith("line-obligation door="));
         const content = rows.map((l) => l.includes('"target":'));
-        check("start record: the intent prints whole (2000 chars), content obligations precede the ids, and the lane door is ./ctl.sh task <id>",
+        check("start record: the intent prints whole (10000 chars), content obligations precede the ids, and the lane door is ./ctl.sh task <id>",
           line.status === 0 && out.includes(`intent=${JSON.stringify(own.lineage.record.intent)} pointer=null detail: GET /api/self (lineage.record)`)
             && rows.length === 10 && content.lastIndexOf(true) < content.indexOf(false)
             && rows.slice(0, 7).every((l) => !l.includes("[shortened"))
@@ -645,7 +645,7 @@ await import(pathToFileURL(process.argv[2]).href);
       /^[0-9a-f]{32}$/.test(predTok) && autoId !== "" && watchId !== "",
       `slot ${pred} ${predOpened?.status} auto=${armedAuto?.status}:${autoId} watch=${armedWatch?.status}:${watchId}`);
     // the intent at its cap (server/types.ts#LINEAGE_INTENT_MAX), multi-byte: the brief used to cut it at 320 bytes
-    const INTENT = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — Grüße. ".repeat(30)}`.slice(0, 2000);
+    const INTENT = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — Grüße. ".repeat(150)}`.slice(0, 10_000);
     const succeeded = autoId && watchId ? await selfPost(predTok, "succeed", { intent: INTENT }) : null;
     const sj = ((await succeeded?.json()) ?? {}) as { ok?: boolean; slot?: number };
     let succTok = "";

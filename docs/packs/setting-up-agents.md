@@ -76,8 +76,8 @@ It never says how to do the work.
   the last verdict, and report and verdict are stored as files. The cost of a round is the sum of `cost.total` over
   the `message_end` lines of its `pi.jsonl`; report it per run. A pi call with tools started from a Claude session's
   shell is blocked by the classifier. The owner starts it or sets a rule; you don't work around it.
-- **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 2000 characters (characters, not bytes; cut a
-  longer message into numbered parts). A lane gets a 409 there; its result arrives as a fleet-report.
+- **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 10 000 characters (characters, not bytes), so a report
+  goes in one piece, not in numbered parts. A lane gets a 409 there; its result arrives as a fleet-report.
   Session-to-session traffic goes through this mailbox, never through Claude Code's own cross-session messages,
   which type into the pane and show the whole coordination in the owner's chat.
 - A mailbox message reaches the session's pane after about a minute, with sender and full text; a session with its

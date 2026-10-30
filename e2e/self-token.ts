@@ -1078,7 +1078,7 @@ export async function run(ctx: Ctx): Promise<void> {
     // --- the channel refusals, each of which opens NOTHING ---
     const occupied = async (): Promise<number> => (await succRows()).filter((x) => x.cwd).length;
     const occupiedBefore = await occupied();
-    const overCap = await successionPost("succeed", oldTok, { intent: "I".repeat(2001) });
+    const overCap = await successionPost("succeed", oldTok, { intent: "I".repeat(10_001) });
     const overCapText = await overCap.text();
     const twoChannels = await successionPost("succeed", oldTok, { intent: "resume the queue",
       pointer: "docs/handoff-2026-09-14.md#next" });
@@ -1092,7 +1092,7 @@ export async function run(ctx: Ctx): Promise<void> {
     const uncommittedText = await uncommitted.text();
     rmSync(`${sr}/handoff-2026-09-14.md`, { force: true });
     check("POST /api/self/succeed: intent over its cap is 400 NAMING the cap, and no successor opens",
-      overCap.status === 400 && overCapText.includes("at most 2000 characters") && (await occupied()) === occupiedBefore,
+      overCap.status === 400 && overCapText.includes("at most 10000 characters") && (await occupied()) === occupiedBefore,
       `${overCap.status} ${overCapText}`);
     check("POST /api/self/succeed: intent AND pointer is 409 with the one-channel sentence, and so is carry beside intent",
       twoChannels.status === 409 && twoChannelsText.includes("exactly one handover channel")

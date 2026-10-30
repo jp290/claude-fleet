@@ -27146,8 +27146,8 @@ const POSTFACH_WINDOW_MS = INBOX_NUDGE_MS === 0 ? 0 : Math.max(0, Number(process
   Math.min(60, INBOX_NUDGE_MS / 1000)) | 0) * 1000;
 const POSTFACH_TICK_MS = INBOX_NUDGE_MS === 0 ? 0 : Math.max(250, Number(process.env.FLEET_POSTFACH_MS ??
   Math.min(10_000, INBOX_NUDGE_MS)) | 0);
-// One paste is bounded by characters, not by a count of messages: a full message is 2000 chars and
-// three of them plus their sender heads still fit comfortably under the 32 KiB paste ceiling. The
+// One paste is bounded by characters, not by a count of messages: a message is up to 10 000 chars; a
+// longer one than this bound goes alone, and a text over the 32 KiB paste ceiling arrives as a pointer line. The
 // oldest entries win; whatever does not fit waits for the next tick and is not lost.
 const POSTFACH_MAX_CHARS = 8_000;
 // Main-session migration is OFF unless the owner arms its threshold. Unlike auto-③ this types

@@ -58,8 +58,8 @@ export const postfachEntryText = (entry: PostfachEntry): string =>
   `${POSTFACH_BODY_PREFIX} ${entry.id} from ${entry.from}\n\n${entry.text}`;
 
 // Oldest first; ties are broken by id so a plan is stable across map/read order. A single entry is
-// always delivered even if it alone exceeds maxChars — a message is at most 2000 chars, so that can
-// only happen through a caller's misconfiguration, never through the Postfach's own bound.
+// always delivered even if it alone exceeds maxChars — a message may be up to 10 000 chars and maxChars is
+// 8 000, so a long one goes alone; above server.ts#PASTE_MAX_BYTES the pane gets a pointer line, not a flood.
 export function planPostfachDelivery(entries: readonly PostfachEntry[], now: number,
   options: PostfachPlanOptions): PostfachPlan | null {
   const eligible = entries

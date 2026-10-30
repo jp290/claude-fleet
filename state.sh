@@ -30,7 +30,7 @@ MAX_LINES, MAX_BYTES = 80, 10000
 # bytes, content first (ten = five armed watches and five autos, what one occupant can hold; 600 bytes
 # carry a live check-in text, 201-422 bytes on 2026-10-09). Measured that day at a succession: a
 # 1979-byte intent cut to 282, and the one obligation with content counted under omitted.
-INTENT_MAX, RECORD_ROWS, RECORD_WIDTH = 2000, 10, 600
+INTENT_MAX, RECORD_ROWS, RECORD_WIDTH = 10000, 10, 600
 http = 0
 def short(text, limit=320, door='GET /api/self'):
     raw = str(text).replace('\n', r'\n').replace('\r', r'\r').encode('utf-8')

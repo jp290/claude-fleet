@@ -1407,7 +1407,12 @@ function validAttentionBranch(branch: string): boolean {
     && !branch.endsWith("/") && !branch.endsWith(".") && !branch.endsWith(".lock");
 }
 
-const MAX_MESSAGE_TEXT = 2000;
+// A mailbox text is one piece: a report or a hand-off a seat has to say whole used to be cut into numbered parts by
+// hand at 2000 characters (owner 2026-10-30: the limit no longer fits). What this bound still protects is storage:
+// the record is a ring of MESSAGES_MAX rows inside fleet.json, so 200 x 10 000 characters is the 2 MB it may grow by.
+// It does not protect the pane: a typed text above server.ts#PASTE_MAX_BYTES is stored whole and the pane gets one
+// pointer line, so a long message cannot flood the composer.
+const MAX_MESSAGE_TEXT = 10_000;
 
 // a queued feature request. NEVER auto-sent: a task only leaves `pending` when
 // the OWNER promotes it to `queued`; the idle dispatcher then assigns queued tasks to
@@ -3161,7 +3166,11 @@ const LINEAGE_ROLES: LineageRole[] = ["generic", "supervisor"];
 type LineageObligationKind = "watch" | "auto" | "inbox" | "report";
 const LINEAGE_OBLIGATION_KINDS: LineageObligationKind[] = ["watch", "auto", "inbox", "report"];
 const LINEAGE_ID_RE = /^[0-9a-f]{24}$/;
-const LINEAGE_INTENT_MAX = 2000;
+// The handover text a seat writes for its successor, whole (owner 2026-10-30: at 2000 characters a succession audit
+// found three things cut). It rides in the line record and the standing handover on fleet.json and the start brief
+// types it verbatim, so the bound protects storage (LINEAGE_RECORDS_MAX x this = 1 MB) and keeps the brief under
+// server.ts#PASTE_MAX_BYTES. Longer prose belongs in a committed, dated section named by `pointer`.
+const LINEAGE_INTENT_MAX = 10_000;
 const LINEAGE_POINTER_MAX = 300;
 // wider than any one occupant can owe (5 armed watches + 5 autos + the delivery budget + its
 // undecided reports), and a list past it REFUSES the succession rather than being shortened

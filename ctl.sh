@@ -62,7 +62,7 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    read the lane occupant now, then /send with its openedAt pin
   reply <messageId> <textfile|-> [--log <file>] [--line <text>] [--program <id>] [--json]
                                    answer a message in one call: to its sender, replyTo set, marked read,
-                                   one line appended to --log (self token; ≤2000 characters)
+                                   one line appended to --log (self token; ≤10000 characters)
   status [--full] [--json]         where things stand: seats, merge checks, lands, audit, helpers, unread
                                    messages — one line each (self doors + owner routes; UNKNOWN named)
   commit main -m <msgfile> [--budget <sec>] [--json]      (also typed commit-main)
@@ -1894,7 +1894,7 @@ const refuse = (why, code = 1) => { console.error(`reply: ${why} — nothing sen
 let text;
 try { text = fs.readFileSync(src === "-" ? 0 : src, "utf8").trimEnd(); } catch { refuse("cannot read the text", 2); }
 if (!text.trim()) refuse("the text is empty", 2);
-if (text.length > 2000) refuse(`the text is ${text.length} characters, the mailbox takes at most 2000`, 2);
+if (text.length > 10000) refuse(`the text is ${text.length} characters, the mailbox takes at most 10000`, 2);
 const key = (a) => !a ? "" : a.kind === "program" ? `program:${a.id}` : a.kind === "role" ? `role:${a.role}` : `${a.kind}:${a.slot}:${a.openedAt}`;
 const who = (a) => !a ? "?" : a.kind === "program" ? `program ${String(a.id).slice(0, 8)}` : a.kind === "role" ? `the ${a.role}` : `slot ${a.slot}`;
 // a connection that drops is an answer of its own (status 0), never a stack trace: after the POST it means "unknown"

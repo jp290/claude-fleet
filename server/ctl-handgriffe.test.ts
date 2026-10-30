@@ -144,11 +144,11 @@ describe("ctl.sh reply", () => {
     expect(readFileSync(log, "utf8")).toBe("- eigene Zeile\n");
   });
 
-  test("über 2000 Zeichen, ein fremdes oder eigenes Id, ein fehlendes Protokoll: nichts geht hinaus", async () => {
+  test("über 10000 Zeichen, ein fremdes oder eigenes Id, ein fehlendes Protokoll: nichts geht hinaus", async () => {
     seen = [];
     writeFileSync(log, "unverändert\n");
-    const long = await ctl(["reply", IN_ID, "-", "--log", log], { stdin: "x".repeat(2001) });
-    expect([long.code, long.err]).toEqual([2, "reply: the text is 2001 characters, the mailbox takes at most 2000 — nothing sent\n"]);
+    const long = await ctl(["reply", IN_ID, "-", "--log", log], { stdin: "x".repeat(10_001) });
+    expect([long.code, long.err]).toEqual([2, "reply: the text is 10001 characters, the mailbox takes at most 10000 — nothing sent\n"]);
     const foreign = await ctl(["reply", "999999", "-", "--log", log], { stdin: "Hallo" });
     expect(foreign.code).toBe(1);
     expect(foreign.err).toContain("no message 999999 addressed to you");

@@ -14,6 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, 
 import { join } from "node:path";
 import { branchTestkit, persisted, type Answer, type Fixture } from "./branches-testkit";
 import { ladeNachbarn } from "./nachbarn";
+import { MAX_MESSAGE_TEXT } from "./types";
 
 const { TMP, BIN, fixture, serve, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -237,13 +238,13 @@ describe("Fernpost: dieselben Grenzen wie eine lokale Nachricht", () => {
   const door = "/api/fleet-nachbar/messages";
   const mitAusweis = (body: unknown) => b.call(door, { owner: false, body, headers: { authorization: `Bearer ${AUSWEIS_A_AN_B}` } });
 
-  test("mehr als 2000 Zeichen nimmt weder die Self-Tür noch die Tür des Nachbarn; genau 2000 gehen", async () => {
-    const zuViel = "x".repeat(2001);
+  test("mehr als der Deckel (MAX_MESSAGE_TEXT) nimmt weder die Self-Tür noch die Tür des Nachbarn; genau der Deckel geht", async () => {
+    const zuViel = "x".repeat(MAX_MESSAGE_TEXT + 1);
     const r = await a.call("/api/self/messages", { self: tokA, body: { to: { kind: "remote", fleet: "b", slot: SITZ_B }, payload: text(zuViel), idempotencyKey: "g1" } });
     expect(r.status).toBe(400);
     expect((await mitAusweis({ from: { slot: SITZ_A }, to: { slot: SITZ_B }, payload: text(zuViel), idempotencyKey: "g2" })).status).toBe(400);
-    expect((await mitAusweis({ from: { slot: SITZ_A }, to: { slot: SITZ_B }, payload: text("y".repeat(2000)), idempotencyKey: "g3" })).status).toBe(200);
-    expect((await postfach(b, tokB)).filter((m) => m.payload.text.length > 2000)).toEqual([]);
+    expect((await mitAusweis({ from: { slot: SITZ_A }, to: { slot: SITZ_B }, payload: text("y".repeat(MAX_MESSAGE_TEXT)), idempotencyKey: "g3" })).status).toBe(200);
+    expect((await postfach(b, tokB)).filter((m) => m.payload.text.length > MAX_MESSAGE_TEXT)).toEqual([]);
   }, 30_000);
 
   test("derselbe Schlüssel zweimal an der Tür ergibt drüben genau eine Zeile; derselbe Schlüssel für einen anderen Text ist 409", async () => {

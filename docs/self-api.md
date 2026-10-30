@@ -481,7 +481,7 @@ Checkpoint (und folgt nie im Verbund mit anderen Programs: 409 mit Namen). Dann:
 curl -X POST http://<fleet-host>:<port>/api/self/succeed \
   -H "content-type: application/json" \
   -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
-  -d '{"intent":"Absicht, Korrekturen, Reihenfolge — höchstens 2000 Zeichen"}'
+  -d '{"intent":"Absicht, Korrekturen, Reihenfolge — höchstens 10 000 Zeichen"}'
 ```
 
 `label` im Body benennt die Nachfolgerin, ohne `label` erbt sie das der Vorgängerin. Ein Rollen-Label
@@ -600,7 +600,7 @@ und sie bekommt keinen Linien-Record). Jede Nachfolge schreibt EINEN Record
   verweigern würde (`server.ts#lineageAutoTarget` prüft mit demselben Validator, statt die Nachfolge
   zu verweigern). Der Body steht NUR im typisierten Ziel: ein Feld wie `text` direkt am
   Obligation-Objekt macht den Record weiter unlesbar;
-- `intent` (höchstens 2000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
+- `intent` (höchstens 10 000 Zeichen) ODER `pointer` (`pfad.md#anker`, ein getrackter, sauberer, datierter
   Abschnitt, `YYYY-MM-DD` in Pfad oder Anker) — **genau ein Übergabekanal**. Beides = 409, einer davon
   neben `carry` = 409; `intent` über dem Deckel = 400 mit dem Deckel im Text; undatierter/fehlgeformter
   Pointer = 400; Pointer auf uncommittete Datei = 409. Lane- und Program-MAIN-Schiene verweigern
@@ -884,7 +884,7 @@ feststeht." `POST /api/self/succeed` kostet die Vorgängerin einen letzten Turn,
 neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließen die Lücke:
 
 - **`POST /api/self/handover`** (self-token) — `{"intent": "…"}` ODER `{"pointer": "pfad.md#anker"}`,
-  geprüft wie der `succeed`-Body (`server.ts#lineageChannelOf`: `intent` ≤ 2000 Zeichen, `pointer`
+  geprüft wie der `succeed`-Body (`server.ts#lineageChannelOf`: `intent` ≤ 10 000 Zeichen, `pointer`
   datiert, getrackt und sauber, sonst 400/409; leerer Body = 400). Überschreibt die vorige; die
   Session hält sie in ohnehin laufenden Turns aktuell. Gespeichert als `Slot.standingHandover
   {at, openedAt, intent, pointer}` (`server/types.ts#StandingHandover`), persistiert, an die Belegung
@@ -3695,7 +3695,7 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | `personal` kein Boolean | 400 | `personal must be true or false` |
 | `personal:true` an einen Sitz, der nicht Anthropic ist (Harness ≠ Claude oder Modell nicht im Register unter claude; Unbekanntes zählt als nicht Anthropic) | 409 | `personal message <key> is not delivered to a non-Anthropic seat: <harness>/<model>` — die Nachricht wird nicht geschrieben (server/datengrenze.ts) |
 | `payload.kind` unbekannt | 400 | `payload kind must be one of text` |
-| `payload.text` leer/über 2000 | 400 | `payload text must be a non-empty string of at most 2000 chars` |
+| `payload.text` leer/über 10000 | 400 | `payload text must be a non-empty string of at most 10000 chars` |
 | `idempotencyKey` leer/über 200 | 400 | `idempotencyKey must be a non-empty string of at most 200 chars` |
 | Unbekannte Program-Id | 409 | `unknown program <id>` |
 | `role:"controller"` | 409 | `role "controller" is named but not addressable: …` |
@@ -3705,8 +3705,8 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | `:id/read` unbekannt oder fremd | 404 | `unknown message` |
 
 **Deckel:** `MESSAGES_MAX` = 200 Einträge auf dem GANZEN Record (gelesene fallen zuerst, `dropped`
-zählt) · Text 2000 Zeichen (`MAX_SUPERVISOR_NUDGE_TEXT` — derselbe Deckel wie beim Nudge, damit zwei
-Kanäle nicht zwei Deckel haben) · `idempotencyKey` 200 Zeichen.
+zählt) · Text 10 000 Zeichen (`server/types.ts#MAX_MESSAGE_TEXT`: schützt den Speicher, den der Ring in `fleet.json`
+wächst, nicht das Pane — ein Text über 32 KiB kommt als Zeiger-Zeile) · `idempotencyKey` 200 Zeichen.
 
 **Payload-Union.** Heute genau ein Mitglied, `{kind:"text", text}`. Ein unbekannter `payload.kind`
 wird mit benanntem Satz **abgelehnt**, der Record trägt `v:1`. **Was das beweist und was nicht:** es

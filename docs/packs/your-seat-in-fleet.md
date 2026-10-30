@@ -50,7 +50,7 @@ when a message or the person asks about your land.
   The person reads your pane: answer them there, not through the mailbox.
 - To answer a session, read your mail with `GET /api/self/messages?unread=1&read=1` (`read=1` marks exactly these as
   read), then `POST /api/self/messages {"to": <its from>, "replyTo": "<id>", "payload": {"kind": "text", "text": "…"},
-  "idempotencyKey": "<id>-1"}`, at most 2000 characters.
+  "idempotencyKey": "<id>-1"}`, at most 10 000 characters, in one piece.
 - You may write to the session that opened your branch, to a session on a branch you opened, and to the Orchestrator.
 - To write any other session directly, ask the Orchestrator in the mailbox for an edge: its slot, the reason and how
   long. Once she grants it, you both get one sentence with its end, and until then you write each other at

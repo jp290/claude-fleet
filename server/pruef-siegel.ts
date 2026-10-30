@@ -9,7 +9,8 @@
 //   · Was es deckt: nur seine eigenen Units (deckung). Ein Siegel mit Baum T deckt nichts für Baum T'. Für jede Unit entscheidet das
 //     NEUESTE Siegel, das sie nennt: ist es rot, ist die Unit ungedeckt (ein Rot wird neu gelaufen, es zählt nie als „schon geprüft“).
 //   · Was NICHT reist: ein Urteil (Adjudikation) — es steht in keiner Siegel-Zeile, und ein Feld, das ein Siegel nicht kennt, wird beim
-//     Lesen verworfen. Plattform und bun-Version stehen im Siegel und werden angezeigt; ein Flag „plattformgebunden“ gibt es nicht.
+//     Lesen verworfen. Plattform und bun-Version stehen im Siegel und werden angezeigt. Ungebunden ist der Standard: nur eine ausdrücklich markierte Unit
+//     (e2e/ctx.ts#ShardUnit.plattformGebunden, heute keine) verlangt ein Siegel der Plattform des Fragenden (deckung).
 //   · VERTRAUEN: ein Siegel kann schreiben, wer auf den Hub pushen kann; das Deploy-Tor glaubt ihm so, wie es heute dem Helfer glaubt,
 //     und jedes Siegel nennt seinen Lauf (Maschine + Run-Ordner), damit „grün“ nachprüfbar bleibt.
 import { hostname } from "node:os";
@@ -80,17 +81,26 @@ export function siegelAusZeile(line: string): Siegel | null {
     plattform: { os: p.os.slice(0, 20), arch: p.arch.slice(0, 20), bun: p.bun.slice(0, 20) }, lauf: r.lauf, at: r.at };
 }
 
+/** `plattform`: die des Fragenden (Standard: diese Maschine); `gebunden`: ob eine Unit plattformgebunden ist (Standard: die Markierung in ShardUnit). */
+export interface PlattformRegel { plattform?: string; gebunden?: (unit: string) => boolean }
+const istPlattformGebunden = (unit: string): boolean => SHARD_UNITS.some((u) => u.unit === unit && u.plattformGebunden === true);
+
 /**
  * Was die Siegel zu den geforderten Units decken. Nur ein grünes Siegel deckt; für jede Unit gilt das NEUESTE Siegel, das sie nennt
  * (ist es rot, bleibt sie in der Lücke). Die Quellen sind die Siegel, die wirklich etwas beitragen, je mit ihrem Beitrag.
  */
-export function deckung(siegel: readonly Siegel[], gefordert: readonly string[]): Deckung {
+export function deckung(siegel: readonly Siegel[], gefordert: readonly string[], opts: PlattformRegel = {}): Deckung {
+  const hier = opts.plattform ?? plattformHier().os;
+  const gebunden = opts.gebunden ?? istPlattformGebunden;
   const neuesteZuerst = [...siegel].sort((a, b) => b.at - a.at);
   const gedeckt: string[] = [];
   const luecke: string[] = [];
   const beitrag = new Map<Siegel, string[]>();
   for (const unit of gefordert) {
-    const massgeblich = neuesteZuerst.find((s) => s.units.includes(unit));
+    // DIE PLATTFORM-REGEL: ungebunden ist der Standard, ein Siegel jeder Plattform deckt die Unit. Nur eine ausdrücklich gebundene Unit
+    // (ShardUnit.plattformGebunden) zählt allein das Siegel der Plattform des Fragenden; ein Siegel der anderen deckt sie nicht, und der Fragende fährt sie.
+    const passt = (s: Siegel): boolean => !gebunden(unit) || s.plattform.os === hier;
+    const massgeblich = neuesteZuerst.find((s) => s.units.includes(unit) && passt(s));
     if (massgeblich && massgeblich.ergebnis === "green") {
       gedeckt.push(unit);
       beitrag.set(massgeblich, [...(beitrag.get(massgeblich) ?? []), unit]);

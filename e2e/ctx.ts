@@ -122,7 +122,10 @@ export interface StewardCtx {
 // main b13548f5 plus this cut, beside the measurement of the old shard 1 on band 5): 1 347, 1 185, 963
 // and 1 024 s; the 38 k15 start mutants alone take 2 797 s of them, ~74 s each. The old shard 1 on the
 // same tree took 4 874 s (hand run 1024041054-nd-main, units=dom mutants=1).
-export interface ShardUnit { unit: string; seconds: number; modules: readonly string[]; mutantsOf?: string }
+// `plattformGebunden`: die Unit prüft etwas, das nur auf der eigenen Plattform gilt (tmux-Locale, WebKit, Pfade). Standard UNGEBUNDEN (Orchestratorin
+// 30.10.): nur eine ausdrücklich markierte Unit verlangt ein Prüf-Siegel DERSELBEN Plattform (server/pruef-siegel.ts#deckung). Heute ist keine markiert;
+// die Liste wird eine eigene Messung (dieselben Units auf beiden Plattformen, was abweicht, ist gebunden), nicht geraten.
+export interface ShardUnit { unit: string; seconds: number; modules: readonly string[]; mutantsOf?: string; plattformGebunden?: true }
 export const SHARD_UNITS: readonly ShardUnit[] = [
   { unit: "pure", seconds: 1, modules: ["context-plan", "model-scan", "api-stall", "prompts"] },
   { unit: "context-packs", seconds: 14, modules: ["context-packs"] },

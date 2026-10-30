@@ -110,6 +110,21 @@ describe("Deckung", () => {
     // ein neueres Grün macht die Unit wieder gedeckt
     expect(deckung([siegel(T, { at: 1, units: ["core"], ergebnis: "red" }), siegel(T, { at: 2, units: ["core"], lauf: "g" })], ["core"]).luecke).toEqual([]);
   });
+  test("Plattform: ungebunden ist der Standard; nur eine ausdrücklich gebundene Unit verlangt ein Siegel derselben Plattform", () => {
+    const linux = siegel(T, { units: ["core", "tmux-locale"], plattform: { os: "linux", arch: "x64", bun: "1.3.0" } });
+    const darwin = siegel(T, { units: ["tmux-locale"], plattform: { os: "darwin", arch: "arm64", bun: "1.3.0" }, lauf: "mac-lauf", at: 2 });
+    const gebunden = (u: string): boolean => u === "tmux-locale"; // im Test als darwin-gebunden markiert
+    // der Mac fragt: die gebundene Unit deckt das Linux-Siegel nicht, die ungebundene weiter
+    const mac = deckung([linux], ["core", "tmux-locale"], { plattform: "darwin", gebunden });
+    expect(mac.gedeckt).toEqual(["core"]);
+    expect(mac.luecke).toEqual(["tmux-locale"]);
+    // ein Siegel der Plattform des Fragenden deckt sie
+    expect(deckung([linux, darwin], ["core", "tmux-locale"], { plattform: "darwin", gebunden }).luecke).toEqual([]);
+    // der WH (linux) fragt dasselbe: sein Linux-Siegel deckt auch die gebundene Unit
+    expect(deckung([linux], ["core", "tmux-locale"], { plattform: "linux", gebunden }).luecke).toEqual([]);
+    // heute ist keine Unit gebunden: dasselbe Linux-Siegel deckt für den Mac alles, was es lief
+    expect(deckung([linux], ["core", "tmux-locale"], { plattform: "darwin" }).luecke).toEqual([]);
+  });
   test("ein Urteil reist nie: ein unbekanntes Feld fällt beim Lesen weg, Unlesbares ist null", () => {
     const line = JSON.stringify({ ...siegel(T), adjudication: { verdict: "flake" }, verdict: "flake" });
     const s = siegelAusZeile(line)!;

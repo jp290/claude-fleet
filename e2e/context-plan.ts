@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, lstatSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { codexPermissionsFrom } from "../server/types";
+import { freshSuccessionAppendix, FRESH_TAIL_MAX } from "../server/brief-platz";
 import { piZaiFenceProfile } from "../server/pi-zai-fence";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -1844,7 +1845,8 @@ async function ownerSuccessionPermissionsChecks(check: ContextPlanCheck): Promis
   const doorFor = (slot: Record<string, unknown>, late: unknown, seen: { effects: number; spawn: unknown; appendix: string | null },
     cache: "warm" | "kalt" = "warm", summary: string | null = null) => {
     const claude = { id: "claude", supports: { transcript: false } };
-    const deps = { codexPermissionsFrom, CLAUDE_HARNESS: claude,
+    // freshSuccessionAppendix and the transcript-rest cap live in server/brief-platz.ts, outside the source slice cut above
+    const deps = { codexPermissionsFrom, freshSuccessionAppendix, FRESH_TAIL_MAX, CLAUDE_HARNESS: claude,
       HARNESSES: [claude, { id: "codex", supports: { transcript: false },
         permissions: { default: { sandbox: "danger-full-access", approval: "never" } } }],
       programs: [], STEWARD_LABEL: "steward", MERGE_IDLE_MS: 1000,

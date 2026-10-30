@@ -13,8 +13,9 @@
 //     (e2e/ctx.ts#ShardUnit.plattformGebunden, heute keine) verlangt ein Siegel der Plattform des Fragenden (deckung).
 //   · VERTRAUEN: ein Siegel kann schreiben, wer auf den Hub pushen kann; das Deploy-Tor glaubt ihm so, wie es heute dem Helfer glaubt,
 //     und jedes Siegel nennt seinen Lauf (Maschine + Run-Ordner), damit „grün“ nachprüfbar bleibt.
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { SHARD_UNITS } from "../e2e/ctx";
+import { join } from "node:path";
 
 export const SIEGEL_REF = "refs/notes/fleet/seal";
 export const SIEGEL_HUB_REF = "refs/notes/fleet/seal-hub";
@@ -59,9 +60,32 @@ export function maschinenName(env: Record<string, string | undefined> = process.
 }
 export const plattformHier = (): Siegel["plattform"] => ({ os: process.platform, arch: process.arch, bun: Bun.version });
 
-/** Die Units einer Suite ohne Mutanten-Scheiben, ohne die geskippten (die Tabelle eines Laufs, e2e/ctx.ts#unitsOfRun). */
+// DIE TABELLE: dieses Modul importiert nichts aus e2e/ — die Fixture- und Scratch-Server der e2e-Suite kopieren server/ ohne e2e/, und ein Import von
+// "../e2e/ctx" ließ sie beim Start sterben (Check 30.10., Run 1030020630-eece66ec). Es liest den Quelltext von e2e/ctx.ts beim Laden selbst; fehlt die Datei oder
+// ist sie nicht lesbar, ist die Tabelle null: dann gibt es keine geschuldeten Units, keine Deckung und kein Ja am Deploy-Tor (fail closed), und der Server läuft sonst weiter.
+interface Einheit { unit: string; mutant: boolean; gebunden: boolean }
+/** Die Einträge von SHARD_UNITS aus dem Quelltext einer Tabelle; null, wenn der Block fehlt oder leer ist. */
+export function tabelleAusQuelltext(text: string): Einheit[] | null {
+  const start = text.indexOf("export const SHARD_UNITS");
+  if (start < 0) return null;
+  const open = text.indexOf("= [", start);
+  const end = open < 0 ? -1 : text.indexOf("\n];", open);
+  if (open < 0 || end < 0) return null;
+  const found = [...text.slice(open, end).matchAll(/\{\s*unit:\s*"([a-z0-9-]+)"([^}]*)\}/g)]
+    .map((m): Einheit => ({ unit: m[1]!, mutant: /mutantsOf:/.test(m[2]!), gebunden: /plattformGebunden:\s*true/.test(m[2]!) }));
+  return found.length ? found : null;
+}
+/** Die Unit-Namen (mit „!“ für plattformGebunden), sortiert, aus dem Quelltext einer Tabelle; null, wenn sie nicht lesbar ist. */
+export function einheitenAusQuelltext(text: string): string[] | null {
+  return tabelleAusQuelltext(text)?.map((e) => e.unit + (e.gebunden ? "!" : "")).sort() ?? null;
+}
+const LAUFENDE_TABELLE: Einheit[] | null = (() => {
+  try { return tabelleAusQuelltext(readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"), "utf8")); } catch { return null; }
+})();
+
+/** Die Units einer Suite ohne Mutanten-Scheiben, ohne die geskippten (die Tabelle eines Laufs, e2e/ctx.ts#unitsOfRun). Ohne lesbare Tabelle: keine. */
 export const geforderteUnits = (skip: readonly string[] = []): string[] =>
-  SHARD_UNITS.filter((u) => !u.mutantsOf && !skip.includes(u.unit)).map((u) => u.unit);
+  (LAUFENDE_TABELLE ?? []).filter((u) => !u.mutant && !skip.includes(u.unit)).map((u) => u.unit);
 
 /** Eine Zeile aus einer Note, streng gelesen. Unbekannte Felder (etwa ein Urteil) fallen weg; Unlesbares ist null. */
 export function siegelAusZeile(line: string): Siegel | null {
@@ -83,7 +107,7 @@ export function siegelAusZeile(line: string): Siegel | null {
 
 /** `plattform`: die des Fragenden (Standard: diese Maschine); `gebunden`: ob eine Unit plattformgebunden ist (Standard: die Markierung in ShardUnit). */
 export interface PlattformRegel { plattform?: string; gebunden?: (unit: string) => boolean }
-const istPlattformGebunden = (unit: string): boolean => SHARD_UNITS.some((u) => u.unit === unit && u.plattformGebunden === true);
+const istPlattformGebunden = (unit: string): boolean => LAUFENDE_TABELLE?.some((u) => u.unit === unit && u.gebunden) === true;
 
 /**
  * Was die Siegel zu den geforderten Units decken. Nur ein grünes Siegel deckt; für jede Unit gilt das NEUESTE Siegel, das sie nennt
@@ -211,18 +235,7 @@ export const vergesseAbruf = (): void => { zuletztGeholt = 0; };
 // Plattform-Marke eine andere, deckt kein Siegel und es läuft die volle Prüfung. Eine geänderte Gewichtung (seconds), Kommentare und Leerraum ändern nichts —
 // sonst schlösse jede solche Änderung das Tor (20 Commits in 30 Tagen). Ist die Tabelle des Zielbaums nicht lesbar, bleibt es zu. Ein Baum ohne
 // e2e/ctx.ts ist keiner von Fleet (ein fremdes Repo): über den sagt die Tabelle nichts.
-/** Die Unit-Namen (mit „!“ für plattformGebunden), sortiert, aus dem Quelltext einer Tabelle; null, wenn der Block fehlt oder leer ist. */
-export function einheitenAusQuelltext(text: string): string[] | null {
-  const start = text.indexOf("export const SHARD_UNITS");
-  if (start < 0) return null;
-  const open = text.indexOf("= [", start);
-  const end = open < 0 ? -1 : text.indexOf("\n];", open);
-  if (open < 0 || end < 0) return null;
-  const found = [...text.slice(open, end).matchAll(/\{\s*unit:\s*"([a-z0-9-]+)"([^}]*)\}/g)]
-    .map((m) => m[1]! + (/plattformGebunden:\s*true/.test(m[2]!) ? "!" : ""));
-  return found.length ? found.sort() : null;
-}
-const LAUFENDE_EINHEITEN: string[] = SHARD_UNITS.map((u) => u.unit + (u.plattformGebunden === true ? "!" : "")).sort();
+const LAUFENDE_EINHEITEN: string[] | null = LAUFENDE_TABELLE ? LAUFENDE_TABELLE.map((u) => u.unit + (u.gebunden ? "!" : "")).sort() : null;
 export async function tabelleStimmt(repo: string, tree: string): Promise<boolean> {
   // ls-tree: Exit 0 und LEERE Ausgabe heißt „der Pfad fehlt im Baum“ (kein Fleet-Baum, ein Ja); jeder Fehler und jede Zeitüberschreitung ist ein Nein
   const r = await git(repo, ["ls-tree", tree, "--", "e2e/ctx.ts"]);
@@ -231,7 +244,7 @@ export async function tabelleStimmt(repo: string, tree: string): Promise<boolean
   const blob = await git(repo, ["cat-file", "blob", r.out.split(/\s+/)[2] ?? ""]);
   if (blob.code !== 0) return false;
   const ziel = einheitenAusQuelltext(blob.out);
-  return ziel !== null && ziel.length === LAUFENDE_EINHEITEN.length && ziel.every((n, i) => n === LAUFENDE_EINHEITEN[i]);
+  return ziel !== null && LAUFENDE_EINHEITEN !== null && ziel.length === LAUFENDE_EINHEITEN.length && ziel.every((n, i) => n === LAUFENDE_EINHEITEN[i]);
 }
 
 /**

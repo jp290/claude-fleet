@@ -3,7 +3,7 @@
 // des Journals startete (sonst hätte das Journal ihre Datei gesehen); eine ältere, deren Datei weg
 // ist, kann gelöscht worden sein — für sie heißt es „unknown".
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TRANSKRIPT_JOURNAL, openTranscriptJournal } from "./transkript-gesehen";
@@ -62,5 +62,17 @@ describe("transkript-gesehen", () => {
     const k = openTranscriptJournal(ganz, () => 3_000);
     expect(k.pastMissingOf("s-1", "pi-zai", 5_000).absent).toBe("deleted");
     expect(k.pastMissingOf("s-2", "pi-zai", 5_000).absent).toBe("deleted");
+  });
+  test("reißt ein Anhängen im laufenden Prozess ab, klebt die nächste Zeile nicht an das Bruchstück", () => {
+    const file = join(dir, "lebend.jsonl");
+    writeFileSync(file, '{"since":1000}\n');
+    const j = openTranscriptJournal(file, () => 2_000);
+    chmodSync(file, 0o444); // das Anhängen scheitert (best effort, kein Wurf)
+    j.noteSeen("s-1");
+    chmodSync(file, 0o644);
+    // was ein abgerissenes Schreiben dagelassen hätte: ein Bruchstück ohne Zeilenende
+    writeFileSync(file, '{"since":1000}\n{"sessionId":"s-ab');
+    j.noteSeen("s-2");
+    expect(openTranscriptJournal(file, () => 3_000).pastMissingOf("s-2", "pi-zai", 5_000).absent).toBe("deleted");
   });
 });

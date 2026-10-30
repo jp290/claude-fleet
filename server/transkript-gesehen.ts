@@ -55,7 +55,7 @@ export function openTranscriptJournal(file: string, now: () => number = Date.now
         if (tornEnd) { appendFileSync(file, "\n"); tornEnd = false; }
         if (headerPending) { appendFileSync(file, `${JSON.stringify({ since })}\n`); headerPending = false; }
         appendFileSync(file, `${JSON.stringify({ sessionId })}\n`);
-      } catch { /* best effort — the in-memory fact still holds for this process */ }
+      } catch { tornEnd = true; /* best effort — the in-memory fact still holds; a write that broke off may have left a torn end */ }
     },
     // startedAt: when the missing session's occupation began (null when no record names it)
     pastMissingOf(sessionId: string, harness: string | null, startedAt: number | null): { absent: PastAbsent; reason: string } {

@@ -29239,10 +29239,10 @@ async function pastTranscript(s: Slot, n: number, after: number) {
   // source null on an ASSIGNED session names why, instead of letting the client's blanket line
   // claim a deletion (transkript-gesehen.ts). The reason is about the PREDECESSOR's harness, which a
   // succession may have changed and the lineage does not keep: the start history holds it per
-  // occupation (slot + openedAt); an occupation it does not name stays unknown.
+  // occupation (slot + openedAt); an occupation it does not name, or a history that cannot be read, stays unknown.
   if (payload.source !== null) return { ...base, assigned: true as const, ctx: past.ctx, ...payload };
   const start = past.occupant
-    ? (await liesHistorie(STATE_DIR, Number.MAX_SAFE_INTEGER)).find((e) => e.slot === past.occupant!.slot && e.openedAt === past.occupant!.openedAt)
+    ? (await liesHistorie(STATE_DIR, Number.MAX_SAFE_INTEGER).catch(() => [])).find((e) => e.slot === past.occupant!.slot && e.openedAt === past.occupant!.openedAt)
     : undefined;
   return { ...base, assigned: true as const, ctx: past.ctx, ...payload,
     ...transcriptJournal.pastMissingOf(past.who.sessionId, start?.harness ?? null, past.startedAt) };

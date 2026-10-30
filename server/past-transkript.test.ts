@@ -10,7 +10,7 @@
 // ordner hält die gelesene Tatsache fest), und eine ohne jede Datei (nie geschrieben).
 // Die Pauschalzeile darf dabei nirgends als Grund ohne Löschung auftauchen.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit } from "./branches-testkit";
 
@@ -210,5 +210,29 @@ describe("die Vorgänger-Station nennt den wahren Grund einer fehlenden Transkri
     expect(claude!.reason ?? "").not.toContain("pi writes");
     expect(ohne!.absent).toBe("unknown");
     expect(pi!.absent).toBe("never-written");
+  }, 90_000);
+  // Die Vorgänger-Ansicht hing vor dem Grund nicht an der Start-Historie: ein Lesefehler dort darf sie nicht zu einem 500 machen.
+  test("pi-zai: eine unlesbare Start-Historie lässt die Ansicht antworten, der Grund heißt unknown", async () => {
+    const f = fixture();
+    const [open] = await life(f, [{ method: "POST", path: "/api/slots/1/open", body: { cwd: f.repo, harness: "pi-zai" } }], extra);
+    expect(open.status).toBe(200);
+    const staat = JSON.parse(readFileSync(join(f.state, "fleet.json"), "utf8")) as {
+      slots: Record<string, Record<string, unknown>>; lineageHandovers?: unknown[] };
+    const t2 = staat.slots["1"]!.openedAt as number, t1 = t2 - 3_600_000;
+    const linie = "7a4".padEnd(24, "0");
+    staat.slots["1"]!.lineageId = linie;
+    staat.lineageHandovers = [...(staat.lineageHandovers ?? []), { v: 1, lineageId: linie, role: "generic", at: t2,
+      from: { slot: 1, openedAt: t1, sessionId: crypto.randomUUID(), cwd: f.repo }, to: { slot: 1, openedAt: t2 }, obligations: [],
+      intent: "unreadable history probe", pointer: null, supersededBy: null }];
+    writeFileSync(join(f.state, "fleet.json"), JSON.stringify(staat, null, 2), { mode: 0o600 });
+    writeFileSync(join(f.state, "transcripts-seen.jsonl"), `${JSON.stringify({ since: t1 - 60_000 })}\n`);
+    // die Historie ist nicht lesbar (EACCES): Lesen scheitert mit etwas anderem als „fehlt"
+    writeFileSync(join(f.state, "start-historie.jsonl"), "{}\n");
+    chmodSync(join(f.state, "start-historie.jsonl"), 0o000);
+    const [antwort] = await life(f, [{ method: "GET", path: "/api/slots/1/succession/1/transcript" }], extra);
+    expect(antwort!.status).toBe(200);
+    const b = antwort!.body as { source?: string | null; absent?: string };
+    expect(b.source).toBeNull();
+    expect(b.absent).toBe("unknown");
   }, 90_000);
 });

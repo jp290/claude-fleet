@@ -114,16 +114,20 @@ function mutantNeedlesStand(sourceRoot: string): void {
     ["timeline", TIMELINE_MUTANTS, ""], ["activity", ACTIVITY_MUTANTS, ""], ["konstellation", KONST_MUTANTS, ""], ["uebergabe", UEB_MUTANTS, ""],
     ["leiste", LEISTE_MUTANTS, ""], ["k15 start", K15_START_MUTANTS, ""], ["k15 start live", K15_START_LIVE_MUTANTS, ""],
   ];
-  const sources = new Map<string, string>();
+  const sources = new Map<string, string | Error>();
   const gone: string[] = [];
   let needles = 0;
   for (const [family, mutants, fallback] of families) {
     for (const m of mutants) {
       const file = m.file ?? fallback;
-      if (!sources.has(file)) sources.set(file, readFileSync(resolve(sourceRoot, file), "utf8"));
+      if (!sources.has(file)) {
+        try { sources.set(file, readFileSync(resolve(sourceRoot, file), "utf8")); } catch (error) { sources.set(file, error as Error); }
+      }
+      const source = sources.get(file)!;
       for (const needle of m.needle !== undefined ? [m.needle] : (m.edits ?? []).map((e) => e[0])) {
         needles++;
-        if (!sources.get(file)!.includes(needle)) gone.push(`${family} — ${m.name} (${file}): ${needle.slice(0, 70)}`);
+        if (source instanceof Error) gone.push(`${family} — ${m.name}: ${file} cannot be read (${source.message.slice(0, 80)})`);
+        else if (!source.includes(needle)) gone.push(`${family} — ${m.name} (${file}): ${needle.slice(0, 70)}`);
       }
     }
   }

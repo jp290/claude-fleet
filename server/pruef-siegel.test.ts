@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { baumVon, deckung, geforderteUnits, geprueftAm, holeSiegel, leseSiegel, planFuer, pushSiegel, schreibeSiegel,
+import { baumVon, deckung, geforderteUnits, geprueftAm, holeSiegel, leseSiegel, planFuer, pushSiegel, schreibeSiegel, tabelleStimmt,
   siegelAusZeile, vergesseAbruf, type Siegel } from "./pruef-siegel";
 
 const base = realpathSync(mkdtempSync(join(tmpdir(), "fleet-siegel-")));
@@ -178,6 +178,14 @@ describe("Deckung", () => {
     expect((await planFuerBaum(fremd)).luecke).toEqual([]);
   });
 
+  test("R2: nur „der Pfad fehlt im Baum“ ist ein Ja; ein Fehler beim Lesen des Baums schließt", async () => {
+    // kein Repository, kein Baum: git antwortet mit einem Fehler, und der ist kein „kein Fleet-Baum“
+    expect(await tabelleStimmt(join(base, "gibt-es-nicht"), "a".repeat(40))).toBe(false);
+    // ein Baum, den das Repository nicht kennt
+    expect(await tabelleStimmt(wh, "b".repeat(40))).toBe(false);
+    // ein lesbarer Baum ohne e2e/ctx.ts bleibt ein Ja
+    expect(await tabelleStimmt(wh, (await baumVon(wh, "HEAD"))!)).toBe(true);
+  });
   test("ohne lesbaren Baum ist alles Lücke", async () => {
     const p = await planFuer(wh, "deadbeef".repeat(5), ["core"]);
     expect(p.tree).toBeNull();

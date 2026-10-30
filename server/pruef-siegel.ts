@@ -217,9 +217,11 @@ const LAUFENDE_TABELLE: string | null = (() => {
   try { return gitBlobHash(readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"))); } catch { return null; }
 })();
 export async function tabelleStimmt(repo: string, tree: string): Promise<boolean> {
-  const r = await git(repo, ["rev-parse", "--verify", "--quiet", `${tree}:e2e/ctx.ts`]);
-  if (r.code !== 0 || !r.out) return true; // kein e2e/ctx.ts im Baum: kein Fleet-Baum
-  return LAUFENDE_TABELLE !== null && r.out === LAUFENDE_TABELLE;
+  // ls-tree: Exit 0 und LEERE Ausgabe heißt „der Pfad fehlt im Baum“ (kein Fleet-Baum, ein Ja); jeder Fehler und jede Zeitüberschreitung ist ein Nein
+  const r = await git(repo, ["ls-tree", tree, "--", "e2e/ctx.ts"]);
+  if (r.code !== 0) return false;
+  if (!r.out) return true;
+  return LAUFENDE_TABELLE !== null && r.out.split(/\s+/)[2] === LAUFENDE_TABELLE;
 }
 
 /**

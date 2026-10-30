@@ -271,6 +271,24 @@ describe("F5: kein Siegel auf dem falschen Baum, und eine Abrechnung führt nie 
   }, 3 * LIFE_DEADLINE_MS);
 });
 
+describe("R1: auch ein Server MIT Audit-Befehl holt die Siegel für den Deploy frisch", () => {
+  test("Hub weg, ein früher geholtes Mac-Siegel deckt den Baum: das Tor öffnet nicht (409), es reiht den eigenen Audit ein", async () => {
+    const { wh, mac } = zweiFleets();
+    const [, , , audits] = await landeUndAuditiere(mac, "mac", umgebung(mac, "mac", attrappe(mac.state).cmd), "r-eins");
+    expect((audits?.body.audits as { result: string }[])[0]?.result).toBe("green");
+    sh(mac.repo, "push", "-q", "hub", "main");
+    sh(wh.repo, "fetch", "-q", "hub");
+    sh(wh.repo, "merge", "-q", "--ff-only", "hub/main");
+    const eWh = umgebung(wh, "wh", attrappe(wh.state).cmd); // der WH HAT einen Audit-Befehl
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], eWh);
+    expect(tip?.body).toMatchObject({ state: "seen" }); // das Mac-Siegel liegt jetzt im Hub-Namensraum des WH
+    rmSync(sh(wh.repo, "remote", "get-url", "hub"), { recursive: true, force: true }); // der Hub ist weg
+    const [refused] = await life(wh, [post("/api/deploy", {})], eWh);
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.reason)).toContain("tip not audited");
+  }, 5 * LIFE_DEADLINE_MS);
+});
+
 describe("F7: eine zusammengesetzte Zeile ohne Lauf bewegt die Ruhe-Uhr nicht", () => {
   test("nach einer Abrechnung aus Siegeln wartet das nächste Land seine eigene Ruhezeit ab, nicht eine ab der Abrechnung", async () => {
     const QUIET = 3_600_000;

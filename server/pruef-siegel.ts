@@ -161,10 +161,11 @@ export function schreibeSiegel(repo: string, s: Siegel, schreiber: string = masc
  * Alle Siegel zu einem Baum aus beiden Namensräumen (eigene Refs und die vom Hub geholten), ohne Doppelte.
  * `fremdFuer`: nur Siegel, die ein ANDERER Schreiber in den Hub gelegt hat — der Ref, nicht das Feld `maschine`, sagt, wessen Fleet es schrieb
  * (der Helfer, der einen Audit der einen Fleet fuhr, trägt den Namen der anderen). Der Hub-Abruf des eigenen Refs zählt nicht.
+ * `nurEigene`: nur die Refs dieser Maschine, keine vom Hub geholten (ein Hub, der gerade nicht antwortet, ist kein Zeuge).
  */
-export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?: string } = {}): Promise<Siegel[]> {
+export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?: string; nurEigene?: true } = {}): Promise<Siegel[]> {
   if (!TREE.test(tree)) return [];
-  const refs = await git(repo, ["for-each-ref", "--format=%(refname)", ...(opts.fremdFuer ? [`${SIEGEL_HUB_REF}/`] : [`${SIEGEL_REF}/`, `${SIEGEL_HUB_REF}/`])]);
+  const refs = await git(repo, ["for-each-ref", "--format=%(refname)", ...(opts.fremdFuer ? [`${SIEGEL_HUB_REF}/`] : opts.nurEigene ? [`${SIEGEL_REF}/`] : [`${SIEGEL_REF}/`, `${SIEGEL_HUB_REF}/`])]);
   if (refs.code !== 0 || !refs.out) return [];
   const seen = new Set<string>();
   const found: Siegel[] = [];
@@ -225,9 +226,9 @@ export async function tabelleStimmt(repo: string, tree: string): Promise<boolean
  * Der Plan eines Audits für einen Stand: was schon gedeckt ist und was noch läuft. `gefordert` sind die Units, die dieser Lauf schulden
  * würde. Ohne lesbaren Baum ist alles Lücke — nicht lesbar heißt ungeprüft.
  */
-export async function planFuer(repo: string, sha: string, gefordert: readonly string[]): Promise<Deckung & { tree: string | null }> {
+export async function planFuer(repo: string, sha: string, gefordert: readonly string[], opts: { nurEigene?: true } = {}): Promise<Deckung & { tree: string | null }> {
   const tree = await baumVon(repo, sha);
   if (!tree) return { tree: null, gedeckt: [], luecke: [...gefordert], quellen: [] };
   if (!(await tabelleStimmt(repo, tree))) return { tree, gedeckt: [], luecke: [...gefordert], quellen: [] };
-  return { tree, ...deckung(await leseSiegel(repo, tree), gefordert) };
+  return { tree, ...deckung(await leseSiegel(repo, tree, opts.nurEigene ? { nurEigene: true } : {}), gefordert) };
 }

@@ -33371,11 +33371,14 @@ const helperTakesSkipUnits = (deviceId: string | undefined): boolean =>
 // nothing and a verdict (adjudication) is in no seal. dom is left out of what the day's audits owe (auditScopeOf), so it stays the gap of a check.
 const sealHub = async (repo: string): Promise<string> => HUB_REMOTE && !(await hubRemoteMissing(repo)) ? HUB_REMOTE : "";
 // What an audit of `sha` still owes. null = no plan: the nightly measures the dom mutants, and no seal stands for those.
-async function sealPlanOf(repo: string, sha: string, trigger: AuditTrigger | undefined, outOfScope: string[]):
+// `frisch` (the deploy gate): the hub is asked without the 30 s throttle, and when a hub is entered and does not answer, the seals fetched from it earlier
+// are no witness — only this machine's own count (R1). Everything else keeps the throttled, best-effort fetch.
+async function sealPlanOf(repo: string, sha: string, trigger: AuditTrigger | undefined, outOfScope: string[], frisch = false):
   Promise<(Deckung & { tree: string | null }) | null> {
   if (trigger === "nightly") return null;
-  await holeSiegel(repo, await sealHub(repo));
-  return planFuer(repo, sha, geforderteUnits(outOfScope));
+  const hub = await sealHub(repo);
+  const geholt = await holeSiegel(repo, hub, frisch ? 0 : undefined);
+  return planFuer(repo, sha, geforderteUnits(outOfScope), frisch && hub && !geholt ? { nurEigene: true } : {});
 }
 // The scope a helper job gets: the trigger's own (auditScopeOf) plus every unit a green seal of the same tree covers. A complete cover is
 // settled before this is asked (settleFromSeals), so a plan with no gap here is run as before rather than scoped to nothing.
@@ -50792,7 +50795,7 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
   }
   // PRÜF-GEDÄCHTNIS: no row of this machine, but the seals of THIS TREE may cover what a deploy's audit owes (everything but dom, auditScopeOf):
   // then the tip was measured — here or on the other fleet — and nothing is queued twice. The stamp names every source. A red seal covers nothing.
-  const sealed = await sealPlanOf(repo, target, asker, auditScopeOf(asker).skipUnits ?? []);
+  const sealed = await sealPlanOf(repo, target, asker, auditScopeOf(asker).skipUnits ?? [], deploy);
   if (sealed && sealed.quellen.length && sealed.luecke.length === 0)
     return { state: "seen", stamp: { at: Math.max(...sealed.quellen.map((q) => q.at)), result: "green", quellen: sealed.quellen } };
   const watch = `watch {"kind":"audit","repo":${JSON.stringify(repo)},"mainAfter":"${target}"}`

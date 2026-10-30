@@ -57,6 +57,8 @@ describe("derselbe Baum über WH-Land und Hub-Push, genau einmal voll auditiert"
     expect(tipWh?.body).toMatchObject({ queued: true });
     expect((audits?.body.audits as { result: string }[]).map((r) => r.result)).toEqual(["green"]);
     expect(a.laeufe()).toHaveLength(1);
+    // ein Lauf auf diesem Server trägt die Plattform dieses Servers
+    expect((await leseSiegel(wh.repo, (await baumVon(wh.repo, "main"))!)).find((x) => x.tiefe === "audit")!.plattform.os).toBe(process.platform);
 
     // der Hub-Push: die Branch-Land-Tür schiebt main nicht selbst (docs/packs/advanced-features.md), das tut der Owner; das Siegel schob
     // seinen Ref beim Schreiben. Auf dem Mac liegt nichts davon, bis er sync-t.
@@ -225,6 +227,8 @@ describe("das Siegel aus der Ergebniszeile eines Helfers", () => {
     expect(siegel).toHaveLength(1);
     expect(siegel[0]).toMatchObject({ ergebnis: "green", maschine: "testgeraet", units: ["lanes"] });
     expect(siegel[0]!.lauf).toMatch(/^helper-/);
+    // R3: das Gerät meldet seine Plattform nicht; der Server schreibt nicht seine eigene darunter
+    expect(siegel[0]!.plattform).toEqual({ os: "unbekannt", arch: "-", bun: "-" });
     expect(deckung(await leseSiegel(f.repo, tree), geforderteUnits(["dom"])).luecke).toEqual([]);
     expect(jobs?.status).toBe(200);
   }, 3 * LIFE_DEADLINE_MS);
@@ -350,6 +354,7 @@ describe("der Shard-Weg des Helfers", () => {
     expect(siegel).toHaveLength(1);
     expect(siegel[0]).toMatchObject({ ergebnis: "green", units: ["lanes"] });
     expect(siegel[0]!.lauf).toMatch(/^shards-/);
+    expect(siegel[0]!.plattform.os).toBe("unbekannt");
   }, 3 * LIFE_DEADLINE_MS);
 
   test("volle Deckung: der Shard-Claim endet mit 409 „settled from the seals“, die Zeile steht grün, es läuft nichts", async () => {

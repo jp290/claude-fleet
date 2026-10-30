@@ -33393,7 +33393,7 @@ async function auditScopeWithSeals(repo: string, sha: string, trigger: AuditTrig
 // Written to the LOCAL note BEFORE the row (a reader who waits for the row finds it); the push to the hub comes AFTER the row (sealPushAfter), so a hub
 // that does not answer never holds a result route (the helper daemon gives up on /api/helper/result after 10 s). A failure here is a log line: the
 // seal is a memory, not the verdict.
-async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string, maschine: string): Promise<void> {
+async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string, maschine: string, plattform = plattformHier()): Promise<void> {
   try {
     if ((row.result !== "green" && row.result !== "red") || row.proportional || row.cmdSource === "check-command"
       || row.cmdSource === "repo-worker" || !units.length || !row.mainSha) return;
@@ -33401,7 +33401,7 @@ async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string
     if (row.remote?.clonedSha && row.remote.clonedSha !== row.mainSha) return;
     const tree = await baumVon(row.repo, row.mainSha);
     if (!tree) return;
-    const ok = await schreibeSiegel(row.repo, { v: 1, tree, units, tiefe: "audit", ergebnis: row.result, maschine, plattform: plattformHier(),
+    const ok = await schreibeSiegel(row.repo, { v: 1, tree, units, tiefe: "audit", ergebnis: row.result, maschine, plattform,
       lauf, at: row.at });
     if (!ok) console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} could not be written`);
   } catch (e) {
@@ -33409,6 +33409,8 @@ async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string
   }
 }
 // …and the push, after the row, waiting at most 3 s: the git push goes on in the background past that, and a refused or failed one is logged by pushSiegel
+// …what a seal of a HELPER job says about the platform: the device does not report one, and this server's own would be a guess about another machine
+const SEAL_PLATTFORM_UNBEKANNT = { os: "unbekannt", arch: "-", bun: "-" };
 async function sealPushAfter(repo: string): Promise<void> {
   try {
     const hub = await sealHub(repo);
@@ -37205,7 +37207,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   markAuditClaimable(repo, now);
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
   // PRÜF-GEDÄCHTNIS: the units this helper job ran (the table minus the scope it was handed) are sealed BEFORE the row
-  await sealAuditRow(row, geforderteUnits(claim.scope?.skipUnits ?? []), `helper-${claim.id}`, sealMachineOf(claim.name));
+  await sealAuditRow(row, geforderteUnits(claim.scope?.skipUnits ?? []), `helper-${claim.id}`, sealMachineOf(claim.name), SEAL_PLATTFORM_UNBEKANNT);
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   await sealPushAfter(row.repo);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
@@ -37627,7 +37629,7 @@ async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise
   markAuditClaimable(run.repo, now);
   try { rmSync(run.bundle, { force: true }); } catch { /* the helpers have their copies */ }
   await sealAuditRow(row, geforderteUnits(run.scope?.skipUnits ?? []), `shards-${jobId ?? row.remote?.jobId ?? run.shards[0]?.jobId ?? "run"}`,
-    sealMachineOf(row.remote?.name ?? "helper"));
+    sealMachineOf(row.remote?.name ?? "helper"), SEAL_PLATTFORM_UNBEKANNT);
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   await sealPushAfter(row.repo);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);

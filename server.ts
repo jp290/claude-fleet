@@ -33391,6 +33391,8 @@ async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string
   try {
     if ((row.result !== "green" && row.result !== "red") || row.proportional || row.cmdSource === "check-command"
       || row.cmdSource === "repo-worker" || !units.length || !row.mainSha) return;
+    // a helper that ran ANOTHER commit than the one this row is filed under measured another tree: its seal would sit on the wrong one
+    if (row.remote?.clonedSha && row.remote.clonedSha !== row.mainSha) return;
     const tree = await baumVon(row.repo, row.mainSha);
     if (!tree) return;
     const ok = await schreibeSiegel(row.repo, { v: 1, tree, units, tiefe: "audit", ergebnis: row.result, maschine, plattform: plattformHier(),
@@ -33411,18 +33413,24 @@ async function sealPushAfter(repo: string): Promise<void> {
 const sealMachineOf = (name: string): string => maschinenName({ FLEET_MACHINE: name });
 // An entry whose tree the seals cover COMPLETELY owes no run, whoever would have claimed it: the row is composed from the seals (runPostLandAudit's
 // composed path spawns nothing) and the covers are consumed exactly as the drain consumes them. Asked at the helper's door before a bundle is built.
-async function settleFromSeals(repo: string, q: { main: string; covers: AuditCover[] }, trigger: AuditTrigger | undefined): Promise<boolean> {
+// COMPOSED OR NOTHING: the settlement never runs a suite. runPostLandAudit is told `composeOnly` and declines (DECLINED) when its own plan, read at
+// the tip it resolves THEN, is no longer complete — main moved to another tree, a newer red turned up — and the covers stay queued for a real run.
+// `nach` is a test seam: awaited between the check and the run, it is where a land can move main.
+async function settleFromSeals(repo: string, q: { main: string; covers: AuditCover[] }, trigger: AuditTrigger | undefined,
+  nach?: () => Promise<void>): Promise<boolean> {
   if (trigger === "nightly" || auditRunningRepo !== null || helperClaimOf(repo) || auditShardRuns.has(repo) || !q.covers.length) return false;
   const tip = await git(repo, "rev-parse", q.main);
   if (tip.code !== 0 || !tip.out) return false;
   const out = auditScopeOf(trigger).skipUnits ?? [];
   const plan = await sealPlanOf(repo, tip.out, trigger, out);
   if (!plan || plan.luecke.length || !plan.quellen.length) return false;
+  await nach?.();
   if (auditRunningRepo !== null || helperClaimOf(repo) || auditShardRuns.has(repo)) return false; // taken while the seals were read
   auditRunningRepo = repo;
   try {
     const covers = q.covers.slice();
-    const refused = await runPostLandAudit(repo, q.main, covers, false, trigger, out);
+    const refused = await runPostLandAudit(repo, q.main, covers, false, trigger, out, true);
+    if (refused === DECLINED) return false; // the plan did not hold at the run: nothing was consumed, nothing was measured
     q.covers.splice(0, covers.length);
     for (const r of refused) enqueueAuditCover(repo, r.main, r.cover);
     settleAuditEntry(repo);
@@ -33435,6 +33443,11 @@ async function settleFromSeals(repo: string, q: { main: string; covers: AuditCov
     if (runningPostLandAudit?.repo === repo) runningPostLandAudit = null;
   }
   return true;
+}
+// for the tests (server/branches.drive.ts): settle the queued entry of a repo from its seals, with the seam above
+async function settleQueuedFromSeals(repo: string, trigger: AuditTrigger | undefined, nach?: () => Promise<void>): Promise<boolean> {
+  const q = auditQueue.get(repo);
+  return q ? await settleFromSeals(repo, q, trigger, nach) : false;
 }
 // THE NIGHTLY TICK — the one timer the cadence owns (armAuditCadenceKick) calls it, and so does boot.
 // Not a second scheduler: it decides nothing but "is tonight's run of this repo queued yet", writes
@@ -34979,8 +34992,10 @@ async function splitAuditCovers(repo: string, main: string, mainSha: string, cov
 }
 // Returns the covers the run REFUSED to claim, each with the branch to requeue it on; the drain
 // puts them back in the same turn it consumes the rest.
+// what runPostLandAudit returns when it was asked to compose only and the seals no longer cover the tip it resolved (compared by identity)
+const DECLINED: { main: string; cover: AuditCover }[] = [];
 async function runPostLandAudit(repo: string, main: string, covers: AuditCover[],
-  proportional: boolean, trigger?: AuditTrigger, outOfScope: string[] = []): Promise<{ main: string; cover: AuditCover }[]> {
+  proportional: boolean, trigger?: AuditTrigger, outOfScope: string[] = [], composeOnly = false): Promise<{ main: string; cover: AuditCover }[]> {
   // Asked even on the short-chain path, and deliberately: an entry whose repo has no audit command
   // any more is PARKED, and a parked entry must stay unmeasured rather than quietly acquire a
   // fleet-shaped chain nobody configured. The short chain REPLACES a configured command; it never
@@ -35046,6 +35061,7 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
         sealPlan = await sealPlanOf(repo, mainSha, trigger, outOfScope);
       // A COMPLETE COVER owes no run: the row is composed from the seals and says so in `quellen`
       const composed = sealPlan !== null && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0;
+      if (composeOnly && !composed) return DECLINED;
       const snapErr = composed ? null : await snapshotIntegrationTree(repo, mainSha, dir, proportional);
       if (snapErr) {
         reason = snapErr;
@@ -57757,4 +57773,4 @@ if (process.stdout.isTTY) {
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
-  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme };
+  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals };

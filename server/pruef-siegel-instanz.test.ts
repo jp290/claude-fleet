@@ -242,6 +242,35 @@ describe("das Siegel aus der Ergebniszeile eines Helfers", () => {
   }, 3 * LIFE_DEADLINE_MS);
 });
 
+describe("F5: kein Siegel auf dem falschen Baum, und eine Abrechnung führt nie eine Suite aus", () => {
+  test("ein Helfer, der einen anderen Commit fuhr (clonedSha), siegelt nicht; der Lauf mit passendem clonedSha siegelt", async () => {
+    const dev = { deviceId: "testgeraet07", name: "testgeraet", features: ["audit-skip-units"] };
+    const lauf = async (name: string, clonedSha: string) => {
+      const { f, tree, e, land } = await helferFixture(name);
+      const r = await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet07"),
+        post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+        post("/api/helper/result", { jobId: "$2.jobs.0.id", exitCode: 0, tail: GRUEN, clonedSha }),
+        { until: reihe(f), ms: 5_000 }], e);
+      expect(r.slice(0, 5).map((x) => x.status)).toEqual([200, 200, 200, 200, 200]); // Land, Gerät, Jobs, Claim, Ergebnis
+      return (await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit");
+    };
+    expect(await lauf("fremdsha", "a".repeat(40))).toHaveLength(0);
+    expect(await lauf("gleichsha", "$0.sha")).toHaveLength(1);
+  }, 5 * LIFE_DEADLINE_MS);
+
+  test("bewegt ein Land main zwischen Prüfung und Lauf auf einen anderen Baum, rechnet die Abrechnung nicht ab und fährt keine Suite", async () => {
+    const { f, e, land } = await helferFixture("beweglich", {}, geforderteUnits(["dom"]));
+    const a = attrappe(f.state);
+    const [, abgerechnet, audits] = await life(f, [land,
+      { abrechnen: { repo: f.repo, trigger: "quiet", bewege: { datei: "land-dazwischen.txt", text: "ein anderer Baum\n" } } },
+      get("/api/post-land-audits")], e);
+    expect(abgerechnet?.body.abgerechnet).toBe(false);
+    expect(a.laeufe()).toHaveLength(0);
+    expect(audits?.body.audits).toEqual([]);
+    expect((audits?.body.pending as { covers: number }[])[0]?.covers).toBe(1);
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
 describe("F4: der Siegel-Push hält die Antwort an den Helfer nicht auf", () => {
   test("ein Hub, der den Push 20 s festhält: die Ergebniszeile steht, die Antwort kommt nach höchstens 3 s Push-Wartezeit, das Siegel liegt lokal", async () => {
     const { f, tree, e, land } = await helferFixture("langsamerhub");

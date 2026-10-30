@@ -40,12 +40,15 @@ if (!arg) throw new Error("keine Schritte");
 // "end": ein Durchgang des Endes gelandeter Branches (server.ts#endLandedBranchesNow), Antwort 200 mit seinem Ergebnis.
 // `background`: die Anfrage läuft los, ohne dass der nächste Schritt auf sie wartet; ihre Antwort steht an ihrem Platz,
 // sobald das Leben endet. `touch`: legt eine leere Datei an (das `.release` eines Test-Riegels), Antwort 200
+// `abrechnen`: die wartende Prüfung dieses Repos aus ihren Siegeln abrechnen (server.ts#settleQueuedFromSeals); `bewege`: eine Datei, die zwischen der Prüfung
+// des Plans und dem Lauf auf main committet wird (ein Land, das main auf einen anderen Baum bewegt)
+interface Abrechnen { abrechnen: { repo: string; trigger?: string; bewege?: { datei: string; text: string } } }
 interface Background { background: Step }
 interface Touch { touch: string }
 // "abwarten": bis jede `background`-Anfrage geantwortet hat, Antwort 200
-const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | "end" | "save" | "abwarten")[];
+const steps = JSON.parse(arg) as (Step | Until | Rohr | Background | Touch | Datei | Warte | Postfach | Geparkt | Ausgabe | Abrechnen | "end" | "save" | "abwarten")[];
 
-const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom }
+const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, endLandedBranchesNow, saveStateNow, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, settleQueuedFromSeals, slotFrom }
   = await import("../server");
 const t0 = Date.now();
 await loadStateAndReap(join(stateDir, "fleet.json"));
@@ -92,6 +95,16 @@ for (const step of steps) {
   if (typeof step === "object" && "touch" in step) { writeFileSync(step.touch, ""); out.push({ status: 200, body: { touch: step.touch } }); continue; }
   if (step === "abwarten") { await Promise.all(pending); out.push({ status: 200, body: { abgewartet: pending.length } }); continue; }
   if (step === "end") { out.push({ status: 200, body: await endLandedBranchesNow() }); continue; }
+  if ("abrechnen" in step) {
+    const { repo, trigger, bewege } = step.abrechnen;
+    const nach = bewege ? async (): Promise<void> => {
+      writeFileSync(join(repo, bewege.datei), bewege.text);
+      for (const a of [["add", bewege.datei], ["commit", "-q", "-m", "ein Land bewegt main"]])
+        if (Bun.spawnSync(["git", "-C", repo, ...a]).exitCode !== 0) throw new Error(`git ${a.join(" ")} schlug fehl`);
+    } : undefined;
+    out.push({ status: 200, body: { abgerechnet: await settleQueuedFromSeals(repo, trigger as never, nach) } });
+    continue;
+  }
   if ("datei" in step) { writeFileSync(step.datei, step.text); await Bun.sleep(step.ms); out.push({ status: 200, body: { datei: step.datei } }); continue; }
   if ("ausgabe" in step) {
     const s = slotFrom(step.ausgabe);

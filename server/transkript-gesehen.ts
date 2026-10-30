@@ -27,9 +27,13 @@ export const PAST_MISSING_UNKNOWN = "No transcript file exists for this session 
 export function openTranscriptJournal(file: string, now: () => number = Date.now) {
   const seen = new Set<string>();
   let since: number | null = null;
+  // a crash can leave the last line without its newline: the next append must not glue itself to it
+  let tornEnd = false;
   if (existsSync(file)) {
     try {
-      for (const line of readFileSync(file, "utf8").split("\n")) {
+      const text = readFileSync(file, "utf8");
+      tornEnd = text !== "" && !text.endsWith("\n");
+      for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         try {
           const row = JSON.parse(line) as { sessionId?: unknown; since?: unknown };
@@ -48,6 +52,7 @@ export function openTranscriptJournal(file: string, now: () => number = Date.now
       if (!sessionId || seen.has(sessionId)) return;
       seen.add(sessionId);
       try {
+        if (tornEnd) { appendFileSync(file, "\n"); tornEnd = false; }
         if (headerPending) { appendFileSync(file, `${JSON.stringify({ since })}\n`); headerPending = false; }
         appendFileSync(file, `${JSON.stringify({ sessionId })}\n`);
       } catch { /* best effort — the in-memory fact still holds for this process */ }

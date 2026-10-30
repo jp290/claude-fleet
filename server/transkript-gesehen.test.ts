@@ -48,4 +48,19 @@ describe("transkript-gesehen", () => {
     expect(j.pastMissingOf("s-1", "pi-zai", 5_000).absent).toBe("deleted");
     expect(j.pastMissingOf("s-2", "pi-zai", 5_000).absent).toBe("unknown");
   });
+  test("ein abgerissenes Ende ohne Zeilenumbruch klebt die nächste Zeile nicht an: die Sitzung gilt nach dem Neuladen als gesehen", () => {
+    const file = join(dir, "abgerissen.jsonl");
+    writeFileSync(file, '{"since":1000}\n{"sessionId":"s-1"}\n{"sessionId":"s-ab');
+    openTranscriptJournal(file, () => 2_000).noteSeen("s-2");
+    const j = openTranscriptJournal(file, () => 3_000);
+    expect(j.pastMissingOf("s-2", "pi-zai", 5_000).absent).toBe("deleted");
+    expect(j.pastMissingOf("s-1", "pi-zai", 5_000).absent).toBe("deleted");
+    // auch ein vollständiges letztes Objekt ohne Umbruch behält seine Aussage
+    const ganz = join(dir, "ganz.jsonl");
+    writeFileSync(ganz, '{"since":1000}\n{"sessionId":"s-1"}');
+    openTranscriptJournal(ganz, () => 2_000).noteSeen("s-2");
+    const k = openTranscriptJournal(ganz, () => 3_000);
+    expect(k.pastMissingOf("s-1", "pi-zai", 5_000).absent).toBe("deleted");
+    expect(k.pastMissingOf("s-2", "pi-zai", 5_000).absent).toBe("deleted");
+  });
 });

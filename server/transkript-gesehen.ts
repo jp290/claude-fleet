@@ -16,6 +16,9 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 // Tolerant on load like every append-only file here: a torn or bad line is skipped, never fatal.
 // The journal may only ever make a reason more specific, never wrong.
 
+// The journal lives in the state dir, which is the checkout itself (STATE_DIR): .gitignore must name it.
+export const TRANSKRIPT_JOURNAL = "transcripts-seen.jsonl";
+
 export type PastAbsent = "deleted" | "never-written" | "unknown";
 export const PAST_DELETED = "This session's transcript file is no longer on disk — Fleet read it before, and it has been removed since";
 export const PAST_NEVER_WRITTEN = "This occupation never wrote a session file — pi writes one only once the session has its first message, and this occupation ended before its first turn";

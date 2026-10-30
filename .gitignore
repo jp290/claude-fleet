@@ -118,6 +118,7 @@ field-perf.jsonl.1
 /context-borrows.jsonl
 /postfach-versuche.jsonl
 /start-historie.jsonl
+/transcripts-seen.jsonl
 /sitz-start/
 /orchestrator-start/
 /start-fassungen/

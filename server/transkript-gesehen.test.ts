@@ -6,12 +6,19 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openTranscriptJournal } from "./transkript-gesehen";
+import { TRANSKRIPT_JOURNAL, openTranscriptJournal } from "./transkript-gesehen";
 
 const dir = mkdtempSync(join(tmpdir(), "transkript-gesehen-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("transkript-gesehen", () => {
+  // Der Zustandsordner ist der Checkout (server/state-dir.ts): eine Datei, die Fleet dort schreibt und git nicht
+  // ignoriert, lässt fleet-sync auf dem Folger mit „worktree not clean“ scheitern (26.10.).
+  test("das Journal, das Fleet in den Checkout schreibt, ist für git ignoriert", () => {
+    const r = Bun.spawnSync(["git", "-C", join(import.meta.dir, ".."), "check-ignore", "-q", TRANSKRIPT_JOURNAL]);
+    expect(r.exitCode).toBe(0);
+  });
+
   test("eine pi-Besetzung älter als das Journal bekommt unknown, nicht never-written", () => {
     const file = join(dir, "neu.jsonl");
     const j = openTranscriptJournal(file, () => 1_000);

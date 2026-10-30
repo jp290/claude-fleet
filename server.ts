@@ -209,7 +209,7 @@ import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/aud
 import { ADJUDICATION_CLEARS_RED, ADJUDICATION_VERDICTS, type AdjudicationVerdict } from "./server/adjudication";
 import { diskAdmission } from "./server/disk-space";
 import { STATE_DIR } from "./server/state-dir";
-import { openTranscriptJournal } from "./server/transkript-gesehen";
+import { TRANSKRIPT_JOURNAL, openTranscriptJournal } from "./server/transkript-gesehen";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import type { PiZaiFenceInput } from "./server/pi-zai-fence";
@@ -25847,7 +25847,7 @@ const conversationCache = new Map<string, { size: number; mtime: number; read: C
 // WHAT FLEET HAS SEEN OF A SESSION'S FILE (server/transkript-gesehen.ts): one durable line per session id
 // whose conversation file a reader resolved and read (transcriptPayload, conversationPayload and
 // contextFillOf record it). It answers the past view's one question about a file missing NOW.
-const transcriptJournal = openTranscriptJournal(`${STATE_DIR}/transcripts-seen.jsonl`);
+const transcriptJournal = openTranscriptJournal(`${STATE_DIR}/${TRANSKRIPT_JOURNAL}`);
 // `native`: codex and pi name no measured question form — their origin is the identity that found the
 // file, their binding always `none` (transcriptPayload#nativeOf); no Claude form is guessed here
 async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number, native?: NativeReq):

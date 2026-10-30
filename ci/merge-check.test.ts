@@ -840,8 +840,8 @@ describe("die Reparatur eines roten main: belegt oder nicht", () => {
 });
 
 // Ein Rot in src/*.test.ts landete ungesehen, weil der Check seine Verzeichnisse selbst zählte (ci, server) und nicht die
-// von package.json „test“ fuhr. Er fährt jetzt genau die Pfade des Kandidaten, soweit der Baum Tests dort hat.
-describe("die Unit-Tests des Checks sind die von package.json „test“", () => {
+// von package.json „test“ fuhr. Das Skript gehört dem Kandidaten: es erweitert den festen Satz {ci, server}, es verengt ihn nie.
+describe("die Unit-Tests des Checks: fester Satz plus die von package.json „test“", () => {
   const dirs: string[] = [];
   afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
   const tree = (test: string | null, files: string[]): string => {
@@ -851,26 +851,45 @@ describe("die Unit-Tests des Checks sind die von package.json „test“", () =>
     for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); writeFileSync(join(dir, f), "// test\n"); }
     return dir;
   };
+  const ALL = ["ci/a.test.ts", "server/b.test.ts", "src/c.test.ts", "session-blocks.test.ts"];
 
   test("src und session-blocks.test.ts laufen mit, wenn package.json sie nennt und der Baum Tests dort hat", () => {
-    const dir = tree("bun test ./server ./ci ./src ./session-blocks.test.ts",
-      ["ci/a.test.ts", "server/b.test.ts", "src/c.test.ts", "session-blocks.test.ts"]);
-    expect(unitTestCommand(dir)).toEqual({ cmd: "bun test ./server ./ci ./src ./session-blocks.test.ts", na: null });
+    expect(unitTestCommand(tree("bun test ./server ./ci ./src ./session-blocks.test.ts", ALL)))
+      .toEqual({ cmd: "bun test ./ci ./server ./src ./session-blocks.test.ts", na: null, error: null });
+  });
+  test("ein Kandidat, der scripts.test auf './server' verengt, fährt trotzdem ./ci", () => {
+    expect(unitTestCommand(tree("bun test ./server", ALL)).cmd).toBe("bun test ./ci ./server");
   });
   test("ein Pfad ohne Tests im Baum fällt weg, auch wenn er in package.json steht", () => {
-    const dir = tree("bun test ./server ./ci ./src ./session-blocks.test.ts", ["server/b.test.ts", "src/helper.ts"]);
-    expect(unitTestCommand(dir).cmd).toBe("bun test ./server");
+    expect(unitTestCommand(tree("bun test ./server ./nowhere ./src", ["server/b.test.ts", "src/helper.ts"])).cmd).toBe("bun test ./server");
   });
-  test("ohne ein einziges Test im Baum ist es „nicht anwendbar“ und nie ein grün geprüfter Teil", () => {
+  test("ohne ein einziges Test in ci, server und den Pfaden ist es „nicht anwendbar“", () => {
     const r = unitTestCommand(tree("bun test ./server ./src", ["src/helper.ts"]));
-    expect(r.cmd).toBe("true");
+    expect([r.cmd, r.error]).toEqual(["true", null]);
     expect(r.na).toContain("keine Tests");
   });
-  test("ein Baum ohne test-Skript behält ci und server wie bisher", () => {
-    expect(unitTestCommand(tree(null, ["ci/a.test.ts", "server/b.test.ts", "src/c.test.ts"])).cmd).toBe("bun test ./ci ./server");
+  for (const [name, script] of [
+    ["ein Flag", "bun test ./server ./src --timeout 5000"],
+    ["ein Glob", "bun test ./src/*.test.ts"],
+    ["ein Pfad ohne ./", "bun test server src"],
+    ["eine Kette", "bun test ./server && true"],
+    ["ein Pfad mit ..", "bun test ./server ./../x"],
+    ["ein anderes Programm", "node --test ./server"],
+  ] as const) {
+    test(`${name} im Skript ist ROT mit Grund, nie still der Standard und nie „na“`, () => {
+      const r = unitTestCommand(tree(script, ALL));
+      expect(r.error).toContain("test");
+      expect([r.cmd, r.na]).toEqual(["", null]);
+    });
+  }
+  test("kein test-Skript und kein package.json sind ebenfalls ROT mit Grund", () => {
+    expect(unitTestCommand(tree(null, ALL)).error).toContain("nicht lesbar");
+    const dir = tree("bun test ./server", ALL);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: {} }));
+    expect(unitTestCommand(dir).error).toContain("kein Skript");
   });
   test("dieser Baum fährt dieselbe Menge wie `bun run test`", () => {
     const script = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts.test as string;
-    expect(unitTestCommand(join(import.meta.dir, "..")).cmd).toBe(script);
+    expect([...unitTestCommand(join(import.meta.dir, "..")).cmd.split(" ").slice(2)].sort()).toEqual([...script.split(" ").slice(2)].sort());
   });
 });

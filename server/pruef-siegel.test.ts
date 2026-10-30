@@ -178,6 +178,33 @@ describe("Deckung", () => {
     expect((await planFuerBaum(fremd)).luecke).toEqual([]);
   });
 
+  test("F6-Feinschliff: ein geänderter seconds-Wert ändert die Deckung nicht, eine neue Unit, ein anderes plattformGebunden oder eine unlesbare Tabelle schon", async () => {
+    const echt = readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"), "utf8");
+    const plan = async (name: string, text: string) => {
+      const dir = join(base, name);
+      mkdirSync(join(dir, "e2e"), { recursive: true });
+      sh(dir, "init", "-q", "-b", "main");
+      writeFileSync(join(dir, "e2e", "ctx.ts"), text);
+      sh(dir, "add", "-A");
+      sh(dir, ...ID, "commit", "-qm", name);
+      await schreibeSiegel(dir, siegel((await baumVon(dir, "HEAD"))!, { units: ["core"], lauf: name }), "wh");
+      return planFuer(dir, "HEAD", ["core"]);
+    };
+    // nur die Gewichtung (seconds) ändert sich: die Siegel decken weiter
+    expect(echt).toContain('{ unit: "core", seconds: 701,');
+    expect((await plan("ctx-seconds", echt.replace('{ unit: "core", seconds: 701,', '{ unit: "core", seconds: 999,'))).luecke).toEqual([]);
+    // Kommentare und Leerraum sind egal
+    expect((await plan("ctx-kommentar", `// ein anderer Kopf\n${echt}\n// und ein Schwanz\n`)).luecke).toEqual([]);
+    // eine neue Unit: keine Deckung
+    expect((await plan("ctx-neue-unit", echt.replace('{ unit: "pure",', '{ unit: "neue-unit", seconds: 1, modules: ["x"] },\n  { unit: "pure",'))).gedeckt).toEqual([]);
+    // eine Unit ist jetzt plattformgebunden: die Regel hat sich geändert, keine Deckung
+    expect((await plan("ctx-gebunden", echt.replace('{ unit: "core", seconds: 701,', '{ unit: "core", plattformGebunden: true, seconds: 701,'))).gedeckt).toEqual([]);
+    // eine Unit fehlt: die Tabelle ist eine andere
+    expect((await plan("ctx-ohne-unit", echt.replace(/\s*\{ unit: "tmux-locale"[^}]*\},/, ""))).gedeckt).toEqual([]);
+    // nicht lesbar (kein SHARD_UNITS-Block): es bleibt zu
+    expect((await plan("ctx-kaputt", "export const NICHTS = 1;\n")).gedeckt).toEqual([]);
+  });
+
   test("R2: nur „der Pfad fehlt im Baum“ ist ein Ja; ein Fehler beim Lesen des Baums schließt", async () => {
     // kein Repository, kein Baum: git antwortet mit einem Fehler, und der ist kein „kein Fleet-Baum“
     expect(await tabelleStimmt(join(base, "gibt-es-nicht"), "a".repeat(40))).toBe(false);

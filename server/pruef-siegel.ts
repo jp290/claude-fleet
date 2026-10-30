@@ -13,10 +13,7 @@
 //     (e2e/ctx.ts#ShardUnit.plattformGebunden, heute keine) verlangt ein Siegel der Plattform des Fragenden (deckung).
 //   · VERTRAUEN: ein Siegel kann schreiben, wer auf den Hub pushen kann; das Deploy-Tor glaubt ihm so, wie es heute dem Helfer glaubt,
 //     und jedes Siegel nennt seinen Lauf (Maschine + Run-Ordner), damit „grün“ nachprüfbar bleibt.
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
 import { SHARD_UNITS } from "../e2e/ctx";
 
 export const SIEGEL_REF = "refs/notes/fleet/seal";
@@ -209,19 +206,32 @@ export async function holeSiegel(repo: string, remote: string, mindestensMs = 30
 export const vergesseAbruf = (): void => { zuletztGeholt = 0; };
 
 // DIE TABELLE, GEGEN DIE GEFRAGT WIRD: die geschuldeten Units kommen aus e2e/ctx.ts des LAUFENDEN Servers, nicht aus dem Zielbaum. Ein Baum, der eine neue
-// Unit einführt, gälte sonst als gedeckt, weil der Server sie nicht kennt (fail-open). Darum: trägt der Zielbaum ein e2e/ctx.ts, das vom Stand dieses Servers
-// abweicht (Blob-Hash), deckt kein Siegel — es läuft die volle Prüfung. Ein Baum ohne e2e/ctx.ts ist keiner von Fleet (ein fremdes Repo): über den sagt die
-// Tabelle nichts. Der Hash wird beim Laden des Moduls genommen, denn das ist die Tabelle, die dieser Prozess wirklich benutzt.
-const gitBlobHash = (bytes: Buffer): string => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-const LAUFENDE_TABELLE: string | null = (() => {
-  try { return gitBlobHash(readFileSync(join(import.meta.dir, "..", "e2e", "ctx.ts"))); } catch { return null; }
-})();
+// Unit einführt, gälte sonst als gedeckt, weil der Server sie nicht kennt (fail-open). Darum vergleicht tabelleStimmt die MENGE DER UNIT-NAMEN samt
+// plattformGebunden aus dem Quelltext von e2e/ctx.ts im Zielbaum mit der Tabelle, die dieser Prozess geladen hat: fehlt eine Unit, ist eine neu, oder ist die
+// Plattform-Marke eine andere, deckt kein Siegel und es läuft die volle Prüfung. Eine geänderte Gewichtung (seconds), Kommentare und Leerraum ändern nichts —
+// sonst schlösse jede solche Änderung das Tor (20 Commits in 30 Tagen). Ist die Tabelle des Zielbaums nicht lesbar, bleibt es zu. Ein Baum ohne
+// e2e/ctx.ts ist keiner von Fleet (ein fremdes Repo): über den sagt die Tabelle nichts.
+/** Die Unit-Namen (mit „!“ für plattformGebunden), sortiert, aus dem Quelltext einer Tabelle; null, wenn der Block fehlt oder leer ist. */
+export function einheitenAusQuelltext(text: string): string[] | null {
+  const start = text.indexOf("export const SHARD_UNITS");
+  if (start < 0) return null;
+  const open = text.indexOf("= [", start);
+  const end = open < 0 ? -1 : text.indexOf("\n];", open);
+  if (open < 0 || end < 0) return null;
+  const found = [...text.slice(open, end).matchAll(/\{\s*unit:\s*"([a-z0-9-]+)"([^}]*)\}/g)]
+    .map((m) => m[1]! + (/plattformGebunden:\s*true/.test(m[2]!) ? "!" : ""));
+  return found.length ? found.sort() : null;
+}
+const LAUFENDE_EINHEITEN: string[] = SHARD_UNITS.map((u) => u.unit + (u.plattformGebunden === true ? "!" : "")).sort();
 export async function tabelleStimmt(repo: string, tree: string): Promise<boolean> {
   // ls-tree: Exit 0 und LEERE Ausgabe heißt „der Pfad fehlt im Baum“ (kein Fleet-Baum, ein Ja); jeder Fehler und jede Zeitüberschreitung ist ein Nein
   const r = await git(repo, ["ls-tree", tree, "--", "e2e/ctx.ts"]);
   if (r.code !== 0) return false;
   if (!r.out) return true;
-  return LAUFENDE_TABELLE !== null && r.out.split(/\s+/)[2] === LAUFENDE_TABELLE;
+  const blob = await git(repo, ["cat-file", "blob", r.out.split(/\s+/)[2] ?? ""]);
+  if (blob.code !== 0) return false;
+  const ziel = einheitenAusQuelltext(blob.out);
+  return ziel !== null && ziel.length === LAUFENDE_EINHEITEN.length && ziel.every((n, i) => n === LAUFENDE_EINHEITEN[i]);
 }
 
 /**

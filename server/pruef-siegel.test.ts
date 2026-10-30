@@ -76,6 +76,16 @@ describe("Siegel am Baum, über den Hub", () => {
     expect(geprueftAm(sehen.quellen)).toContain("1029-aaaa");
   });
 
+  test("„fremd“ liest nur, was ein anderer Schreiber in den Hub legte, nicht den Abruf des eigenen Refs", async () => {
+    const tree = (await baumVon(wh, "HEAD~1"))!;
+    // der Mac hat den WH-Ref abgerufen: für den Mac ist das Siegel fremd, für den WH nicht (der Hub gibt dem WH seinen eigenen Ref zurück)
+    expect((await leseSiegel(mac, tree, { fremdFuer: "mac" })).map((s) => s.maschine)).toEqual(["wh"]);
+    vergesseAbruf();
+    await holeSiegel(wh, "origin", 0);
+    expect(await leseSiegel(wh, tree, { fremdFuer: "wh" })).toEqual([]);
+    expect((await leseSiegel(wh, tree)).length).toBe(1);
+  });
+
   test("der Abruf überschreibt nichts: der eigene Ref bleibt, der Hub-Stand liegt daneben", async () => {
     const own = sh(mac, "for-each-ref", "--format=%(refname)", "refs/notes/fleet/seal/");
     expect(own).toBe("");

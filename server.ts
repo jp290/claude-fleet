@@ -281,7 +281,7 @@ import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrt
   type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { RICHTUNG_PLATZ, SETUP_ROUTE, liesKonzept, roleStein, setupRoute, steineFuerAgentWahl, type SetupServer } from "./server/setup-datei";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
-import { geforderteUnits, baumVon, geprueftAm, holeSiegel, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
+import { geforderteUnits, baumVon, deckung, geprueftAm, leseSiegel, holeSiegel, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -50704,10 +50704,37 @@ type DeployAuditOf =
   | { state: "seen"; stamp: DeployAuditStamp }
   | { state: "not-applicable" }
   | { state: "unseen"; repo: string; why: string; queued: boolean; redAt?: number; next: string };
+// A SERVER WITHOUT AN AUDIT COMMAND OF ITS OWN (since the audit switch the workhorse is one: the other fleet audits) used to be "not applicable" and
+// let any tip out. It no longer does when a hub is in play: the deploy gate lets a tip through only if a GREEN seal of another fleet's writer
+// covers the tree of the target for everything a deploy's audit owes (everything but dom), and says whose seal it was; otherwise it stays closed
+// with the reason. Nothing is queued — there is no command to run. A red seal keeps the gate shut and, giving `redAt`, also keeps gate-only
+// (deployGateOnlyOf) from walking past it. A server with no hub has no other machine to ask: unchanged, not applicable. The owner's force stays.
+async function deployAuditWithoutCommand(repo: string, target: string, asker: TipAuditAsker): Promise<DeployAuditOf> {
+  const hub = await sealHub(repo);
+  if (!hub) return { state: "not-applicable" };
+  await holeSiegel(repo, hub);
+  const tree = await baumVon(repo, target);
+  const deploy = asker === "deploy";
+  const closed = (why: string, redAt?: number): DeployAuditOf => ({ state: "unseen", repo, queued: false, ...(redAt ? { redAt } : {}), why,
+    next: `have the other fleet audit this tree (its audit writes the seal that opens this gate), then ${deploy ? "POST /api/deploy again" : "ask again"}` });
+  if (!tree) return closed(`this server has no audit command and the tree of ${target.slice(0, 8)} is unreadable — no seal can stand for it`);
+  const required = geforderteUnits(auditScopeOf(asker).skipUnits ?? []);
+  const others = await leseSiegel(repo, tree, { fremdFuer: maschinenName() });
+  const d = deckung(others, required);
+  if (d.quellen.length && d.luecke.length === 0)
+    return { state: "seen", stamp: { at: Math.max(...d.quellen.map((q) => q.at)), result: "green", quellen: d.quellen } };
+  const redSeal = others.filter((s) => s.ergebnis === "red" && s.units.some((u) => d.luecke.includes(u))).sort((a, b) => b.at - a.at)[0];
+  if (redSeal)
+    return closed(`this server has no audit command of its own, and ${redSeal.maschine}'s seal of this tree (${redSeal.lauf}) is RED — a red covers nothing, the other fleet runs it again`, redSeal.at);
+  return closed(d.quellen.length
+    ? `this server has no audit command of its own; the seals of this tree cover ${d.gedeckt.length} of ${required.length} units — missing: ${d.luecke.slice(0, 6).join(", ")}${d.luecke.length > 6 ? ", …" : ""}`
+    : "this server has no audit command of its own, and no other fleet has sealed this tree green yet");
+}
 async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAsker = "deploy"): Promise<DeployAuditOf> {
   const deploy = asker === "deploy";
   const top = await git(REPO_DIR, "rev-parse", "--show-toplevel");
-  if (top.code !== 0 || !top.out || !auditCmdFor(top.out)) return { state: "not-applicable" };
+  if (top.code !== 0 || !top.out) return { state: "not-applicable" };
+  if (!auditCmdFor(top.out)) return await deployAuditWithoutCommand(top.out, target, asker);
   const repo = top.out;
   const canon = repoCanon(repo);
   const { rows } = await readLedger<unknown>(POSTLAND_AUDIT_FILE);

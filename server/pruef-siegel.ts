@@ -144,14 +144,19 @@ export function schreibeSiegel(repo: string, s: Siegel, schreiber: string = masc
   return next;
 }
 
-/** Alle Siegel zu einem Baum aus beiden Namensräumen (eigene Refs und die vom Hub geholten), ohne Doppelte. */
-export async function leseSiegel(repo: string, tree: string): Promise<Siegel[]> {
+/**
+ * Alle Siegel zu einem Baum aus beiden Namensräumen (eigene Refs und die vom Hub geholten), ohne Doppelte.
+ * `fremdFuer`: nur Siegel, die ein ANDERER Schreiber in den Hub gelegt hat — der Ref, nicht das Feld `maschine`, sagt, wessen Fleet es schrieb
+ * (der Helfer, der einen Audit der einen Fleet fuhr, trägt den Namen der anderen). Der Hub-Abruf des eigenen Refs zählt nicht.
+ */
+export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?: string } = {}): Promise<Siegel[]> {
   if (!TREE.test(tree)) return [];
-  const refs = await git(repo, ["for-each-ref", "--format=%(refname)", `${SIEGEL_REF}/`, `${SIEGEL_HUB_REF}/`]);
+  const refs = await git(repo, ["for-each-ref", "--format=%(refname)", ...(opts.fremdFuer ? [`${SIEGEL_HUB_REF}/`] : [`${SIEGEL_REF}/`, `${SIEGEL_HUB_REF}/`])]);
   if (refs.code !== 0 || !refs.out) return [];
   const seen = new Set<string>();
   const found: Siegel[] = [];
   for (const ref of refs.out.split("\n")) {
+    if (opts.fremdFuer && ref.slice(ref.lastIndexOf("/") + 1) === opts.fremdFuer) continue;
     const note = await git(repo, ["notes", `--ref=${ref}`, "show", tree]);
     if (note.code !== 0) continue;
     for (const line of note.out.split("\n").slice(0, MAX_LINES_PER_TREE)) {

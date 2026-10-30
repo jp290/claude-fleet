@@ -128,3 +128,54 @@ describe("der Audit fährt nur die Lücke", () => {
     expect(row?.quellen).toMatchObject([{ maschine: "mac", lauf: "1029-check" }]);
   }, 3 * LIFE_DEADLINE_MS);
 });
+
+describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalter)", () => {
+  // der WH hat keinen FLEET_POSTLAND_AUDIT_CMD, aber einen Hub; der Mac auditiert und siegelt
+  const ohneBefehl = (f: Fixture, name: string): Record<string, string> => ({ FLEET_HUB_REMOTE: "hub", FLEET_REPO_DIR: f.repo, FLEET_MACHINE: name });
+  async function macAuditiert(rot: boolean) {
+    const { wh, mac, hub } = zweiFleets();
+    const [, , , audits] = await landeUndAuditiere(mac, "mac", umgebung(mac, "mac", attrappe(mac.state, rot).cmd), "vom-mac");
+    expect((audits?.body.audits as { result: string }[]).map((r) => r.result)).toEqual([rot ? "red" : "green"]);
+    sh(mac.repo, "push", "-q", "hub", "main");
+    sh(wh.repo, "fetch", "-q", "hub");
+    sh(wh.repo, "merge", "-q", "--ff-only", "hub/main");
+    expect(sh(hub, "for-each-ref", "--format=%(refname)", "refs/notes/fleet/seal/")).toBe("refs/notes/fleet/seal/mac");
+    return wh;
+  }
+  const deploy = (extra: Record<string, unknown> = {}) => post("/api/deploy", extra);
+
+  test("kein Siegel: das Tor bleibt zu (409, mit Grund), der Befehl fehlt nicht als Freibrief", async () => {
+    const { wh } = zweiFleets();
+    const [tip, refused] = await life(wh, [post("/api/repos/audit-tip", {}), deploy()], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ queued: false, state: "unseen" });
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.reason)).toContain("tip not audited");
+    expect(String(refused?.body.reason)).toContain("no audit command of its own");
+    expect(String(refused?.body.reason)).toContain("no other fleet has sealed this tree green");
+  }, 3 * LIFE_DEADLINE_MS);
+
+  test("ein grünes Siegel des Macs auf demselben Baum: das Tor geht auf und nennt die Quelle", async () => {
+    const wh = await macAuditiert(false);
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ queued: false, state: "seen", audit: { result: "green", quellen: [{ maschine: "mac", tiefe: "audit" }] } });
+    expect(String(tip?.body.why)).toContain("geprüft am mac, voller Audit");
+  }, 4 * LIFE_DEADLINE_MS);
+
+  test("ein rotes Siegel des Macs: das Tor bleibt zu und nennt das Rot", async () => {
+    const wh = await macAuditiert(true);
+    const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.reason)).toContain("tip not audited");
+    expect(String(refused?.body.reason)).toContain("is RED");
+  }, 4 * LIFE_DEADLINE_MS);
+
+  test("das eigene Siegel zählt nicht als das einer anderen Maschine", async () => {
+    // der WH selbst hat (etwa über einen lokalen Check) auf dem Baum gesiegelt: ohne ein fremdes Siegel bleibt das Tor zu
+    const { wh } = zweiFleets();
+    const tree = (await baumVon(wh.repo, "HEAD"))!;
+    await schreibeSiegel(wh.repo, { v: 1, tree, units: geforderteUnits(["dom"]), tiefe: "audit", ergebnis: "green", maschine: "mac", plattform: plattformHier(),
+      lauf: "selbst", at: Date.now() }, "wh");
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ queued: false, state: "unseen" });
+  }, 3 * LIFE_DEADLINE_MS);
+});

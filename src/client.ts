@@ -2691,8 +2691,10 @@ class Pane {
       }
       this.chatSource = data.source;
       if (data.source === null && !this.chatEl.childElementCount) {
+        // a past session with no file names WHY it has none (server.ts#pastMissingOf): "no longer on
+        // disk" is only ever said of a file Fleet read before — never again as the blanket line
         this.chatEl.replaceChildren(el("div", "chatempty", past !== null
-          ? "This session's transcript file is no longer on disk"
+          ? (data.reason ?? "This session's transcript file is not on disk")
           : "no transcript yet — say something in the terminal"));
       }
       if (data.entries.length) {

@@ -209,6 +209,7 @@ import { audit, AUDIT_FILE, auditActorScope, withAuditActor } from "./server/aud
 import { ADJUDICATION_CLEARS_RED, ADJUDICATION_VERDICTS, type AdjudicationVerdict } from "./server/adjudication";
 import { diskAdmission } from "./server/disk-space";
 import { STATE_DIR } from "./server/state-dir";
+import { openTranscriptJournal } from "./server/transkript-gesehen";
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import type { PiZaiFenceInput } from "./server/pi-zai-fence";
@@ -25720,6 +25721,7 @@ async function transcriptPayload(s: Slot, afterRaw: number, full = false, native
   const claude = harnessOf(s.harness).id === "claude";
   if (!file) return { entries: [], total: 0, source: null,
     ...(native && { native: nativeOf(native, s, before, { found: false, questions: claude, pinned: false, fileSession: null, via: null }) }) };
+  transcriptJournal.noteSeen(s.sessionId);
   const pinned = !!s.sessionId && file === `${projDir(s.cwd!)}/${s.sessionId}.jsonl`;
   const tier = harnessOf(s.harness).id === "claude" && slots[s.id - 1] === s ? { ttlSec: deliveryCacheState(s).ttlSec } : {};
   const after = Math.max(0, afterRaw | 0);
@@ -25841,6 +25843,11 @@ async function recallSlot(s: Slot, kind: RecallKind): Promise<RecallResult> {
 // of MB. Keyed by path + size + mtime; bounded by clearing it whole past 32 files (a handful of
 // conversations are open at once, and a miss costs one read).
 const conversationCache = new Map<string, { size: number; mtime: number; read: ConversationRead }>();
+
+// WHAT FLEET HAS SEEN OF A SESSION'S FILE (server/transkript-gesehen.ts): one durable line per session id
+// whose conversation file a reader resolved and read (transcriptPayload, conversationPayload and
+// contextFillOf record it). It answers the past view's one question about a file missing NOW.
+const transcriptJournal = openTranscriptJournal(`${STATE_DIR}/transcripts-seen.jsonl`);
 // `native`: codex and pi name no measured question form — their origin is the identity that found the
 // file, their binding always `none` (transcriptPayload#nativeOf); no Claude form is guessed here
 async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversation"]>, afterRaw: number, native?: NativeReq):
@@ -25852,6 +25859,7 @@ async function conversationPayload(s: Slot, conv: NonNullable<Harness["conversat
   if (!file) return none;
   let st: { size: number; mtimeMs: number };
   try { st = statSync(file); } catch { return none; }
+  transcriptJournal.noteSeen(s.sessionId);
   let hit = conversationCache.get(file);
   if (!hit || hit.size !== st.size || hit.mtime !== st.mtimeMs) {
     const lines = (await Bun.file(file).text()).split("\n").filter((l) => l.trim() !== "");
@@ -29207,6 +29215,7 @@ function contextFillOf(s: Slot, cwd: string, sessionId: string): ContextFill | n
   if (!file) return null;
   let read: number | ContextRead | null;
   try { read = reader.used(file, statSync(file).size); } catch { return null; }
+  transcriptJournal.noteSeen(sessionId);
   if (read === null) return null;
   const usedTokens = typeof read === "number" ? read : read.used;
   const windowTokens = typeof read === "number" ? modelWindow : read.window;
@@ -29226,7 +29235,11 @@ async function pastTranscript(s: Slot, n: number, after: number) {
       native: nativeOf(history, s, { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId },
         { found: false, questions: harnessOf(s.harness).id === "claude", pinned: false, fileSession: null, via: null }) };
   const was: Slot = { ...s, cwd: past.who.cwd, sessionId: past.who.sessionId };
-  return { ...base, assigned: true as const, ctx: past.ctx, ...(await transcriptPayload(was, after, false, history)) };
+  const payload = await transcriptPayload(was, after, false, history);
+  // source null on an ASSIGNED session names why, instead of letting the client's blanket line
+  // claim a deletion (transkript-gesehen.ts)
+  return { ...base, assigned: true as const, ctx: past.ctx, ...payload,
+    ...(payload.source === null && transcriptJournal.pastMissingOf(past.who.sessionId, was.harness, past.startedAt)) };
 }
 
 // A FRESH STANDING HANDOVER ENDS THE NUDGE (owner 2026-10-06: every nudge is a turn that re-reads the

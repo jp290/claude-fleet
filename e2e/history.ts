@@ -457,6 +457,7 @@ export async function run(): Promise<void> {
 
   await runNativeQuestions();
   await runForeignConversations();
+  await runPastReasons();
   runLinks();
 }
 
@@ -610,6 +611,91 @@ function renderStub(src: string, entity?: (kind: MdEntityKind, id: string) => bo
   } finally {
     g.document = had;
   }
+}
+
+// --- THE PAST VIEW'S MISSING-FILE REASONS (owner 2026-10-27, slot 10): a predecessor station whose
+// session file is absent used to say „[Zitat entfernt]“ — a deletion claim that was FALSE for the
+// common case: pi writes its session file only once the session has its first user or assistant
+// message (pi's own SessionManager._persist), so an occupation that dies before its first turn —
+// a heal respawn — leaves no file at all, and nothing was ever deleted. The route now names the
+// true reason: never-written (a pi session that began after the journal and whose file Fleet never saw), deleted (a file Fleet read
+// once and no longer finds — held durably by transcripts-seen.jsonl in the state dir, so a server
+// restart cannot turn "deleted" into "never written"), or the long-standing unassigned reason.
+// Driven on a pi-zai line of three predecessors: A's file stays (the transcript shows), B's file is
+// read and then deleted across a restart (deleted), C never had one (never-written).
+async function runPastReasons(): Promise<void> {
+  const zaiRoot = process.env.FLEET_PI_ZAI_AGENT_DIR ?? "";
+  const cwd = `${tmpdir()}/fleet-e2e-past-reasons-${process.pid}`;
+  mkdirSync(cwd, { recursive: true });
+  const slot = zaiRoot ? await freeSlotId() : undefined;
+  const open = slot !== undefined ? await post(`/api/slots/${slot}/open`, { cwd, harness: "pi-zai" }) : null;
+  check("past-reasons fixture: a pi-zai slot opens on a throwaway cwd (the suite's own agent dir)",
+    !!open?.ok && slot !== undefined, `slot=${slot} status=${open?.status} zaiRoot=${!!zaiRoot}`);
+  if (!open?.ok || slot === undefined) { rmSync(cwd, { recursive: true, force: true }); return; }
+  const real = realpathSync(cwd);
+  const dir = `${zaiRoot}/sessions/--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+  mkdirSync(dir, { recursive: true });
+  const sidA = "30000000-0000-4000-8000-00000000000a", sidB = "30000000-0000-4000-8000-00000000000b",
+    sidC = "30000000-0000-4000-8000-00000000000c";
+  const line = (sid: string, frage: string, antwort: string) =>
+    `${JSON.stringify({ type: "session", version: 3, id: sid, timestamp: "2026-10-27T19:55:00.000Z", cwd: real })}\n`
+    + `${JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-10-27T19:55:10.000Z",
+      message: { role: "user", content: frage, timestamp: 1793132710000 } })}\n`
+    + `${JSON.stringify({ type: "message", id: "m2", parentId: "m1", timestamp: "2026-10-27T19:55:20.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: antwort }], timestamp: 1793132720000 } })}\n`;
+  writeFileSync(`${dir}/2026-10-27T19-55-00-000Z_${sidA}.jsonl`, line(sidA, "was sagte Besetzung A", "die Antwort von A"));
+  const fileB = `${dir}/2026-10-27T19-55-00-000Z_${sidB}.jsonl`;
+  writeFileSync(fileB, line(sidB, "was sagte Besetzung B", "die Antwort von B"));
+  // C: keine Datei — die Besetzung, die vor ihrem ersten Turn starb (der Fall vom 27.10.)
+  await stopSrv();
+  const plant = JSON.parse(readFileSync(`${ROOT}/fleet.json`, "utf8")) as
+    { slots: Record<string, Record<string, unknown>>; lineageHandovers?: unknown[] };
+  const openedAt = plant.slots[String(slot)]!.openedAt as number;
+  const lineageId = "0a1b".padEnd(24, "0");
+  plant.slots[String(slot)]!.lineageId = lineageId;
+  const hour = 3_600_000;
+  const rec = (von: { openedAt: number; sessionId: string }, zu: number) => ({ v: 1, lineageId, role: "generic",
+    at: zu, from: { slot, openedAt: von.openedAt, sessionId: von.sessionId, cwd },
+    to: { slot, openedAt: zu }, obligations: [], intent: "past reasons probe", pointer: null, supersededBy: null });
+  plant.lineageHandovers = [...(plant.lineageHandovers ?? []),
+    rec({ openedAt: openedAt - 3 * hour, sessionId: sidA }, openedAt - 2 * hour),
+    rec({ openedAt: openedAt - 2 * hour, sessionId: sidB }, openedAt - hour),
+    rec({ openedAt: openedAt - hour, sessionId: sidC }, openedAt)];
+  writeFileSync(`${ROOT}/fleet.json`, JSON.stringify(plant, null, 2), { mode: 0o600 });
+  // the journal began before the planted occupations (never-written is said only of an occupation
+  // that started after it; an older one is "unknown" — transkript-gesehen.ts)
+  writeFileSync(`${ROOT}/transcripts-seen.jsonl`, `${JSON.stringify({ since: openedAt - 4 * hour })}\n`);
+  await restartSrv();
+  type Past = { assigned?: boolean; source?: string | null; absent?: string; reason?: string; entries?: unknown[] };
+  const pastOf = async (n: number): Promise<Past> =>
+    (await (await get(`/api/slots/${slot}/succession/${n}/transcript`)).json()) as Past;
+  const a = await pastOf(1), b = await pastOf(2), c = await pastOf(3);
+  check("past reasons: A's file is on disk — the predecessor's transcript shows, and no reason line exists",
+    a.assigned === true && (a.source ?? "").endsWith(`_${sidA}.jsonl`) && (a.entries ?? []).length === 2
+      && a.absent === undefined && a.reason === undefined,
+    JSON.stringify({ ...a, entries: a.entries?.length }).slice(0, 240));
+  check("past reasons: C never wrote a file (pi writes one only with the session's first message) — the reason says so and claims no deletion",
+    c.assigned === true && c.source === null && (c.entries ?? []).length === 0 && c.absent === "never-written"
+      && (c.reason ?? "").includes("never wrote a session file") && !(c.reason ?? "").includes("no longer on disk"),
+    JSON.stringify(c).slice(0, 240));
+  const journal = existsSync(`${ROOT}/transcripts-seen.jsonl`) ? readFileSync(`${ROOT}/transcripts-seen.jsonl`, "utf8") : "";
+  check("past reasons: what Fleet read is journalled (A and B), so the fact a file EXISTED survives a restart",
+    b.assigned === true && (b.source ?? "").endsWith(`_${sidB}.jsonl`)
+      && journal.includes(sidA) && journal.includes(sidB) && !journal.includes(sidC),
+    `${JSON.stringify({ ...b, entries: b.entries?.length }).slice(0, 160)} journal=${journal.length}`);
+  // die Löschung, die die alte Pauschalzeile immer behauptete — zwischen zwei Serverleben
+  rmSync(fileB, { force: true });
+  await restartSrv();
+  const b2 = await pastOf(2), a2 = await pastOf(1), c2 = await pastOf(3);
+  check("past reasons: B's file, read once and deleted — 'no longer on disk' is now TRUE of it, and said only of it",
+    b2.assigned === true && b2.source === null && b2.absent === "deleted" && (b2.reason ?? "").includes("no longer on disk"),
+    JSON.stringify(b2).slice(0, 240));
+  check("past reasons: after the restart A still shows its transcript and C still says never-written — no verdict flips on a restart",
+    (a2.source ?? "").endsWith(`_${sidA}.jsonl`) && (a2.entries ?? []).length === 2 && c2.absent === "never-written",
+    JSON.stringify({ a: a2.source, c: c2.absent }));
+  await post(`/api/slots/${slot}/kill`, {});
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
 }
 
 function runLinks(): void {

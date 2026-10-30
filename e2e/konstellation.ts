@@ -315,8 +315,10 @@ export async function runKonstellationDom(sourceRoot: string, artifacts?: string
         // a short value sized to the room, not to a font: two words whose width is the column beside an ordinary tag („Fleet default“,
         // the befehle row) less 27 px. The widest tag wrapped takes 13 px more than that ordinary one and unwrapped 42 (helper, 390 px),
         // so the value needs 14 px less than its column with the rule and 15 px more than its column without it, in every slot and in
-        // any font whose rows scale alike. Raw values per slot are in the facts: need, col (the column it got) and ref.
+        // any font whose rows scale alike. Raw values per slot are in the facts: need, col (the column it got) and ref. The rule is the phone's
+        // (max-width 700px): on a wide window the tag has room unwrapped, the column is 42 px short of ref, and the probe stands for nothing.
         beside: (() => { const x = p.querySelector('.kv[data-k="cc-systemprompt"] > .kx'), ref = p.querySelector('.kv[data-k="befehle"] > .kx'); if (!x || !ref) return null;
+          if (innerWidth > 700) return { need: 0, col: 0, ref: 0, one: true };
           const keep = x.textContent, m = document.createElement('canvas').getContext('2d'); m.font = getComputedStyle(x).font;
           const want = ref.getBoundingClientRect().width - 27, text = (a) => 'n'.repeat(a) + ' n'; let a = 1;
           while (a < 60 && m.measureText(text(a + 1)).width <= want) a++;

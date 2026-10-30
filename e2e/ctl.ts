@@ -645,7 +645,7 @@ await import(pathToFileURL(process.argv[2]).href);
       /^[0-9a-f]{32}$/.test(predTok) && autoId !== "" && watchId !== "",
       `slot ${pred} ${predOpened?.status} auto=${armedAuto?.status}:${autoId} watch=${armedWatch?.status}:${watchId}`);
     // the intent at its cap (server/types.ts#LINEAGE_INTENT_MAX), multi-byte: the brief used to cut it at 320 bytes
-    const INTENT = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — Grüße. ".repeat(150)}`.slice(0, 10_000);
+    const INTENT = `Absicht: ${"erst die Welle landen, dann den Audit lesen, dann die Pflichten neu armieren — Grüße. ".repeat(150)}`.slice(0, 10_000).trimEnd();   // the door trims: a cut ending in a space would not come back equal
     const succeeded = autoId && watchId ? await selfPost(predTok, "succeed", { intent: INTENT }) : null;
     const sj = ((await succeeded?.json()) ?? {}) as { ok?: boolean; slot?: number };
     let succTok = "";

@@ -104,8 +104,8 @@ describe("der Audit fährt nur die Lücke", () => {
     commitIn(String(made?.body.path), "luecke.txt", "luecke");
     // der Baum, den main nach dem Land hat: der des Branch-Tips (ein Land ohne weitere Änderung auf main)
     const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
-    await schreibeSiegel(f.repo, { v: 1, tree, units, tiefe: "check", ergebnis: "green", maschine: "mac", plattform: plattformHier(),
-      lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+    await schreibeSiegel(f.repo, { v: 1, tree, units, tiefe: "check", ergebnis: "green", maschine: "wh", plattform: plattformHier(),
+      lauf: "1029-check", at: Date.now() - 60_000 }, "wh");
     return { f, tree };
   }
   test("alle Units außer dom gedeckt: der Audit läuft mit FLEET_E2E_SKIP_UNITS und fährt nur dom", async () => {
@@ -117,7 +117,7 @@ describe("der Audit fährt nur die Lücke", () => {
     const skip = a.laeufe()[0]!.replace("skip=", "").split(",");
     expect(skip.sort()).toEqual(geforderteUnits(["dom"]).sort());
     expect(skip).not.toContain("dom");
-    expect((audits?.body.audits as { quellen?: { maschine: string }[] }[])[0]?.quellen?.map((q) => q.maschine)).toEqual(["mac"]);
+    expect((audits?.body.audits as { quellen?: { maschine: string }[] }[])[0]?.quellen?.map((q) => q.maschine)).toEqual(["wh"]);
   }, 3 * LIFE_DEADLINE_MS);
   test("alle Units gedeckt: kein Lauf, die Zeile ist grün und nennt ihre Quelle", async () => {
     const { f } = await mitCheckSiegel(geforderteUnits());
@@ -127,7 +127,7 @@ describe("der Audit fährt nur die Lücke", () => {
     expect(a.laeufe()).toHaveLength(0);
     const row = (audits?.body.audits as { result: string; quellen?: { maschine: string; lauf: string }[] }[])[0];
     expect(row?.result).toBe("green");
-    expect(row?.quellen).toMatchObject([{ maschine: "mac", lauf: "1029-check" }]);
+    expect(row?.quellen).toMatchObject([{ maschine: "wh", lauf: "1029-check" }]);
   }, 3 * LIFE_DEADLINE_MS);
 });
 
@@ -141,8 +141,8 @@ describe("die Tür des Helfers rechnet bei voller Deckung ab", () => {
     commitIn(String(made?.body.path), "helfer.txt", "helfer");
     const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
     // ein Check hat alles außer dom gefahren; der Audit nach einem Deploy/audit-tip schuldet nur dies (auditScopeOf)
-    await schreibeSiegel(f.repo, { v: 1, tree, units: geforderteUnits(["dom"]), tiefe: "check", ergebnis: "green", maschine: "mac",
-      plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+    await schreibeSiegel(f.repo, { v: 1, tree, units: geforderteUnits(["dom"]), tiefe: "check", ergebnis: "green", maschine: "wh",
+      plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "wh");
     const a = attrappe(f.state);
     // die Uhr gibt sofort frei (quiet: ohne dom), der lokale Drain wartet auf einen Helfer
     const e = { ...umgebung(f, "wh", a.cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "" };
@@ -160,7 +160,7 @@ describe("die Tür des Helfers rechnet bei voller Deckung ab", () => {
     // die Zeile steht grün, ohne Lauf, mit ihrer Quelle; der Eintrag ist verbraucht, der Helfer findet nichts mehr
     const row = (audits?.body.audits as { result: string; quellen?: { maschine: string; lauf: string }[]; skipUnits?: string[] }[])[0];
     expect(row?.result).toBe("green");
-    expect(row?.quellen).toMatchObject([{ maschine: "mac", lauf: "1029-check" }]);
+    expect(row?.quellen).toMatchObject([{ maschine: "wh", lauf: "1029-check" }]);
     expect(a.laeufe()).toHaveLength(0);
     expect((after?.body.jobs as unknown[]).length).toBe(0);
     // F1: nach der Abrechnung läuft nichts mehr, und das Deploy-Tor sagt es auch (kein "a post-land audit is running")
@@ -176,7 +176,7 @@ describe("die Tür des Helfers gibt bei teilweiser Deckung nur die Lücke zu fah
     commitIn(String(made?.body.path), "teilweise.txt", "teilweise");
     const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
     await schreibeSiegel(f.repo, { v: 1, tree, units: geforderteUnits(["dom"]).filter((u) => u !== "lanes"), tiefe: "check", ergebnis: "green",
-      maschine: "mac", plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+      maschine: "wh", plattform: plattformHier(), lauf: "1029-check", at: Date.now() - 60_000 }, "wh");
     const e = { ...umgebung(f, "wh", attrappe(f.state).cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "" };
     const [, , jobs, claim] = await life(f, [
       post("/api/branches/land", { repo: f.repo, branch: "branch/teilweise", subject: "teilweise", unchecked: true }),
@@ -201,8 +201,8 @@ async function helferFixture(name: string, extra: Record<string, string> = {}, d
   const [made] = await life(f, [post("/api/branches", { repo: f.repo, name })], {});
   commitIn(String(made?.body.path), `${name}.txt`, name);
   const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
-  await schreibeSiegel(f.repo, { v: 1, tree, units: deckt, tiefe: "check", ergebnis: "green", maschine: "mac", plattform: plattformHier(),
-    lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+  await schreibeSiegel(f.repo, { v: 1, tree, units: deckt, tiefe: "check", ergebnis: "green", maschine: "wh", plattform: plattformHier(),
+    lauf: "1029-check", at: Date.now() - 60_000 }, "wh");
   const e = { ...umgebung(f, "wh", attrappe(f.state).cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "", ...extra };
   const land = post("/api/branches/land", { repo: f.repo, branch: `branch/${name}`, subject: name, unchecked: true });
   return { f, tree, e, land };
@@ -221,7 +221,7 @@ describe("das Siegel aus der Ergebniszeile eines Helfers", () => {
     const skip = (claim?.body.job as { skipUnits: string[] }).skipUnits;
     expect(skip).not.toContain("lanes");
     const row = (audits?.body.audits as { result: string; skipUnits?: string[]; quellen?: { maschine: string }[] }[])[0];
-    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "mac" }] });
+    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "wh" }] });
     // das Siegel dieses Laufs: genau die Lücke (lanes), vom Gerät, als Audit; zusammen mit dem Check ist alles außer dom gedeckt
     const siegel = (await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit");
     expect(siegel).toHaveLength(1);
@@ -348,7 +348,7 @@ describe("der Shard-Weg des Helfers", () => {
     expect(s1).toContain("core");
     expect(s1).not.toContain("lanes");
     const row = (audits?.body.audits as { result: string; shards?: unknown[]; quellen?: { maschine: string }[] }[])[0];
-    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "mac" }] });
+    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "wh" }] });
     expect(row?.shards).toHaveLength(2);
     const siegel = (await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit");
     expect(siegel).toHaveLength(1);
@@ -492,4 +492,65 @@ describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalt
     const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
     expect(tip?.body).toMatchObject({ queued: false, state: "unseen" });
   }, 3 * LIFE_DEADLINE_MS);
+});
+
+describe("Check ist nicht Audit: die Verklemmung zwischen WH (ohne Audit-Befehl) und Mac (mit)", () => {
+  const ohneBefehl = (f: Fixture, name: string): Record<string, string> => ({ FLEET_HUB_REMOTE: "hub", FLEET_REPO_DIR: f.repo, FLEET_MACHINE: name });
+  const folgt = (von: Fixture, nach: Fixture): void => {
+    sh(von.repo, "push", "-q", "hub", "main");
+    sh(nach.repo, "fetch", "-q", "hub");
+    sh(nach.repo, "merge", "-q", "--ff-only", "hub/main");
+  };
+
+  test("(a)+(b) ein am WH gecheckter Stand: der Mac reiht sein Audit ein (nicht „seen“), und erst dessen Siegel öffnet das Deploy-Tor des WH", async () => {
+    const { wh, mac } = zweiFleets();
+    const head = commitIn(wh.repo, "wh-check.txt", "am WH gecheckt und gelandet");
+    const tree = (await baumVon(wh.repo, head))!;
+    await schreibeSiegel(wh.repo, { v: 1, tree, units: geforderteUnits(["dom"]), tiefe: "check", ergebnis: "green", maschine: "wh", plattform: plattformHier(),
+      lauf: "wh-check", at: Date.now() - 60_000 }, "wh");
+    expect(await pushSiegel(wh.repo, "hub", "wh")).toBe(true);
+    folgt(wh, mac);
+    // der WH hat nur seinen Check: sein Tor bleibt zu
+    const [zuWh] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(zuWh?.body).toMatchObject({ queued: false, state: "unseen" });
+    expect(String(zuWh?.body.why)).toContain("no other fleet has sealed this tree green yet");
+    // der Mac nimmt den fremden Check nicht als sein Audit: er reiht ein und fährt es voll
+    const a = attrappe(mac.state);
+    const eMac = umgebung(mac, "mac", a.cmd);
+    const [tipMac, , audits] = await life(mac, [post("/api/repos/audit-tip", {}), { until: reihe(mac), ms: 20_000 }, get("/api/post-land-audits")], eMac);
+    expect(tipMac?.body).toMatchObject({ queued: true });
+    expect(tipMac?.body.state).not.toBe("seen");
+    expect((audits?.body.audits as { result: string }[]).map((r) => r.result)).toEqual(["green"]);
+    expect(a.laeufe()).toHaveLength(1);
+    // sein Audit-Siegel reist zum Hub; jetzt geht das Tor des WH auf und nennt mac:audit
+    await pushSiegel(mac.repo, "hub", "mac");
+    const [offenWh] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(offenWh?.body).toMatchObject({ queued: false, state: "seen", audit: { result: "green" } });
+    const quellen = (offenWh?.body.audit as { quellen: { maschine: string; tiefe: string }[] }).quellen;
+    expect(quellen.map((q) => `${q.maschine}:${q.tiefe}`)).toContain("mac:audit");
+    expect(quellen.map((q) => `${q.maschine}:${q.tiefe}`)).not.toContain("wh:check");
+  }, 6 * LIFE_DEADLINE_MS);
+
+  test("(c) ein am Mac gelandeter Stand: Mac-Check-Siegel + Mac-Audit der Lücke decken ihn für das WH-Deploy-Tor", async () => {
+    const { wh, mac } = zweiFleets();
+    const a = attrappe(mac.state);
+    const eMac = umgebung(mac, "mac", a.cmd);
+    const [made] = await life(mac, [post("/api/branches", { repo: mac.repo, name: "mac-land" })], eMac);
+    commitIn(String(made?.body.path), "mac-land.txt", "am Mac");
+    const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
+    await schreibeSiegel(mac.repo, { v: 1, tree, units: geforderteUnits(["dom"]).filter((u) => u !== "lanes"), tiefe: "check", ergebnis: "green", maschine: "mac",
+      plattform: plattformHier(), lauf: "mac-check", at: Date.now() - 60_000 }, "mac");
+    await life(mac, [post("/api/branches/land", { repo: mac.repo, branch: "branch/mac-land", subject: "mac-land", unchecked: true }),
+      post("/api/repos/audit-tip", {}), { until: reihe(mac), ms: 20_000 }], eMac);
+    expect(a.laeufe()).toHaveLength(1); // der eigene Check deckt das eigene Audit weiter: nur die Lücke lief
+    const skip = a.laeufe()[0]!.replace("skip=", "").split(",");
+    expect(skip).toContain("core");
+    expect(skip).not.toContain("lanes");
+    await pushSiegel(mac.repo, "hub", "mac");
+    folgt(mac, wh);
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ queued: false, state: "seen", audit: { result: "green" } });
+    const quellen = (tip?.body.audit as { quellen: { maschine: string; tiefe: string }[] }).quellen;
+    expect(quellen.map((q) => `${q.maschine}:${q.tiefe}`).sort()).toEqual(["mac:audit", "mac:check"]);
+  }, 6 * LIFE_DEADLINE_MS);
 });

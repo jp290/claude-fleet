@@ -219,3 +219,67 @@ describe("Deckung", () => {
     expect(p.luecke).toEqual(["core"]);
   });
 });
+
+describe("wessen Check zählt: ein Server mit Audit-Befehl nimmt kein fremdes Check-Siegel als sein Audit", () => {
+  // der Server fragt als „mac“ (mit Audit-Befehl); „wh“ hat gecheckt, der Hub hat es geholt
+  const alsMac = async <T>(f: () => Promise<T>): Promise<T> => {
+    const vorher = process.env.FLEET_MACHINE;
+    process.env.FLEET_MACHINE = "mac";
+    try { return await f(); } finally { if (vorher === undefined) delete process.env.FLEET_MACHINE; else process.env.FLEET_MACHINE = vorher; }
+  };
+  const neuerBaum = async (name: string): Promise<{ sha: string; tree: string }> => {
+    const sha = commit(mac, `${name}.txt`, name);
+    return { sha, tree: (await baumVon(mac, sha))! };
+  };
+  const ausHub = (dir: string, tree: string, zeile: string, schreiber: string): void =>
+    void sh(dir, ...ID, "notes", `--ref=refs/notes/fleet/seal-hub/${schreiber}`, "append", "-m", zeile, tree);
+
+  test("ein fremdes Check-Siegel deckt für den Mac nichts; ein fremdes Audit-Siegel und der eigene Check decken", async () => {
+    const { sha, tree } = await neuerBaum("art-fremd");
+    ausHub(mac, tree, JSON.stringify(siegel(tree, { tiefe: "check", maschine: "wh", lauf: "check-wh" })), "wh");
+    const p = await alsMac(() => planFuer(mac, sha, OHNE_DOM));
+    expect(p.gedeckt).toEqual([]);
+    expect(p.luecke).toEqual(OHNE_DOM);
+    expect(p.quellen).toEqual([]);
+    // das Audit des WH deckt (eine Maschine, die kein Audit hatte, bekommt das einer anderen)
+    ausHub(mac, tree, JSON.stringify(siegel(tree, { tiefe: "audit", maschine: "wh", lauf: "audit-wh", at: 2000 })), "wh");
+    const q = await alsMac(() => planFuer(mac, sha, OHNE_DOM));
+    expect(q.luecke).toEqual([]);
+    expect(q.quellen.map((x) => `${x.maschine}:${x.tiefe}`)).toEqual(["wh:audit"]);
+  });
+
+  test("der eigene Check deckt das eigene Audit weiter: nur die Lücke bleibt", async () => {
+    const { sha, tree } = await neuerBaum("art-eigen");
+    const ohneLanes = OHNE_DOM.filter((u) => u !== "lanes");
+    await schreibeSiegel(mac, siegel(tree, { tiefe: "check", maschine: "mac", units: ohneLanes }), "mac");
+    const p = await alsMac(() => planFuer(mac, sha, OHNE_DOM));
+    expect(p.gedeckt).toEqual(ohneLanes);
+    expect(p.luecke).toEqual(["lanes"]);
+    expect(p.quellen.map((x) => x.tiefe)).toEqual(["check"]);
+  });
+
+  test("ein Siegel ohne Feld tiefe (alt) zählt als Check: der Mac nimmt es als fremdes nicht", async () => {
+    const { sha, tree } = await neuerBaum("art-alt");
+    const { tiefe: _weg, ...alt } = siegel(tree, { maschine: "wh", lauf: "alt-wh" });
+    const gelesen = siegelAusZeile(JSON.stringify(alt));
+    expect(gelesen?.tiefe).toBe("check");
+    expect(siegelAusZeile(JSON.stringify({ ...alt, tiefe: "quatsch" }))).toBeNull();
+    ausHub(mac, tree, JSON.stringify(alt), "wh");
+    const p = await alsMac(() => planFuer(mac, sha, OHNE_DOM));
+    expect(p.gedeckt).toEqual([]);
+    expect(p.luecke).toEqual(OHNE_DOM);
+    // ein Server ohne Audit-Befehl (deckung ohne die Regel) nimmt fremde Siegel jeder Tiefe, auch das alte
+    const fremd = await leseSiegel(mac, tree, { fremdFuer: "mac" });
+    expect(fremd.map((s) => s.tiefe)).toEqual(["check"]);
+    expect(deckung(fremd, OHNE_DOM).luecke).toEqual([]);
+  });
+
+  test("leseSiegel markiert nach dem Ref, nicht nach dem Feld maschine: ein Helfer-Siegel im eigenen Ref ist eigenes", async () => {
+    const { tree } = await neuerBaum("art-ref");
+    await schreibeSiegel(mac, siegel(tree, { tiefe: "audit", maschine: "geraet" }), "mac");
+    ausHub(mac, tree, JSON.stringify(siegel(tree, { tiefe: "check", maschine: "wh", lauf: "x", at: 5 })), "wh");
+    const alle = await leseSiegel(mac, tree, { ich: "mac" });
+    expect(alle.map((s) => `${s.maschine}:${s.fremd ? "fremd" : "eigen"}`).sort()).toEqual(["geraet:eigen", "wh:fremd"]);
+    expect("fremd" in JSON.parse(JSON.stringify(siegel(tree)))).toBe(false);
+  });
+});

@@ -11,6 +11,9 @@
 //   · Was NICHT reist: ein Urteil (Adjudikation) — es steht in keiner Siegel-Zeile, und ein Feld, das ein Siegel nicht kennt, wird beim
 //     Lesen verworfen. Plattform und bun-Version stehen im Siegel und werden angezeigt. Ungebunden ist der Standard: nur eine ausdrücklich markierte Unit
 //     (e2e/ctx.ts#ShardUnit.plattformGebunden, heute keine) verlangt ein Siegel der Plattform des Fragenden (deckung).
+//   · Wessen Check zählt (Owner 30.10.): auf einem Server MIT Audit-Befehl deckt ein FREMDES Check-Siegel (Ref einer anderen Maschine, tiefe "check") nie eine
+//     Unit für Abrechnung, audit-tip und Deploy-Tor — nur ein fremdes Audit-Siegel und eigene Siegel jeder Tiefe tun es; ein Server OHNE Audit-Befehl nimmt fremde Siegel jeder
+//     Tiefe (deckung/opts.ohneFremdeChecks). Ohne diese Regel hielt der Check des WH den Mac für „schon auditiert“, und der WH wartete ewig auf ein Siegel des Macs.
 //   · VERTRAUEN: ein Siegel kann schreiben, wer auf den Hub pushen kann; das Deploy-Tor glaubt ihm so, wie es heute dem Helfer glaubt,
 //     und jedes Siegel nennt seinen Lauf (Maschine + Run-Ordner), damit „grün“ nachprüfbar bleibt.
 import { readFileSync } from "node:fs";
@@ -38,6 +41,8 @@ export interface Siegel {
   /** der Lauf, damit „grün“ nachprüfbar bleibt: Run-Ordner (Basisname) oder Job */
   lauf: string;
   at: number;
+  /** nur beim Lesen gesetzt (leseSiegel): der Ref einer ANDEREN Maschine hat es geschrieben. Steht in keiner Note. */
+  fremd?: true;
 }
 /** eine Quelle der zusammengesetzten Deckung: wer welche Units wann lief */
 export interface SiegelQuelle {
@@ -87,7 +92,7 @@ const LAUFENDE_TABELLE: Einheit[] | null = (() => {
 export const geforderteUnits = (skip: readonly string[] = []): string[] =>
   (LAUFENDE_TABELLE ?? []).filter((u) => !u.mutant && !skip.includes(u.unit)).map((u) => u.unit);
 
-/** Eine Zeile aus einer Note, streng gelesen. Unbekannte Felder (etwa ein Urteil) fallen weg; Unlesbares ist null. */
+/** Eine Zeile aus einer Note, streng gelesen. Unbekannte Felder (etwa ein Urteil) fallen weg; Unlesbares ist null. Ohne `tiefe` (alt) gilt das Siegel als Check, die vorsichtigere Art. */
 export function siegelAusZeile(line: string): Siegel | null {
   let raw: unknown;
   try { raw = JSON.parse(line); } catch { return null; }
@@ -96,27 +101,30 @@ export function siegelAusZeile(line: string): Siegel | null {
   const p = r.plattform as Record<string, unknown> | undefined;
   if (r.v !== 1 || typeof r.tree !== "string" || !TREE.test(r.tree)
     || !Array.isArray(r.units) || r.units.length > 200 || !r.units.every((u) => typeof u === "string" && UNIT.test(u))
-    || (r.tiefe !== "check" && r.tiefe !== "audit") || (r.ergebnis !== "green" && r.ergebnis !== "red")
+    || (r.tiefe !== undefined && r.tiefe !== "check" && r.tiefe !== "audit") || (r.ergebnis !== "green" && r.ergebnis !== "red")
     || typeof r.maschine !== "string" || !MACHINE.test(r.maschine)
     || !p || typeof p.os !== "string" || typeof p.arch !== "string" || typeof p.bun !== "string"
     || typeof r.lauf !== "string" || !r.lauf || r.lauf.length > 200
     || typeof r.at !== "number" || !Number.isFinite(r.at)) return null;
-  return { v: 1, tree: r.tree, units: [...new Set(r.units as string[])], tiefe: r.tiefe, ergebnis: r.ergebnis, maschine: r.maschine,
+  return { v: 1, tree: r.tree, units: [...new Set(r.units as string[])], tiefe: r.tiefe ?? "check", ergebnis: r.ergebnis, maschine: r.maschine,
     plattform: { os: p.os.slice(0, 20), arch: p.arch.slice(0, 20), bun: p.bun.slice(0, 20) }, lauf: r.lauf, at: r.at };
 }
 
 /** `plattform`: die des Fragenden (Standard: diese Maschine); `gebunden`: ob eine Unit plattformgebunden ist (Standard: die Markierung in ShardUnit). */
-export interface PlattformRegel { plattform?: string; gebunden?: (unit: string) => boolean }
+export interface PlattformRegel { plattform?: string; gebunden?: (unit: string) => boolean;
+  /** ein Server MIT Audit-Befehl: ein grünes Check-Siegel einer anderen Maschine (`fremd`) deckt nichts, sein eigenes Audit bleibt geschuldet */
+  ohneFremdeChecks?: boolean }
 const istPlattformGebunden = (unit: string): boolean => LAUFENDE_TABELLE?.some((u) => u.unit === unit && u.gebunden) === true;
 
 /**
  * Was die Siegel zu den geforderten Units decken. Nur ein grünes Siegel deckt; für jede Unit gilt das NEUESTE Siegel, das sie nennt
- * (ist es rot, bleibt sie in der Lücke). Die Quellen sind die Siegel, die wirklich etwas beitragen, je mit ihrem Beitrag.
+ * (ist es rot, bleibt sie in der Lücke). Mit `ohneFremdeChecks` zählt ein grünes Check-Siegel einer anderen Maschine nicht. Die Quellen sind die Siegel, die wirklich etwas beitragen, je mit ihrem Beitrag.
  */
 export function deckung(siegel: readonly Siegel[], gefordert: readonly string[], opts: PlattformRegel = {}): Deckung {
   const hier = opts.plattform ?? plattformHier().os;
   const gebunden = opts.gebunden ?? istPlattformGebunden;
-  const neuesteZuerst = [...siegel].sort((a, b) => b.at - a.at);
+  const zaehlt = (s: Siegel): boolean => !(opts.ohneFremdeChecks && s.fremd && s.tiefe === "check" && s.ergebnis === "green");
+  const neuesteZuerst = siegel.filter(zaehlt).sort((a, b) => b.at - a.at);
   const gedeckt: string[] = [];
   const luecke: string[] = [];
   const beitrag = new Map<Siegel, string[]>();
@@ -183,15 +191,18 @@ export function schreibeSiegel(repo: string, s: Siegel, schreiber: string = masc
  * `fremdFuer`: nur Siegel, die ein ANDERER Schreiber in den Hub gelegt hat — der Ref, nicht das Feld `maschine`, sagt, wessen Fleet es schrieb
  * (der Helfer, der einen Audit der einen Fleet fuhr, trägt den Namen der anderen). Der Hub-Abruf des eigenen Refs zählt nicht.
  * `nurEigene`: nur die Refs dieser Maschine, keine vom Hub geholten (ein Hub, der gerade nicht antwortet, ist kein Zeuge).
+ * Jedes Siegel aus dem Ref einer anderen Maschine als `ich` (Standard: diese) trägt `fremd`.
  */
-export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?: string; nurEigene?: true } = {}): Promise<Siegel[]> {
+export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?: string; nurEigene?: true; ich?: string } = {}): Promise<Siegel[]> {
   if (!TREE.test(tree)) return [];
   const refs = await git(repo, ["for-each-ref", "--format=%(refname)", ...(opts.fremdFuer ? [`${SIEGEL_HUB_REF}/`] : opts.nurEigene ? [`${SIEGEL_REF}/`] : [`${SIEGEL_REF}/`, `${SIEGEL_HUB_REF}/`])]);
   if (refs.code !== 0 || !refs.out) return [];
   const seen = new Set<string>();
   const found: Siegel[] = [];
+  const ich = opts.ich ?? maschinenName();
   for (const ref of refs.out.split("\n")) {
-    if (opts.fremdFuer && ref.slice(ref.lastIndexOf("/") + 1) === opts.fremdFuer) continue;
+    const schreiber = ref.slice(ref.lastIndexOf("/") + 1);
+    if (opts.fremdFuer && schreiber === opts.fremdFuer) continue;
     const note = await git(repo, ["notes", `--ref=${ref}`, "show", tree]);
     if (note.code !== 0) continue;
     for (const line of note.out.split("\n").slice(0, MAX_LINES_PER_TREE)) {
@@ -200,7 +211,7 @@ export async function leseSiegel(repo: string, tree: string, opts: { fremdFuer?:
       const key = `${s.maschine}\0${s.lauf}\0${s.tiefe}\0${s.ergebnis}\0${s.at}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      found.push(s);
+      found.push(schreiber === ich ? s : { ...s, fremd: true });
     }
   }
   return found;
@@ -249,11 +260,12 @@ export async function tabelleStimmt(repo: string, tree: string): Promise<boolean
 
 /**
  * Der Plan eines Audits für einen Stand: was schon gedeckt ist und was noch läuft. `gefordert` sind die Units, die dieser Lauf schulden
- * würde. Ohne lesbaren Baum ist alles Lücke — nicht lesbar heißt ungeprüft.
+ * würde. Ohne lesbaren Baum ist alles Lücke — nicht lesbar heißt ungeprüft. Der Plan ist die Frage eines Servers MIT Audit-Befehl: ein fremdes
+ * Check-Siegel deckt darin nichts (deckung/ohneFremdeChecks).
  */
 export async function planFuer(repo: string, sha: string, gefordert: readonly string[], opts: { nurEigene?: true } = {}): Promise<Deckung & { tree: string | null }> {
   const tree = await baumVon(repo, sha);
   if (!tree) return { tree: null, gedeckt: [], luecke: [...gefordert], quellen: [] };
   if (!(await tabelleStimmt(repo, tree))) return { tree, gedeckt: [], luecke: [...gefordert], quellen: [] };
-  return { tree, ...deckung(await leseSiegel(repo, tree, opts.nurEigene ? { nurEigene: true } : {}), gefordert) };
+  return { tree, ...deckung(await leseSiegel(repo, tree, opts.nurEigene ? { nurEigene: true } : {}), gefordert, { ohneFremdeChecks: true }) };
 }

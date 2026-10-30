@@ -995,6 +995,10 @@ Session als `actor` und `<rolle> slot=… openedAt=…` im Detail. `ctl.sh commi
 nimmt auch ihre Ablehnung als Antwort. Die Owner-Tür fragt es nur mit ausdrücklichem Owner-Token oder ohne
 Self-Token, also im Terminal des Owners (`ctl.sh#pane_self`).
 
+Was den Audit ersetzt (Prüf-Siegel, `server/pruef-siegel.ts#deckung`): ein Server MIT Audit-Befehl nimmt ein fremdes Siegel der Tiefe
+`check` nie als sein Audit (dann reiht diese Tür ein); fremde `audit`-Siegel und eigene Siegel jeder Tiefe decken. Ein Server OHNE
+Audit-Befehl öffnet sein Deploy-Tor nur mit fremden Siegeln, jeder Tiefe.
+
 ## merges — `GET /api/self/merges` (seit 2026-10-19, bau/ohne-owner-token)
 
 Der Land-Sensor ohne Owner-Token, nur lesend. Er antwortet `{scope, rows, busy}`. Je Zeile steht

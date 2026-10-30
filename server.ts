@@ -50784,7 +50784,8 @@ type DeployAuditOf =
 // A SERVER WITHOUT AN AUDIT COMMAND OF ITS OWN (since the audit switch the workhorse is one: the other fleet audits) used to be "not applicable" and
 // let any tip out. It no longer does when a hub is in play: the deploy gate lets a tip through only if a GREEN seal of another fleet's writer
 // covers the tree of the target for everything a deploy's audit owes (everything but dom), and says whose seal it was; otherwise it stays closed
-// with the reason. Nothing is queued — there is no command to run. A red seal keeps the gate shut and, giving `redAt`, also keeps gate-only
+// with the reason (a seal of ANY depth counts here, its check as well as its audit; the other fleet, which has a command, takes no foreign check for its own
+// audit — pruef-siegel#deckung — so it runs one and seals it). Nothing is queued — there is no command to run. A red seal keeps the gate shut and, giving `redAt`, also keeps gate-only
 // (deployGateOnlyOf) from walking past it. A server with no hub has no other machine to ask: unchanged, not applicable. The owner's force stays.
 async function deployAuditWithoutCommand(repo: string, target: string, asker: TipAuditAsker): Promise<DeployAuditOf> {
   const hub = await sealHub(repo);

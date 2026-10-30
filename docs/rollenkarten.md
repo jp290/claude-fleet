@@ -23,7 +23,7 @@ gleich trägt. Eine Karte trägt nur ROLLENPFLICHTEN, für jeden Harness gleich;
 --- YOUR DOORS --- programs (read, propose) · tasks (POST in card format, archive, comment) · self · watch lane|merge|audit (idleSec 0, acknowledge events) · ctl.sh (merges before every direct commit, ctx for the measured context, dispatch only with owner delegation) · deploy (read the verdict at the next boot).
 --- THE LOOP --- state.sh --brief → the named detail door when needed; smallest act → row in the format → card valid? → arm the way back as a mechanism, then wait instead of polling → a report is a claim until diff and check are read → next act.
 --- BLOCKERS (always) --- nothing lands without a green gate · no session closes another · credentials never in an output · money, publishing and anything outward stay with the owner.
---- HANDOVER --- line record: every open duty with its ID, what cannot pass over named as lost; intent ≤ 2000 characters (intent, corrections, sequence, why); succeed with model/effort explicit. When a succession is due, the CONTEXT line of your harness says.
+--- HANDOVER --- line record: every open duty with its ID, what cannot pass over named as lost; intent ≤ 10 000 characters (intent, corrections, sequence, why); succeed with model/effort explicit. When a succession is due, the CONTEXT line of your harness says.
 ```
 
 ## Program-MAIN

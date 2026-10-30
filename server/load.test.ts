@@ -136,14 +136,28 @@ describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
     cwd: "/tmp/fleet-pi-regular", browserMcp: false, context: null, permissions: null,
     fleetCheckout: false, remoteName: null, fenceBwrap: "/usr/bin/bwrap" as string | null,
   };
-  test("pi, pi-unfenced, pi-zai, pi-zai-unfenced und pi-deepseek starten mit --tui-mode regular, claude nicht", async () => {
+  // Die Flagge gehoert in den pi-Aufruf selbst: der steht als LETZTES vor dem '; exec <Shell>', das einer
+  // toten pi die Pane zurueckgibt. Dahinter (oder in einem Wort davor wie 'fleet_pz …') liefe sie ins
+  // Leere, und ein Muster 'irgendwo steht --tui-mode regular' bliebe trotzdem gruen. Mit startDatei steht sie
+  // HINTER dem schon geschlossenen, gequoteten --append-system-prompt-Argument, nicht in dessen Quotes.
+  test("pi, pi-unfenced, pi-zai, pi-zai-unfenced und pi-deepseek: --tui-mode regular steht am Ende des pi-Aufrufs, vor dem letzten '; exec ', claude nicht", async () => {
     const m = await load();
     const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-regular-"));
+    const startDatei = "/tmp/start datei/start.md"; // mit Leerzeichen: nur ein geschlossenes Quote-Paar haelt es zusammen
     try {
       for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS, m.PI_ZAI_HARNESS, m.PI_ZAI_UNFENCED_HARNESS, m.PI_DEEPSEEK_HARNESS]) {
-        const line = h.spawnCmd({ ...base, cwd });
-        expect(line).toMatch(/(^|[\s;])pi .*--tui-mode regular(\s|;|$)/);
-        expect(line.match(/--tui-mode/g)?.length).toBe(1);
+        for (const [fall, o, ende] of [
+          ["ohne Startdatei", { ...base, cwd }, " --tui-mode regular"],
+          ["mit Startdatei", { ...base, cwd, startDatei }, ` --append-system-prompt '${startDatei}' --tui-mode regular`],
+        ] as const) {
+          const line = h.spawnCmd(o);
+          const exec = line.lastIndexOf("; exec ");
+          expect([h.id, fall, exec > 0]).toEqual([h.id, fall, true]);
+          const aufruf = line.slice(0, exec);
+          expect([h.id, fall, aufruf.endsWith(ende)]).toEqual([h.id, fall, true]);
+          expect(aufruf).toMatch(/(^|[\s;])pi --/);
+          expect(line.match(/--tui-mode/g)?.length).toBe(1);
+        }
       }
       expect(m.CLAUDE_HARNESS.spawnCmd({ ...base, cwd })).not.toContain("--tui-mode");
     } finally { rmSync(cwd, { recursive: true, force: true }); }

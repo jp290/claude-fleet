@@ -50718,11 +50718,13 @@ type DeployAuditOf =
 async function deployAuditWithoutCommand(repo: string, target: string, asker: TipAuditAsker): Promise<DeployAuditOf> {
   const hub = await sealHub(repo);
   if (!hub) return { state: "not-applicable" };
-  await holeSiegel(repo, hub);
+  // FRESH, not throttled: the hub is the only witness this gate has, and a seal fetched earlier is not today's. A fetch that fails keeps the gate shut.
+  const fresh = await holeSiegel(repo, hub, 0);
   const tree = await baumVon(repo, target);
   const deploy = asker === "deploy";
   const closed = (why: string, redAt?: number): DeployAuditOf => ({ state: "unseen", repo, queued: false, sealOnly: true, ...(redAt ? { redAt } : {}), why,
     next: `have the other fleet audit this tree (its audit writes the seal that opens this gate), then ${deploy ? "POST /api/deploy again" : "ask again"}` });
+  if (!fresh) return closed("this server has no audit command of its own, and the seals of the other fleet could not be fetched from the hub just now — a gate that cannot ask stays shut");
   if (!tree) return closed(`this server has no audit command and the tree of ${target.slice(0, 8)} is unreadable — no seal can stand for it`);
   const required = geforderteUnits(auditScopeOf(asker).skipUnits ?? []);
   const others = await leseSiegel(repo, tree, { fremdFuer: maschinenName() });

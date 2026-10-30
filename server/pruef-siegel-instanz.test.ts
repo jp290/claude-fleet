@@ -327,6 +327,17 @@ describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalt
     expect(String(refused?.body.reason)).toContain("no audit command of its own");
   }, 3 * LIFE_DEADLINE_MS);
 
+  test("F3: erreicht das Tor den Hub nicht, bleibt es zu, auch wenn ein früher geholtes Siegel den Baum deckt", async () => {
+    const wh = await macAuditiert(false);
+    const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(tip?.body).toMatchObject({ state: "seen" }); // das Siegel des Macs liegt jetzt im Hub-Namensraum des WH
+    rmSync(sh(wh.repo, "remote", "get-url", "hub"), { recursive: true, force: true }); // der Hub ist weg
+    const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));
+    expect(refused?.status).toBe(409);
+    expect(String(refused?.body.reason)).toContain("tip not audited");
+    expect(String(refused?.body.reason)).toContain("could not be fetched");
+  }, 5 * LIFE_DEADLINE_MS);
+
   test("ein rotes Siegel des Macs: das Tor bleibt zu und nennt das Rot", async () => {
     const wh = await macAuditiert(true);
     const [refused] = await life(wh, [deploy()], ohneBefehl(wh, "wh"));

@@ -23,6 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { ADJUDICATION_CLEARS_RED } from "../server/adjudication";
 import { BIG_UNITS, bigUnitsFor, bigUnitsLine, type BigUnitSelection } from "./big-units";
 import { repairProofOf, type RepairProof } from "./repair-proof";
+import { maschinenName, plattformHier, pushSiegel, schreibeSiegel } from "../server/pruef-siegel";
 
 const RUNNER = join(import.meta.dir, "merge-check-run.sh");
 const REPO_DIR = join(import.meta.dir, "..");
@@ -437,10 +438,32 @@ export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Reco
       run: /^run (\S+)/m.exec(run.out)?.[1] ?? null, helperWaitMs: Number(/^run \S+ wait=(\d+)/m.exec(run.out)?.[1] ?? 0) });
     if (!runLine) return finish("error", false, `der Helfer lieferte kein Urteil (${helper.kind === "ssh" ? "ssh" : "sh"} exit ${run.exit})`, 3);
     const verdict = runLine[1] === "green" ? "green" : "red";
+    // PRÜF-GEDÄCHTNIS (server/pruef-siegel.ts): was dieser Check auf genau diesem Baum fuhr, bleibt als Siegel stehen und reist über den Hub.
+    // Der Audit nach dem Land fährt dann nur die Lücke (dom und was der Check ausließ). Ein Rot wird mitgeschrieben und deckt nichts.
+    await siegelDesChecks(repo, row, verdict, units, helper, env);
     const d = decide(verdict, state, proof?.ok === true, proof ? proof.why : undefined);
     return finish(verdict, d.mergeable, verdict === "red" ? red.why : d.why, d.code);
   } catch (e) {
     return finish("error", false, e instanceof Error ? e.message : String(e), 3);
+  }
+}
+
+// Die Units stammen aus den `shard-unit`-Zeilen der Audit-Shards (units); Maschine und Plattform sind die des Helfers: lokal diese, über ssh
+// der Host und `unbekannt` (die Plattform eines fremden Helfers kennt dieser Prozess nicht, und raten wäre schlimmer als das).
+async function siegelDesChecks(repo: string, row: Record<string, unknown>, verdict: string, units: Record<string, number>, helper: Helper,
+  env: Record<string, string | undefined>): Promise<void> {
+  try {
+    const tree = String(row.tree ?? "");
+    const ran = Object.keys(units);
+    if (!/^[0-9a-f]{40}$/.test(tree) || !ran.length) return;
+    const lokal = helper.kind === "local";
+    const maschine = lokal ? maschinenName(env) : maschinenName({ FLEET_MACHINE: helper.host.split("@").pop()!.split(".")[0]! });
+    const lauf = String(row.run ?? "").split("/").filter(Boolean).pop() ?? `check-${String(row.at)}`;
+    const ok = await schreibeSiegel(repo, { v: 1, tree, units: ran, tiefe: "check", ergebnis: verdict === "green" ? "green" : "red", maschine,
+      plattform: lokal ? plattformHier() : { os: "unbekannt", arch: "-", bun: "-" }, lauf, at: Date.now() }, maschinenName(env));
+    if (ok && git(["remote", "get-url", "hub"], undefined, repo).ok) await pushSiegel(repo, "hub", maschinenName(env));
+  } catch (e) {
+    console.error(`merge-check: kein Siegel: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

@@ -243,6 +243,13 @@ dirty=$(git status --porcelain)
 git fetch "$REMOTE" "+refs/heads/main:refs/remotes/$REMOTE/main" || {
   echo "fleet-sync: fetch from '$REMOTE' failed"; exit 2; }
 
+# THE SEALS OF THE OTHER MACHINE (server/pruef-siegel.ts). A seal says "on this tree these units ran, green or red, on that machine"; the writer
+# pushes its own ref (refs/notes/fleet/seal/<machine>) to the hub, and this machine reads them from refs/notes/fleet/seal-hub/ so that a tip the
+# other fleet already audited is not audited again. A different namespace on purpose: this machine's own ref is never overwritten. Best effort —
+# a hub without seals or one that does not answer costs nothing here, and never changes the exit of a sync.
+git fetch --quiet "$REMOTE" "+refs/notes/fleet/seal/*:refs/notes/fleet/seal-hub/*" >/dev/null 2>&1 \
+  || echo "fleet-sync: no seals fetched from '$REMOTE' — main is unaffected"
+
 before=$(git rev-parse HEAD)
 after=$(git rev-parse "refs/remotes/$REMOTE/main")
 if [ "$before" = "$after" ]; then

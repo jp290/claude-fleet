@@ -281,6 +281,7 @@ import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrt
   type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { RICHTUNG_PLATZ, SETUP_ROUTE, liesKonzept, roleStein, setupRoute, steineFuerAgentWahl, type SetupServer } from "./server/setup-datei";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
+import { geforderteUnits, baumVon, geprueftAm, holeSiegel, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
 import { HISTORIE_ROUTE as K15_HISTORIE_ROUTE, KONST_ROUTE as K15_KONST_ROUTE, SPEICHER_DATEI as K15_SPEICHER_DATEI, LAEUFE_ROUTE as K15_LAEUFE_ROUTE, SPEICHER_ROUTE as K15_SPEICHER_ROUTE, FREIGABE_ROUTE as K15_FREIGABE_ROUTE } from "./src/k15-speicher";
 
 auditActorScope.enterWith({ kind: "machine", why: "boot" });
@@ -33063,6 +33064,11 @@ interface PostLandAuditRow {
   // for; `deploy` — a deploy asked for this tree. Absent where no cadence applies: a deployment
   // without a helper, and every row written before it existed.
   trigger?: AuditTrigger;
+  // PRÜF-GEDÄCHTNIS (server/pruef-siegel.ts): the units this run was spared because a green seal of the SAME TREE already covered them,
+  // and the seals it stands on — each names its machine, depth, run and units. Absent: nothing was spared, the run measured alone.
+  // A row with `quellen` and no run of its own (`ms` near 0, `out` the "geprüft am …" sentence) is a row composed from seals.
+  skipUnits?: string[];
+  quellen?: SiegelQuelle[];
   // Present ONLY on a `nightly` row (withNightlyFacts): every land since the previous nightly — the
   // span the one run with the dom unit answers for.
   nightly?: { lands: { branch: string; mainAfter: string; at: number }[]; landsTotal: number };
@@ -33354,6 +33360,71 @@ function auditScopeOf(trigger: AuditTrigger | undefined): { skipUnits?: string[]
 }
 const helperTakesSkipUnits = (deviceId: string | undefined): boolean =>
   !!(deviceId && helperDevices.get(deviceId)?.features?.includes(AUDIT_SKIP_UNITS_FEATURE));
+// PRÜF-GEDÄCHTNIS (server/pruef-siegel.ts; owner 2026-10-29: [Zitat entfernt]).
+// A SEAL says: on THIS TREE these units ran, green or red, on that machine, in that run. The merge check writes one (ci/merge-check.ts), so does
+// every audit row below, and both travel to the other fleet through the hub (the writer pushes its own ref; fleet-sync.sh and the readers
+// fetch). What a seal spares: an audit of a tip whose tree the seals cover runs ONLY the gap (FLEET_E2E_SKIP_UNITS), and covers fully → no run,
+// the row is composed from the seals and names every source. The deploy gate reads the same composition (deployAuditOf). A RED seal covers
+// nothing and a verdict (adjudication) is in no seal. dom is left out of what the day's audits owe (auditScopeOf), so it stays the gap of a check.
+const sealHub = async (repo: string): Promise<string> => HUB_REMOTE && !(await hubRemoteMissing(repo)) ? HUB_REMOTE : "";
+// What an audit of `sha` still owes. null = no plan: the nightly measures the dom mutants, and no seal stands for those.
+async function sealPlanOf(repo: string, sha: string, trigger: AuditTrigger | undefined, outOfScope: string[]):
+  Promise<(Deckung & { tree: string | null }) | null> {
+  if (trigger === "nightly") return null;
+  await holeSiegel(repo, await sealHub(repo));
+  return planFuer(repo, sha, geforderteUnits(outOfScope));
+}
+// The scope a helper job gets: the trigger's own (auditScopeOf) plus every unit a green seal of the same tree covers. A complete cover is
+// settled before this is asked (settleFromSeals), so a plan with no gap here is run as before rather than scoped to nothing.
+async function auditScopeWithSeals(repo: string, sha: string, trigger: AuditTrigger | undefined):
+  Promise<{ scope: { skipUnits?: string[]; domMutants?: true }; quellen: SiegelQuelle[] }> {
+  const base = auditScopeOf(trigger);
+  const plan = await sealPlanOf(repo, sha, trigger, base.skipUnits ?? []);
+  if (!plan || !plan.gedeckt.length || !plan.luecke.length) return { scope: base, quellen: [] };
+  return { scope: { ...base, skipUnits: [...(base.skipUnits ?? []), ...plan.gedeckt] }, quellen: plan.quellen };
+}
+// The seal an audit row leaves: the units that RAN (the required table minus what the run was told to leave out), under the tree it measured.
+// Written BEFORE the row so that a reader who waits for the row finds the seal; pushed to the hub with a cap, so a hub that does not answer
+// cannot hold the drain. A failure here is a log line: the seal is a memory, not the verdict.
+async function sealAuditRow(row: PostLandAuditRow, units: string[], lauf: string, maschine: string): Promise<void> {
+  try {
+    if ((row.result !== "green" && row.result !== "red") || row.proportional || row.cmdSource === "check-command"
+      || row.cmdSource === "repo-worker" || !units.length || !row.mainSha) return;
+    const tree = await baumVon(row.repo, row.mainSha);
+    if (!tree) return;
+    const ok = await schreibeSiegel(row.repo, { v: 1, tree, units, tiefe: "audit", ergebnis: row.result, maschine, plattform: plattformHier(),
+      lauf, at: row.at });
+    if (!ok) { console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} could not be written`); return; }
+    const hub = await sealHub(row.repo);
+    if (hub) await Promise.race([pushSiegel(row.repo, hub), Bun.sleep(10_000).then(() => false)]);
+  } catch (e) {
+    console.log(`pruef-siegel: the seal of ${row.mainSha.slice(0, 8)} failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+// The name a helper writes under: the device's own name, cut to what a seal's machine field takes.
+const sealMachineOf = (name: string): string => maschinenName({ FLEET_MACHINE: name });
+// An entry whose tree the seals cover COMPLETELY owes no run, whoever would have claimed it: the row is composed from the seals (runPostLandAudit's
+// composed path spawns nothing) and the covers are consumed exactly as the drain consumes them. Asked at the helper's door before a bundle is built.
+async function settleFromSeals(repo: string, q: { main: string; covers: AuditCover[] }, trigger: AuditTrigger | undefined): Promise<boolean> {
+  if (trigger === "nightly" || auditRunningRepo !== null || helperClaimOf(repo) || auditShardRuns.has(repo) || !q.covers.length) return false;
+  const tip = await git(repo, "rev-parse", q.main);
+  if (tip.code !== 0 || !tip.out) return false;
+  const out = auditScopeOf(trigger).skipUnits ?? [];
+  const plan = await sealPlanOf(repo, tip.out, trigger, out);
+  if (!plan || plan.luecke.length || !plan.quellen.length) return false;
+  if (auditRunningRepo !== null || helperClaimOf(repo) || auditShardRuns.has(repo)) return false; // taken while the seals were read
+  auditRunningRepo = repo;
+  try {
+    const covers = q.covers.slice();
+    const refused = await runPostLandAudit(repo, q.main, covers, false, trigger, out);
+    q.covers.splice(0, covers.length);
+    for (const r of refused) enqueueAuditCover(repo, r.main, r.cover);
+    settleAuditEntry(repo);
+    markAuditClaimable(repo);
+    savePostLandAuditQueue();
+  } finally { auditRunningRepo = null; }
+  return true;
+}
 // THE NIGHTLY TICK — the one timer the cadence owns (armAuditCadenceKick) calls it, and so does boot.
 // Not a second scheduler: it decides nothing but "is tonight's run of this repo queued yet", writes
 // at most one cover per repo per night, and hands everything else to auditCadenceOf through the drain.
@@ -33472,6 +33543,8 @@ interface HelperClaim {
   covers: AuditCover[];  // FROZEN at claim, exactly as the drain freezes its slice
   bundle: string;        // path of the bundle file this claim handed out
   trigger?: AuditTrigger; // which cadence number released it (auditCadenceOf) — absent: no cadence applies
+  scope?: { skipUnits?: string[]; domMutants?: true }; // what the job was told to leave out — the units the row's seal may claim
+  quellen?: SiegelQuelle[]; // the seals the skipped units stand on
 }
 const helperClaims = new Map<string, HelperClaim>(); // repo toplevel -> the live claim on it
 // --- THE SHARDED AUDIT: one queue entry, n helper jobs, one ledger row --------------------------
@@ -33582,6 +33655,7 @@ interface AuditShardRun {
   // green. So the first claimant decides — `{}` when it did not declare AUDIT_SKIP_UNITS_FEATURE —
   // and a later claim from a device that cannot honour a non-empty scope is refused.
   scope?: { skipUnits?: string[]; domMutants?: true };
+  quellen?: SiegelQuelle[]; // the seals the scope's skipped units stand on (pruef-siegel)
 }
 const auditShardRuns = new Map<string, AuditShardRun>(); // repo toplevel -> its open sharded run
 // the first claim's bundle build, shared: a daemon with three free slots POSTs three claims in one
@@ -34377,6 +34451,9 @@ function auditCounts(row: PostLandAuditRow): boolean {
   // the 16 s kill above, and it would poison the same distribution, which exists to answer "should
   // I keep waiting for the audit running HERE". The row still lands on the ledger in full.
   if (row.remote) return false;
+  // …NOR A ROW THAT STANDS ON SEALS (pruef-siegel): a composed row ran nothing and a partial one only the gap, so neither is a sample of the
+  // whole suite's cost, which is what "should I keep waiting for the audit running HERE" asks about.
+  if (row.quellen?.length) return false;
   // …AND NEITHER IS A SHORT-CHAIN ROW, for the same reason and with the same failure mode. This
   // distribution answers exactly one question — "should I keep waiting for the audit running HERE"
   // — and a proportional run is install+pins in seconds against a full suite's minutes. Mixed in,
@@ -34735,10 +34812,11 @@ async function snapshotIntegrationTree(repo: string, sha: string, dir: string,
 // ITS ISOLATION. ./e2e-isolated.sh derives socket, port and scratch dir from `$$` and sets all
 // three explicitly on the inner server (verified first-hand 2026-07-25), so concurrent runs cannot
 // collide and none of them can reach socket `claudefleet`.
-function auditChildEnv(): Record<string, string> {
+function auditChildEnv(skipUnits: string[] = []): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env))
     if (typeof v === "string" && !k.startsWith("FLEET_")) env[k] = v;
+  if (skipUnits.length) env.FLEET_E2E_SKIP_UNITS = skipUnits.join(",");
   return env;
 }
 // A local caller hands this the COMPLETE captured output. A remote caller has only a retained tail:
@@ -34891,7 +34969,7 @@ async function splitAuditCovers(repo: string, main: string, mainSha: string, cov
 // Returns the covers the run REFUSED to claim, each with the branch to requeue it on; the drain
 // puts them back in the same turn it consumes the rest.
 async function runPostLandAudit(repo: string, main: string, covers: AuditCover[],
-  proportional: boolean, trigger?: AuditTrigger): Promise<{ main: string; cover: AuditCover }[]> {
+  proportional: boolean, trigger?: AuditTrigger, outOfScope: string[] = []): Promise<{ main: string; cover: AuditCover }[]> {
   // Asked even on the short-chain path, and deliberately: an entry whose repo has no audit command
   // any more is PARKED, and a parked entry must stay unmeasured rather than quietly acquire a
   // fleet-shaped chain nobody configured. The short chain REPLACES a configured command; it never
@@ -34924,6 +35002,8 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   // what the row may CLAIM: the frozen covers whose land the measured tip contains (split below)
   let counted = covers;
   let refused: { main: string; cover: AuditCover }[] = [];
+  // PRÜF-GEDÄCHTNIS: what the seals of this tree already cover (null: no plan — short chain, the repo's own command, the nightly)
+  let sealPlan: (Deckung & { tree: string | null }) | null = null;
   try {
     // the CURRENT tip, not the triggering land's mainAfter: coalescing means this run stands for
     // every land folded into it, and the row must name the tree it actually measured.
@@ -34951,11 +35031,20 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
       if (!counted.length) return refused;
       // `proportional` IS the "does the command run in this tree itself" question here: the short
       // chain runs `bun e2e/pins.ts` in the snapshot, the configured full chain stages a copy.
-      const snapErr = await snapshotIntegrationTree(repo, mainSha, dir, proportional);
+      if (!proportional && chosen.source !== "check-command" && chosen.source !== "repo-worker")
+        sealPlan = await sealPlanOf(repo, mainSha, trigger, outOfScope);
+      // A COMPLETE COVER owes no run: the row is composed from the seals and says so in `quellen`
+      const composed = sealPlan !== null && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0;
+      const snapErr = composed ? null : await snapshotIntegrationTree(repo, mainSha, dir, proportional);
       if (snapErr) {
         reason = snapErr;
+      } else if (composed) {
+        result = "green"; reason = undefined; exitCode = 0;
+        out = geprueftAm(sealPlan!.quellen);
       } else {
-        const p = Bun.spawn(["sh", "-c", cmd], { cwd: dir, env: auditChildEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        // …and a PARTIAL one runs only the gap: the covered units are taken out of the table (FLEET_E2E_SKIP_UNITS, e2e/ctx.ts#selectSkipUnits)
+        const spared = sealPlan && sealPlan.gedeckt.length ? sealPlan.gedeckt : [];
+        const p = Bun.spawn(["sh", "-c", cmd], { cwd: dir, env: auditChildEnv(spared), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
         const spawnedAt = Date.now();
         // Read the pipes as PROMISES and race the EXIT against the deadline — never `await` the
         // streams first. A suite is a process TREE (it boots a server, drives tmux), and the pipe's
@@ -35152,6 +35241,8 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
     ...(workMs !== null ? { workMs } : {}),
     covers: counted, ...(trigger ? { trigger } : {}),
     ...(proportional ? { proportional: true as const, steps: [...VERIFY_PROPORTIONAL_STEPS] } : {}),
+    ...(sealPlan?.quellen.length ? { quellen: sealPlan.quellen } : {}),
+    ...(sealPlan?.gedeckt.length ? { skipUnits: sealPlan.gedeckt } : {}),
   };
   unmeasuredGreenIsUnknown(row);
   await withNightlyFacts(row);
@@ -35164,6 +35255,9 @@ async function runPostLandAudit(repo: string, main: string, covers: AuditCover[]
   // open a window in which a land that was just audited reads as WAITING FOR AN AUDIT — precisely
   // the confusion the view exists to remove. The drain clears it in the same synchronous block that
   // consumes the entry; see its `finally`.
+  // PRÜF-GEDÄCHTNIS: a run that measured leaves its seal (the units it ran: the gap, or all) BEFORE the row; a composed row measured nothing
+  if (!(sealPlan && sealPlan.luecke.length === 0 && sealPlan.quellen.length > 0))
+    await sealAuditRow(row, sealPlan ? sealPlan.luecke : geforderteUnits(outOfScope), basename(dir), maschinenName());
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
@@ -36696,6 +36790,8 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   if (auditTriggerNow(repo, q) === "nightly" && !helperTakesSkipUnits(deviceId))
     return json({ error: `this is the nightly audit (the whole suite with the dom unit's mutants), and this device's last`
       + ` heartbeat did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — it would run the suite without them` }, 409);
+  if (await settleFromSeals(repo, q, auditTriggerNow(repo, q)))
+    return json({ error: "this audit was settled from the seals of its tree — every unit it owes was already measured, nothing is left to run" }, 409);
   const id = helperJobId(repo);
   const file = `${HELPER_BUNDLE_DIR}/${id}-${randomBytes(4).toString("hex")}.bundle`;
   const built = await buildHelperBundle(repo, q.main, file);
@@ -36703,6 +36799,9 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
     try { rmSync(file, { force: true }); } catch { /* never written */ }
     return json({ error: built.error }, 500);
   }
+  // what this job is told to leave out: the trigger's scope plus the units a green seal of THIS TREE covers (only for a device that takes a scope).
+  // Read BEFORE the re-check below, so that no await sits between the re-check and the claim it guards.
+  const sealed = helperTakesSkipUnits(deviceId) ? await auditScopeWithSeals(repo, built.sha, auditTriggerNow(repo, q)) : { scope: {}, quellen: [] };
   // RE-CHECKED after the await. Bundling takes seconds, and the drain may have committed to this
   // repo meanwhile — the mark is what makes that visible, and throwing a bundle away is cheaper
   // than the duplicate run the alternative would authorize.
@@ -36716,6 +36815,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
     id, repo, main: q.main, mainSha: built.sha, deviceId, name: helperDeviceName(deviceId),
     claimedAt: now, expiresAt: now + HELPER_CLAIM_TIMEOUT_MS, covers: q.covers.slice(), bundle: file,
     ...(trigger ? { trigger } : {}),
+    ...(Object.keys(sealed.scope).length ? { scope: sealed.scope } : {}), ...(sealed.quellen.length ? { quellen: sealed.quellen } : {}),
   };
   helperClaims.set(repo, claim);
   if (helperDevices.has(deviceId)) setHelperDevice(deviceId, claim.name); // touch lastSeen
@@ -36725,7 +36825,7 @@ async function helperClaim(body: Record<string, unknown> | null): Promise<Respon
   return json({ job: { id, kind: "audit", repo: basename(repo), main: q.main, mainSha: built.sha,
     branches: claim.covers.map((c) => c.branch), covers: claim.covers.length,
     claimedAt: now, expiresAt: claim.expiresAt, name: claim.name,
-    ...(helperTakesSkipUnits(deviceId) ? auditScopeOf(trigger) : {}) } });
+    ...sealed.scope } });
 }
 // The exit-code classification, shared by both kinds and extracted for exactly that reason: a
 // remote green and a local green mean the same thing only if ONE function decides what green is.
@@ -37042,6 +37142,7 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
     exitCode, out: tail, ...(fails !== undefined ? { fails } : {}),
     checks: measured ? postLandAuditChecks(tail, exitCode as number, fails) : null,
     covers: claim.covers, ...(claim.trigger ? { trigger: claim.trigger } : {}),
+    ...(claim.quellen?.length ? { quellen: claim.quellen } : {}), ...(claim.scope?.skipUnits?.length ? { skipUnits: claim.scope.skipUnits } : {}),
     remote: { name: claim.name, claimedAt: claim.claimedAt, reportedAt: now, ...(trail ? { trail } : {}),
       ...(clonedSha ? { clonedSha } : {}), ...helperNoMeasureOf(body, exitCode), jobId: claim.id },
   };
@@ -37068,6 +37169,8 @@ async function helperResult(body: Record<string, unknown> | null): Promise<Respo
   helperClaims.delete(repo);
   markAuditClaimable(repo, now);
   try { rmSync(claim.bundle, { force: true }); } catch { /* the helper has its copy */ }
+  // PRÜF-GEDÄCHTNIS: the units this helper job ran (the table minus the scope it was handed) are sealed BEFORE the row
+  await sealAuditRow(row, geforderteUnits(claim.scope?.skipUnits ?? []), `helper-${claim.id}`, sealMachineOf(claim.name));
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
@@ -37211,13 +37314,20 @@ async function claimAuditShard(repo: string, k: number, n: number, deviceId: str
   if (!auditShardRuns.has(repo) && !takesScope && auditTriggerNow(repo, q) === "nightly")
     return json({ error: `this is the nightly audit (the whole suite with the dom unit's mutants), and this device's last`
       + ` heartbeat did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — it would run the suite without them` }, 409);
+  if (!auditShardRuns.has(repo) && !auditShardOpening.has(repo) && await settleFromSeals(repo, q, auditTriggerNow(repo, q)))
+    return json({ error: "this audit was settled from the seals of its tree — every unit it owes was already measured, nothing is left to run" }, 409);
   if (!auditShardRuns.has(repo)) {
     const opened = await (auditShardOpening.get(repo) ?? openAuditShardRun(repo, q.main, n));
     if ("error" in opened) return json({ error: opened.error }, opened.status);
   }
   const run = auditShardRuns.get(repo);
   if (!run || run.n !== n) return json({ error: "the sharded run for this tree changed while the claim waited — try again" }, 409);
-  run.scope ??= takesScope ? auditScopeOf(run.trigger) : {};
+  if (run.scope === undefined) {
+    // FROZEN at the first claim with the sealed units in it: every shard of the run plans over the same table
+    const sealed = takesScope ? await auditScopeWithSeals(run.repo, run.mainSha, run.trigger) : { scope: {}, quellen: [] };
+    run.scope ??= sealed.scope;
+    if (sealed.quellen.length && !run.quellen) run.quellen = sealed.quellen;
+  }
   if (Object.keys(run.scope).length && !takesScope)
     return json({ error: `this run's shards are planned with ${JSON.stringify(run.scope)}, and this device's last heartbeat`
       + ` did not declare "${AUDIT_SKIP_UNITS_FEATURE}" — its shard would plan over other units` }, 409);
@@ -37439,6 +37549,7 @@ function shardedAuditRowOf(run: AuditShardRun, now: number, jobId: string | unde
     cmd: `remote helper (${nameList}): FLEET_E2E_SHARD=k/${n} ./e2e-isolated.sh`,
     exitCode: result === "green" ? 0 : result === "red" ? reds[0]?.r.exitCode ?? null : null,
     out, ...(anyFails ? { fails } : {}), checks, covers: run.covers, ...(run.trigger ? { trigger: run.trigger } : {}),
+    ...(run.quellen?.length ? { quellen: run.quellen } : {}), ...(run.scope?.skipUnits?.length ? { skipUnits: run.scope.skipUnits } : {}),
     shards: run.shards.map((s) => ({
       k: s.k, jobId: s.jobId, result: s.result?.result ?? "unknown",
       ms: s.result ? s.result.reportedAt - s.result.claimedAt : null,
@@ -37479,6 +37590,8 @@ async function writeShardedAuditRow(run: AuditShardRun, jobId?: string): Promise
   auditShardRuns.delete(run.repo);
   markAuditClaimable(run.repo, now);
   try { rmSync(run.bundle, { force: true }); } catch { /* the helpers have their copies */ }
+  await sealAuditRow(row, geforderteUnits(run.scope?.skipUnits ?? []), `shards-${jobId ?? row.remote?.jobId ?? run.shards[0]?.jobId ?? "run"}`,
+    sealMachineOf(row.remote?.name ?? "helper"));
   await appendEvent(POSTLAND_AUDIT_FILE, row as unknown as Record<string, unknown>);
   if (row.result === "red") await carryFlakeAdjudications("audit", row.at);
   await mintAuditEvents(row);
@@ -50316,7 +50429,8 @@ interface DeployMarker {
 // tier-2 command applies to this repo, so there is nothing to wait for) or `gate-only` (every land
 // since the youngest green-audited ancestor passed a full land gate; `gateOnly` names that ancestor
 // and the lands). Absent on both: a row written before the precondition existed.
-interface DeployAuditStamp { at: number; result: "green" | "red"; adjudication?: AdjudicationVerdict }
+// `quellen`: the stamp stands on seals of the same tree (pruef-siegel), not on a row of this machine — each names its machine, depth, run and units
+interface DeployAuditStamp { at: number; result: "green" | "red"; adjudication?: AdjudicationVerdict; quellen?: SiegelQuelle[] }
 type DeployUnaudited = "forced" | "no-audit-command" | "gate-only";
 interface DeployRow {
   at: number; id: string; by: DeployBy;
@@ -50609,6 +50723,11 @@ async function deployAuditOf(target: string, enqueue: boolean, asker: TipAuditAs
       why: `its full audit (row at ${red.at}) is RED and nobody has adjudicated it`,
       next: `adjudicate it — POST /api/post-land-audits/adjudicate {"at":${red.at},"verdict":"real|flake|stale-test|unknowable","note":"…"}${deploy ? " — then POST /api/deploy again" : ""}` };
   }
+  // PRÜF-GEDÄCHTNIS: no row of this machine, but the seals of THIS TREE may cover what a deploy's audit owes (everything but dom, auditScopeOf):
+  // then the tip was measured — here or on the other fleet — and nothing is queued twice. The stamp names every source. A red seal covers nothing.
+  const sealed = await sealPlanOf(repo, target, asker, auditScopeOf(asker).skipUnits ?? []);
+  if (sealed && sealed.quellen.length && sealed.luecke.length === 0)
+    return { state: "seen", stamp: { at: Math.max(...sealed.quellen.map((q) => q.at)), result: "green", quellen: sealed.quellen } };
   const watch = `watch {"kind":"audit","repo":${JSON.stringify(repo)},"mainAfter":"${target}"}`
     + (deploy ? " (POST /api/self/watch), then POST /api/deploy again once it is green or its red adjudicated"
       : " (POST /api/self/watch) — it fires when the tip's row is written");
@@ -50716,7 +50835,8 @@ async function auditTipVerb(body: Record<string, unknown> | null, by = "owner"):
     return json({ queued: false, state: tip.state, target, why: "no tier-2 audit command applies to this repo — there is nothing to queue" });
   if (tip.state === "seen")
     return json({ queued: false, state: tip.state, target, audit: tip.stamp,
-      why: tip.stamp.result === "green" ? `its full audit is already GREEN (row at ${tip.stamp.at}) — nothing was queued`
+      why: tip.stamp.quellen ? `${geprueftAm(tip.stamp.quellen)} — nothing was queued`
+        : tip.stamp.result === "green" ? `its full audit is already GREEN (row at ${tip.stamp.at}) — nothing was queued`
         : `its full audit (row at ${tip.stamp.at}) is red and adjudicated ${tip.stamp.adjudication} — nothing was queued` });
   // the asker in its own words — the audit row's actor names the credential, `by` the role it was used in
   audit("audit_tip", undefined, `${by} target=${target.slice(0, 12)} queued=${tip.queued} state=${tip.state}`);

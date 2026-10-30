@@ -119,6 +119,9 @@ export const LAUF_NACHRICHTEN_MAX = 400;
 export const nachrichtenDatei = (dir: string, id: string): string => join(dir, `k15-lauf-${id}.jsonl`);
 export interface LaufNachricht { id: string; at: number; from: unknown; to: unknown; text: string; replyTo: string | null }
 const gezaehlt = new Map<string, Promise<number>>();
+// die Dateien, deren „gekappt“-Zeile in diesem Prozess entschieden ist: einmal je Datei, auch wenn sie von VOR einer Senkung des
+// Deckels schon über ihm liegt (dann stand die Zeile nie da, und ein genaues „== max“ träfe sie nicht mehr)
+const gekapptEntschieden = new Set<string>();
 export function merkeLaufNachricht(laeufe: readonly string[], n: LaufNachricht, dir: string, max = LAUF_NACHRICHTEN_MAX): Promise<void> {
   return binnenGrenze(schreibeLaufNachricht(laeufe, n, dir, max));
 }
@@ -129,8 +132,11 @@ async function schreibeLaufNachricht(laeufe: readonly string[], n: LaufNachricht
     const vorher = gezaehlt.get(datei) ?? readEventLog(datei).then((r) => r.total, () => 0);
     gezaehlt.set(datei, vorher.then((x) => x + 1));
     const bisher = await vorher;
-    if (bisher < max) await appendEvent(datei, { art: "nachricht", ...n });
-    else if (bisher === max) await appendEvent(datei, { art: "gekappt", at: n.at, max });
+    if (bisher < max) { await appendEvent(datei, { art: "nachricht", ...n }); continue; }
+    if (gekapptEntschieden.has(datei)) continue;
+    gekapptEntschieden.add(datei);
+    const schonDa = (await readEventLog(datei).catch(() => ({ rows: [] as Record<string, unknown>[] }))).rows.some((r) => r.art === "gekappt");
+    if (!schonDa) await appendEvent(datei, { art: "gekappt", at: n.at, max });
   }
 }
 export async function liesLaufNachrichten(dir: string, id: string): Promise<{ nachrichten: LaufNachricht[]; gekappt: boolean }> {

@@ -254,6 +254,16 @@ describe("die Nachrichten eines Laufs", () => {
     expect(b.gekappt).toBe(true);
     expect((await readEventLog(nachrichtenDatei(dir, "la"))).total).toBe(3);
   });
+  test("eine Datei, die von vor einer Senkung des Deckels schon über ihm liegt, bekommt keine neue Nachricht und genau eine Zeile „gekappt“", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "laeufe-"));
+    for (let i = 1; i <= 5; i++) await appendEvent(nachrichtenDatei(dir, "lz"), { art: "nachricht", ...n(i) });
+    await Promise.all([6, 7].map((i) => merkeLaufNachricht(["lz"], n(i), dir, 2)));
+    await merkeLaufNachricht(["lz"], n(8), dir, 2);
+    const z = await liesLaufNachrichten(dir, "lz");
+    expect(z.nachrichten.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4", "m5"]);
+    expect(z.gekappt).toBe(true);
+    expect((await readEventLog(nachrichtenDatei(dir, "lz"))).total).toBe(6);
+  });
 });
 
 describe("eine Nachricht zwischen Sessions eines Laufs über den Server", () => {

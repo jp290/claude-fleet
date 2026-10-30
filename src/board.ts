@@ -3839,12 +3839,11 @@ function machineState(list: WorkplaceStand[]): MachineState {
 }
 // A DEVICE'S OWN WORD (owner 2026-10-09: „[Zitat entfernt]“
 // ): a device is online or offline — "läuft" is said of a server; a machine
-// known only by a link has nothing measured and no chip. The sidebar's signs keep machineState's words.
-// this tab says them in English (owner 18.10. 23:4x); machineState keeps the sidebar's German words
-const DEVICE_WORD: Partial<Record<MachineState["tone"], string>> = { live: "online", off: "offline", still: "quiet" };
+// known only by a link has nothing measured and no chip. machineState says online / offline / quiet itself
+// since the English board (a8f761e4), so a device row takes its words as they are.
 function deviceState(list: WorkplaceStand[]): MachineState | null {
   const st = machineState(list);
-  return st.tone === "link" ? null : { ...st, word: DEVICE_WORD[st.tone] ?? st.word };
+  return st.tone === "link" ? null : st;
 }
 function stateChip(state: MachineState): HTMLElement {
   const chip = el("span", "zs");

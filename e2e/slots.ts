@@ -11820,7 +11820,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   { name: "⏏ carries the land form too", state: "live", width: 1200, claim: "Merge asks first",
     needle: "    const direct = await post(`/api/slots/${slot}/land`, {});", with: "    const direct = await post(`/api/slots/${slot}/land`, commits ? { squash: false } : {});" },
   { name: "a device that reports says läuft again", state: "lane", claim: "each device's state is a dot and a word at the row's end",
-    needle: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { live: \"online\", off: \"offline\", still: \"quiet\" };", with: "const DEVICE_WORD: Partial<Record<MachineState[\"tone\"], string>> = { off: \"offline\", still: \"quiet\" };" },
+    needle: "return { tone: \"live\", word: \"online\", title: `Reports as a helper regularly", with: "return { tone: \"live\", word: \"läuft\", title: `Reports as a helper regularly" },
   { name: "the test instance's row says nothing in its chip", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",
     needle: "    { ...HERE_STATE, title: \"This page comes from this test instance\" }, null,", with: "    { ...HERE_STATE, word: \"\", title: \"This page comes from this test instance\" }, null," },
   { name: "the test instance's row opens nothing", state: "lane", width: 1200, claim: "as a test instance: its own row is built like every machine row",

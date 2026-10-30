@@ -25,7 +25,7 @@
 // A run WITHOUT this module starts no browser: fleet-e2e.ts points FLEET_E2E_BROWSER at a path that
 // cannot run whenever `dom` is not selected, so a browser probe that slipped into another module
 // fails there as its own PROBE line instead of starting Chromium (e2e/pins.ts holds both halves).
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { BASE, REPO, ROOT, TOKEN, check } from "./harness";
@@ -97,8 +97,37 @@ export async function run(): Promise<void> {
   await uebergabeDom(sourceRoot);
   await leisteDom(sourceRoot);
   await k15StartDom(sourceRoot);
+  mutantNeedlesStand(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for the band's and the snapshot's mutant pages" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
+}
+
+// A MUTANT WHOSE NEEDLE LEFT THE SOURCE IS DEAD, AND ONLY THE NIGHTLY SAID SO. The mutants run in the mutant mode alone, so a
+// source edit that moved a needle (a translation, a line that grew a second condition) showed up three nights running
+// (28.–30.10.) as a red PROBE line of its slice, and the day's audits, which carry no mutants, stayed green. Every run of this
+// unit now reads each needle (the leiste's: each edit) in the file its family swaps it in, without a browser. The files are the
+// ones the families read: the Arbeitsorte's mutants default to src/board.ts.
+function mutantNeedlesStand(sourceRoot: string): void {
+  type Swap = { name: string; file?: string; needle?: string; edits?: readonly (readonly [string, string])[] };
+  const families: [string, readonly Swap[], string][] = [
+    ["composer keep", KEEP_MUTANTS, ""], ["arbeitsorte", ARBEITSORTE_MUTANTS, "src/board.ts"], ["strip", STRIP_MUTANTS, ""],
+    ["timeline", TIMELINE_MUTANTS, ""], ["activity", ACTIVITY_MUTANTS, ""], ["konstellation", KONST_MUTANTS, ""], ["uebergabe", UEB_MUTANTS, ""],
+    ["leiste", LEISTE_MUTANTS, ""], ["k15 start", K15_START_MUTANTS, ""], ["k15 start live", K15_START_LIVE_MUTANTS, ""],
+  ];
+  const sources = new Map<string, string>();
+  const gone: string[] = [];
+  let needles = 0;
+  for (const [family, mutants, fallback] of families) {
+    for (const m of mutants) {
+      const file = m.file ?? fallback;
+      if (!sources.has(file)) sources.set(file, readFileSync(resolve(sourceRoot, file), "utf8"));
+      for (const needle of m.needle !== undefined ? [m.needle] : (m.edits ?? []).map((e) => e[0])) {
+        needles++;
+        if (!sources.get(file)!.includes(needle)) gone.push(`${family} — ${m.name} (${file}): ${needle.slice(0, 70)}`);
+      }
+    }
+  }
+  check(`dom mutants — PROBE: every mutant's needle still stands in its source file (${needles} needles, no browser)`, gone.length === 0, gone.join(" · "));
 }
 
 // --- from e2e/slots.ts: settings, composer, chat, terminal search, Arbeitsorte, the phone islands, the strip, the glass

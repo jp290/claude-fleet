@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit, commitIn, get, LIFE_DEADLINE_MS, post, sh, type Fixture } from "./branches-testkit";
-import { baumVon, deckung, geforderteUnits, leseSiegel, plattformHier, schreibeSiegel } from "./pruef-siegel";
+import { baumVon, deckung, geforderteUnits, leseSiegel, plattformHier, pushSiegel, schreibeSiegel } from "./pruef-siegel";
 
 const { TMP, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -420,6 +420,36 @@ describe("ein Deploy-Tor ohne eigenen Audit-Befehl (der WH seit dem Audit-Schalt
     const [tip] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
     expect(tip?.body).toMatchObject({ queued: false, state: "unseen" });
     expect(String(tip?.body.why)).toContain("unit table (e2e/ctx.ts) differs");
+  }, 5 * LIFE_DEADLINE_MS);
+
+  test("Bedingung der Orchestratorin: gedeckt wird je Unit; deployt wird erst, wenn JEDE geschuldete Unit gedeckt ist (dom nicht), mit allen Quellen", async () => {
+    const { wh, mac } = zweiFleets();
+    const head = commitIn(mac.repo, "gemeinsamer-baum.txt", "ein Stand");
+    sh(mac.repo, "push", "-q", "hub", "main");
+    sh(wh.repo, "fetch", "-q", "hub");
+    sh(wh.repo, "merge", "-q", "--ff-only", "hub/main");
+    const tree = (await baumVon(mac.repo, head))!;
+    const siegel = (units: string[], tiefe: "check" | "audit", maschine: string, lauf: string, at: number) => schreibeSiegel(mac.repo,
+      { v: 1, tree, units, tiefe, ergebnis: "green", maschine, plattform: plattformHier(), lauf, at }, "mac");
+    // ein Check auf diesem Baum: alles außer dom und lanes
+    await siegel(geforderteUnits(["dom"]).filter((u) => u !== "lanes"), "check", "mac", "1030-check", Date.now() - 60_000);
+    expect(await pushSiegel(mac.repo, "hub", "mac")).toBe(true);
+    const [offen, tipOffen] = await life(wh, [deploy(), post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(offen?.status).toBe(409);
+    const geschuldet = geforderteUnits(["dom"]).length; // dom schuldet ein Deploy-Audit nicht (auditScopeOf), es bleibt nightly
+    expect(String(offen?.body.reason)).toContain(`cover ${geschuldet - 1} of ${geschuldet} units`); // alle bis auf lanes
+    expect(String(offen?.body.reason)).toContain("missing: lanes");
+    expect(String(offen?.body.reason)).not.toContain("dom");
+    expect(tipOffen?.body).toMatchObject({ state: "unseen" });
+    // ein grünes Siegel für lanes auf demselben Baum kommt dazu: jetzt ist jede geschuldete Unit gedeckt, und das Tor nennt beide Quellen
+    await siegel(["lanes"], "audit", "workhorse", "helper-abc", Date.now());
+    expect(await pushSiegel(mac.repo, "hub", "mac")).toBe(true);
+    const [zu] = await life(wh, [post("/api/repos/audit-tip", {})], ohneBefehl(wh, "wh"));
+    expect(zu?.body).toMatchObject({ state: "seen", audit: { result: "green" } });
+    const quellen = (zu?.body.audit as { quellen: { maschine: string; tiefe: string; units: string[] }[] }).quellen;
+    expect(quellen.map((q) => `${q.maschine}:${q.tiefe}`).sort()).toEqual(["mac:check", "workhorse:audit"]);
+    expect(quellen.find((q) => q.maschine === "workhorse")!.units).toEqual(["lanes"]);
+    expect(String(zu?.body.why)).toContain("geprüft am");
   }, 5 * LIFE_DEADLINE_MS);
 
   test("ein rotes Siegel des Macs: das Tor bleibt zu und nennt das Rot", async () => {

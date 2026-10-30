@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit, commitIn, get, LIFE_DEADLINE_MS, post, sh, type Fixture } from "./branches-testkit";
-import { baumVon, geforderteUnits, plattformHier, schreibeSiegel } from "./pruef-siegel";
+import { baumVon, deckung, geforderteUnits, leseSiegel, plattformHier, schreibeSiegel } from "./pruef-siegel";
 
 const { TMP, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -186,6 +186,95 @@ describe("die Tür des Helfers gibt bei teilweiser Deckung nur die Lücke zu fah
     expect(skip).toContain("core");
     expect(skip).not.toContain("lanes");
     expect([...skip].sort()).toEqual([...geforderteUnits(["lanes"])].sort());
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
+// Ein Helfer-Fixture: ein Check-Siegel des Macs deckt alles außer dom und `lanes`; das Land reiht einen Audit ein, den die Uhr sofort freigibt (quiet),
+// der lokale Drain wartet auf einen Helfer. Gibt Repo, Baum und die Umgebung zurück.
+async function helferFixture(name: string, extra: Record<string, string> = {}, deckt = geforderteUnits(["dom"]).filter((u) => u !== "lanes")) {
+  const f = fixture();
+  sh(f.repo, "remote", "add", "hub", neuerHub());
+  const [made] = await life(f, [post("/api/branches", { repo: f.repo, name })], {});
+  commitIn(String(made?.body.path), `${name}.txt`, name);
+  const tree = (await baumVon(String(made?.body.path), "HEAD"))!;
+  await schreibeSiegel(f.repo, { v: 1, tree, units: deckt, tiefe: "check", ergebnis: "green", maschine: "mac", plattform: plattformHier(),
+    lauf: "1029-check", at: Date.now() - 60_000 }, "mac");
+  const e = { ...umgebung(f, "wh", attrappe(f.state).cmd), FLEET_AUDIT_HELPER_GRACE_MS: "60000", FLEET_AUDIT_QUIET_MS: "0", FLEET_AUDIT_QUIET_DAY: "", ...extra };
+  const land = post("/api/branches/land", { repo: f.repo, branch: `branch/${name}`, subject: name, unchecked: true });
+  return { f, tree, e, land };
+}
+const GRUEN = "PASS  eine Prüfung\nALL PASS";
+
+describe("das Siegel aus der Ergebniszeile eines Helfers", () => {
+  test("der Helfer meldet grün: das Siegel trägt die Units, die sein Job fuhr (die Lücke), unter dem Namen des Geräts, und schließt die Deckung", async () => {
+    const { f, tree, e, land } = await helferFixture("ergebnis");
+    const dev = { deviceId: "testgeraet03", name: "testgeraet", features: ["audit-skip-units"] };
+    const [, , jobs, claim, result, , audits] = await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet03"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+      post("/api/helper/result", { jobId: "$2.jobs.0.id", exitCode: 0, tail: GRUEN }),
+      { until: reihe(f), ms: 5_000 }, get("/api/post-land-audits")], e);
+    expect([claim?.status, result?.status]).toEqual([200, 200]);
+    const skip = (claim?.body.job as { skipUnits: string[] }).skipUnits;
+    expect(skip).not.toContain("lanes");
+    const row = (audits?.body.audits as { result: string; skipUnits?: string[]; quellen?: { maschine: string }[] }[])[0];
+    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "mac" }] });
+    // das Siegel dieses Laufs: genau die Lücke (lanes), vom Gerät, als Audit; zusammen mit dem Check ist alles außer dom gedeckt
+    const siegel = (await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit");
+    expect(siegel).toHaveLength(1);
+    expect(siegel[0]).toMatchObject({ ergebnis: "green", maschine: "testgeraet", units: ["lanes"] });
+    expect(siegel[0]!.lauf).toMatch(/^helper-/);
+    expect(deckung(await leseSiegel(f.repo, tree), geforderteUnits(["dom"])).luecke).toEqual([]);
+    expect(jobs?.status).toBe(200);
+  }, 3 * LIFE_DEADLINE_MS);
+
+  test("der Helfer meldet rot: das rote Siegel steht da und deckt nichts, die Lücke bleibt offen", async () => {
+    const { f, tree, e, land } = await helferFixture("rotergebnis");
+    const dev = { deviceId: "testgeraet04", name: "testgeraet", features: ["audit-skip-units"] };
+    await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet04"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+      post("/api/helper/result", { jobId: "$2.jobs.0.id", exitCode: 1, tail: "FAIL  eine Prüfung\n1 FAILURE", fails: ["eine Prüfung"] }),
+      { until: reihe(f), ms: 5_000 }], e);
+    const alle = await leseSiegel(f.repo, tree);
+    expect(alle.filter((x) => x.tiefe === "audit").map((x) => x.ergebnis)).toEqual(["red"]);
+    expect(deckung(alle, geforderteUnits(["dom"])).luecke).toEqual(["lanes"]);
+  }, 3 * LIFE_DEADLINE_MS);
+});
+
+describe("der Shard-Weg des Helfers", () => {
+  const dev = { deviceId: "testgeraet05", name: "testgeraet", features: ["audit-skip-units", "audit-shard"] };
+  test("teilweise Deckung: beide Shards bekommen denselben Scope, und das Siegel der zusammengeführten Zeile trägt die Lücke", async () => {
+    const { f, tree, e, land } = await helferFixture("shards", { FLEET_AUDIT_SHARDS: "2" });
+    const [, , jobs, c1, c2, r1, r2, , audits] = await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet05"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+      post("/api/helper/claim", { jobId: "$2.jobs.1.id", deviceId: dev.deviceId }),
+      post("/api/helper/result", { jobId: "$2.jobs.0.id", exitCode: 0, tail: GRUEN }),
+      post("/api/helper/result", { jobId: "$2.jobs.1.id", exitCode: 0, tail: GRUEN }),
+      { until: reihe(f), ms: 5_000 }, get("/api/post-land-audits")], e);
+    expect((jobs?.body.jobs as unknown[]).length).toBe(2);
+    expect([c1?.status, c2?.status, r1?.status, r2?.status]).toEqual([200, 200, 200, 200]);
+    const s1 = (c1?.body.job as { skipUnits: string[] }).skipUnits, s2 = (c2?.body.job as { skipUnits: string[] }).skipUnits;
+    expect(s1).toEqual(s2);
+    expect(s1).toContain("core");
+    expect(s1).not.toContain("lanes");
+    const row = (audits?.body.audits as { result: string; shards?: unknown[]; quellen?: { maschine: string }[] }[])[0];
+    expect(row).toMatchObject({ result: "green", quellen: [{ maschine: "mac" }] });
+    expect(row?.shards).toHaveLength(2);
+    const siegel = (await leseSiegel(f.repo, tree)).filter((x) => x.tiefe === "audit");
+    expect(siegel).toHaveLength(1);
+    expect(siegel[0]).toMatchObject({ ergebnis: "green", units: ["lanes"] });
+    expect(siegel[0]!.lauf).toMatch(/^shards-/);
+  }, 3 * LIFE_DEADLINE_MS);
+
+  test("volle Deckung: der Shard-Claim endet mit 409 „settled from the seals“, die Zeile steht grün, es läuft nichts", async () => {
+    const { f, e, land } = await helferFixture("shardvoll", { FLEET_AUDIT_SHARDS: "2" }, geforderteUnits(["dom"]));
+    const [, , jobs, claim, , audits, after] = await life(f, [land, post("/api/helper/device", dev), get("/api/helper/jobs?deviceId=testgeraet05"),
+      post("/api/helper/claim", { jobId: "$2.jobs.0.id", deviceId: dev.deviceId }),
+      { until: reihe(f), ms: 5_000 }, get("/api/post-land-audits"), get("/api/helper/jobs?deviceId=testgeraet05")], e);
+    expect((jobs?.body.jobs as unknown[]).length).toBe(2);
+    expect(claim?.status).toBe(409);
+    expect(String(claim?.body.error)).toContain("settled from the seals");
+    expect((audits?.body.audits as { result: string; quellen?: unknown[] }[])[0]).toMatchObject({ result: "green" });
+    expect((after?.body.jobs as unknown[]).length).toBe(0);
   }, 3 * LIFE_DEADLINE_MS);
 });
 

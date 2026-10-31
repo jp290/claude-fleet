@@ -17,7 +17,7 @@ import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./se
 import { istLeseantwort, korrekturFaltung, type KorrekturFaltung, korrekturStein } from "./server/korrektur-stein";
 import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, selbstGeerbt, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
-import { istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
+import { fernpostAbgelehnt, istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { fassungAufgabeAusSitz, ordnerFehlt, ordnerSatz, ordnerVorschlag, sitzAnsicht, zielAusPosition, zielNachricht } from "./server/position-start";
 import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
@@ -19009,8 +19009,13 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
       ...(prior.delivery ? { delivery: prior.delivery } : {}) });
   }
 
-  // FERNPOST: a seat of ANOTHER fleet is written through the neighbour door; the receiving fleet checks who may write whom
-  if (to.kind === "remote") return await sendRemoteMessage(s, sender.from, to, payload, key, replyTo);
+  // FERNPOST: a seat of ANOTHER fleet is written through the neighbour door; the receiving fleet checks who may write whom.
+  // DATA BOUNDARY, door 12: personal text is refused HERE, before anything goes to the neighbour (server/datengrenze.ts#fernpostAbgelehnt)
+  if (to.kind === "remote") {
+    const grenze = fernpostAbgelehnt(personal, `message ${key}`, to.fleet);
+    if (grenze) return json({ error: grenze, refusal: "personal-text" }, 409);
+    return await sendRemoteMessage(s, sender.from, to, payload, key, replyTo);
+  }
 
   // SESSION ADDRESSES SPEAK ONLY TO THEIR COUNTERPART: an unbound session writes to the Orchestrator,
   // the Orchestrator answers it, and the two ends of a branch door write to each other (K13) — the
@@ -19060,7 +19065,7 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   // DIE DATENGRENZE AM TEXT (server/datengrenze.ts): ein markierter Text geht an keinen Sitz, der nicht Anthropic ist. Die Abweisung
   // kommt, bevor die Nachricht in den Ring geschrieben wird: der Text steht nirgends im Postfach des Empfängers.
   if (personal && resolved.holder && !istAnthropic(resolved.holder.harness, resolved.holder.model))
-    return json({ error: persoenlichAbgelehnt(`message ${key}`, resolved.holder.harness, resolved.holder.model) }, 409);
+    return json({ error: persoenlichAbgelehnt(`message ${key}`, resolved.holder.harness, resolved.holder.model), refusal: "personal-text" }, 409);
   const entry = appendMessage(sender.from, to, payload, key, replyTo, personal);
   // the Orchestratorin reads along: the edge keeps the id of every message it let through (GET /api/self/kanten)
   if (viaKante) kantenBook = kanteMerkt(kantenBook, viaKante.id, entry.id);

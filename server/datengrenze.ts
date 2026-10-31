@@ -31,8 +31,9 @@
 //                                       „das Kind einer pi-Öffnerin erbt den persönlichen Pack nicht …“
 //  11. Ausleihe eines Packs           server.ts#contextBorrowRoute (GET /api/self/context/<id>): 409, refusal personal-text
 //                                       „Ausleihe: ein pi-Sitz leiht einen persönlichen Pack nicht aus …“
-//  12. Fernpost                       OFFEN: branch/fernpost ist noch nicht in main; dort muss `istAnthropic(Ziel)` vor den Versand
-//                                       test.todo „Fernpost: …“
+//  12. Fernpost                       server.ts#sendMessageFor, Zweig `to.kind === "remote"`: 409 vor dem Versand an die Tür des
+//                                     Nachbarn (server/nachbar-tuer.ts#sendeAnNachbar), refusal personal-text; Regel: fernpostAbgelehnt
+//                                       „Fernpost: ein markierter Text verlässt diese Fleet nicht …“
 //  13. Plan-Packs einer Lane oder MAIN (server/session-agents.ts#renderSessionAgents)   OFFEN: trägt die Marke nicht
 //                                       test.todo „Plan-Packs einer Lane oder MAIN: …“
 //  14. Nachfolge-Brief                server.ts#nachfolgeSteineFuer: die Steine der Vorgängerin stehen im Brief eines Harness ohne Fleets
@@ -73,3 +74,15 @@ export const weggelassenZeile = (stein: string, harness: string | null | undefin
 export function wissenFuerSitz(k: SeatKnowledge, harness: string | null | undefined, model: string | null | undefined): SeatKnowledge {
   return istAnthropic(harness, model) ? k : { ...k, packs: k.packs.filter((pack) => pack.personal !== true) };
 }
+
+// FERNPOST (Tür 12) — DIE LESART STEHT NUR HIER. Streng (Orchestratorin 31.10.; der Owner entscheidet noch zwischen streng und mild):
+// für persönlichen Text zählt eine andere Maschine als „[Zitat entfernt]“, gleich welcher Sitz dort wartet — die sendende Fleet weist
+// ihn ab, bevor etwas zum Nachbarn geht, und auf dem Draht reist darum keine Marke.
+// Die milde Lesart („an einen Claude-Sitz drüben ja“) ändert diese eine Regel, braucht aber, was die sendende Fleet heute nicht weiß:
+// Harness und Modell des Sitzes drüben. Ein Feld `personal` auf dem Draht weist eine ältere Fleet mit 400 ab
+// (server/nachbar-tuer.ts#nimmNachbarAn liest nur from, to, payload, idempotencyKey, replyRef).
+/** Die Regel der Tür: der Satz der Abweisung (409) für einen Text an einen Sitz der Fleet `fleet`, oder null, wenn er gehen darf.
+ *  Streng: Unmarkiertes geht, Persönliches nie. Rein. */
+export const fernpostAbgelehnt = (personal: boolean, stein: string, fleet: string): string | null =>
+  personal ? `personal ${stein} does not leave this Fleet: neighbour fleet "${fleet}" is another machine, and personal text stays on this machine and with Anthropic`
+    : null;

@@ -10,13 +10,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Sitz } from "../src/sitz";
 import { sitzZumTeilen } from "../src/sitz";
-import { istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./datengrenze";
+import { fernpostAbgelehnt, istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./datengrenze";
 import { sitzWissen } from "./sitz-reise";
 import { seatSkillFiles, type SeatKnowledge } from "./sitz-wissen";
 import { schreibEigenenPack } from "./eigene-packs";
 import { hashText, steineFuerAgentWahl } from "./setup-datei";
 
-const { TMP, BIN, fixture, life, cleanup } = branchTestkit();
+const { TMP, BIN, fixture, life, serve, cleanup } = branchTestkit();
 afterAll(cleanup);
 const ARGV = join(TMP, "argv");
 mkdirSync(ARGV);
@@ -97,7 +97,7 @@ describe("eine persönliche Nachricht erreicht keinen Sitz, der nicht Anthropic 
       as(f, ORCH, get("/api/self/kanten"))]);
     // an den pi-Sitz: 409 mit dem Grund, den die Tür nennt
     expect(anPi?.status).toBe(409);
-    expect(anPi?.body.error).toBe(persoenlichAbgelehnt("message p1", "pi", null));
+    expect([anPi?.body.error, anPi?.body.refusal]).toEqual([persoenlichAbgelehnt("message p1", "pi", null), "personal-text"]);
     // der Text steht nirgends im Postfach des Empfängers, auch nicht in seiner Ansicht beider Enden
     expect(JSON.stringify(offen?.body)).not.toContain("12/345/67890");
     expect(texte(bPostfach)).toEqual(["Nichts Persönliches, nur der Stand des Builds."]);
@@ -330,8 +330,50 @@ describe("die übrigen Türen", () => {
     expect(unbekannt?.status).toBe(404);
   }, LIFE_DEADLINE_MS * 2);
 
-  // Fernpost: branch/fernpost ist noch nicht in main (Kopf von server/datengrenze.ts, Tür 8)
-  test.todo("Fernpost: ein markierter Text geht nicht an einen Nicht-Anthropic-Sitz der anderen Maschine, an einen Claude-Sitz schon", () => {});
+  // Fernpost (Tür 12, strenge Lesart: server/datengrenze.ts#fernpostAbgelehnt). Der Nachbar ist ein Ersatz in diesem Prozess, der
+  // aufschreibt, was bei ihm ankommt: so zeigt der Test, dass vor dem Versand abgewiesen wird und nicht erst drüben.
+  test("Fernpost: ein markierter Text verlässt diese Fleet nicht, an keinen Sitz der anderen Maschine (409 vor dem Versand), Unmarkiertes geht wie vorher", async () => {
+    const SITZ = 2, DRUEBEN = 5;
+    const angekommen: Record<string, unknown>[] = [];
+    const nachbar = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (req) => {
+      angekommen.push(await req.json() as Record<string, unknown>);
+      return Response.json({ ok: true, existing: false, holder: DRUEBEN });
+    } });
+    const f = fixture();
+    const dir = join(f.state, "bindung");
+    mkdirSync(join(dir, "secrets"), { recursive: true });
+    writeFileSync(join(dir, "secrets", "an-drueben.token"), "ausweis-an-drueben-0123456789abcdef0123\n");
+    chmodSync(join(dir, "secrets", "an-drueben.token"), 0o600);
+    writeFileSync(join(dir, "nachbarn.json"), JSON.stringify({ nachbarn: [{ name: "drueben", url: `http://127.0.0.1:${nachbar.port}`,
+      ausweisAus: "an-drueben.token", erlaubt: [] }] }));
+    const fl = await serve(f);
+    try {
+      expect((await fl.call(`/api/slots/${SITZ}/open`, { body: { cwd: f.repo, label: "Claude A" } })).status).toBe(200);
+      let tok = "";
+      for (let i = 0; i < 200 && !tok; i++) {
+        tok = (persisted(f).slots as Record<string, { selfToken?: string }> | undefined)?.[String(SITZ)]?.selfToken ?? "";
+        if (!tok) await Bun.sleep(50);
+      }
+      const an = (key: string, text: string, personal?: boolean) => fl.call("/api/self/messages", { self: tok, body: {
+        to: { kind: "remote", fleet: "drueben", slot: DRUEBEN }, payload: { kind: "text", text }, idempotencyKey: key,
+        ...(personal === undefined ? {} : { personal }) } });
+      // markiert, an einen Claude-Sitz (die sendende Seite weiß nicht, wer drüben sitzt): 409 mit dem Grund, nichts beim Nachbarn
+      const markiert = await an("p1", "Persönliches für drüben", true);
+      expect([markiert.status, markiert.body.refusal, markiert.body.error])
+        .toEqual([409, "personal-text", fernpostAbgelehnt(true, "message p1", "drueben")]);
+      expect(angekommen).toEqual([]);
+      const box = (await fl.call("/api/self/messages", { self: tok })).body.entries as { payload: { text: string } }[];
+      expect(box.map((m) => m.payload.text)).not.toContain("Persönliches für drüben");
+      // unmarkiert und `personal: false` fließen wie vorher, und auf dem Draht steht kein neues Feld
+      expect((await an("u1", "Unmarkiert für drüben")).status).toBe(200);
+      expect((await an("u2", "Ausdrücklich nicht persönlich", false)).status).toBe(200);
+      expect(angekommen.map((m) => (m.payload as { text: string }).text)).toEqual(["Unmarkiert für drüben", "Ausdrücklich nicht persönlich"]);
+      expect(angekommen.map((m) => Object.keys(m).sort())).toEqual([["from", "idempotencyKey", "payload", "to"], ["from", "idempotencyKey", "payload", "to"]]);
+    } finally {
+      void nachbar.stop(true);
+      await fl.stop();
+    }
+  }, LIFE_DEADLINE_MS * 2);
   // Plan-Packs einer Lane oder MAIN (Tür 9): die Marke kommt dort noch nicht an
   test.todo("Plan-Packs einer Lane oder MAIN: ein persönlicher Pack erreicht den Start eines Nicht-Anthropic-Sitzes nicht", () => {});
 });

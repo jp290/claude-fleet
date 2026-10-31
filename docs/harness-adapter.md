@@ -935,7 +935,7 @@ gepinnt). Metadaten (`stat`)
 bleiben offen: realpath, getcwd und jede Aufwärtssuche (git, bun, node) brauchen sie; ein Name muss
 dafür schon bekannt sein, Auflisten ist zu. **(B) wieder geöffnet** nur der Standardbedarf der
 Zählung: der eigene Worktree (RW), das eigene Temp-Home `/private/tmp/fleet-pi-zai/<hash(cwd)>` (RW),
-das pi-zai-Agent-Verzeichnis (RW), der Suite-Mutex `fleet-e2e.lock` samt `.q` und `/tmp/tmux-<uid>`
+das pi-zai-Agent-Verzeichnis (lesend; schreibbar nur die eigene Session und die vier Lock-Verzeichnisse `<datei>.lock`, die pi daneben anlegt, Mangel 175), der Suite-Mutex `fleet-e2e.lock` samt `.q` und `/tmp/tmux-<uid>`
 (RW), lesend die PATH-Verzeichnisse unter Home und das Paket-Root des gestarteten `pi`, lesend das
 gemeinsame git-Verzeichnis einer Worktree-Lane, schreibend davon nur `objects/`, das eigene
 Admin-Verzeichnis, der EINE eigene Branch (Ref, Lock, Reflog) — sein Name kommt aus Fleets
@@ -1032,7 +1032,7 @@ die Allowlist von (A)/(B) ist der Mount-Baum (`server/pi-zai-fence.ts#piZaiBwrap
 `/usr/bin/true` (scheitert das: dieselbe Marke, kein pi), liest den Key außen und startet pi allein darin.
 Sichtbar: `/usr` und eine kurze `/etc`-Liste (nur lesen), die PATH-Verzeichnisse unter Home samt den Zielen
 ihrer Symlinks (`~/.local/bin/node` → der ganze `node-v…`-Baum), pis Paket-Root (nur lesen), der Worktree
-und das eigene Temp-Home `/tmp/fleet-pi-zai/<hash>` (lesen/schreiben), das Agent-Verzeichnis, dessen
+und das eigene Temp-Home `/tmp/fleet-pi-zai/<hash>` (lesen/schreiben), das Agent-Verzeichnis (ein Wegwerf-Overlay: lesbar, Schreibversuche landen in einem tmpfs und enden mit dem Zaun, Mangel 175), dessen
 `sessions/` durch ein leeres tmpfs ersetzt ist, in das nur die EIGENE Session-Ordnung zurückgebunden wird,
 und `auth.json` nur lesend (leerer Store, sonst wie auf macOS kein Zaun; fehlt sie, legt die äußere Shell
 `{}` an). **Seit 27.10. für den Browser in einer Pane** (eine gezäunte Lane fährt die Suite, deren DOM-Proben
@@ -1163,8 +1163,8 @@ Denkstufen sind `low`, `high`, `max` — die drei, die BEIDE Katalogeinträge ke
 *Der Zaun.* Dieselbe Funktion wie bei pi-zai (`server.ts#piFencedBwrapLine` über
 `server/pi-zai-fence.ts#piZaiBwrapArgs`), nur mit eigenem Agent-Verzeichnis und eigener Key-Datei als
 Parameter — eine Kopie wäre genau das, was driftet. Was er durchlässt, ist deshalb wörtlich pi-zai's
-Liste: das eigene Agent-Verzeichnis (RW, `sessions/` durch ein leeres tmpfs ersetzt, nur die eigene
-Session zurückgebunden), der Worktree (RW), das eigene Temp-Home, Pis Laufzeit und die PATH-Werkzeuge
+Liste: das eigene Agent-Verzeichnis (Wegwerf-Overlay wie bei pi-zai, `sessions/` durch ein leeres tmpfs ersetzt, nur die eigene
+Session zurückgebunden und beschreibbar), der Worktree (RW), das eigene Temp-Home, Pis Laufzeit und die PATH-Werkzeuge
 (RO), `/usr` und eine kurze `/etc`-Liste (RO), das git-Verzeichnis der Lane (RO außer `objects/`, dem
 Admin-Verzeichnis und EINEM Branch); geschlossen bleiben Home, `/tmp`, fremde Worktrees, `~/.ssh`, der
 Key, `fleet.json`/`.env`, fremde Sessions, fremde Prozess-Umgebungen und der Live-tmux-Socket. Netz
@@ -1179,7 +1179,7 @@ kein bwrap da), startet **kein** pi: die Pane druckt `pi-deepseek: pi was NOT st
 *Sein Start.* Wie jeder pi-Sitz liest er Fleet's Start-Block ueber
 `--append-system-prompt '<datei>'`: den Zweck, den der Owner an der Tuer tippte, den Zweck seiner
 Vorgaengerin und die gewaehlten Packs (server.ts#piStartDatei, server/sitz-wissen.ts). Die Datei liegt
-unter `<agent-dir>/fleet-start/<sha256>.md` — im Zaun geoeffnet, weil das Agent-Verzeichnis in (B)
+unter `<agent-dir>/fleet-start/<sha256>.md` — im Zaun lesbar, weil das Agent-Verzeichnis in (B)
 liegt —, traegt nur Text und nie den Key; die Schluesseldatei bleibt ungebunden und das
 `$(cat …)` in der aeusseren Pane-Shell. Claude-Skills bekommt er nicht; ein gewaehlter Pack kommt
 darum woertlich im Start an. `GET /api/self/context/fleet-doors` bleibt fuer ihn offen.

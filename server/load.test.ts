@@ -2,7 +2,7 @@
 // Bun.serve) läuft nur, wenn die Datei Einstieg ist (`bun server.ts`); ein Import bekommt die Logik.
 // Damit lässt sich Server-Logik in Sekunden prüfen statt nach einem Vollboot.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -10,6 +10,8 @@ import type { TEntry } from "./conversation-read";
 import { appendEvent } from "./persist";
 import { pendingSettledBy } from "../src/pendingsend";
 import { safetySystemNote } from "../src/safety-note";
+import { katalogAus, modelleVon } from "../src/k15-agent";
+import { MODEL_REGISTER, modelsForHarness } from "../model-register";
 
 const ROOT = join(import.meta.dir, "..");
 const SERVER = join(ROOT, "server.ts");
@@ -32,7 +34,10 @@ function freePort(): number {
 // pi-deepseek-Test unten könnte den Zaun nicht prüfen.
 const STATE_DIR = mkdtempSync(join(tmpdir(), "fleet-load-state-"));
 const isolation = { FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: `fleetload${process.pid}`,
-  FLEET_STATE_DIR: STATE_DIR, FLEET_PI_ZAI_DENY_ROOTS: `${STATE_DIR}/deny-test` };
+  FLEET_STATE_DIR: STATE_DIR, FLEET_PI_ZAI_DENY_ROOTS: `${STATE_DIR}/deny-test`,
+  // das Fleet-eigene Agent-Verzeichnis der pi-Sitze (server.ts#PI_AGENT_DIR): der Test legt dort einen
+  // Katalog und eine Session an, also zeigt es in sein eigenes Verzeichnis statt unter das echte ~/.config
+  FLEET_PI_AGENT_DIR: `${STATE_DIR}/pi-agent` };
 afterAll(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 let loadProvenSafe = false;
 
@@ -160,6 +165,31 @@ describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
         }
       }
       expect(m.CLAUDE_HARNESS.spawnCmd({ ...base, cwd })).not.toContain("--tui-mode");
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // Die Startfenster-Wege von pi und pi-unfenced fuer ein Modell des Registers (GLM, DeepSeek) bauen eine eigene Zeile
+  // (Schluessel aus der Datei, Katalog, Anbieter); auch sie enden mit dem Modus vor dem letzten '; exec '.
+  test("pi und pi-unfenced mit einem Modell des Startfensters (GLM, DeepSeek): --tui-mode regular steht am Ende des pi-Aufrufs", async () => {
+    const m = await load();
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-regular-"));
+    const startDatei = "/tmp/start datei/start.md";
+    try {
+      for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS]) {
+        for (const model of ["glm-5.3", "glm-5.3-flash", "deepseek-flash", "deepseek-v4-pro"]) {
+          for (const [fall, o, ende] of [
+            ["ohne Startdatei", { ...base, cwd, model }, ` --model '${model}' --tui-mode regular`],
+            ["mit Startdatei", { ...base, cwd, model, startDatei }, ` --append-system-prompt '${startDatei}' --tui-mode regular`],
+          ] as const) {
+            const line = h.spawnCmd(o);
+            const exec = line.lastIndexOf("; exec ");
+            expect([h.id, model, fall, exec > 0]).toEqual([h.id, model, fall, true]);
+            expect([h.id, model, fall, line.slice(0, exec).endsWith(ende)]).toEqual([h.id, model, fall, true]);
+            expect(line).toContain(`--model '${model}'`);
+            expect(line.match(/--tui-mode/g)?.length).toBe(1);
+          }
+        }
+      }
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });
@@ -828,5 +858,125 @@ describe("viewEntry: eine gestoppte Antwort wird benannt", () => {
     expect(viewEntry({ type: "user", timestamp: ts,
       message: { role: "user", content: [{ type: "text", text: own }] } }, 84)).toBeNull();
     expect(viewEntry({ type: "system", subtype: "turn_duration", timestamp: ts }, 85)).toBeNull();
+  });
+});
+
+// Owner 27.10., wörtlich: „[Zitat entfernt]“ Der Test hält beides fest, das ANGEBOT und die ZEILE, die es einlöst: was das
+// Startfenster für `pi` und `pi-unfenced` zeigt, ist genau die Liste des Registers, und jedes dieser
+// Modelle wird von einer Zeile gestartet, die mitgibt, was es braucht — den Schlüssel aus der
+// Schlüsseldatei (nie auf argv, nie ausgedruckt) und für die zai-Ids den Katalog im Fleet-eigenen
+// Agent-Verzeichnis, damit ~/.pi des Owners unberührt bleibt.
+describe("pi: die Modelle des Startfensters und die Zeile, die sie startet", () => {
+  const WILL = ["glm-5.3", "glm-5.3-flash", "deepseek-flash", "deepseek-v4-pro"];
+  // dieselben Pfade, die server.ts aus HOME ableitet — FLEET_PI_AGENT_DIR ist in der Isolation oben auf
+  // ein Testverzeichnis gesetzt, damit der Lauf nichts unter dem echten ~/.config anlegt
+  const agentDir = `${STATE_DIR}/pi-agent`;
+  const zaiKey = `${process.env.HOME}/.config/claude-fleet/secrets/zai-coding-plan.key`;
+  const dsKey = `${process.env.HOME}/.config/fleet-deepseek/key`;
+  const base = {
+    sessionId: "sess-p1", resume: false, model: null, effort: null, container: "", containerContext: "",
+    cwd: "/tmp/fleet-pi-modelle", browserMcp: false, context: null, permissions: null,
+    fleetCheckout: false, remoteName: null,
+  };
+  const katalog = (harnesses: { id: string; models: readonly string[] }[]) =>
+    katalogAus({ harnesses: harnesses.map((h) => ({ id: h.id, models: h.models, effortLevels: [], supports: { model: true, effort: true },
+      note: null, role: "agent", default: false, availability: { status: "available" }, hier: true })) });
+
+  test("das Fenster bietet für pi und pi-unfenced GLM und DeepSeek an — und nichts, was das Register nicht führt", async () => {
+    const { PI_HARNESS, PI_UNFENCED_HARNESS } = await load();
+    for (const h of [PI_HARNESS, PI_UNFENCED_HARNESS]) {
+      expect(h.models).toEqual(WILL);
+      // das Angebot IST die Registerliste dieses Harness (GET /api/harnesses → models: h.models), also
+      // kann kein Modell erscheinen, das der Register nicht kennt
+      expect(h.models).toEqual(modelsForHarness(h.id as "pi" | "pi-unfenced"));
+      expect(MODEL_REGISTER.filter((e) => e.harness === h.id).map((e) => e.id)).toEqual(WILL);
+      // und jedes Angebot passiert die Schreibweise dieses Adapters
+      expect(h.modelRe).not.toBeNull();
+      for (const m of h.models) expect(h.modelRe!.test(m)).toBe(true);
+      const k = katalog([{ id: h.id, models: h.models }]);
+      expect(k).not.toBeNull();
+      expect(modelleVon(k!, h.id)).toEqual(WILL);
+    }
+  });
+
+  test("eine GLM-Id: provider zai, Schlüssel aus der Datei in die Umgebung, Katalog im Fleet-Verzeichnis", async () => {
+    const { PI_HARNESS } = await load();
+    const line = PI_HARNESS.spawnCmd({ ...base, model: "glm-5.3-flash" });
+    expect(line).toContain("--provider zai");
+    expect(line).toContain("--model 'glm-5.3-flash'");
+    expect(line).toContain(`ZAI_API_KEY="$(cat '${zaiKey}')"`);
+    // der Katalog wird geschrieben, in das Fleet-eigene Agent-Verzeichnis dieses Harness
+    expect(line).toContain(`PI_CODING_AGENT_DIR='${agentDir}'`);
+    expect(line).toContain(`> '${agentDir}/models.json'`);
+    expect(line).toContain('"glm-5.3-flash"');
+    expect(line).toContain(`mkdir -p '${agentDir}'`);
+    // der Schlüssel steht NUR als Kommando-Substitution in der Zeile: nie auf argv, nie ausgedruckt
+    expect(line).not.toContain("--api-key");
+    expect(line.match(/ZAI_API_KEY=/g)?.length).toBe(1);
+    expect(line).not.toMatch(/ZAI_API_KEY="(?!\$\(cat ')/);
+    // ...und der Owners-Agent-Home bleibt unberührt: kein Weg in ~/.pi auf dieser Zeile
+    expect(line).not.toContain("/.pi/");
+    // es bleibt der ungezäunte Sitz: kein Zaun um die Zeile
+    expect(line).not.toContain("bwrap");
+    expect(line).not.toContain("sandbox-exec");
+  });
+
+  test("eine DeepSeek-Id: provider deepseek, Schlüssel aus der Datei — kein Katalog, kein Umzug des Agent-Homes", async () => {
+    const { PI_HARNESS } = await load();
+    const line = PI_HARNESS.spawnCmd({ ...base, model: "deepseek-v4-pro" });
+    expect(line).toContain("--provider deepseek");
+    expect(line).toContain("--model 'deepseek-v4-pro'");
+    expect(line).toContain(`DEEPSEEK_API_KEY="$(cat '${dsKey}')"`);
+    expect(line).not.toContain("--api-key");
+    expect(line.match(/DEEPSEEK_API_KEY=/g)?.length).toBe(1);
+    expect(line).not.toMatch(/DEEPSEEK_API_KEY="(?!\$\(cat ')/);
+    // pi 1.0.2 bringt den Anbieter und beide Ids selbst mit: hier wird keine Datei geschrieben und
+    // kein Agent-Verzeichnis verschoben, ~/.pi bleibt also genau das, was es war
+    expect(line).not.toContain("models.json");
+    expect(line).not.toContain("PI_CODING_AGENT_DIR");
+  });
+
+  test("ein Modell, das die Zeile nicht kennt, bekommt weiterhin die nackte Zeile — und pi-unfenced dieselbe", async () => {
+    const { PI_HARNESS, PI_UNFENCED_HARNESS } = await load();
+    const o = { ...base, model: "claude-bridge/claude-haiku-4-5", effort: "high", startDatei: "/tmp/start-pi.md" };
+    const line = PI_HARNESS.spawnCmd(o);
+    expect(line).toContain("pi --session-id sess-p1 --model 'claude-bridge/claude-haiku-4-5' --thinking high --append-system-prompt '/tmp/start-pi.md'");
+    expect(line).not.toContain("--provider");
+    expect(line).not.toContain("_API_KEY");
+    expect(line).not.toContain("models.json");
+    // EIN Bauer für beide Sitze: die Zeile kann nicht auseinanderlaufen
+    expect(PI_UNFENCED_HARNESS.spawnCmd(o)).toBe(line);
+    expect(PI_UNFENCED_HARNESS.spawnCmd({ ...base, model: "glm-5.3" })).toBe(PI_HARNESS.spawnCmd({ ...base, model: "glm-5.3" }));
+  });
+
+  test("ein Modellname, der wie ein Objekt-Schlüssel heißt, ist kein Anbieter-Modell: nackte Zeile, kein --provider", async () => {
+    const { PI_HARNESS } = await load();
+    for (const model of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const line = PI_HARNESS.spawnCmd({ ...base, model });
+      expect(line).toContain(`--model '${model}'`);
+      expect(line).not.toContain("--provider");
+      expect(line).not.toContain("undefined");
+    }
+  });
+
+  test("die Session eines GLM-Laufs wird gefunden: das Agent-Verzeichnis ist die zweite Wurzel des pi-Sitzes", async () => {
+    const { PI_HARNESS } = await load();
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-seat-"));
+    try {
+      const real = realpathSync(cwd);
+      const slug = `--${real.replace(/^\/+/, "").replaceAll("/", "-")}--`;
+      const id = "11111111-2222-3333-4444-555555555555";
+      const dir = `${agentDir}/sessions/${slug}`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(`${dir}/1790000000000_${id}.jsonl`,
+        `${JSON.stringify({ type: "session", id, cwd: real })}\n`);
+      expect(PI_HARNESS.context).not.toBeNull();
+      const ctx = PI_HARNESS.context!;
+      expect(ctx.file({ cwd, sessionId: id })).toBe(`${dir}/1790000000000_${id}.jsonl`);
+      // eine fremde Id bleibt unbekannt — die zweite Wurzel fügt nur hinzu, sie tauscht nichts aus
+      expect(ctx.file({ cwd, sessionId: "99999999-0000-0000-0000-000000000000" })).toBeNull();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

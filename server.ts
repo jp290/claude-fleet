@@ -1215,35 +1215,38 @@ const SPAWN_PATH_RE = /^\/[A-Za-z0-9_.@+\-/ ]*$/;
 // `pi-zai` owns a complete, process-local Pi agent home: catalog, settings, auth and sessions all
 // stay below this Fleet-specific directory, so neither ~/.pi/agent nor ~/.claude participates.
 // Both paths enter single-quoted shell words. Refuse an unsafe operator override at boot rather
-// than silently falling back to a different location than the one the operator named.
-const PI_ZAI_AGENT_DIR = (() => {
-  const path = process.env.FLEET_PI_ZAI_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-zai-agent`;
+// than silently falling back to a different location than the one the operator named — one reader for
+// all of them, so no seat can quietly get a weaker check than its neighbour.
+function safeSpawnPath(name: string, dflt: string): string {
+  const path = process.env[name] ?? dflt;
   if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
-    throw new Error("FLEET_PI_ZAI_AGENT_DIR must be a safe absolute path without ..");
+    throw new Error(`${name} must be a safe absolute path without ..`);
   return path.replace(/\/+$/, "");
-})();
-const PI_ZAI_KEY_FILE = (() => {
-  const path = process.env.FLEET_PI_ZAI_KEY_FILE ?? `${HOME}/.config/claude-fleet/secrets/zai-coding-plan.key`;
-  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
-    throw new Error("FLEET_PI_ZAI_KEY_FILE must be a safe absolute path without ..");
-  return path.replace(/\/+$/, "");
-})();
-// The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“) owns its own agent home and its own key file, and the
-// same two boot checks as pi-zai's: both paths enter single-quoted shell words, and a location the
-// operator named must not silently become another one. The key file's DEFAULT is the owner's path on
-// the Workhorse, spelled here because Fleet may only ever name it, never read or print it.
-const PI_DEEPSEEK_AGENT_DIR = (() => {
-  const path = process.env.FLEET_PI_DEEPSEEK_AGENT_DIR ?? `${HOME}/.config/claude-fleet/pi-deepseek-agent`;
-  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
-    throw new Error("FLEET_PI_DEEPSEEK_AGENT_DIR must be a safe absolute path without ..");
-  return path.replace(/\/+$/, "");
-})();
-const PI_DEEPSEEK_KEY_FILE = (() => {
-  const path = process.env.FLEET_PI_DEEPSEEK_KEY_FILE ?? `${HOME}/.config/fleet-deepseek/key`;
-  if (!SPAWN_PATH_RE.test(path) || path === "/" || path.split("/").includes(".."))
-    throw new Error("FLEET_PI_DEEPSEEK_KEY_FILE must be a safe absolute path without ..");
-  return path.replace(/\/+$/, "");
-})();
+}
+const PI_ZAI_AGENT_DIR = safeSpawnPath("FLEET_PI_ZAI_AGENT_DIR", `${HOME}/.config/claude-fleet/pi-zai-agent`);
+const PI_ZAI_KEY_FILE = safeSpawnPath("FLEET_PI_ZAI_KEY_FILE", `${HOME}/.config/claude-fleet/secrets/zai-coding-plan.key`);
+// The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“) owns its own agent home and its own key file. The key
+// file's DEFAULT is the owner's path on the Workhorse, spelled here because Fleet may only ever name
+// it, never read or print it.
+const PI_DEEPSEEK_AGENT_DIR = safeSpawnPath("FLEET_PI_DEEPSEEK_AGENT_DIR", `${HOME}/.config/claude-fleet/pi-deepseek-agent`);
+const PI_DEEPSEEK_KEY_FILE = safeSpawnPath("FLEET_PI_DEEPSEEK_KEY_FILE", `${HOME}/.config/fleet-deepseek/key`);
+// The plain Pi seats (`pi`, `pi-unfenced`) keep the owner's ~/.pi for every run that pins no GLM id.
+// A GLM run needs a catalogue pi does not bundle reliably, and that catalogue may only live below
+// Fleet: writing it into ~/.pi/agent would touch the owner's own agent home. This is the Fleet-owned
+// home of THIS harness — a seat of its own, like pi-zai's, so the two can never overwrite each other.
+const PI_AGENT_DIR = safeSpawnPath("FLEET_PI_AGENT_DIR", `${HOME}/.config/claude-fleet/pi-agent`);
+// WHAT A PROVIDER-PINNED MODEL NEEDS ON THE PLAIN PI SEATS — one table, because the catalogue the
+// start window offers (model-register.ts) and the start line that carries the model are two answers to
+// one question and must not drift: an id here is an id the line can start. `catalog` says whether pi's
+// own bundled catalogue needs help (zai: the adapter supplies both GLM entries, exactly as pi-zai does)
+// or not (deepseek: pi 1.0.2 ships the provider and both ids itself, so no file is written).
+interface PiSeatModel { provider: "zai" | "deepseek"; keyEnv: string; keyFile: string; catalog: boolean }
+const PI_SEAT_MODELS: Readonly<Record<string, PiSeatModel>> = {
+  "glm-5.3": { provider: "zai", keyEnv: "ZAI_API_KEY", keyFile: PI_ZAI_KEY_FILE, catalog: true },
+  "glm-5.3-flash": { provider: "zai", keyEnv: "ZAI_API_KEY", keyFile: PI_ZAI_KEY_FILE, catalog: true },
+  "deepseek-flash": { provider: "deepseek", keyEnv: "DEEPSEEK_API_KEY", keyFile: PI_DEEPSEEK_KEY_FILE, catalog: false },
+  "deepseek-v4-pro": { provider: "deepseek", keyEnv: "DEEPSEEK_API_KEY", keyFile: PI_DEEPSEEK_KEY_FILE, catalog: false },
+};
 // pi-zai's READ fence (server/pi-zai-fence.ts; measured draft: docs/messungen/2026-09-21-pi-zai-
 // lesezaun.md). ABSOLUTE by default, never PATH-resolved: pi and its children may write anywhere
 // under the owner's home, and a `sandbox-exec` dropped into ~/.bun/bin would otherwise neuter the
@@ -1365,6 +1368,57 @@ function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
 const PI_ZAI_FENCE_FAILED = "pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test. "
   + "This pane is a plain shell, not an agent.";
 
+// ONE start line for BOTH plain Pi seats (`pi`, `pi-unfenced`), because those two adapters differ in
+// POLICY, not in how a model starts — a second copy is what drifts. Three shapes, and which one applies
+// is decided by the model ALONE:
+//   - no model, or a name PI_SEAT_MODELS does not file (a claude-bridge id, a local tag): today's line,
+//     byte for byte. A name Fleet does not know stays the owner's business, not this table's.
+//   - a GLM id: `--provider zai`, the key from ITS key file into the pane environment, and the very
+//     catalogue pi-zai writes (piZaiCatalogJson) into this harness's own Fleet agent home — ~/.pi of the
+//     owner is neither read for models nor written, which is the isolation rule pi-zai already follows.
+//     NO `--no-approve` here, unlike pi-zai: that flag exists there because the fence's own HOME makes the
+//     owner's user-level skills look project-local. This seat keeps the real HOME, so pi's trust
+//     behaviour stays the one the owner knows from his own `pi`.
+//   - a DeepSeek id: `--provider deepseek` and only the key. NO catalogue, and therefore no agent-home
+//     move: pi 1.0.2 ships that provider and both ids itself (its bundled catalogue holds
+//     deepseek-flash and deepseek-v4-pro), so this run keeps the owner's ~/.pi exactly as it is.
+// The bare case keeps what the owner chose on 2026-08-12: full local access — edits, git, Fleet/tmux and
+// network with his own reach — and the trailing `exec ${SHELL}` hands a dead agent's pane back to him.
+// What must not happen is an UNATTENDED path typing into that shell, and that is shut by the alive gate
+// rather than a fence: with no pi process, `comms: ["pi"]` finds nothing, the slot reads `no-agent`, and
+// canDeliver refuses autos, dispatch and steward sends.
+// The key is never on argv and never printed: `$(cat '…')` runs in the pane shell, as in pi-zai.
+// A missing key file does NOT start pi and says which file it wanted — a model offered by the window
+// must never be a pane that dies on its first request.
+type SpawnOpts = Parameters<Harness["spawnCmd"]>[0];
+function piSeatSpawnCmd(o: SpawnOpts): string {
+  // an OWN key only: a model named `constructor`, `toString` or `__proto__` passes HARNESS_MODEL_RE and would otherwise find
+  // the object's prototype as its "seat" and start `--provider undefined` into a dead pane
+  const seat = o.model && Object.hasOwn(PI_SEAT_MODELS, o.model) ? PI_SEAT_MODELS[o.model] : undefined;
+  let cmd = "pi";
+  if (seat) cmd += ` --provider ${seat.provider}`;
+  // `--session-id` is create-or-attach in ONE flag, under the same single-quoting rule as slotCmd.
+  if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
+  // single-quoted under the same rule as slotCmd, and it carries MORE weight here: a Pi model
+  // pattern may contain `*` (HARNESS_MODEL_RE admits it), which zsh — tmux's default-shell —
+  // aborts the whole line on when it matches nothing, killing the pane at spawn.
+  if (o.model) cmd += ` --model '${o.model}'`;
+  if (o.effort) cmd += ` --thinking ${o.effort}`;
+  if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+  cmd += PI_TUI_REGULAR;
+  // untracked provider model: the owner's own pi, unchanged (its key, its agent home, its trust prompt).
+  if (!seat) return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
+  const keyError = `pi: missing or empty ${seat.provider} key file: ${seat.keyFile}`;
+  const catalogError = `pi: could not prepare process-local agent directory: ${PI_AGENT_DIR}`;
+  const guard = `${PATH_EXPORT}if [ ! -s '${seat.keyFile}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
+    + (seat.catalog
+      ? `mkdir -p '${PI_AGENT_DIR}' && printf '%s\\n' '${piZaiCatalogJson()}' > '${PI_AGENT_DIR}/models.json' `
+        + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+      : "");
+  return `${guard}${seat.catalog ? `PI_CODING_AGENT_DIR='${PI_AGENT_DIR}' ` : ""}`
+    + `${seat.keyEnv}="$(cat '${seat.keyFile}')" ${cmd}; exec ${SHELL}`;
+}
+
 // Adapter #2 — Pi (pi.dev, `@earendil-works/pi-coding-agent`). Every flag below is MEASURED, not
 // read off a README; the measurements are briefs/pi-messungen-2026-08-07.md, section letters cited
 // per line. The one flag this file does NOT take from that report is `transcript` — see below.
@@ -1401,25 +1455,11 @@ const PI_HARNESS: Harness = {
   // id continues the conversation, and the "creating a new session" warning is absent the second
   // time). So `resume` is ignored here — claude needs two flags for the two roles, Pi needs one,
   // and the respawn path (ensureSlot, ↻ restart) therefore works by passing the id it already has.
-  spawnCmd: (o) => {
-    let cmd = "pi";
-    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
-    // single-quoted under the same rule as slotCmd, and it carries MORE weight here: a Pi model
-    // pattern may contain `*` (HARNESS_MODEL_RE admits it), which zsh — tmux's default-shell —
-    // aborts the whole line on when it matches nothing, killing the pane at spawn.
-    if (o.model) cmd += ` --model '${o.model}'`;
-    if (o.effort) cmd += ` --thinking ${o.effort}`;
-    // Fleet's start block (purpose, chosen packs) as a file pi reads: `--append-system-prompt <path>` expands an existing file.
-    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
-    cmd += PI_TUI_REGULAR;
-    // Bare, by owner decision 2026-08-12: full local access is the normal operating mode, so pi
-    // runs with the owner's own reach — edits, git, Fleet/tmux and network. The trailing
-    // `exec ${SHELL}` hands a dead agent's pane back to the owner; what must not happen is an
-    // UNATTENDED path typing into that shell, and that is shut by the alive gate rather than a
-    // fence: with no pi process, `comms: ["pi"]` finds nothing, the slot reads `no-agent`, and
-    // canDeliver refuses autos, dispatch and steward sends.
-    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
-  },
+  // THE ONE LINE, shared with `pi-unfenced` (piSeatSpawnCmd above): policy differs between those two
+  // adapters, the start of a model does not. The bare case — no model, or a name this seat's table does
+  // not file — is exactly the line that stood here before, full local access by owner decision
+  // 2026-08-12, and the builder's comment carries its reasoning.
+  spawnCmd: piSeatSpawnCmd,
   // NULL — Pi cannot host a worker session, and for the same measured reason `supports.transcript`
   // is false: it keeps no ~/.claude/projects/<slug>/<uuid>.jsonl, and that file IS the worker's
   // return channel. A hopeful line here would spawn a real agent, cost a real run, and then poll a
@@ -1428,10 +1468,12 @@ const PI_HARNESS: Harness = {
   // as the only gap): ToolProfile is a claude CLI flag set, and Pi has no equivalent to `--tools ""`.
   worker: () => null,
   // Pi's session file is not a Fleet transcript, but it does carry host-readable usage counters.
-  context: { file: piContextFile, used: readPiUsedTokens, tail: readPiTail },
+  // The reader asks the Fleet-owned GLM agent home too (piSeatContextFile): a GLM run writes its
+  // session there, and the identity check keeps the two roots from ever naming one another's session.
+  context: { file: piSeatContextFile, used: readPiUsedTokens, tail: readPiTail },
   // ...and the same file, resolved the same way (cwd slug + pinned UUID + session header), is the
   // conversation view's source: server/conversation-read.ts#readPiSession walks its id/parentId tree.
-  conversation: { file: piContextFile, read: readPiSession },
+  conversation: { file: piSeatContextFile, read: readPiSession },
   pinsSession: true,
   // Depth 1 is enough, and that is a MEASUREMENT, not an assumption: briefs/pi-messungen-2026-08-07.md
   // (d) found `pi` itself on depth 1, while the bridge's Claude-Agent-SDK child sits on depth 2 and
@@ -1459,7 +1501,12 @@ const PI_HARNESS: Harness = {
   // provider/id (`claude-bridge/claude-haiku-4-5`), a `:thinking` suffix, and globs — none of which
   // MODEL_RE admits, and it must not be widened to: a claude slot has no use for those characters.
   modelRe: HARNESS_MODEL_RE,
-  models: [],
+  // A MENU from the register (model-register.ts, harness `pi`): the four provider models piSeatSpawnCmd
+  // really starts — DeepSeek and both GLM ids — so the start window offers exactly what the line can
+  // carry. The field stays a menu, not a gate: modelOf still judges every value by modelRe, and a name
+  // the register never heard of (a bridge id, a probe tag) keeps passing. What the register's second
+  // question DOES refuse now is an id filed under ANOTHER harness — pi cannot start a claude id.
+  models: modelsForHarness("pi"),
   effortLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], // `pi --help`, the real installation
   supports: {
     resume: true,       // measured (a), including the pane respawn ensureSlot actually performs
@@ -1489,7 +1536,7 @@ const PI_HARNESS: Harness = {
   // Pi ships no permission layer of its own (its own bundled security doc: built-in tools read, write and
   // run shell with the permissions of the pi process), and since 2026-08-12 Fleet deliberately
   // adds none: full local access is the normal operating mode. The note says so at pick time.
-  note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12)",
+  note: "full local access: edits, git/commit, Fleet, tmux and network run with the owner's own reach (owner decision 2026-08-12); models in its window: DeepSeek (deepseek-flash, deepseek-v4-pro) and GLM (glm-5.3, glm-5.3-flash) besides free text — the key comes from ~/.config/fleet-deepseek/key or ~/.config/claude-fleet/secrets/zai-coding-plan.key through the environment only (never argv, never printed), and a GLM run takes its catalogue from Fleet's own agent home, so ~/.pi stays untouched",
   role: "agent",
   browserProfile: "not-applicable", // Pi has no MCP layer — inherited by pi-unfenced
 };
@@ -1836,15 +1883,11 @@ const PI_DEEPSEEK_HARNESS: Harness = {
 const PI_UNFENCED_HARNESS: Harness = {
   ...PI_HARNESS,
   id: "pi-unfenced",
-  spawnCmd: (o) => {
-    let cmd = "pi";
-    if (o.sessionId) cmd += ` --session-id ${o.sessionId}`;
-    if (o.model) cmd += ` --model '${o.model}'`;
-    if (o.effort) cmd += ` --thinking ${o.effort}`;
-    if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
-    cmd += PI_TUI_REGULAR;
-    return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
-  },
+  // The same one line as `pi` (piSeatSpawnCmd): the two seats differ in policy, not in how a model —
+  // GLM, DeepSeek or an untracked name — is started.
+  spawnCmd: piSeatSpawnCmd,
+  // Explicit despite the spread, for the reason `worker` below gives: a self-contained declaration.
+  models: modelsForHarness("pi-unfenced"),
   // Explicit despite the spread: the source-level worker/transcript invariant intentionally reads
   // every adapter as a self-contained declaration rather than executing object inheritance.
   worker: () => null,
@@ -1854,7 +1897,7 @@ const PI_UNFENCED_HARNESS: Harness = {
   allowsLanes: false,
   singleton: true,
   laneForm: null,
-  note: "UNFENCED host access: unrestricted filesystem writes, git and network; MAIN session only, one active slot; no unattended work prompts (explicit subscribed Watch notifications allowed)",
+  note: "UNFENCED host access: unrestricted filesystem writes, git and network; MAIN session only, one active slot; no unattended work prompts (explicit subscribed Watch notifications allowed); same model window as pi (DeepSeek deepseek-flash/deepseek-v4-pro, GLM glm-5.3/glm-5.3-flash) with the same key files read through the environment only and the same Fleet-owned GLM agent home, so ~/.pi stays untouched",
 };
 
 // The container this adapter execs into. A docker name/id charset MINUS the quote, because the
@@ -26114,7 +26157,7 @@ function timelineSource(r: TimelineReceipt): TimelineSource | null {
       if (candidate && meta?.id === r.session && sameCwd(meta.cwd, r.cwd)) { file = candidate; cwd = meta.cwd; }
     } else {
       const o = { sessionId: r.session, cwd: r.cwd };
-      file = harness === "pi" ? piContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
+      file = harness === "pi" ? piSeatContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
         : harness === "pi-deepseek" ? piDeepseekContextFile(o) : null;
       if (file) cwd = realpathLoose(r.cwd);
     }
@@ -50004,6 +50047,14 @@ function piContextFile(o: { cwd: string; sessionId: string }): string | null {
   return valid.length === 1 ? valid[0] : null;
 }
 
+// The plain Pi SEAT reads its session from one of two agent homes: `~/.pi/agent` for every run that
+// pins no GLM id (unchanged), and the Fleet-owned home for a GLM run, whose catalogue may not live in
+// the owner's. `~/.pi` is asked first, so a seat that never chose GLM answers exactly as before; the
+// second root can only ADD an answer, never swap one, because the identity travels with the file (cwd
+// slug, pinned UUID and the session header's own cwd) — two roots can at most both be empty.
+function piSeatContextFile(o: { cwd: string; sessionId: string }): string | null {
+  return piContextFile(o) ?? isolatedPiContextFile(PI_AGENT_DIR, o);
+}
 // pi-zai uses Pi's byte-identical session format and cwd slug, but PI_CODING_AGENT_DIR moves the
 // root. Keep piContextFile itself unchanged: normal Pi must continue reading ~/.pi/agent exactly
 // as before, while this adapter can never observe or mutate that global directory.

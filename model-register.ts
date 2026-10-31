@@ -1,5 +1,5 @@
 // model-register.ts — the model policy, defaults, aliases and display windows for Fleet harnesses.
-export type ModelHarness = "claude" | "codex" | "pi-zai" | "pi-deepseek" | "pi-zai-unfenced";
+export type ModelHarness = "claude" | "codex" | "pi" | "pi-unfenced" | "pi-zai" | "pi-deepseek" | "pi-zai-unfenced";
 export type ModelStatus = "current" | "superseded";
 export type FleetWorkerRole = "summary" | "commitMsg" | "enhance" | "digest" | "review" | "merge" | "repair" | "cleanReview" | "card";
 export type ModelRole = "orchestrator" | "main" | "worker" | "denk" | FleetWorkerRole
@@ -146,6 +146,19 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "codex", id: "gpt-5.6-luna", status: "superseded", supersededBy: "gpt-6-luna", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.5", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.3-codex-spark", status: "current" },
+  // The plain Pi seats (`pi`, `pi-unfenced`) — owner 27.10.: „[Zitat entfernt]“
+  // .
+  // The same four ids their start line now really carries (server.ts#PI_SEAT_MODELS), and nothing
+  // else: the window offers what the line can start, so a listed model is never a request that dies.
+  // Separate rows per harness, as for the two GLM seats: the harness is separably choosable.
+  { harness: "pi", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-unfenced", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-unfenced", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-unfenced", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-unfenced", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
   { harness: "pi-zai", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
   { harness: "pi-zai", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
   // The same two models on the unfenced GLM seat: the model list is a fact about the provider, not

@@ -33,8 +33,9 @@ export interface BwrapProbe {
 
 // protected = the fence must refuse it; allowed = the pane's work, the fence must let it through
 export const PROTECTED = ["ssh", "key", "fleetjson", "envfile", "zshrc", "otherwt", "denyroot", "foreignsession", "scaffoldenv",
-  "foreignenviron", "tmuxlive", "homewrite", "mainref", "foreignref", "hook"] as const;
-export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "ownref", "gitcommit", "shm"] as const;
+  "foreignenviron", "tmuxlive", "homewrite", "mainref", "foreignref", "hook", "agenthomecode", "agenthomesettings"] as const;
+// agentlock: pi makes a lock directory beside every file it reads from its agent home (Mangel 175)
+export const ALLOWED = ["cwdfile", "tool", "cwdwrite", "ownsession", "ownref", "gitcommit", "shm", "agentlock"] as const;
 
 function probeScript(f: Fx): string {
   const r = (name: string, path: string): string => `if grep -aq ${NEEDLE} '${path}' 2>/dev/null; then echo '${name}=1'; else echo '${name}=0'; fi`;
@@ -54,6 +55,12 @@ function probeScript(f: Fx): string {
     `if echo x > '${f.agent}/sessions/${piSessionSlug(f.cwd)}/own' 2>/dev/null; then echo 'ownsession=1'; else echo 'ownsession=0'; fi`,
     `if git -C '${f.cwd}' update-ref refs/heads/branch/pz-board HEAD 2>/dev/null; then echo 'ownref=1'; else echo 'ownref=0'; fi`,
     `if git -C '${f.cwd}' -c user.email=a@b -c user.name=n commit -q --allow-empty -m lane 2>/dev/null; then echo 'gitcommit=1'; else echo 'gitcommit=0'; fi`,
+    // THE PI AGENT HOME (Mangel 175): pi loads code from it without a trust question and every seat of an adapter shares it, so what a
+    // seat writes there must not outlive its fence. Inside the overlay the writes SUCCEED (pi needs them); the HOST's answer after the
+    // run is the claim, see run() below. The lock directory is the one thing pi needs that a read-only home would refuse.
+    `if mkdir -p '${f.agent}/extensions' 2>/dev/null && echo x > '${f.agent}/extensions/x.ts' 2>/dev/null; then echo 'agenthomecode=1'; else echo 'agenthomecode=0'; fi`,
+    `if echo pwned > '${f.agent}/settings.json' 2>/dev/null; then echo 'agenthomesettings=1'; else echo 'agenthomesettings=0'; fi`,
+    `if mkdir '${f.agent}/settings.json.lock' 2>/dev/null; then echo 'agentlock=1'; rmdir '${f.agent}/settings.json.lock'; else echo 'agentlock=0'; fi`,
     // the shared memory Chromium needs (owner 27.10.): /dev/shm is --dev's own writable dir on its tmpfs
     `if echo x > /dev/shm/pz-shm 2>/dev/null; then echo 'shm=1'; rm -f /dev/shm/pz-shm; else echo 'shm=0'; fi`,
   ].join("\n");
@@ -90,7 +97,7 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
     put(`${home}/.ssh/id`); put(`${home}/.config/claude-fleet/secrets/zai.key`); put(`${fleet}/fleet.json`); put(`${fleet}/.env`);
     put(`${home}/.zshrc`); put(`${home}/other/file`); put(`${deny}/child/canary`);
     put(`${home}/.local/bin/tool`, "#!/bin/sh\n" + NEEDLE); chmodSync(`${home}/.local/bin/tool`, 0o755);
-    put(`${agent}/auth.json`, "{}"); put(`${agent}/sessions/--foreign--/s.jsonl`);
+    put(`${agent}/auth.json`, "{}"); put(`${agent}/sessions/--foreign--/s.jsonl`); put(`${agent}/settings.json`, "{}");
     mkdirSync(`${root}/live-tmux`, { recursive: true });
     const sh = (cmd: string[], cwdOf = root): void => { const r = spawnSync(cmd[0]!, cmd.slice(1), { cwd: cwdOf, encoding: "utf8" }); if (r.status !== 0) throw new Error(`${cmd.join(" ")}: ${r.stderr}`); };
     sh(["git", "init", "-q", "-b", "main", main]);
@@ -125,6 +132,10 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
         : spawnSync("/bin/sh", ["-c", script], { encoding: "utf8", env, timeout: 60_000 });
       const m = parse(r.stdout ?? "");
       m.homewrite = existsSync(`${home}/pwn`); // the HOST's answer: a write into the sandbox's own tmpfs reaches nothing
+      // ...and the same for the agent home: the overlay takes the write, the real directory must not see it; the own session must
+      m.agenthomecode = existsSync(`${agent}/extensions/x.ts`);
+      m.agenthomesettings = readFileSync(`${agent}/settings.json`, "utf8").includes("pwned");
+      if (args) m.ownsession = existsSync(`${agent}/sessions/${piSessionSlug(cwd)}/own`);
       return m;
     };
     const bw = piZaiBwrapArgs(input, { newSession: true });
@@ -138,6 +149,8 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
       sh(["git", "-C", main, "update-ref", "refs/heads/main", mainFirst]);
       sh(["git", "-C", main, "update-ref", "refs/heads/branch/foreign", foreignFirst]);
       rmSync(`${home}/pwn`, { force: true }); rmSync(`${main}/.git/hooks/pre-commit`, { force: true });
+      rmSync(`${agent}/extensions`, { recursive: true, force: true }); writeFileSync(`${agent}/settings.json`, "{}");
+      rmSync(`${agent}/sessions/${piSessionSlug(cwd)}/own`, { force: true });
     };
     const control = run(null); restore();
     const fenced = args ? run(args) : {}; restore();
@@ -172,9 +185,9 @@ export async function probeBwrapFence(): Promise<BwrapProbe> {
     symlinkSync(home, cache); // the worst case: the cache names the whole home
     const cacheLinked = piZaiBwrapArgs(input, { newSession: false })?.args ?? [];
     rmSync(cache, { force: true });
-    // ...and no writable bind beyond the pane's own work: the tree, its temp home, its agent dir and
-    // its own session, git's objects/admin/own branch. A new --bind anywhere else fails here.
-    const knownRw = new Set([cwd, own, agent, `${agent}/sessions/${piSessionSlug(cwd)}`,
+    // ...and no writable bind beyond the pane's own work: the tree, its temp home and its own session (the agent dir is an
+    // overlay with a throwaway upper layer, never a bind), git's objects/admin/own branch. A new --bind anywhere else fails here.
+    const knownRw = new Set([cwd, own, `${agent}/sessions/${piSessionSlug(cwd)}`,
       ...(g ? [`${g.common}/objects`, g.admin, dirname(`${g.common}/${g.ref}`), dirname(`${g.common}/logs/${g.ref}`)] : [])]);
     const build = {
       refusesNullDenyRoots: piZaiBwrapArgs({ ...input, denyRoots: null }) === null,

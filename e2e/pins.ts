@@ -1220,13 +1220,14 @@ await import(pathToFileURL(process.argv[2]).href);
     const RULE_PZ_ALLOWLIST = "pi-zai's fence closes home and the temp roots first, opens only named areas, and never-rules come last in explicit operations";
     const closeAt = prof.indexOf('(deny file-read-data file-read-xattr file-write* (subpath "/Users/fx") (subpath "/private/tmp") (subpath "/private/var/folders/fx/fx"))');
     // every allow but the leading `(allow default)`; past the never-rules only this pane's own
-    // session may re-open (and the bare listing of sessions/ that pi's mkdir needs)
+    // session may re-open (and the bare listing of sessions/ that pi's mkdir needs), and the lock
+    // DIRECTORIES pi makes beside the files it reads from its agent home (Mangel 175; the home itself is read-only)
     const openings = [...prof.matchAll(/\(allow (?!default\))[^()]*/g)].map((m) => m.index ?? -1);
     const lateOpenings = openings.filter((i) => i > dfAt).map((i) => prof.slice(i, prof.indexOf("))", i)));
     const shape = {
       closedFirst: closeAt > 0 && openings.length > 0 && openings.every((i) => i > closeAt),
       cwdOpen: prof.includes(`(allow file-read-data file-read-xattr file-write* (subpath "${fx.cwd}")`),
-      neverAfterOpenings: dfAt > 0 && lateOpenings.length === 2 && lateOpenings.every((o) => o.includes(`"${fx.agentDir}/sessions`)),
+      neverAfterOpenings: dfAt > 0 && lateOpenings.length === 3 && lateOpenings.every((o) => o.includes(`"${fx.agentDir}/sessions`) || o.includes(`"${fx.agentDir}/settings.json.lock"`)),
       noWildcardFileRule: !/\((?:allow|deny) file-read\*/.test(prof),
       noBareAllow: !/\(allow (?!default\))[a-z*-]+(?: [a-z*-]+)*\)/.test(prof),
       ownBranchOnly: prof.includes(`(literal "${fx.git.common}/${fx.git.ref}")`) && !prof.includes(`(subpath "${fx.git.common}/refs")`),

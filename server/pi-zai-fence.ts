@@ -125,6 +125,10 @@ export interface PiZaiFenceInput {
 // 2026-10-06, sandbox log: swift-build/swift-package and swift-driver denied file-write-create
 // there). Only these names, and only create and unlink: enough for the staged file to be made and
 // renamed out, while another process's staged content stays unreadable and unwritable.
+// The lock directories pi makes in its agent home (proper-lockfile: `<file>.lock`), the only names writable there on macOS.
+// (pi's settings.json, auth.json, trust.json and models-store.json - spelled by stem here: this is pi's agent home, not Claude's
+// ~/.claude/settings.json that e2e/pins.ts keeps Fleet from naming)
+export const PI_AGENT_HOME_LOCKS = ["settings", "auth", "trust", "models-store"].map((stem) => `${stem}.json.lock`);
 export const PIZAI_NSIRD_TOOLS = ["swift-build", "swift-package", "swift-driver"] as const;
 
 // Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and
@@ -186,7 +190,8 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
   // run somewhere else execute code. The server runs git in this worktree outside the fence (status
   // ticks, the land), so a hook, a core.fsmonitor/hooksPath in a config, or a `.git`/`commondir`
   // pointer re-aimed at a lane-made config would run the lane's command with the owner's full reach.
-  const readOnly = [...i.toolRoots.map(sub), ...(g ? [sub(g.common)] : [])];
+  // ...and the pi agent home READABLE only (Mangel 175): see PI_AGENT_HOME_LOCKS and the deny below for what stays writable in it
+  const readOnly = [...i.toolRoots.map(sub), sub(i.agentDir), ...(g ? [sub(g.common)] : [])];
   const gitDirs = g ? [g.common, g.admin] : [`${i.cwd}/.git`];
   const gitNeverWrite = [lit(`${i.cwd}/.git`), ...gitDirs.flatMap((d) => [sub(`${d}/hooks`), lit(`${d}/config`),
     lit(`${d}/config.worktree`), lit(`${d}/commondir`), lit(`${d}/gitdir`)])];
@@ -206,7 +211,7 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // stat answers only for a name already known; enumerating one is a listing, and that is closed.
     + `(deny ${content} file-write* ${sub(h)} ${i.tmpRoots.map(sub).join(" ")})`
     // (B) OPENED again inside them — the census' standard need, nothing conditional.
-    + `(allow ${content} file-write* ${sub(i.cwd)} ${sub(i.ownTmp)} ${sub(i.agentDir)}`
+    + `(allow ${content} file-write* ${sub(i.cwd)} ${sub(i.ownTmp)}`
     + ` ${sub(i.suiteLock)} ${sub(`${i.suiteLock}.q`)} ${sub(i.tmuxDir)})`
     // never emitted empty: an allow without a filter would re-open the whole disk
     + (readOnly.length ? `(allow ${content} ${readOnly.join(" ")})` : "")
@@ -214,6 +219,12 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // SwiftPM's atomic-write staging dirs in the closed per-user temp dir (PIZAI_NSIRD_TOOLS)
     + (userTemp ? `(allow file-write-create file-write-unlink (regex #"^${rx(userTemp)}/TemporaryItems/NSIRD_`
       + `(${PIZAI_NSIRD_TOOLS.join("|")})_[^/]+(/|$)"))` : "")
+    // (B2) THE PI AGENT HOME IS NOT WRITABLE (Mangel 175, owner 31.10.): pi loads code and instructions from it without a trust
+    // question and every seat of one adapter shares it, so a write there reaches the next seat that starts. Denied wherever the
+    // directory lies (it is under home in production, but nothing here may depend on it); the own session is let back in below,
+    // the lock directories after that. There is no overlay on macOS, so unlike the bwrap fence settings.json stays read-only: what
+    // /settings and Ctrl+S write fails inside pi and is not kept.
+    + `(deny file-write* ${sub(i.agentDir)})`
     // (C) NEVER, even inside an opening. (1) the owner token's two FILE families. A regex, not two
     // literals: fleet.json.bak and .env.bak-* sit beside the originals and a literal missed them (T1).
     + `(deny ${allRead} file-write* (regex #"^${rx(i.fleetDir)}/(fleet[.]json|[.]env)")`
@@ -226,6 +237,12 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
     // the mkdir of its session directory before any prompt (attic, "Der pi-Zaun").
     + `(allow ${allRead} file-write* ${sub(own)})`
     + `(allow file-read-metadata ${lit(`${i.agentDir}/sessions`)})`
+    // pi 1.0.2 makes a lock DIRECTORY beside every file it reads from its agent home, also to read (proper-lockfile; measured
+    // 2026-10-31 in the bwrap fence: with the home read-only it printed `Invalid settings file … EROFS mkdir settings.json.lock`
+    // and did not load settings.json). These four names are empty directories nobody loads; the files they guard stay read-only.
+    // models-store.json (dynamically refreshed provider catalogs) is NOT written: an entry there is a full model with baseUrl and
+    // headers, and the price is pi's banner `Could not refresh … model catalogs` (open point for the Mac's Orchestratorin).
+    + `(allow file-write* ${PI_AGENT_HOME_LOCKS.map((n) => lit(`${i.agentDir}/${n}`)).join(" ")})`
     // Pi 1.0.2 reads its credential store at startup. Only an empty regular store may be read;
     // Band C still denies its metadata, xattrs and every write. A populated or uninspectable
     // store fails the existing sandbox self-test with this reason before pi can start.
@@ -388,7 +405,18 @@ export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } =
   // (B) read-write: the lane, the pane's temp home, the pi agent dir
   a.push("--bind", i.cwd, i.cwd); open(i.cwd);
   a.push("--bind", i.ownTmp, i.ownTmp); open(i.ownTmp);
-  a.push("--bind", i.agentDir, i.agentDir); open(i.agentDir);
+  // THE PI AGENT HOME IS A THROWAWAY COPY-ON-WRITE VIEW (Mangel 175, owner 31.10.): pi loads code and instructions from
+  // it WITHOUT a project trust question (settings.json with package paths, extensions/, skills/, prompts/, mcp.json,
+  // models.json, SYSTEM.md, AGENTS.md …) and every seat of one adapter shares the directory, so a plain `--bind` let one
+  // seat leave something that its sibling ran or read at the next start. A plain `--ro-bind` is no answer either: pi 1.0.2
+  // makes a lock DIRECTORY beside every file it reads (`settings.json.lock`, `auth.json.lock`, measured 2026-10-31), so
+  // with a read-only home it shows an EROFS banner and does not load settings.json at all. `--overlay-src` + `--tmp-overlay`
+  // gives pi a writable view whose lower layer is the real home (what Fleet wrote before the spawn - skills/,
+  // fleet-skills.json, models.json, fleet-start/ - arrives as that layer) and whose upper layer is a tmpfs that ends with
+  // this fence. A write inside succeeds for this seat only; the real home is never touched. The price, wanted: what
+  // /settings and Ctrl+S (default model) write holds only until the seat ends. There is NO fallback: a bwrap without overlay
+  // support dies at the self-test (`fleet_pz /usr/bin/true`), and the pane says the fence failed instead of starting pi on a bind.
+  a.push("--overlay-src", i.agentDir, "--tmp-overlay", i.agentDir); open(i.agentDir);
   a.push("--tmpfs", `${i.agentDir}/sessions`);
   const ownSession = `${i.agentDir}/sessions/${piSessionSlug(i.cwd)}`;
   a.push("--bind", ownSession, ownSession);

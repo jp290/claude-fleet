@@ -88,17 +88,20 @@ describe("ein pi-Sitz bekommt Zweck und gewählte Packs als Start-Datei", () => 
     expect(liest.filter((a) => a.id === "wissen").map((a) => a.text ?? "").join("\n")).toContain("--- fleet-doors (");
   }, LIFE_DEADLINE_MS * 2);
 
-  test("der Plan verspricht Skills nur einem pi-Adapter, der ein Agent-Verzeichnis hat", async () => {
+  test("der Plan verspricht Skills jedem pi-Sitz, plain pi wie pi-zai", async () => {
     const f = fixture();
     const plan = (harness: string) => get(`/api/founding-plan?${new URLSearchParams({ repo: f.repo, role: "nur-ordner", harness, anlass: "neu" })}`);
-    const [ohne, mit] = await life(f, [plan("pi"), plan("pi-zai")]);
+    const [pi, unfenced, zai] = await life(f, [plan("pi"), plan("pi-unfenced"), plan("pi-zai")]);
     type Zeile = { id: string; zustand: string; details?: { packs?: string[] } };
     const skills = (a: Answer | undefined) => ((a?.body.plan as { bausteine: Zeile[] } | undefined)?.bausteine ?? []).find((z) => z.id === "bibliothek-skills");
-    expect([ohne?.status, mit?.status]).toEqual([200, 200]);
-    expect(skills(ohne)?.details?.packs ?? []).toEqual([]);
-    expect(skills(ohne)?.zustand).not.toBe("an");
-    expect(skills(mit)?.details?.packs?.length).toBeGreaterThan(0);
-    expect(skills(mit)?.zustand).toBe("an");
+    expect([pi?.status, unfenced?.status, zai?.status]).toEqual([200, 200, 200]);
+    const zaiPacks = [...(skills(zai)?.details?.packs ?? [])].sort();
+    expect(zaiPacks.length).toBeGreaterThan(0);
+    expect(skills(zai)?.zustand).toBe("an");
+    for (const antwort of [pi, unfenced]) {
+      expect([...(skills(antwort)?.details?.packs ?? [])].sort()).toEqual(zaiPacks);
+      expect(skills(antwort)?.zustand).toBe("an");
+    }
   }, LIFE_DEADLINE_MS * 2);
 
   test("GET /api/self/context/fleet-doors holt den Pack für diesen Sitz", async () => {

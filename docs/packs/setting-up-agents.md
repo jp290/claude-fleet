@@ -64,6 +64,38 @@ It never says how to do the work.
 - Say in one sentence when it stops and reports instead of searching on, for example "If the test only turns green
   with a change to server.ts, stop and report." A stop turns a failure into a planned outcome.
 
+## Leading the work
+
+A lead sets up the seats a task needs, tells each what it needs, and holds what comes back against the task. Three
+things decide whether that work is excellent:
+
+- **Never call your own work done.** Someone else looks: a checker you set up, independent (its own examples, its own
+  oracle, never the author's tests), free to say "no defects found, and this is what I covered". After you fix what it
+  found, it looks again. The loop ends when the checker finds nothing, not when you do. In the first trial of these
+  doors the lead fixed three real defects and stopped there; nobody looked at the fix.
+- **What must hold on every turn stands in the purpose you give, never in a skill.** A skill is opened only when its
+  one-line description names the moment, and never for a rule: in that trial the lead never opened the three skills it
+  was given. So a lead's purpose says it: you lead; you never call your own work done; you set up the checker
+  yourself; it looks again after each fix. Four sentences are enough.
+- **Sharpen the order before you give it.** An order to another seat is the connecting piece above, compiled against
+  your own context (`sharpen3`: why, goal with its done-when, what it needs to know, limit, back to). The owner wants
+  agents to sharpen each other's orders; a vague order costs a round.
+
+The mechanics: open the checker through `POST /api/self/seats/open` with the model and effort you chose, in a role you
+formed (`POST /api/self/roles`) when it needs rights or a start text of its own; write through the mailbox, at most
+2000 characters a message, a longer report as numbered parts (a message may be a short probe before the report: answer
+it, then report); when its work is done, tell it to end its seat (`POST /api/self/retire`) so your cap of live seats
+stays free. Everything you give a seat shows in the owner's start brief as a + line with you as its author. The bodies
+of these doors are in `fleet-doors`.
+
+A purpose for a lead, from the trial, four sentences: "You lead this task. You never call your own work done: you set
+up an independent checker through Fleet's seat and role doors, fix what it finds, and it looks again after each fix.
+You give every seat you open a sharpened order with a done-when. You end a seat when its work is done."
+
+A start text for a checker's role, three sentences: "You check independently: your own examples, your own oracle,
+never the author's tests, and you change no file. You report concrete defects with the input that shows each, or say
+that you found none and what you covered. You look again after every fix until you find nothing."
+
 ## How seats start today
 
 - **A free session in its own folder:** `POST /api/slots/<n>/open` with cwd, label, model and effort. Its purpose and its

@@ -2160,6 +2160,11 @@ interface Slot {
   // the agent it was opened from (door field `agent`, server/agenten.ts): name, hash and `kopieVon`, shown by its Fassung. null = opened
   // without one. Carried by a generic succession; persisted; cleared on open/kill.
   agent: import("./agenten").AgentBezug | null;
+  // DIE GEBILDETE ROLLE, IN DER DIESER SITZ STARTETE (door field `role`, POST /api/self/seats/open; server/selbst-sitze.ts):
+  // Kennung, Name und Hash ihres Steins auf dem Regal. Der Starttext steht in seinem Start und unter „Rolle“ der Fassung, die
+  // Rechte kamen als Zusagen dazu (additiv, wie jede Rolle), und die Adresse {kind:"role"} geht an den jüngsten Inhaber.
+  // null = ohne gebildete Rolle geöffnet. Wie Slot.agent getragen: persistiert, von einer generischen Nachfolge mitgetragen, beim Öffnen/Schließen gelöscht.
+  rolleStein?: import("./selbst-sitze").RolleBezug | null;
   rechte: import("../session-rechte").Rechte | null; // what this session may do, set at open by the window's
   // „Was darf er?“ (server/rechte.ts): server rights (`recht`, `buendel`) on every harness, and the four Claude Code
   // switch rules in the `--settings` of every spawn plus one sentence in its system prompt on Claude only; carried by
@@ -2740,7 +2745,7 @@ const loadProgramInbox = (value: unknown): ProgramInboxRead => {
 // the same message under the same id. The READ RECEIPT is decided by the OCCUPANT TRIPLE — so the
 // record still says exactly who read it, and a later occupant never overwrites that. Two different
 // questions; a slot-keyed record answers both with one wrong answer.
-type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner";
+type MessageRole = "supervisor" | "orchestrator" | "controller" | "owner" | (string & {});
 // `controller` is carried DELIBERATELY as a well-formed but unresolvable address. The Controller is
 // Scope and holds no binding (docs/controller.md), so naming it here is how the dead end is
 // DOCUMENTED rather than invented: the loader accepts the address, the resolver refuses it by name,
@@ -2799,8 +2804,11 @@ const loadMessageAddress = (value: unknown, what: string, legacy = false): Messa
   if (r.kind === "role") {
     if (Object.keys(r).some((k) => !["kind", "role"].includes(k)) || Object.keys(r).length !== 2)
       return `${what} must contain exactly kind, role`;
-    if (typeof r.role !== "string" || !(MESSAGE_ROLES.includes(r.role as MessageRole) || (legacy && r.role === "supervisor")))
-      return `${what} role must be one of ${MESSAGE_ROLES.join(", ")}`;
+    // DIE ADRESSE EINER GEBILDETEN ROLLE (Richtung Schritt 5): eine Kennung wie ihr Rollenstein trägt sie; die Auflösung
+    // (server.ts#resolveMessageAddress) entscheidet, ob eine Rolle hier lebt — der Lader hält nur die Form stabil lesbar.
+    // „supervisor“ ist ausgemustert, hat aber die Form einer Kennung: neu adressierbar ist es nicht, es liest sich nur als Altbestand (legacy).
+    if (typeof r.role !== "string" || !(MESSAGE_ROLES.includes(r.role as MessageRole) || (r.role !== "supervisor" && /^[a-z][a-z0-9-]{0,79}$/.test(r.role)) || (legacy && r.role === "supervisor")))
+      return `${what} role must be one of ${MESSAGE_ROLES.join(", ")} or a formed role id of lowercase letters, digits and dashes`;
     return { kind: "role", role: r.role as MessageRole };
   }
   if (r.kind === "session" || r.kind === "lane") {

@@ -70,7 +70,14 @@ describe("die Rollen als benannte Bundel", () => {
     expect(wirksameRechte({ stufe: "bauen", an: [], aus: [], buendel: "none" }, ["orchestrator"]).size).toBe(0);
     expect([...wirksameRechte({ stufe: "bauen", an: [], aus: [], buendel: "none", recht: ["edge.grant"] }, ["lane"])])
       .toEqual(["edge.grant"]);
-    expect(RECHT_IDS.length).toBe(10);
+    expect(RECHT_IDS.length).toBe(14);
+    // DIE DREI SETUP-RECHTE (Richtung Schritt 4) UND role.form (Schritt 5) TRÄGT KEIN ROLLENBUNDEL: sie ändern das Setup als solches,
+    // nicht nur einen Start daraus — der Owner vergibt sie je Sitz (server/setup-tueren.ts). Jede Rolle behält genau, was sie hatte.
+    for (const [rolle, bundel] of Object.entries(ROLLEN_BUENDEL) as [RechtRolle, RechtId[]][])
+      for (const id of ["setup.save", "setup.export", "setup.import", "role.form"] as RechtId[]) {
+        expect(bundel, `${rolle} trägt nicht ${id}`).not.toContain(id);
+        expect(typeof RECHT_WAS[id] === "string" && RECHT_WAS[id].length > 0, `${id} hat einen Satz`).toBe(true);
+      }
     // der Startbrief nennt jedes wirksame Recht mit seiner Bedeutung und dann den Zaun (oder dessen Fehlen)
     const brief = rechteZeilen(null, ["generic"], "claude");
     expect(brief[0]).toStartWith("FLEET SERVER RIGHTS (checked at Fleet's doors):");

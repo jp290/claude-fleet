@@ -218,6 +218,9 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
     if (abw === null || werteAbw === null || schalter === null || (ohne !== undefined && !(Array.isArray(ohne) && ohne.every((t) => typeof t === "string"))))
       return `session ${name}: its settings do not fit`;
     if (x.wann !== undefined && typeof x.wann !== "string") return `session ${name}: "wann" is not text`;
+    if (x.ziel !== undefined && (typeof x.ziel !== "string" || x.ziel.length > 8000)) return `session ${name}: "ziel" is text of at most 8000 characters`;
+    const ordnerRoh = x.ordner === undefined ? undefined : obj(x.ordner);
+    if (x.ordner !== undefined && (!ordnerRoh || !(ordnerRoh.hint === null || typeof ordnerRoh.hint === "string"))) return `session ${name}: "ordner" is { hint }`;
     // was mit dem Sitz reiste (src/sitz.ts); ein schiefer Block lehnt die ganze Datei ab, wie eine schiefe Einstellung
     const sitzRoh: Sitz | string | undefined = x.sitz === undefined || x.sitz === null ? undefined : sitzAus(x.sitz);
     if (typeof sitzRoh === "string") return `session ${name}: ${sitzRoh}`;
@@ -234,7 +237,8 @@ export function importKonst(text: string, profile: readonly Profil[], jetzt: num
     }
     neu.push(pos(ids[n], name, pr.id, { ...(abw ? { abw } : {}), ...(werteAbw ? { werteAbw } : {}), ...(schalter ? { schalter } : {}),
       ...(ohne ? { ohne: (ohne as string[]).slice(0, 200) } : {}), ...(typeof x.wann === "string" ? { wann: x.wann.slice(0, 200) } : {}), ...(datei ? { datei } : {}),
-      ...(sitz ? { sitz } : {}), ...(rechte ? { rechte } : {}) }));
+      ...(sitz ? { sitz } : {}), ...(rechte ? { rechte } : {}), ...(typeof x.ziel === "string" && x.ziel ? { ziel: x.ziel } : {}),
+      ...(ordnerRoh ? { ordner: { hint: typeof ordnerRoh.hint === "string" ? ordnerRoh.hint.slice(0, 200) : null } } : {}) }));
   }
   // die Eltern: jede `meldetAn` muss es geben, keine Session meldet an sich selbst, und kein Kreis
   const vater = new Map<string, string>();

@@ -66,6 +66,30 @@ describe("das Format trägt den Sitz mit Text und Hash", () => {
   });
 });
 
+describe("der Setup-Hash deckt, was der Start liest", () => {
+  test("Weg, Wann-lesen, Quellen und Autor eines Packs und Autor, Zweck und Geltung eines Konzepts ändern den Hash; die Datei mit altem Hash bleibt lesbar", async () => {
+    const { datei } = await exportiere();
+    const pack = (f: Partial<SetupDatei["packs"][number]>): SetupDatei => ({ ...datei, packs: datei.packs.map((p) => p.id === "shared-pack" ? { ...p, ...f } : p) });
+    const hashes = [datei, pack({ way: "skill" }), pack({ useWhen: "Read this when you rest." }), pack({ author: "Jemand" }),
+      pack({ sources: [{ path: "x.md", anchor: "# X" }] })].map(setupHashVon);
+    expect(new Set(hashes).size).toBe(hashes.length);
+    // eine Datei, deren Hash über Weg oder Wann-lesen lügt, wird abgelehnt
+    expect(pruefeSetupDatei({ ...pack({ way: "skill" }), setupHash: datei.setupHash })).toContain("setupHash does not match");
+    const konzept: SetupDatei = { ...datei, concepts: [{ kind: "concept", id: "k-x", version: 1, hash: hashText("T"), text: "T" }] };
+    for (const f of [{ author: "A" }, { purpose: "P" }, { validity: "V" }])
+      expect(setupHashVon({ ...konzept, concepts: [{ ...konzept.concepts[0]!, ...f }] })).not.toBe(setupHashVon(konzept));
+    // ALT: eine Datei, die vor der Erweiterung gehasht wurde (Bausteine nur mit id/hash/personal), gilt weiter
+    const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
+      : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : 1).map(([k, x]) => [k, kanon(x)])) : v;
+    const altHash = hashText(JSON.stringify(kanon({ name: datei.name, seats: datei.seats, edges: datei.edges,
+      packs: datei.packs.map((p) => ({ kind: "pack", id: p.id, hash: p.hash, personal: p.personal === true })),
+      concepts: [], roles: datei.roles })));
+    const alt = { ...datei, setupHash: altHash };
+    expect(altHash).not.toBe(datei.setupHash);
+    expect(pruefeSetupDatei(alt)).toEqual(alt);
+  });
+});
+
 describe("die persönliche Marke steht am Wissen, nicht in einer Liste", () => {
   test("die Marke wird dort gelesen, wo das Wissen liegt: im Pack-Kopf und im Konzept-Frontmatter", () => {
     const packDir = frisch();
@@ -464,5 +488,28 @@ describe("Rollen sind Steine", () => {
     expect(block).toContain("seat.open — open a seat");
     expect(block).toContain("edge.grant — grant or close an edge");
     expect(RICHTUNG_PLATZ).toContain("empty place");
+  });
+});
+
+describe("F4 · ein unveränderter Rundlauf behält seinen Hash", () => {
+  test("Export, Import, Export einer Datei ergibt denselben setupHash, und derivedFrom ist null, nicht die erste Datei", async () => {
+    const A = await exportiere();
+    const dir = frisch();
+    const imp = await importiereSetup(JSON.parse(JSON.stringify(A.datei)), { dir, bibliothek: () => SEAT }, { schreiben: true, jetzt: 1 });
+    expect(imp.status).toBe(201);
+    const b = liesAgenten(dir)[0]!;
+    const B = await setupAusAgent(b, { bibliothek: () => SEAT });
+    if (typeof B === "string") throw new Error(B);
+    const unterschied = (x: unknown, y: unknown, pfad = ""): string[] => {
+      if (JSON.stringify(x) === JSON.stringify(y)) return [];
+      if (x && y && typeof x === "object" && typeof y === "object") {
+        const keys = new Set([...Object.keys(x), ...Object.keys(y)]);
+        return [...keys].flatMap((k) => unterschied((x as Record<string, unknown>)[k], (y as Record<string, unknown>)[k], `${pfad}.${k}`));
+      }
+      return [`${pfad}: ${JSON.stringify(x)} ≠ ${JSON.stringify(y)}`];
+    };
+    expect(unterschied(A.datei.seats, B.datei.seats, "seats")).toEqual([]);
+    expect(B.datei.setupHash).toBe(A.datei.setupHash);
+    expect(B.datei.derivedFrom).toBeNull();
   });
 });

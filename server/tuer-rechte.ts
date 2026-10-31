@@ -16,6 +16,10 @@ export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
   "text.concept.version": "publish a concept version",
   "text.concept.annotation": "annotate a concept",
   "text.program": "write its Program's text",
+  "setup.save": "save an agent as its own setup",
+  "setup.export": "export a setup as one file",
+  "setup.import": "import a setup file",
+  "role.form": "form a role of its own",
 };
 
 // Die Rollen, die ein Sitz gleichzeitig tragen kann (Steward auf einer Lane, Lane als gebundene MAIN, …).

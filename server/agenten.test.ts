@@ -1,11 +1,12 @@
 // EIN AGENT ALS EIN OBJEKT (server/agenten.ts): gespeichert mit Namen, kopiert mit „copy of“ und dem Hash des Originals, an der Tür ganz
 // genommen, geteilt mit „derived from“ und importiert nie in bypass. Rein bis auf den Speicher in einem Temp-Ordner.
 import { afterAll, describe, expect, test } from "bun:test";
+import type { RechtId } from "../session-rechte";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  abgeleitete, agentAnDerTuer, agentAusDatei, agentDatei, agentenRoute, agentHash, EINGEBAUTE, eigeneAnsicht, eigenerAgent, herkunftSatz, katalog,
+  abgeleitete, agentAnDerTuer, deckelDerWahl, agentAusDatei, agentDatei, agentenRoute, agentHash, EINGEBAUTE, eigeneAnsicht, eigenerAgent, herkunftSatz, katalog,
   kopie, liesAgenten, ortZugaben, schreibAgenten, wahlenAusSlot, zuletztHier, type AgentAnsicht, type AgentenServer, type WahlFeld,
 } from "./agenten";
 
@@ -88,6 +89,16 @@ describe("kopieren", () => {
     expect(k.agentMd).toEqual(orig.agentMd);
     expect(herkunftSatz(k)).toContain(`copy of Prüfer · ${orig.hash.slice(0, 12)}`);
   });
+  test("„derived from“ ist immer ein Setup-Hash: ein Original ohne Setup-Hash gibt der Kopie keinen, der Agent-Hash steht nur in „copy of“", () => {
+    const orig = ansicht({ id: "o", name: "O", wahlen: { model: "claude-sonnet-5-5" } });
+    const k = kopie(orig, {}, gut, ["o"]);
+    if (typeof k === "string") throw new Error(k);
+    expect(k.setupHash).toBeUndefined();
+    expect(k.kopieVon?.hash).toBe(orig.hash);
+    const setup = "a".repeat(64);
+    const k2 = kopie({ ...orig, setupHash: setup }, {}, gut, ["o"]);
+    expect(typeof k2 === "string" ? k2 : k2.setupHash).toBe(setup);
+  });
   test("eine Wahl auf null nimmt sie in der Kopie weg", () => {
     const orig = ansicht({ id: "o", name: "O", wahlen: { model: "claude-sonnet-5-5", effort: "low" } });
     const k = kopie(orig, { wahlen: { effort: null } }, gut, ["o"]);
@@ -99,6 +110,64 @@ describe("kopieren", () => {
     if (typeof k === "string") throw new Error(k);
     expect(k.wahlen.profil).toBeUndefined();
     expect(k.agentMd).toEqual({ titel: "r.md", text: "# R\nlies", profil: "rev" });
+  });
+});
+
+// DIE MARKE VON SITZ (Runde 3 des Schritts 4, Urteil zu faee8c0d): was eine Session über eine Self-Tür speichert oder
+// kopiert, ist nicht die Hand des Owners. Die Marke vonSitz trägt dieselbe Wirkung wie importiert an jeder Tür, die
+// einen Agenten öffnet: nie bypass, nie eine Rolle, die Rechte gedeckelt wie bei einem Import — und sie geht erst weg,
+// wenn der Owner den Agenten ändert.
+describe("die Marke vonSitz: was eine Session speichert, ist nicht die Hand des Owners", () => {
+  test("gespeichert mit gedeckelten Rechten; die Tür verweigert bypass und eine Rolle; der Speicher behält die Marke", () => {
+    const a = eigenerAgent({ id: "hand", name: "Hand", wahlen: { permissionMode: "bypassPermissions", rechte: { stufe: "deployen", recht: ["fleet.deploy"] } } },
+      gut, [], 1, { vonSitz: 3 });
+    if (typeof a === "string") throw new Error(a);
+    expect(a.vonSitz).toBe(3);
+    // der Deckel wie bei einem Import (src/sitz.ts#rechteGedeckelt): Stufe bis „bauen“, keine Zusage aus der Hand einer Session
+    expect(a.wahlen.rechte).toEqual({ stufe: "bauen", an: [], aus: [] });
+    expect(eigeneAnsicht(a).quelle).toContain("Slot 3");
+    const tuer = agentAnDerTuer({ agent: "hand" }, [eigeneAnsicht(a)], ALLE);
+    expect(tuer.ok ? "" : tuer.error).toContain("never starts in bypass");
+    expect(tuer.ok ? "" : tuer.error).toContain("slot 3");
+    // eine Rolle startet ebenso wenig — auch nicht die der Orchestratorin
+    const rolle = eigenerAgent({ id: "rollen-hand", name: "R", wahlen: { rolle: "orchestratorin" } }, gut, [], 1, { vonSitz: 3 });
+    if (typeof rolle === "string") throw new Error(rolle);
+    const tuerRolle = agentAnDerTuer({ agent: "rollen-hand" }, [eigeneAnsicht(rolle)], ALLE);
+    expect(tuerRolle.ok ? "" : tuerRolle.error).toContain("never starts in a role");
+    // der Speicher behält die Marke über einen Neustart; eine Änderung des Owners (PUT: eigenerAgent ohne Marke) nimmt sie
+    const dir = frisch();
+    schreibAgenten(dir, [a]);
+    expect(liesAgenten(dir)[0]?.vonSitz).toBe(3);
+    const geaendert = eigenerAgent({ id: "hand", name: "Hand", wahlen: a.wahlen }, gut, [], 1,
+      { ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}) });
+    if (typeof geaendert === "string") throw new Error(geaendert);
+    expect(geaendert.vonSitz).toBeUndefined();
+  });
+  test("der Deckel behält die Zusagen, die die Speichernde selbst wirksam hat, und nennt die anderen mit ihrer Kennung (F4)", () => {
+    const hat = new Set<RechtId>(["seat.open", "text.pack"]);
+    const wahlen = { rechte: { stufe: "deployen", recht: ["seat.open", "fleet.deploy", "text.pack"] } };
+    const a = eigenerAgent({ id: "zusagen", name: "Zusagen", wahlen }, gut, [], 1, { vonSitz: 3, sitzRechte: hat });
+    if (typeof a === "string") throw new Error(a);
+    // die Stufe bleibt gedeckelt wie bei einem Import; die Zusagen, die die Speichernde trägt, bleiben
+    expect(a.wahlen.rechte).toEqual({ stufe: "bauen", an: [], aus: [], recht: ["seat.open", "text.pack"] });
+    expect(deckelDerWahl(wahlen.rechte, hat)).toEqual(["landen", "deploy", "verwerfen", "fleet.deploy"]);
+    // ohne die Rechte der Speichernden (kein Wissen darüber) fällt jede Zusage, wie bisher
+    expect(deckelDerWahl(wahlen.rechte)).toEqual(["landen", "deploy", "verwerfen"]);
+    const ohne = eigenerAgent({ id: "ohne", name: "Ohne", wahlen }, gut, [], 1, { vonSitz: 3 });
+    expect(typeof ohne === "string" ? ohne : ohne.wahlen.rechte).toEqual({ stufe: "bauen", an: [], aus: [] });
+    // eine Kopie trägt dieselbe Regel
+    const orig = ansicht({ id: "vorlage", name: "Vorlage", wahlen });
+    const k = kopie(orig, {}, gut, ["vorlage"], 1, { vonSitz: 2, sitzRechte: new Set<RechtId>(["fleet.deploy"]) });
+    expect(typeof k === "string" ? k : k.wahlen.rechte).toEqual({ stufe: "bauen", an: [], aus: [], recht: ["fleet.deploy"] });
+  });
+  test("eine Kopie aus der Hand einer Session trägt dieselbe Marke und denselben Deckel wie das Original in der Hand des Owners", () => {
+    const orig = ansicht({ id: "vorlage", name: "Vorlage", wahlen: { permissionMode: "bypassPermissions", rechte: { stufe: "deployen" } } });
+    const k = kopie(orig, {}, gut, ["vorlage"], 1, { vonSitz: 2 });
+    if (typeof k === "string") throw new Error(k);
+    expect(k.vonSitz).toBe(2);
+    expect(k.kopieVon?.id).toBe("vorlage");
+    expect(k.wahlen.rechte).toEqual({ stufe: "bauen", an: [], aus: [] });
+    expect(eigeneAnsicht(k).quelle).toContain("Slot 2");
   });
 });
 
@@ -167,6 +236,18 @@ describe("einen laufenden Sitz speichern", () => {
     expect(w.wahlen).toEqual({ model: "claude-haiku-5-5", effort: "low", permissionMode: "auto", weglassen: { hooks: true }, bibliothek: false });
     expect(w.agentMd).toEqual({ titel: "t", text: "x", profil: "p" });
     expect(w.nichtGetragen.join()).toContain("pw");
+  });
+});
+
+describe("ein Sitz in einer gebildeten Rolle als Agent", () => {
+  test("der Agent trägt die Rolle nicht (eine Datei trägt nie eine Rolle) und die Antwort sagt es, mit dem Weg zur Konstellation", () => {
+    const sitz = { harness: null, model: null, effort: null, permissionMode: null, rechte: null, tools: null, weglassen: null, bibliothek: null, notizbuchWahl: null,
+      remote: false, autoModeEnvironment: null, schwelle: null, agentMd: null, sitz: null, rolle: null, packMcp: [], worktree: false };
+    expect(wahlenAusSlot(sitz).nichtGetragen).toEqual([]);
+    const mit = wahlenAusSlot({ ...sitz, gebildeteRolle: "prufer" });
+    expect(mit.nichtGetragen.join()).toContain("prufer");
+    expect(mit.nichtGetragen.join()).toContain("POST /api/self/konstellationen");
+    expect(mit.wahlen).not.toHaveProperty("rolle");
   });
 });
 

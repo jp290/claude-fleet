@@ -370,6 +370,27 @@ const PRE_AUTH_ROUTES = [
   // It can only take away from its own start line, never add a right, names no other slot and acts on no pane now.
   '= /api/self/packs', // added 2026-10-24 (branch/selbst-einrichten): writes a private context pack (server/eigene-packs.ts) into
   // Fleet's state — text only (id, useWhen, text; any other field 400), never a register id, reaches no seat until one chooses it.
+  // THE SETUP DOORS (direction step 4, server/setup-tueren.ts): save, export and import a setup with the self token, each behind
+  // verlangeRecht (setup.save / setup.export / setup.import — no role bundle carries them) and then through the SAME routes the
+  // owner gate dispatches (agentenRoute, setupRoute), so the exported file and its checks are the same whoever asks. vonSlot at
+  // the save door names only the caller's own slot; the export never carries personal text (an empty place instead); an import
+  // caps the file's rights (rechteGedeckelt), never starts in bypass, and its roles wait for the owner's k15 confirmation.
+  '= /api/self/agenten',
+  String.raw`~ /^\/api\/self\/agenten\/([^/]+)\/kopie$/`,
+  '= /api/self/setups/import',
+  // The constellation a seat leads (F1, server/konstellation-aus-sitzen.ts): behind verlangeRecht `setup.save` (no role bundle), it saves the caller's own seat and the
+  // live seats it opened as a saved constellation; the folders travel as empty places, rights capped, never bypass, no Fleet role. GET …/setups/<id>/datei exports it.
+  '= /api/self/konstellationen',
+  // F6: GET /api/self/constellation — what a seat may see of the constellation it stands in (the seats it may write to and the positions of its saved constellation), never
+  // its own stones; slot-bound, read-only, no right; a seat outside gets an empty list.
+  '= /api/self/constellation',
+  // Sitze in einem Ordner öffnen und Rollen bilden (Richtung Schritt 5, server/selbst-sitze.ts): hinter verlangeRecht (seat.open, role.form,
+  // setup.export) mit dem Self-Token; die Öffnen-Tür geht durch den Weg der Owner-Tür und durch kindNieWeiter, eine Rolle liegt als SetupRole auf dem Regal.
+  '= /api/self/seats/open',
+  String.raw`~ /^\/api\/self\/seats\/(\d+)\/end$/`,   // the opener ends a child it opened (seat.open; server/selbst-sitze.ts#kindBeenden)
+  '= /api/self/roles',
+  String.raw`~ /^\/api\/self\/roles\/([^/]+)\/datei$/`,
+  String.raw`~ /^\/api\/self\/setups\/([^/]+)\/datei$/`,
   '= /api/self/einrichten', // added 2026-10-24 (branch/selbst-einrichten): what the caller's OWN successor gets on top — a
   // purpose and context packs, text only (server/selbst-einrichten.ts; rights, model, hooks, MCP have no field and 400). Its own
   // slot row, bound to its occupation; a seat without a standing role, claude only; in force at its succession, acts on no pane.

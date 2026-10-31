@@ -30,9 +30,17 @@ export const RECHTE_ZAUN = "Das sind Regeln für Claude Code beim Start, keine S
 export type RechtId =
   | "seat.open" | "land.branch" | "land.program" | "fleet.deploy" | "edge.grant"
   | "text.handover" | "text.pack" | "text.concept.version"
-  | "text.concept.annotation" | "text.program";
+  | "text.concept.annotation" | "text.program"
+  | "setup.save" | "setup.export" | "setup.import"
+  | "role.form";
 export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.program", "fleet.deploy", "edge.grant",
-  "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program"];
+  "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program",
+  // DIE SETUP-RECHTE (Richtung Schritt 4): kein Rollenbundel trägt sie — der Owner vergibt sie je Sitz,
+  // denn sie ändern das Setup als solches (server/setup-tueren.ts), nicht nur einen Start daraus.
+  "setup.save", "setup.export", "setup.import",
+  // DIE ROLLEN-BILDUNG (Richtung Schritt 5): eine gebildete Rolle ist ein Setup-Stück mit einer Adresse —
+  // kein Rollenbundel trägt das Recht, denn sonst bildete jede Rolle Rollen (Owner 30.10., „[Zitat entfernt]“).
+  "role.form"];
 // Der eine benannte leere Bundel dieses Schnitts: der Owner öffnet damit eine Probe, deren Rolle nichts
 // hinzufügt. Er ist kein Produktions-Rollenbundel und nimmt einer Rolle nichts weg.
 export type RechteBuendel = "none";

@@ -4600,8 +4600,10 @@ export async function run(ctx: Ctx): Promise<void> {
     to: { ...occupantAddress, slot: successorSlot }, idempotencyKey: "occupant-wrong-target" });
   const occupantOwnerRefusal = await post(`/api/messages/${occupantId}/reply`, {
     payload: { kind: "text", text: "Owner does not gain a new Occupant route" }, idempotencyKey: "occupant-owner-refused" });
-  check("R1 session destinations require the Orchestrator and the exact parent sender",
-    occupantDirectRefusal.status === 409 && occupantMainRefusal.status === 409
+  // Owner 30.10. („[Zitat entfernt]“): die Orchestratorin schreibt einen freien Claude-Sitz auch ohne replyTo an;
+  // eine MAIN, ein falsches Ziel und der Owner-Weg bleiben 409
+  check("R1 session destinations: the Orchestratorin writes a free Claude session without replyTo; a MAIN, a wrong target and the owner route stay refused",
+    occupantDirectRefusal.status === 200 && occupantMainRefusal.status === 409
       && occupantWrongTarget.status === 409 && occupantOwnerRefusal.status === 409,
     `direct=${occupantDirectRefusal.status} main=${occupantMainRefusal.status} target=${occupantWrongTarget.status} owner=${occupantOwnerRefusal.status}`);
   await post(`/api/slots/${occupantSlot}/rename`, { label: "⚙ steward" });
@@ -4750,7 +4752,7 @@ export async function run(ctx: Ctx): Promise<void> {
   await post(`/api/slots/${laneMsgRecycleSlot}/kill`, {});
   const laneMsgCleanup = await post(`/api/tasks/${laneMsgTaskId}/delete`, {});
   check("MAIN-to-lane fixture removes its own task after killing its lane", laneMsgCleanup.ok, `cleanup=${laneMsgCleanup.status}`);
-  const occupantRejectedKeys = ["occupant-program-refused", "occupant-no-parent", "occupant-wrong-sender",
+  const occupantRejectedKeys = ["occupant-program-refused", "occupant-wrong-sender",
     "occupant-wrong-target", "occupant-owner-refused", "lane-cannot-send", "orch-cannot-send-lane", "lane-foreign", "lane-stale"];
   check("Occupant message policy refusals append nothing",
     !(readState().messages as { entries?: MessageRow[] }).entries?.some((e) => occupantRejectedKeys.includes(e.idempotencyKey)),

@@ -43,7 +43,11 @@ export interface Position { id: string; name: string; profil: string; kids?: Pos
   // was mit dem Sitz aus einer anderen Fleet reiste (src/sitz.ts): liest, persönliche Plätze, darf, Notizbuch; ohne ihn liest er Fleets Bibliothek
   sitz?: Sitz;
   // was die Session darf (session-rechte.ts), hier gesetzt; die Tür bekommt es beim Start, ein Export trägt es in sitz.darf
-  rechte?: Rechte }
+  rechte?: Rechte;
+  // was dem Sitz zuerst gesagt wird (das Ziel, mit dem eine Session ihn öffnete); die Konstellation hat daneben die eine Aufgabe mit dem Fertig-wenn
+  ziel?: string;
+  // der Ordner als leerer persönlicher Platz: wer die Datei annimmt, wählt ihn beim Start; der Hinweis ist der Pfad relativ zur Wurzel des Absenders
+  ordner?: { hint: string | null } }
 // DAS PROTOKOLL EINER KONSTELLATION (Harness 2.0 Schritt 3, harness-2-0-antwort.md Lücke 2): wann ein Lauf endet, wie viele Runden höchstens,
 // nach welcher Regel geprüft wird. Jedes Teil ist frei; die Endbedingung ist meist die CI und lässt sich abschalten (Owner 19.10.). null = nicht gesagt
 export interface Protokoll { ende: string | null; runden: number | null; regel: string | null }
@@ -171,7 +175,8 @@ export function exportObjekt(o: ExportEingang): Record<string, unknown> {
       ...(x.datei ? { eigeneDatei: o.voll ? x.datei : x.datei.titel } : {}), ...(x.ohne ? { ohneTeile: x.ohne } : {}), ...(x.werteAbw ? { werteAbw: x.werteAbw } : {}),
       ...(x.schalter ? { schalter: x.schalter } : {}), ...(x.wann ? { wann: x.wann } : {}),
       // Rechte an der Position nur im eigenen Speicher: hinaus gehen sie allein über den Server-Export in sitz.darf (server/sitz-reise.ts#dateiFuer)
-      ...(x.rechte && !o.teilen ? { rechte: x.rechte } : {}), ...(x.sitz ? { sitz: o.teilen ? sitzZumTeilen(x.sitz) : x.sitz } : {}) };
+      ...(x.rechte && !o.teilen ? { rechte: x.rechte } : {}), ...(x.sitz ? { sitz: o.teilen ? sitzZumTeilen(x.sitz) : x.sitz } : {}),
+      ...(x.ziel ? { ziel: x.ziel } : {}), ...(x.ordner ? { ordner: x.ordner } : {}) };
   };
   const konst = (k: Konst) => ({ name: k.name, version: k.v, satz: k.satz, autor: k.eigen ? k.autor ?? DU : FLEET, ...(k.quer ? { quer: k.quer } : {}),
     ...(k.abgeleitetVon ? { abgeleitetVon: k.abgeleitetVon } : {}),

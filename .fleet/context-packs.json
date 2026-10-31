@@ -178,7 +178,7 @@
     "useWhen": "Before you set up an agent or a team: the five parts and the connecting piece.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start", "seat-start"],
+    "triggers": ["orchestrator-start", "seat-start", "seat-choice"],
     "hardness": "guidance",
     "sources": [
       { "id": "setting-up-agents.text", "path": "docs/packs/setting-up-agents.md", "anchor": "# Setting up an agent", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -186,7 +186,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6588,
+    "estimatedBytes": 9269,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -333,7 +333,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 4572,
+    "estimatedBytes": 5168,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -415,7 +415,7 @@
     "useWhen": "When you need to understand what Fleet is, what it is built for and where it is going: the system concept.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["seat-start"],
+    "triggers": ["seat-start", "seat-choice"],
     "hardness": "guidance",
     "sources": [
       { "id": "system-concept.text", "path": "docs/start/system-concept.md", "anchor": "# Claude Fleet", "sorte": "wissen", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
@@ -442,7 +442,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 19520,
+    "estimatedBytes": 19740,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -515,7 +515,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 16263,
+    "estimatedBytes": 29176,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

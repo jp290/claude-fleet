@@ -1038,8 +1038,8 @@ curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $F
 - Erlaubt für jede Nicht-Lane-Session außer dem Steward, nur im eigenen Repo (gleiches `--git-common-dir`). Sonst 409.
 - Die aufrufende Session wird Öffnerin. Sie und die neue Session schreiben sich im Postfach
   (`{to:{kind:"session",slot}}`, §messages, K13).
-- Das Ziel kommt als erste Nachricht. Es beginnt mit „geöffnet von der Session in Slot N über ihren Self-Token“, der
-  Kopf lautet „Ziel eines Branches (vom Öffner, …)“.
+- Das Ziel kommt als erste Nachricht. Es beginnt mit „[opened by the session in slot N through POST /api/self/branches/open — it is your counterpart in
+  the mailbox]“ (an der Ordner-Tür `POST /api/self/seats/open`), der Kopf lautet „goal of a branch (from its opener; the first line names the door)“.
 - Ein Board-Name, der ein Rollen-Label ist (Orchestrator, `⚙ steward`), gibt 409. Er würde das Label der neuen Session.
 - Die Session auf dem Branch baut und startet schlank: nur die Werkzeuge in `.fleet/sitz-werkzeuge.json` (`bau`),
   ohne `~/AGENTS.md`; ihre MCP-Server bleiben. Was sie wirklich bekommt, zeigt `GET /api/slots/<n>/fassung`.
@@ -1068,6 +1068,163 @@ curl -X POST "$FLEET_SELF_URL/api/self/branches/open" -H "x-fleet-self-token: $F
     vor, die weiter ist als die MAIN; Ablehnung 409, Fehlendes erbt die Zeile von ihr. Eine Lane trägt keine `rechte`,
     darum zählen dort nur Harness und Codex-Schranken. Die Owner-Türen bleiben, wie sie sind. Offen (Mangel 108): der
     Karten-Sweep füllt einen fehlenden Spawn später aus einer ROLLE-Zeile, ohne die Einreicherin zu kennen.
+
+## setups — `POST /api/self/agenten`, `POST /api/self/agenten/:id/kopie`, `GET /api/self/setups/:id/datei`, `POST /api/self/setups/import` (seit 2026-10-30, Richtung Schritt 4)
+
+Das Setup als solches in der Hand des Sitzes (Owner 29.10.: „[Zitat entfernt]“). Drei Rechte, die kein Rollenbundel trägt — der Owner vergibt sie je Sitz (`POST /api/slots/<id>/rechte`);
+ohne Recht antwortet die Tür 409 mit `missingRight`:
+
+- **`setup.save`** — `POST /api/self/agenten` nimmt denselben Body wie `POST /api/agenten` (`name`, `wahlen`, `agentMd?`,
+  auch `vonSlot`; an dieser Tür nennt `vonSlot` nur den eigenen Platz — das Setup eines fremden Sitzes speichert der
+  Owner), und `POST /api/self/agenten/<id>/kopie` kopiert einen bestehenden Agenten zu einem eigenen, der „[Zitat entfernt]“ und
+  „derived from“ trägt. Dieselbe Route wie am Owner-Tor (`server/agenten.ts#agentenRoute`).
+- **`setup.export`** — `GET /api/self/setups/<id>/datei` exportiert die Setup-Datei eines eigenen Agenten oder einer
+  gespeicherten Konstellation; dieselbe Route wie am Owner-Tor (`server/setup-datei.ts#setupRoute`). Persönliches Wissen
+  reist nur als leerer Platz — eine Datei mit persönlichem Text verweigert die Tür.
+- **`setup.import`** — `POST /api/self/setups/import` importiert eine Setup-Datei: erst die Vorschau
+  (`{"datei": …}`), dann das Schreiben (`{"datei": …, "schreiben": true}`). Beide hinter demselben Recht — die
+  Vorschau ist die erste Hälfte desselben Akts. Dieselbe Route wie am Owner-Tor; die Grenzen bleiben: Rechte aus der
+  Datei kommen gedeckelt an (`src/sitz.ts#rechteGedeckelt`), eine Freigabe über den Deckel gibt weiterhin nur der Owner
+  (`POST /api/k15/freigabe` bleibt hinter dem Owner-Tor), nichts Importiertes startet in bypass oder in einer Rolle
+  ohne Bestätigung, und ein später daraus geöffneter Sitz ist an der Öffnen-Tür durch `kindNieWeiter` gedeckelt.
+  Ein Ein-Sitz-Import erbittet seine Rechte wie eine Konstellation: die Zusagen der Datei (`may.rechte.recht`) und die Stufe
+  über „bauen“ stehen in Vorschau und Hinweis, kommen aber nicht an; die Antwort des Schreibens nennt sie in
+  `erbetenRechte` (`agent`, `stufe`, `recht`, `door`). Die Tür dafür ist `PUT /api/agenten/<id>` des Owners: sein Speichern
+  setzt die Rechte und nimmt die Marke „importiert“ (eine Freigabe, `POST /api/k15/freigabe`, gibt es nur je Position).
+
+Was der Setup-Hash deckt: Name, Sitze, Kanten, Rollen, die Aufgabe und jeden Baustein mit seinem Text-Hash und mit jedem Feld,
+das den Start formt — bei einem Pack `way`, `useWhen`, Quellen und Autor, bei einem Konzept Autor, Zweck und Geltung. Nicht
+darin: `derivedFrom`, `derivedFromLine` und Läufe. Eine Datei, die vor dieser Erweiterung gehasht wurde (Bausteine nur mit
+id/Hash/persönlich), bleibt lesbar; ihr Export trägt dann den neuen Hash und nennt die alte Datei in `derivedFrom`.
+„Derived from“ ist immer ein Setup-Hash: die Kopie eines Agenten ohne Setup-Hash trägt keinen (der Agent-Hash steht nur in
+„copy of“, `kopieVon`). Eine unveränderte Datei behält beim Rundlauf (Export, Import, Export) ihren Hash und hat `derivedFrom:
+null`; was der Import selbst füllt (Modus `auto`, der Standard-Plan, der Rollentext als Purpose), schreibt der Export nicht
+als Wahl zurück.
+
+```sh
+curl -X POST "$FLEET_SELF_URL/api/self/agenten/pruefer/kopie" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -H 'content-type: application/json' -d '{"wahlen":{"model":"claude-haiku-5-5"}}'
+curl -s "$FLEET_SELF_URL/api/self/setups/pruefer-haiku/datei" -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+curl -X POST "$FLEET_SELF_URL/api/self/setups/import" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
+  -H 'content-type: application/json' -d '{"datei":{…}}'
+```
+
+### Die Konstellation, die ein Sitz führt — `POST /api/self/konstellationen` (seit 2026-10-30, F1)
+
+Recht **`setup.save`** (kein Rollenbundel). Body `{"name"?}` (höchstens 80 Zeichen; sonst heißt sie „Constellation of slot N“), kein anderes Feld.
+Gespeichert wird, was die Session führt: ihr eigener Sitz und die lebenden Sitze, die sie geöffnet hat (`geoeffneteKinder`, höchstens
+`FLEET_SELF_SEAT_CAP`) — ohne ein solches Kind 409 mit dem Weg zum Öffnen. Je Sitz: Harness, Modell, Effort, Modus, Zweck (`Slot.agentMd`),
+gelesene Packs, die gebildete Rolle samt Starttext und Bundel (`Slot.rolleStein` → Regal), sein Ziel (`start.goal`, aus `start-historie.jsonl`;
+nach einer Nachfolge das jüngste Ziel derselben Linie) und sein Ordner als leerer persönlicher Platz (`start.folder`, Hinweis relativ zur Sitz-Wurzel,
+nie ein absoluter Pfad). Kanten: je Kind `reports-to` die Öffnerin; die Postfach-Paare folgen daraus und stehen nicht in der Datei.
+Die Marke des Sitzes gilt wie bei einem gespeicherten Agenten: Rechte gedeckelt (`rechteGedeckelt`, im Speicher und beim Start durch `sitzRechte`),
+bypass wird nicht übernommen, keine Fleet-Rolle, nur der gebildete Rollenblock. Antwort 201 `{ok, konstellation:{id,name,seats}, hinweise, datei}`;
+`GET /api/self/setups/<id>/datei` (Recht `setup.export`) gibt die Datei, die ein zweites Fleet über `POST /api/self/setups/import` ganz liest —
+die Vorschau nennt `seatList` (Name, Rolle, Ziel je Sitz), `edges`, `requestedRoles` und die leeren Ordnerplätze (`emptyPlaces`: `folder:<sitz>`).
+
+Eine Position einer importierten Konstellation startet mit dem Ziel der Datei und in dem Ordner, den die Person für ihren leeren Platz wählt — siehe §seats
+(„Eine Position aus einer Datei öffnen“), dieselben Regeln an der Slot-Tür des Owners, der Ordner-Tür und der Branch-Tür.
+
+Ein Sitz, der aus einem gespeicherten Agenten oder einer importierten Datei startet, trägt deren Setup-Hash in seiner
+Fassung (`GET /api/slots/<n>/fassung` → `setupHash`, neben dem Start-Hash; der Start-Hash bleibt der über das, was
+hier startet). Ein Sitz ohne gespeichertes Setup nennt keinen.
+
+Was eine Session speichert, ist nicht die Hand des Owners: jeder Agent, den diese Tür schreibt, trägt die Marke `vonSitz`
+(des Sitzes, der speichert — die Antwort nennt sie, und die Liste des Owners `GET /api/agenten` sagt in `quelle`, wer ihn
+speicherte). Die Marke wirkt an jeder Öffnen-Tür, der des Owners eingeschlossen: ein so gespeicherter Agent startet nie in
+bypass und nie in einer Rolle, und seine Rechte liegen gedeckelt im Speicher wie die eines Imports
+(`src/sitz.ts#rechteGedeckelt`; `gedeckelt` in der Antwort nennt, was der Deckel zurückhielt). Der Deckel behält die Zusagen
+(`recht`), die die speichernde Session selbst wirksam hat — sie gibt weiter, was sie darf, nicht mehr —, und nennt die übrigen mit
+ihrer Kennung in `gedeckelt`; die Stufe über „bauen“ und die Befehle darüber fallen wie bei einem Import. Erst die Änderung durch den
+Owner (`PUT /api/agenten/<id>` hinter seinem Tor) nimmt die Marke — dann öffnet seine Hand, was die der Session nicht gab.
+
+## constellation — `GET /api/self/constellation` (seit 2026-10-30, F6)
+
+Ein Sitz sieht die Konstellation, in der er steht — nicht sich selbst (Owner 29.10.: Agenten sollen „[Zitat entfernt]“; die Tür auf den
+eigenen Aufbau nannte er „[Zitat entfernt]“, darum zeigt diese nie die eigenen Steine). Self-Token, kein Recht, nur lesen. Antwort `{ me, seats }`:
+
+- **`me`**: `slot`, `role` (`{id,name}` einer gebildeten Rolle oder `null`), `reportsTo` (die Öffnerin, sonst die Position über seiner; `{slot, name, state}`) und
+  `position` (`{konst,pos,name}`, wenn er aus einer gespeicherten Konstellation startete).
+- **`seats`**: die Sitze, denen er schreiben darf — Öffnerin (`opener`), Kinder (`child`), Geschwister (`sibling`), dieselben Paare wie `server/selbst-sitze.ts#sitzGegenseite`
+  — und die anderen Positionen seiner gespeicherten Konstellation (`position`). Je Sitz `slot` (null: nicht gestartet), `position`, `name`, `relations`, `folder`
+  (`{path, hint}`; `path` nur unter der eigenen Sitz-Wurzel, sonst nur der Name des Ordners als `hint`; eine nicht gestartete Position trägt den Hinweis des Absenders),
+  `role`, `purpose` (nur der Titel), `harness`, `model`, `effort`, `state` (`live` | `ended` | `not-started`) und `address` (`{kind:"session",slot}`; `null` für beendet,
+  nicht gestartet und eine lebende Position, die kein Postfach-Gegenüber ist), bei einer gebildeten Rolle, deren jüngster lebender Inhaber der Sitz ist, `roleAddress`.
+- Die Paare folgen der Linie: nach der Nachfolge der Aufruferin oder eines Kindes (`openedBy` bleibt, wie `geoeffneteKinder` es zählt) liest sie dieselben Sitze. Ein beendetes
+  Kind (höchstens zehn, aus `start-historie.jsonl`) bleibt mit `state: "ended"` in der Liste. Ein Sitz außerhalb jeder Konstellation bekommt `seats: []`.
+
+```sh
+curl -s "$FLEET_SELF_URL/api/self/constellation" -H "x-fleet-self-token: $FLEET_SELF_TOKEN"
+```
+
+## seats und roles — `POST /api/self/seats/open`, `POST /api/self/roles`, `GET /api/self/roles`, `GET /api/self/roles/:id/datei` (seit 2026-10-30, Richtung Schritt 5)
+
+Agenten richten Agenten und Rollen ein (Owner 29./30.10.: „[Zitat entfernt]“). Zwei Türen, die bisher nur der Owner hatte:
+
+- **`seat.open`** (Bundel generic, MAIN, Orchestratorin) — `POST /api/self/seats/open` öffnet einen Sitz in einem ORDNER, nicht nur
+  einen Branch des eigenen Repos. Body wie die Owner-Tür `POST /api/slots/<n>/open`: `cwd` (Pflicht), `harness`, `model`, `effort`,
+  `purpose`, `bibliothek`, `goal` oder `aufgabe` (die erste Nachricht), `rechte`, `permissionMode`, `label`, `sitz`, `agent`,
+  `role`. Die Tür geht durch DENSELBEN Weg wie die des Owners (`server.ts#openSeatInFolder`) und durch dieselbe Deckelung wie die
+  Branch-Tür (`server/kind-weite.ts#kindNieWeiter`): nie ein weiterer Harness oder Zaun (eine gezäunte Öffnerin öffnet nie ein
+  ungezäuntes Kind), nie ein weiterer Modus (der Klassifizierer an: nie bypass), nie ein Recht, das die Öffnerin nicht hat; ein Label,
+  das als Rolle gelesen würde (`Orchestrator`, `steward`), und ein `plan` sind abgewiesen. Antwort 200 mit `slot`, `openedAt`, `cwd`.
+  - **Ordner:** unter `FLEET_SELF_SEAT_ROOT` (aufgelöst, Symlinks eingeschlossen); ohne die Variable das Home des Nutzers, keine
+    Verweigerung — eine ungezäunte Session kann ohnehin jeden Befehl als dieser Nutzer laufen lassen, der Zaun hält über `kindNieWeiter`.
+    Ein Ordner außerhalb: 409 mit der Wurzel im Satz.
+  - **Deckel:** `FLEET_SELF_SEAT_CAP` (Standard 3) lebende Sitze, die diese Session über ihren Platz geöffnet hat
+    (`server/selbst-sitze.ts#geoeffneteKinder`); der Satz nennt die Zahl. Die Zahl aller Sitze begrenzt weiter `FLEET_MAX_SESSIONS`.
+  - **Postfach:** die Öffnerin und das Kind sind einander Gegenüber, zwei Kinder derselben Öffnerin auch (`server.ts#folderPeers`).
+  - **`bibliothek`:** wie an der Owner-Tür, mit einer Grenze (F3, 2026-10-30): eine Liste Pack-Ids aus Fleets Bibliothek gibt dem Kind genau diese
+    (`["setting-up-agents"]`, wörtlich im Start; eine unbekannte oder private Id ist 400), `false` keine, `true` oder nichts die Voreinstellung des
+    Ordners — `true` schaltet an dieser Tür nie die ganze Bibliothek an. Vorher warf die Tür eine Liste weg (`bibliothekDerTuer`, Abnahme 22.10.);
+    sie gibt nur Text, den jeder Sitz mit Self-Token ohnehin über `GET /api/self/context/<id>` ausleiht. Dasselbe gilt an `POST /api/self/branches/open`.
+  - **`purpose`:** ein Text, der durch eine Selbst-Tür kommt, trägt seinen Autor („written for you by the session in slot N“) in
+    Start und Fassung, nie als Wort des Owners (`server/agentmd.ts#agentMdBlock`); dasselbe gilt jetzt an der Branch-Tür.
+- **Eine Position aus einer Datei öffnen** (Runde 2, F1): `"sitz": "<konst>/<pos>"` (an dieser Tür nur `"<pos>"` in der Konstellation der Öffnerin) bringt, was die
+  Datei der Position mitgibt. **Ziel:** ohne `goal`/`aufgabe` ist `Position.ziel` die erste Nachricht, mit dem Kopf „the goal of this position in the constellation
+  <name> — from the file“; ein `goal` im Body gilt vor ihm (die Antwort: `goalFromFile: "replaced"`, sonst `"used"`). **Ordner:** `Position.ordner` ist ein leerer
+  persönlicher Platz, `cwd` füllt ihn; ohne `cwd` antwortet die Tür 400 `folder for seat "<pos>": a folder under your seat root, the sender used "<hint>"` — nur
+  diese Tür nimmt ohne `cwd` den Hinweis neben dem Ordner der Öffnerin, wenn es ihn gibt. Die Branch-Tür füllt den Platz mit dem Worktree des Branches. Der Brief
+  nennt beides: `GET /api/slots/<n>/fassung` im Teil `aufgabe` das Ziel „told first (from the file)“ und im Teil `wer` den gefüllten Platz, `GET /api/self` unter
+  `sitz` (`goal`, `folder`).
+- **`role.form`** (kein Bundel; der Owner vergibt es je Sitz) — `POST /api/self/roles {"name", "text", "rights"?, "packs"?}` bildet eine Rolle:
+  ein Name (daraus die Kennung der Adresse), ein Bundel nie weiter als die wirksamen Rechte der Bildnerin (sonst 409 mit
+  `missingRight` des ersten Rechts, das weiter wäre), ein Starttext und die Packs vom Regal oder aus der Bibliothek. Sie liegt als
+  `SetupRole` auf dem Regal (`server/setup-datei.ts`), kein zweites Format. Fleets Rollen (`orchestrator`, `program-main`, `lane`,
+  `steward`, `main`, …) und jeder Name, den `isOrchestratorLabel` oder die Steward-Prüfung als Rolle läse, sind abgewiesen.
+  Eine schon gebildete Kennung bildet nur ihre Bildnerin neu (Platz und Ordner; eine Nachfolge bleibt dieselbe Linie), jeder andere Sitz bekommt 409.
+  `GET /api/self/roles` listet die hier gebildeten und verlangt `seat.open`, nicht `role.form`: wer nur öffnet, findet so die Rolle, in der er ein Kind öffnet.
+- **Ein Sitz in der Rolle:** `role: "<id>"` an der Öffnen-Tür. Eine hier gebildete Rolle, oder eine importierte, deren Rechte der Owner
+  bestätigt hat (`POST /api/k15/freigabe` an der Position, die den Rollensitz trägt; sie gilt den Rechten, die sie bestätigte — hat die
+  Rolle heute andere, wartet sie wieder; eine Rolle ohne Rechte hat nichts zu bestätigen); vorher 409 mit dem Satz „its rights wait for the
+  owner's confirmation“ (`server/selbst-sitze.ts#rolleSteinDerTuer`). Das Bundel kommt als Zusagen dazu (additiv, danach von `kindNieWeiter` an die
+  Rechte der Öffnerin gedeckelt), der Starttext steht in Start und Fassung („Rolle“). Die Adresse `{"kind":"role","role":"<id>"}`
+  geht an den jüngsten lebenden Inhaber; schreiben dürfen Öffnerin, Kind und deren Geschwister.
+  - **Die Rolle reist und kommt an:** ein Import legt die Packs, die eine Rolle liest, mit ihr aufs Regal (auch wenn die Bibliothek des Empfängers
+    sie schon hat; sonst fiele die Rolle still aus `liesShelf`, Mangel 165). Öffnet der Owner einen Sitz aus einer Position der importierten
+    Konstellation (`sitz: "<konst>/<pos>"`, Owner-Tür und Branch-Tür, auch die Vorschau `GET /api/founding-plan?…&sitz=`) und hat er die Rechte
+    der Rolle bestätigt, trägt der Sitz die Rolle (`Slot.rolleStein`): ihr Starttext steht in der Fassung, ihre Adresse geht an ihn. Die
+    Owner-Tür `POST /api/slots/<n>/open` nimmt auch `role: „[Zitat entfernt]“` (gebildet oder bestätigt, Bundel als Zusagen, ohne Deckel einer Öffnerin).
+    Bei der Nachfolge bleibt die Rolle auf jedem Harness; einer ohne Fleets Systemprompt (Codex, pi) liest ihren Starttext im Brief
+    („YOUR ROLE (<id>) stays with the succession“).
+- **Ein Kind beenden:** `POST /api/self/seats/<slot>/end` (Recht `seat.open`, kein neues; Body leer oder `{"openedAt"}` aus der Antwort der Öffnung,
+  damit ein inzwischen neu belegter Platz abgewiesen wird). Beendet ein lebendes Kind, das diese Session durch die Ordner-Tür oder die Branch-Tür öffnete;
+  Antwort `{ok:true}`, das Ende ist das von `/api/self/retire` (`handleSelfRetire`), der Platz zählt nicht mehr gegen `FLEET_SELF_SEAT_CAP`. 409 mit dem Grund
+  bei der eigenen Öffnerin, einem Geschwister, einem Fremden, einem Sitz in einer Rolle von Fleet (Lane, Steward, Orchestratorin) und einem Platz ohne Sitz
+  (`server/selbst-sitze.ts#kindBeenden`). Wahl des Pfads: der Platz ist die Ressource, so wie `/api/self/roles/<id>/datei` die Rolle ist.
+- **Schlüssel:** `POST /api/self/roles` liest `name`, `text`, `rights`, `packs`; `POST /api/self/seats/open` die Felder der Owner-Tür. Jeder andere Schlüssel ist
+  400 mit den gelesenen im Satz (`unknown key "bundle" — this door reads …`). Die Owner-Türen bleiben, wie sie sind.
+- **`setup.export`** — `GET /api/self/roles/<id>/datei` gibt die Rolle als Setup-Datei (`fleet-setup/1`, ein Sitz mit Rollenblock);
+  beim Import erbittet sie ihre Rechte beim neuen Owner (Schritt 4).
+
+```sh
+curl -X POST "$FLEET_SELF_URL/api/self/roles" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"Prüfer","text":"Du prüfst unabhängig und baust nichts um.","rights":["text.pack"]}'
+curl -X POST "$FLEET_SELF_URL/api/self/seats/open" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"cwd":"~/arbeit/projekt","role":"prufer","goal":"Prüfe, was der Bauer baut."}'
+curl -X POST "$FLEET_SELF_URL/api/self/messages" -H "x-fleet-self-token: $FLEET_SELF_TOKEN" -H 'content-type: application/json' \
+  -d '{"to":{"kind":"role","role":"prufer"},"payload":{"kind":"text","text":"Bitte prüfen."},"idempotencyKey":"p1"}'
+```
 
 ## Bindung — eine MAIN, n Programs (seit 2026-10-06)
 
@@ -1516,6 +1673,10 @@ und `head` sind Fleets. Im Fleet-Repo (derselbe git-Objektspeicher) öffnet das 
 Auslöser; in einem anderen Repo nur `seat-start-any-repo`, sonst 409 `trigger-not-matched`
 (`server/sitz-wissen.ts`). Ein Claude-Sitz hat dieselben Packs schon: die aus `SEAT_BOX` wörtlich im
 Start, die übrigen als Skills (`--add-dir`); die Tür ist der Weg der anderen Harnesses.
+
+Ein Sitz ohne stehende Rolle leiht auch einen eigenen Pack (`POST /api/self/packs`, `origin:"own-pack"`) aus,
+den er nicht gewählt hat; trägt Fleets Register dieselbe Id, gilt das Register. Ein als persönlich markierter
+eigener Pack ist für einen Sitz, der nicht Anthropic ist, 409 `personal-text`.
 
 Der explizite Abruf ersetzt nur den Trigger der Katalogauswahl: Status, Harness, Mode,
 Capabilities und Quellverfügbarkeit bleiben Grenzen. Die Auswahl im Spawn-Brief bleibt gleich.
@@ -3510,8 +3671,15 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   eine lebende Lane mit exakt passendem `slot` und `openedAt` adressieren. Ihre Task-/Origin-Zeile
   und die Lane müssen demselben Program gehören. Fremdes Program, fehlende Zuordnung oder
   ersetzter Occupant: benannte 409, kein neuer Record.
-- **Orchestratorin → Session:** Nur als Antwort mit `replyTo` auf die Nachricht genau dieser
-  Session. Andere Absender, freie Erstnachrichten oder eine andere Session-Adresse: 409.
+- **Orchestratorin → Session:** Als Antwort mit `replyTo` auf die Nachricht genau dieser Session,
+  und frei an jeden Claude-Sitz ohne stehende Rolle (nächster Punkt). Andere Absender oder eine
+  andere Session-Adresse: 409.
+- **Anthropic-Sitze (`server.ts#anthropicSitzPaar`, Owner 30.10.: „[Zitat entfernt]“):** Zwei Sitze ohne stehende Rolle (keine Lane, keine MAIN, nicht die Orchestratorin, nicht
+  der Steward), die beide Anthropic sind (`server/datengrenze.ts#istAnthropic`), schreiben sich über
+  `{kind:"session",slot}` ohne Kante und ohne Ablauf; die Orchestratorin schreibt jedem solchen Sitz
+  ohne `replyTo`. Steht ein pi- oder Codex-Sitz an einem Ende, gelten die alten Regeln (Gegenüber,
+  Kante, Paar eines Ordner-Sitzes). Kanten bleiben, was sie waren. Die Datengrenze gilt weiter: eine
+  Nachricht mit `personal:true` erreicht keinen Sitz, der nicht Anthropic ist (409).
 - **Branch-Paar (Neuaufbau K13, `server.ts#branchPeers`):** Zwei Sessions ohne Rolle schreiben sich,
   wenn die eine einen Branch über die Tür geöffnet hat und die andere gerade in dessen Worktree sitzt.
   - **Öffner** ist, wer `POST /api/branches/open` mit dem Owner-Bearer **und** dem eigenen
@@ -3686,7 +3854,7 @@ noch von einer eigenen Adresse ist, bekommt dieselbe **404 `unknown message`** (
 | Situation | Code | Satz |
 |---|---|---|
 | Lane (kein Steward) | 409 | `a lane does not address principals — a lane files its result, and its MAIN speaks for the program` |
-| Session an etwas anderes als die Orchestratorin oder ihr Branch-Gegenüber; Ziel Session ohne Orchestratorin-Antwort, ohne Paar und ohne lebende Kante | 409 | `an unbound session may address only the Orchestrator or its branch counterpart (…); a session destination is otherwise only an Orchestrator reply` |
+| Session an etwas anderes als die Orchestratorin, einen anderen Claude-Sitz oder ihr Branch-Gegenüber; Ziel Session, wo ein Ende kein Claude-Sitz ist, ohne Orchestratorin-Antwort, ohne Paar und ohne lebende Kante | 409 | `an unbound session may address only the Orchestrator, another Claude (Anthropic) seat without a standing role when it is one itself, or its branch counterpart (…); a session destination is otherwise only an Orchestrator reply` |
 | … und das Paar hatte eine Kante, die vorbei ist | 409 | `your edge to slot <n> ended at <hh:mm> — ask the Orchestrator for a new one; ` + der Satz darüber |
 | `{kind:"session",slot}` auf einen Slot ohne lebende Session | 400 | `to session slot <n> holds no live session — without openedAt the address names the session in that slot now` |
 | Weder gebundene MAIN noch Orchestratorin | 409 | der Satz von `boundProgramForMain` |
@@ -7269,3 +7437,18 @@ Request/body semantics, delays, acceptance checks, render paths and poll cadence
 Surfaces: HTTP wire/server/client/reverse-state apply; dashboard display and WebSocket wire are
 not applicable; guests and non-Owner telemetry are unsupported. Checks live in `e2e/slots.ts`
 and `e2e/transport.ts`.
+
+## Was der Start eines Sitzes ohne stehende Rolle über seine Türen sagt (F3, 2026-10-30)
+
+Ein Sitz mit Self-Token außerhalb von Fleets Repo startete ohne ein Wort darüber, was das Token öffnet. Jetzt trägt sein eigener Start:
+
+- **Die Zeile der Server-Rechte** (`FLEET SERVER RIGHTS (checked at Fleet's doors): …`, die erste Zeile von `server/tuer-rechte.ts#rechteZeilen`): bei Claude
+  Code am `--append-system-prompt` vor dem Satz der vier Schalter (`SeatStart.rechte`), bei einem pi-Sitz in seiner Start-Datei, in jedem Ordner und
+  auch mit `bibliothek: false`. Der Zaun („FLEET'S FENCE …“) bleibt Auskunft der Fassung. **Codex** liest weder Start-Block noch Flag: dort steht die Zeile
+  nicht (offen). Die Fassung führt die Zeile als `systemzusatz` mit ihrer Quelle; im eigenen Setup war dieser Abschnitt leer, **darum ändert sich der
+  Start-Hash** eines solchen Sitzes, und die „Darf“-Spalte nannte die Zeile schon vorher, ohne dass der Start sie trug.
+- **`fleet-doors` und `setting-up-agents` als Skill-Zeile** (`server/sitz-wissen.ts#mitTuerenSkill`): im Kontext nur ihre `useWhen`-Zeile, der Text beim
+  Aufruf. Für jeden fremden Sitz mit Self-Token, auch mit einer Liste ohne sie, mit `bibliothek: false` und für einen Sitz aus einer Datei (`sitz`): die Zeile
+  gehört dem Token, nicht der Wahl der Bibliothek. Wer eines der beiden wählt, bekommt es wörtlich im Start (und nicht zusätzlich als Skill).
+  `setting-up-agents` und `system-concept` tragen `seat-choice` und sind in jedem Ordner wählbar und über `GET /api/self/context/<id>` ausleihbar; im
+  Fleet-Repo kommen sie wie bisher von selbst.

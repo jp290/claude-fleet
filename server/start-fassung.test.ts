@@ -200,11 +200,12 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
       expect(abschnitt(frei, "darf", "mcp")?.text).toContain("--strict-mcp-config nein");
       expect(abschnitt(lane, "darf", "werkzeuge")?.text).not.toBe(abschnitt(orch, "darf", "werkzeuge")?.text);
       expect(new Set([lane.hash, orch.hash, frei.hash, eigen.hash]).size).toBe(4);
-      // DAS EIGENE SETUP: kein Modus, kein Schnitt, kein Text von Fleet am Systemprompt, kein Modell von Fleet; die Ansicht nennt, was Fleet dazulegt
+      // DAS EIGENE SETUP: kein Modus, kein Schnitt, nur die Zeile der Server-Rechte am Systemprompt, kein Modell von Fleet; die Ansicht nennt, was Fleet dazulegt
       expect(abschnitt(eigen, "darf", "modus")?.text).toStartWith("eigenes Setup");
       expect(abschnitt(eigen, "darf", "werkzeuge")?.text).toBe("--tools alle eingebauten\n--disallowedTools keine");
       expect(abschnitt(eigen, "darf", "einstellungen")?.text).toBe("{}");
-      expect(abschnitt(eigen, "liest", "systemzusatz")?.text).toBe("");
+      // ...nur die eine Zeile, was sein Self-Token an Fleets Türen öffnet (F3, Ziel 2)
+      expect(abschnitt(eigen, "liest", "systemzusatz")?.text).toStartWith("FLEET SERVER RIGHTS (checked at Fleet's doors):");
       expect(abschnitt(eigen, "wer", "modell")?.text).toContain("deins aus den Claude-Code-Einstellungen");
       const minimum = abschnitt(eigen, "darf", "eigenes-setup")?.text ?? "";
       for (const teil of ["--session-id", "FLEET_SELF_TOKEN", "PATH"]) expect(minimum).toContain(teil);

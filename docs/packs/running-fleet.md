@@ -168,14 +168,16 @@ reads as his.
   the two rules at the bottom. A pasted delivery that was never sent goes out with one Enter. An occupied composer
   blocks every delivery, your own included: `grep -c 'composer occupied' server.log`, and check your own line.
 - **Write to a seat through the mailbox, as its counterpart.** To a branch session you opened, write freely; the
-  opener is matched by slot and folder, so your successor on the same slot keeps the pair. To any other session the
+  opener is matched by slot and folder, so your successor on the same slot keeps the pair. To a Claude seat without a standing role
+  you write freely, with or without `replyTo`. To any other session (a lane, a MAIN, a pi or Codex seat) the
   orchestrator writes only a reply, with `replyTo` on a message from its current occupant; anything else is a 409.
   After the target seat hands over, the door decides. As its branch counterpart, address the new `openedAt` or
   leave it out (that names the session in the slot now); the old one answers a 409 about unbound sessions, which
   points the wrong way. As the orchestrator replying with `replyTo`, keep the `openedAt` the parent came from: the
   successor holds its predecessor's address, and the new one answers 409 "replyTo names no message addressed to
   this sender".
-- **Let two seats talk directly with an edge, when they ask.** A round through you costs them an hour; an edge lets
+- **Let two seats talk directly with an edge, when they ask and a pi or Codex seat stands at one end.** Two Claude
+  seats without a standing role need none. A round through you costs them an hour; an edge lets
   two plain sessions write each other, both ways, until a time: `POST /api/self/kanten {"between": [<a>, <b>],
   "why": "…", "minutes": 60}` (without `minutes` an hour, at most a day). It frees writing and nothing else, and
   only between sessions you may write yourself, never a lane or a MAIN. Both hear it in one sentence with its end,

@@ -46,6 +46,11 @@ export const SEAT_TRIGGERS: Readonly<Record<SeatTree, readonly ContextPackTrigge
   foreign: ["seat-start-any-repo", "seat-choice"],
 };
 
+/** Kommt ein Pack in diesem Baum NUR auf Wahl? Er trägt seat-choice und keinen anderen Auslöser dieses Baums: ein Pack mit `seat-start`
+ *  UND `seat-choice` (setting-up-agents, system-concept) kommt im Fleet-Repo von selbst und ist im fremden Ordner wählbar. Rein. */
+export const nurAufWahl = (triggers: readonly string[], tree: SeatTree): boolean =>
+  triggers.includes("seat-choice") && !SEAT_TRIGGERS[tree].some((t) => t !== "seat-choice" && triggers.includes(t));
+
 // WAS WÖRTLICH IM START STEHT, je Pack ein Satz, warum. Nach Pack-Id, nicht nach Pfad: die Bibliothek zieht um.
 // who-it-is-for steht hier, weil einem Sitz an der Leiste genau das fehlte (Orchestratorin 22.10., runde4 §3).
 // Gemessen am 22.10. (claude 2.1.308, Opus 5.5, Usage der ersten Antwort im selben Ordner, ohne Bibliothek 29 284 Tokens): ein
@@ -231,9 +236,10 @@ export function bibliothekWahlGeladen(v: unknown): BibliothekWahl | null {
 
 /** DIE WAHL AN EINER TÜR: `bibliothek` true | false | [Pack-Ids], oder die Zeile „bibliothek“ eines angenommenen Plans; null heißt,
  *  die Voreinstellung gilt (an, server.ts#seatLibraryOn). Ein Plan ohne diese Zeile wählt nichts. An der Selbst-Tür kann eine
- *  Session für eine andere nur abschalten, nie über die Voreinstellung hinaus anschalten (Abnahme 22.10. 2/2): eine Liste
- *  schaltet an, darum gilt dort die Voreinstellung. Ob jede Id in Fleets Bibliothek steht, prüft der Server am Register
- *  (packAuswahlFehlt). */
+ *  Session für eine andere nur abschalten, nie die ganze Bibliothek über die Voreinstellung hinaus anschalten (Abnahme 22.10. 2/2):
+ *  `true` heißt dort die Voreinstellung. Eine Liste gilt auch dort (F3): sie gibt nur Text aus Fleets Register, den jeder Sitz mit Self-Token ohnehin
+ *  über GET /api/self/context ausleiht, und sie schaltet nicht mehr an, sondern wählt aus. Ob jede Id in Fleets Bibliothek steht (und an dieser Tür
+ *  keine private ist), prüft der Server am Register (packAuswahlFehlt). */
 export function bibliothekDerTuer(body: Readonly<Record<string, unknown>>, plan: readonly { readonly id: string; readonly zustand: string }[] | null,
   tuer: "owner" | "self"): { ok: true; wahl: BibliothekWahl | null } | { ok: false; error: string } {
   const liste = Array.isArray(body.bibliothek) ? packAuswahlVon(body.bibliothek) : null;
@@ -243,7 +249,7 @@ export function bibliothekDerTuer(body: Readonly<Record<string, unknown>>, plan:
     return { ok: false, error: "bibliothek and plan together are two choices — switch it in the plan as bausteine bibliothek=an|aus" };
   const zeile = plan?.find((row) => row.id === "bibliothek")?.zustand;
   const wahl = zeile !== undefined ? zeile === "an" : typeof body.bibliothek === "boolean" ? body.bibliothek : liste;
-  return { ok: true, wahl: tuer === "self" && (wahl === true || Array.isArray(wahl)) ? null : wahl };
+  return { ok: true, wahl: tuer === "self" && wahl === true ? null : wahl };
 }
 /** Die Ids einer Liste, die Fleets Bibliothek für diesen Sitz nicht hat; leer = alle da. Rein. */
 export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge): string[] {
@@ -260,6 +266,22 @@ export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null
     .map((pack) => extra.has(pack.id) ? { ...pack, autor: "your predecessor in this slot" } : pack);
   const weg = new Set(da.flatMap((pack) => pack.statt ? [pack.statt] : []));
   return { ...k, packs: da.filter((pack) => !weg.has(pack.id)) };
+}
+
+/** DIE TÜREN DES SELF-TOKENS FÜR JEDEN FREMDEN SITZ (F3, Owner 24.10.: „[Zitat entfernt]“): ein Sitz außerhalb von Fleets Repo hält `FLEET_SELF_TOKEN` und `FLEET_SELF_URL`, und ohne diese Zeile weiß er nicht, was sie
+ *  öffnen und wie er andere Sitze aufsetzt und führt. Beide Packs kommen als SKILL (im Kontext nur ihre useWhen-Zeile, der Text erst beim Aufruf),
+ *  damit ein schlanker Agent schlank bleibt. Die Zeile gehört dem Token, den der Sitz hält, nicht seiner Bibliothekswahl: sie kommt auch bei einer
+ *  Liste ohne die Packs, bei `bibliothek: false` und bei einem Sitz aus einer Datei (`sitz`). Gewählt (`bibliothek: [ids]` mit ihnen) stehen sie
+ *  wörtlich im Start wie bisher und werden nicht doppelt. `register`: das Wissen, aus dem die Packs kommen (bei einem Sitz aus einer Datei das
+ *  Register des Ordners, nicht das, was die Datei mitbrachte). Rein. */
+export const TUEREN_PACKS: readonly string[] = ["fleet-doors", "setting-up-agents"];
+export function mitTuerenSkill(gewaehlt: SeatKnowledge, register: SeatKnowledge): SeatKnowledge {
+  if (gewaehlt.tree !== "foreign") return gewaehlt;
+  const dazu = TUEREN_PACKS.flatMap((id) => {
+    const pack = register.packs.find((p) => p.id === id);
+    return pack?.text && pack.useWhen && !gewaehlt.packs.some((p) => p.id === id) ? [{ ...pack, weg: "skill" as const }] : [];
+  });
+  return dazu.length ? { ...gewaehlt, packs: [...gewaehlt.packs, ...dazu] } : gewaehlt;
 }
 
 /** „Wissen“ in der Fassung: der Kopf, je Box-Pack sein Text, je Skill die Zeile, die Claude in seiner Skill-Liste

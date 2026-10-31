@@ -35,7 +35,12 @@ const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "o
 // seiner Fassung und seine erste Nachricht
 export interface SitzAuftrag { titel: string; text: string }
 export interface SitzStart { konst: string; pos: string; herkunft: string | null; liest: SitzPack[]; persoenlich: PersoenlichPlatz[]; block: boolean; auftrag: SitzAuftrag | null;
-  richtung?: SitzRichtung | null; konzepte?: SitzKonzept[]; rolle?: string }
+  richtung?: SitzRichtung | null; konzepte?: SitzKonzept[]; rolle?: string;
+  /** der Setup-Hash der importierten Datei, aus der dieser Sitz kam (Richtung Schritt 4: der Start nennt ihn) */
+  setupHash?: string;
+  /** F1 Runde 2: was die Datei der Position mitgibt — der Name der Konstellation, das Ziel (erste Nachricht), der leere Ordnerplatz mit dem Hinweis des Absenders;
+   *  `zielErsetzt`: die Tür nannte ein eigenes Ziel, das Ziel der Datei galt nicht */
+  konstName?: string; ziel?: string; zielErsetzt?: true; ordner?: { hint: string | null } }
 
 const auftragAus = (v: unknown): SitzAuftrag | null => {
   const r = rec(v);
@@ -51,7 +56,11 @@ export function sitzStartGeladen(raw: unknown, harness: string): SitzStart | nul
   // ein Slot von vor dem Auftrag hatte immer einen Block (die Tür verlangte ihn)
   return { konst: r.konst, pos: r.pos, herkunft: typeof r.herkunft === "string" ? r.herkunft : null, liest: s.liest, persoenlich: s.persoenlich,
     block: r.block !== false, auftrag: auftragAus(r.auftrag), richtung: s.richtung ?? null, konzepte: s.konzepte ?? [],
-    ...(s.rolle ? { rolle: s.rolle } : {}) };
+    ...(s.rolle ? { rolle: s.rolle } : {}),
+    ...(typeof r.setupHash === "string" && /^[0-9a-f]{64}$/.test(r.setupHash) ? { setupHash: r.setupHash } : {}),
+    ...(typeof r.konstName === "string" ? { konstName: r.konstName } : {}), ...(typeof r.ziel === "string" && r.ziel ? { ziel: r.ziel } : {}),
+    ...(r.zielErsetzt === true ? { zielErsetzt: true as const } : {}),
+    ...(rec(r.ordner) && (rec(r.ordner)!.hint === null || typeof rec(r.ordner)!.hint === "string") ? { ordner: { hint: rec(r.ordner)!.hint as string | null } } : {}) };
 }
 
 const alsSeatPack = (p: SitzPack): SeatPack => ({ id: p.id, useWhen: p.wofuer, sources: p.quellen.map((q) => ({ path: q.pfad, anchor: q.anker })),
@@ -116,6 +125,16 @@ export function erbeteneZeilen(pos: Record<string, unknown>): string[] {
   });
 }
 
+/** DER LEERE ORDNERPLATZ einer Position (F1 Runde 2): null, wenn `sitz` fehlt oder die Position keinen hat; sonst ihre Kennung und der Hinweis des Absenders. */
+export async function ordnerDerPosition(v: unknown, dir: string, eigene: string | null, selbst: boolean):
+  Promise<{ pos: string; hint: string | null } | { error: string } | null> {
+  if (v === undefined || v === null) return null;
+  const g = await sitzPosition(v, dir, eigene, selbst);
+  if ("error" in g) return g;
+  const o = rec(g.pos.ordner);
+  return o ? { pos: String(g.pos.id), hint: typeof o.hint === "string" ? o.hint : null } : null;
+}
+
 // WAS DIE DATEI FÜR AGENT, MODELL UND EFFORT SAGT, in die Felder des Bodys, wo der Body keine hat; `sitz` steht danach voll da
 // ("<konst>/<position>"), damit jede weitere Lesung dieselbe Position trifft. Ohne `sitz` bleibt der Body, wie er ist
 export async function mitSitzWerten(body: Record<string, unknown>, dir: string, eigene: string | null, selbst = false):
@@ -150,6 +169,8 @@ export async function sitzDerTuer(body: Record<string, unknown> | null, harness:
   if (s?.darf.modus === "bypassPermissions") return { ok: false, error: "an imported seat never starts in bypass — the file asks for bypassPermissions" };
   if (label && orchLabel(label)) return { ok: false, error: "an imported seat never starts as the orchestrator — she runs in bypassPermissions" };
   const herkunft = typeof g.form.abgeleitetVon === "string" ? g.form.abgeleitetVon : null;
+  // der Setup-Hash der importierten Datei (schreibeMehrSitz legt ihn an der Konstellation ab): der Start dieses Sitzes nennt ihn
+  const setupHash = typeof g.form.setupHash === "string" && /^[0-9a-f]{64}$/.test(g.form.setupHash) ? g.form.setupHash : undefined;
   const p = profilVon(g.pos);
   const md = p?.datei === undefined ? null : agentMdText(p.datei);
   // ist die eigene Datei die des Profils (das Fenster speichert beide, k15-agentmd.ts), kommt sie einmal: als Agent-MD
@@ -165,19 +186,26 @@ export async function sitzDerTuer(body: Record<string, unknown> | null, harness:
     ...(typeof p?.name === "string" ? { name: p.name } : {}) } : null;
   // die Rechte aus der Datei gedeckelt, außer der Owner hier hat sie bestätigt (src/sitz.ts#sitzRechte)
   return { ok: true, sitz: { konst: g.konst, pos: posId, herkunft, liest: s?.liest ?? [], persoenlich: s?.persoenlich ?? [], block: s !== null, auftrag: datei,
-      richtung: s?.richtung ?? null, konzepte: s?.konzepte ?? [], ...(s?.rolle ? { rolle: s.rolle } : {}) }, rechte: s ? sitzRechte(s.darf) : null,
+      richtung: s?.richtung ?? null, konzepte: s?.konzepte ?? [], ...(s?.rolle ? { rolle: s.rolle } : {}),
+      ...(setupHash ? { setupHash } : {}), ...(typeof g.form.name === "string" ? { konstName: g.form.name } : {}),
+      ...(typeof g.pos.ziel === "string" && g.pos.ziel.trim() ? { ziel: g.pos.ziel } : {}),
+      // ein goal oder eine aufgabe an der Tür gilt vor dem Ziel der Datei (server/position-start.ts#zielAusPosition); hier festgehalten, damit Vorschau und Start dasselbe rechnen
+      ...(typeof g.pos.ziel === "string" && g.pos.ziel.trim() && (body?.aufgabe !== undefined || (typeof body?.goal === "string" && body.goal.trim() !== "")) ? { zielErsetzt: true as const } : {}),
+      ...(rec(g.pos.ordner) ? { ordner: { hint: typeof rec(g.pos.ordner)!.hint === "string" ? String(rec(g.pos.ordner)!.hint) : null } } : {}) },
+    rechte: s ? sitzRechte(s.darf) : null,
     notizbuch: s?.notizbuch ?? null, agentMd };
 }
 
 // DIE ANDEREN SITZE DERSELBEN KONSTELLATION mit ihrem Auftrag: so nennt Fleet einem Sitz, wen er öffnen kann, und erkennt ein Ziel, das der
 // Brief eines anderen ist
-export async function geschwister(dir: string, konst: string, ohne: string): Promise<{ id: string; name: string; auftrag: string | null }[]> {
+export async function geschwister(dir: string, konst: string, ohne: string): Promise<{ id: string; name: string; auftrag: string | null; ordner: string | null }[]> {
   const gespeichert: unknown = await Bun.file(join(dir, SPEICHER_DATEI)).json().catch(() => null);
   const liste = rec(gespeichert)?.konstellationen;
   const form = Array.isArray(liste) ? liste.map(rec).find((k) => k?.id === konst) : undefined;
   const ps = form && Array.isArray(form.positionen) ? form.positionen.map(rec) : [];
   return ps.flatMap((p) => p && typeof p.id === "string" && p.id !== ohne
-    ? [{ id: p.id, name: typeof p.name === "string" ? p.name : p.id, auftrag: p.eigeneDatei === undefined ? null : agentMdText(p.eigeneDatei)?.text ?? null }] : []);
+    ? [{ id: p.id, name: typeof p.name === "string" ? p.name : p.id, auftrag: p.eigeneDatei === undefined ? null : agentMdText(p.eigeneDatei)?.text ?? null,
+      ordner: typeof rec(p.ordner)?.hint === "string" ? String(rec(p.ordner)!.hint) : null }] : []);
 }
 
 // WAS DER SITZ AN DER TÜR DARF: die Rechte des Bodys, sonst die aus seinem Sitz-Block (schon gedeckelt, sitzDerTuer). An der Self-Tür

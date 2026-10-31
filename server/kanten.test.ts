@@ -29,7 +29,8 @@ async function dreiSessions(): Promise<Fixture> {
   for (const d of ["a", "b"]) mkdirSync(join(f.repo, d));
   const opened = await life(f, [post(`/api/slots/${ORCH}/open`, { cwd: f.repo, label: "🎛 Orchestratorin" }),
     post(`/api/slots/${A}/open`, { cwd: join(f.repo, "a"), label: "Startfenster" }),
-    post(`/api/slots/${B}/open`, { cwd: join(f.repo, "b"), label: "Wicht" })]);
+    // Wicht ist ein pi-Sitz: zwei Claude-Sitze schreiben sich seit dem 30.10. ohne Kante (server/anthropic-post.test.ts), die Kante gilt dort, wo einer keiner ist
+    post(`/api/slots/${B}/open`, { cwd: join(f.repo, "b"), label: "Wicht", harness: "pi" })]);
   expect(opened.map((o) => o.status)).toEqual([200, 200, 200]);
   return f;
 }

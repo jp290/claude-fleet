@@ -187,11 +187,16 @@ export const sitzZumTeilen = (s: Sitz): Sitz => ({ ...s, persoenlich: s.persoenl
 // DER DECKEL (Abnahme 22.10., MUSS 1): Rechte aus einer fremden Datei gelten höchstens bis RECHTE_STANDARD („bauen“). Was darüber liegt
 // (Landen, Deploy, Arbeitskopien wegwerfen), wird eine Allow-Regel, und die geht im Auto-Mode am Klassifizierer vorbei (session-rechte.ts);
 // das gibt nur der Owner der empfangenden Fleet frei. `gedeckelt`: die Befehle, die die Datei erlaubte und der Deckel sperrt
-export function rechteGedeckelt(r: Rechte): { rechte: Rechte; gedeckelt: string[] } {
-  const gedeckelt = RECHTE_BEFEHLE.filter((b) => befehlAn(r, b.id) && !stufeGibt(RECHTE_STANDARD, b.id)).map((b) => b.id);
+// `behalten`: die Zusagen (recht), die die Speichernde selbst wirksam hat (server/tuer-rechte.ts#wirksameRechte) — eine Session gibt weiter, was sie
+// selbst darf, nicht mehr: diese bleiben, die anderen fallen und stehen mit ihrer Kennung in `gedeckelt`. Ohne `behalten` (ein Import, eine Datei) fällt jede Zusage.
+export function rechteGedeckelt(r: Rechte, behalten?: ReadonlySet<string>): { rechte: Rechte; gedeckelt: string[] } {
+  const befehle = RECHTE_BEFEHLE.filter((b) => befehlAn(r, b.id) && !stufeGibt(RECHTE_STANDARD, b.id)).map((b) => b.id);
   const ueber = (s: Rechte["stufe"]) => RECHTE_BEFEHLE.some((b) => stufeGibt(s, b.id) && !stufeGibt(RECHTE_STANDARD, b.id));
-  const rechte: Rechte = { stufe: ueber(r.stufe) ? RECHTE_STANDARD : r.stufe, an: r.an.filter((id) => !gedeckelt.includes(id)), aus: r.aus };
-  return { rechte, gedeckelt };
+  const bleibt = behalten ? (r.recht ?? []).filter((id) => behalten.has(id)) : [];
+  const faellt = behalten ? (r.recht ?? []).filter((id) => !behalten.has(id)) : [];
+  const rechte: Rechte = { stufe: ueber(r.stufe) ? RECHTE_STANDARD : r.stufe, an: r.an.filter((id) => !befehle.includes(id)), aus: r.aus,
+    ...(bleibt.length ? { recht: bleibt } : {}) };
+  return { rechte, gedeckelt: [...befehle, ...faellt] };
 }
 // was ein mitgereister Sitz beim Start darf: die Rechte aus der Datei, gedeckelt, außer der Owner hat sie bestätigt.
 // Ein Rollenbundel kommt erst nach seiner Freigabe dazu; vorher ist es nur erbeten, nie gewährt.

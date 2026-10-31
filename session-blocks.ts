@@ -332,7 +332,7 @@ export const SESSION_BLOCKS: readonly SessionBlock[] = [
     source: "server.ts#seatStartFor",
     belege: ["server.ts#seatStartFor", "server/sitz-wissen.ts#seatSkillFiles", "server.ts#agentCmd"],
     breaksWithout: "Landen, Testinstanz, Agenten aufsetzen und für wen stehen dem Sitz nicht als Skill bereit; ausleihen kann er sie weiter.",
-    nichtSchaltbar: "Folgt dem Schalter „Fleets Bibliothek“: beide kommen zusammen oder gar nicht.",
+    nichtSchaltbar: "Folgt dem Schalter „Fleets Bibliothek“; nur außerhalb von Fleets Repo kommen die zwei Tür-Zeilen (fleet-doors, setting-up-agents) auch bei ausgeschaltetem Schalter.",
     fassung: "unknown", bytes: "unknown",
   },
   {

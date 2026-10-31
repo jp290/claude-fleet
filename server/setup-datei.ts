@@ -63,6 +63,8 @@ export interface SetupNote { id: string; hash: string | null; text: string | nul
 export interface SetupNotebook { index: string; notes: SetupNote[]; home: number }
 /** Der leere Platz der Richtung: sie gehört der Person, nicht dem geteilten Setup. */
 export interface SetupDirection { text: null; personal: true }
+/** Der leere Platz des Ordners: wer die Datei annimmt, wählt ihn beim Start. Der Hinweis ist der Pfad relativ zur Sitz-Wurzel des Absenders (null: er lag außerhalb). */
+export interface SetupFolder { text: null; personal: true; hint: string | null }
 /** EIN ROLLENSTEIN: Starttext, Bundel der Server-Rechte (Schritt 2), die Packs, die die Rolle liest, und sein Hash. */
 export interface SetupRole {
   id: string; name: string; hash: string;
@@ -73,7 +75,8 @@ export interface SetupRole {
 export interface SetupSeat {
   id: string; name: string;
   who: { harness: string | null; model: string | null; effort: string | null };
-  start: { purpose?: { titel: string; text: string }; role?: string; direction?: SetupDirection; ownFile?: { titel: string; text: string } };
+  /** goal: was dem Sitz zuerst gesagt wird (das Ziel seiner Öffnung); die eine Aufgabe mit dem Fertig-wenn bleibt am Setup (`task`) */
+  start: { purpose?: { titel: string; text: string }; role?: string; direction?: SetupDirection; ownFile?: { titel: string; text: string }; goal?: string; folder?: SetupFolder };
   reads: SetupKnowledgeRef[];
   may: { rechte: unknown; permissionMode: string | null; plan?: Record<string, unknown> };
   worksWith: { reportsTo?: string };
@@ -101,6 +104,9 @@ const str = (v: unknown, max: number): string | null => typeof v === "string" &&
 const hashOrNull = (v: unknown): string | null | undefined => v === null || v === undefined ? null : typeof v === "string" && HEX64.test(v) ? v : undefined;
 const noteId = (v: unknown): string | null => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md$/.test(v) && v !== "MEMORY.md" ? v : null;
 
+/** Ein Ordner-Hinweis reist nur als relativer Pfad ohne `..`: ein Pfad dieser Maschine gehört nicht in eine Datei, die hinausgeht. */
+export const relativerHinweis = (h: string): boolean => h.length > 0 && h.length <= 200 && !/^[/\\~]|^[A-Za-z]:|\0/.test(h) && !h.split(/[/\\]/).includes("..");
+
 function quellenAus(v: unknown): SetupQuelle[] | null {
   if (!Array.isArray(v) || v.length > 8) return null;
   const out: SetupQuelle[] = [];
@@ -112,21 +118,34 @@ function quellenAus(v: unknown): SetupQuelle[] | null {
   return out;
 }
 
-/** Der Setup-Körper, wie ihn Schritt 4 hashen wird: Bausteine durch ihren eigenen Hash, kein Lauf, keine eigene Herkunft. */
+/** Der Setup-Körper, den der Hash deckt: alles, was reist und was der Start liest. Ein Baustein geht mit seinem Text-Hash ein und mit jedem
+ *  Feld, das den Start formt (Pack: `way`, `useWhen`, Quellen, Autor; Konzept: Autor, Zweck, Geltung); kein Lauf, keine eigene Herkunft. */
 export function setupKoerper(d: SetupDatei): Record<string, unknown> {
   return {
     name: d.name,
     seats: d.seats,
     edges: d.edges,
-    packs: d.packs.map((p) => ({ kind: "pack", id: p.id, hash: p.hash, personal: p.personal === true })),
-    concepts: d.concepts.map((c) => ({ kind: "concept", id: c.id, version: c.version, hash: c.hash, personal: c.personal === true })),
+    packs: d.packs.map((p) => ({ kind: "pack", id: p.id, hash: p.hash, personal: p.personal === true,
+      way: p.way ?? "start", useWhen: p.useWhen, sources: p.sources, ...(p.author !== undefined ? { author: p.author } : {}) })),
+    concepts: d.concepts.map((c) => ({ kind: "concept", id: c.id, version: c.version, hash: c.hash, personal: c.personal === true,
+      ...(c.author !== undefined ? { author: c.author } : {}), ...(c.purpose !== undefined ? { purpose: c.purpose } : {}),
+      ...(c.validity !== undefined ? { validity: c.validity } : {}) })),
     roles: d.roles,
     ...(d.task !== undefined ? { task: d.task } : {}),
+  };
+}
+/** Die Körperform vor der Erweiterung (Bausteine nur mit id/hash/personal): Dateien, die so gehasht wurden, bleiben lesbar. */
+function setupKoerperAlt(d: SetupDatei): Record<string, unknown> {
+  return {
+    ...setupKoerper(d),
+    packs: d.packs.map((p) => ({ kind: "pack", id: p.id, hash: p.hash, personal: p.personal === true })),
+    concepts: d.concepts.map((c) => ({ kind: "concept", id: c.id, version: c.version, hash: c.hash, personal: c.personal === true })),
   };
 }
 export function setupHashVon(d: SetupDatei): string {
   return sha(JSON.stringify(kanon(setupKoerper(d))));
 }
+const setupHashAlt = (d: SetupDatei): string => sha(JSON.stringify(kanon(setupKoerperAlt(d))));
 export function mitSetupHash(d: Omit<SetupDatei, "setupHash"> & { setupHash?: string }): SetupDatei {
   const ohne = { ...d, setupHash: "" } as SetupDatei;
   return { ...ohne, setupHash: setupHashVon(ohne) };
@@ -240,6 +259,19 @@ function pruefeSeat(raw: unknown, packs: Map<string, SetupPack>, concepts: Map<s
       return `seat ${id}: ownFile is { titel, text } with a text`;
     ownFile = { titel: ownRaw.titel.slice(0, 120), text: ownRaw.text.slice(0, 64_000) };
   }
+  let goal: string | undefined;
+  if (start.goal !== undefined && start.goal !== null) {
+    goal = str(start.goal, 8000) ?? undefined;
+    if (goal === undefined || !goal.trim()) return `seat ${id}: goal is text of 1 to 8000 characters`;
+  }
+  let folder: SetupFolder | undefined;
+  if (start.folder !== undefined && start.folder !== null) {
+    const f = rec(start.folder);
+    if (!f || f.personal !== true || f.text !== null || !(f.hint === null || typeof f.hint === "string"))
+      return `seat ${id}: folder is an empty personal place ({ text: null, personal: true, hint })`;
+    if (typeof f.hint === "string" && !relativerHinweis(f.hint)) return `seat ${id}: the folder hint is a relative path without .. (the place is the person's, a path of this machine does not travel)`;
+    folder = { text: null, personal: true, hint: f.hint };
+  }
   const permissionMode = may.permissionMode === null || may.permissionMode === undefined ? null : str(may.permissionMode, 40);
   if (permissionMode === "bypassPermissions") return `seat ${id}: an imported setup never starts in bypass`;
   if (may.permissionMode !== null && may.permissionMode !== undefined && permissionMode === null) return `seat ${id}: permissionMode is one word`;
@@ -269,7 +301,7 @@ function pruefeSeat(raw: unknown, packs: Map<string, SetupPack>, concepts: Map<s
   }
   return { id, name, who: { harness: str(who.harness, 80) ?? null, model: str(who.model, 120) ?? null, effort: str(who.effort, 40) ?? null },
     start: { ...(purpose ? { purpose } : {}), ...(start.role !== undefined ? { role: str(start.role, 80) ?? "" } : {}),
-      ...(direction ? { direction } : {}), ...(ownFile ? { ownFile } : {}) },
+      ...(direction ? { direction } : {}), ...(ownFile ? { ownFile } : {}), ...(goal ? { goal } : {}), ...(folder ? { folder } : {}) },
     reads, may: { rechte: rechte ?? null, permissionMode, ...(rec(may.plan) ? { plan: rec(may.plan)! } : {}) },
     worksWith: { ...(typeof works.reportsTo === "string" && works.reportsTo ? { reportsTo: works.reportsTo } : {}) }, notebook };
 }
@@ -335,7 +367,7 @@ export function pruefeSetupDatei(raw: unknown): SetupDatei | string {
   const ohne = { format: SETUP_FORMAT, name: r.name.trim(), setupHash, derivedFrom, derivedFromLine: lineRaw as string[],
     seats, edges, packs: [...packs.values()], concepts: [...concepts.values()], roles: [...roles.values()],
     ...(r.task !== undefined ? { task: r.task } : {}), ...(Array.isArray(r.runs) ? { runs: r.runs } : {}) } as SetupDatei;
-  if (setupHashVon(ohne) !== setupHash) return "setupHash does not match the setup body";
+  if (setupHashVon(ohne) !== setupHash && setupHashAlt(ohne) !== setupHash) return "setupHash does not match the setup body";
   return ohne;
 }
 
@@ -444,10 +476,11 @@ export function steineFuerAgentWahl(wahlen: Wahlen | null | undefined, dir: stri
 /** Der leere Platz der Richtung, wie ein Sitz ihn in seinem Start liest: die Person füllt ihn, oder der Sitz startet ohne. */
 export const RICHTUNG_PLATZ = "DIRECTION — empty place: the direction is the person's own. Fill it with yours, or start without one.";
 /** EIN ROLLENSTEIN IM START eines eigenen Agenten: Starttext, Rechte und die gewählten Konzepte als + Zeilen mit Autor. */
-export function startBlockAusSteinen(role: SetupRole | null, concepts: readonly SetupConcept[] = []): string {
+export function startBlockAusSteinen(role: SetupRole | null, concepts: readonly SetupConcept[] = [], autor?: string): string {
   const rechte = role ? role.rights.length ? role.rights.map((id) => `${id} — ${RECHT_WAS[id]}`).join("; ") : "none" : null;
   return [
-    ...(role ? [`FLEET ROLE (${role.id}, author: ${role.name})`, role.start.text,
+    // `autor`: wer die Rolle bildete (eine gebildete Rolle, Slot.rolleStein.von); ihr Name bleibt in der Kopfzeile. Ohne ihn, wie bei einem eigenen Agenten, ist es der Name.
+    ...(role ? [autor ? `FLEET ROLE (${role.id}, author: ${autor}) — ${role.name}` : `FLEET ROLE (${role.id}, author: ${role.name})`, role.start.text,
       `ROLE RIGHTS (step 2 bundle, granted to this seat): ${rechte}`] : []),
     ...concepts.filter((c) => (c.text ?? "").trim()).flatMap((c) => [`+ concept ${c.id} (author: ${c.author ?? "unknown"})`, c.text ?? ""]),
   ].join("\n\n");
@@ -490,13 +523,20 @@ export interface SetupQuellen {
 export interface SetupExport { datei: SetupDatei; hinweise: string[] }
 
 const quelle = (q: { path: string; anchor: string }): SetupQuelle => ({ path: q.path, anchor: q.anchor });
-const alsPack = (p: SeatPack): SetupPack => {
+export const alsPack = (p: SeatPack): SetupPack => {
   const personal = istPersoenlich(p.id, p.personal === true) || p.privat === true;
   const text = p.text ?? "";
   const hash = personal ? null : hashText(text);
   return { kind: "pack", id: p.id, hash, text: personal ? null : text, ...(personal ? { personal: true as const } : {}),
     useWhen: p.useWhen, sources: p.sources.map(quelle), ...(p.autor ? { author: p.autor } : {}), ...(p.weg ? { way: p.weg } : {}) };
 };
+/** Ein Pack aus der Bibliothek dieses Sitzes (Fleets Register und die eigenen Packs der Person) als Baustein, für eine gebildete Rolle, die ihn liest.
+ *  Null, wenn die Bibliothek ihn nicht hat oder er persönlich ist (ein persönlicher Pack bleibt bei seiner Person). */
+export function packAusBibliothek(k: SeatKnowledge | null, id: string): SetupPack | null {
+  const p = k?.packs.find((x) => x.id === id);
+  const block = p && p.text !== null ? alsPack(p) : null;
+  return block && block.personal !== true && block.text !== null ? block : null;
+}
 const alsKonzept = (c: KonzeptQuelle): SetupConcept => ({
   kind: "concept", id: c.id, version: c.version, hash: c.personal ? null : c.hash, text: c.personal ? null : c.text,
   ...(c.personal ? { personal: true as const } : {}), ...(c.author ? { author: c.author } : {}), ...(c.purpose ? { purpose: c.purpose } : {}),
@@ -513,7 +553,7 @@ function notebookAus(index: string, dateien: readonly { datei: string; text: str
   return { index: index.split("\n").filter((z) => !daheim.some((id) => zeigtAuf(z, id))).join("\n"), notes, home: daheim.length };
 }
 
-function privateTexteAusWissen(k: SeatKnowledge): string[] {
+export function privateTexteAusWissen(k: SeatKnowledge): string[] {
   return k.packs.filter((p) => (istPersoenlich(p.id, p.personal === true) || p.privat === true) && p.text !== null).map((p) => p.text as string);
 }
 function privateTexteAusNotizen(n: SetupNotebook | null): string[] {
@@ -607,6 +647,18 @@ export async function setupAusAgent(a: Agent, q: SetupQuellen = {}): Promise<Set
   const fund = persoenlicherTextInDatei(datei, texte);
   if (fund) return `die Datei enthielte persönlichen Text („${fund}…“) und geht so nicht hinaus`;
   return { datei, hinweise };
+}
+
+/** EINE GEBILDETE ROLLE ALS SETUP-DATEI (Richtung Schritt 5): ein Sitz, der die Rolle als Stein trägt, so wie ein Rollensitz einer
+ *  Konstellation reist — Starttext, Bundel und gelesene Packs im Rollenblock, die Richtung als leerer persönlicher Platz. Wer die Datei
+ *  importiert, bekommt die Rechte der Rolle erst mit der Freigabe des Owners (importiereSetup → schreibeMehrSitz, POST /api/k15/freigabe). */
+export function setupAusRolle(stein: RoleStein): SetupDatei {
+  const refs: SetupKnowledgeRef[] = stein.role.packs.map((p) => ({ kind: "pack", id: p.id, hash: p.hash }));
+  const seat: SetupSeat = { id: stein.role.id, name: stein.role.name, who: { harness: null, model: null, effort: null },
+    start: { role: stein.role.id, direction: { text: null, personal: true as const } }, reads: refs,
+    may: { rechte: null, permissionMode: null }, worksWith: {}, notebook: null };
+  return mitSetupHash({ format: SETUP_FORMAT, name: stein.role.name, setupHash: "", derivedFrom: null, derivedFromLine: [],
+    seats: [seat], edges: [], packs: stein.packs, concepts: [], roles: [stein.role] });
 }
 
 /** EINE GESPEICHERTE KONSTELLATION (die alte dateiFuer-Form) ALS SETUP. */
@@ -718,15 +770,23 @@ export function setupAusKonstellation(datei: Record<string, unknown>, form: Reco
       const v = abw[k] ?? profil[k];
       return typeof v === "string" ? v : null;
     };
+    // Was der Import selbst auffüllt, reist nicht als Wahl der Datei zurück (F4, der Rundlauf einer unveränderten Datei behält seinen Hash): der Modus „auto“ IST der Standard
+    // einer Position, der Plan der Schiene „session“ ohne Werte ist der Standard eines Profils, und der Starttext der Rolle steht im Profil, weil der Import ihn dorthin
+    // schrieb (schreibeMehrSitz) — er ist kein Purpose der Datei. Die Normalisierung steht beim Schreiben der Datei, nicht im Hash: die Hashes schon geschriebener Dateien gelten weiter.
+    const purposeDerDatei = md && !(role && md.text === role.start.text) ? md : null;
+    const modus = typeof darf.modus === "string" ? darf.modus : null;
+    const planDerDatei = profil.schiene !== undefined || profil.werte !== undefined ? { schiene: profil.schiene, werte: profil.werte ?? {},
+      schalter: profil.schalter ?? {}, autonomie: profil.autonomie ?? null, einV: profil.einV ?? 1, rechteV: profil.rechteV ?? 1 } : null;
     const seat: SetupSeat = { id, name,
       who: { harness: wert("agent"), model: wert("modell"), effort: wert("effort") },
-      start: { ...(md ? { purpose: { titel: md.titel, text: md.text } } : {}),
+      start: { ...(purposeDerDatei ? { purpose: { titel: purposeDerDatei.titel, text: purposeDerDatei.text } } : {}),
         ...(role ? { role: role.id, direction: { text: null, personal: true as const } } : {}),
-        ...(own ? { ownFile: { titel: own.titel, text: own.text } } : {}) },
+        ...(own ? { ownFile: { titel: own.titel, text: own.text } } : {}),
+        ...(typeof p.ziel === "string" && p.ziel.trim() ? { goal: p.ziel } : {}),
+        ...(rec(p.ordner) ? { folder: { text: null, personal: true as const, hint: typeof rec(p.ordner)!.hint === "string" ? String(rec(p.ordner)!.hint) : null } } : {}) },
       reads: refs,
-      may: { rechte: darf.rechte ?? p.rechte ?? null, permissionMode: typeof darf.modus === "string" ? darf.modus : null,
-        ...(profil.schiene !== undefined || profil.werte !== undefined ? { plan: { schiene: profil.schiene, werte: profil.werte ?? {},
-          schalter: profil.schalter ?? {}, autonomie: profil.autonomie ?? null, einV: profil.einV ?? 1, rechteV: profil.rechteV ?? 1 } } : {}) },
+      may: { rechte: darf.rechte ?? p.rechte ?? null, permissionMode: modus === "auto" ? null : modus,
+        ...(planDerDatei && JSON.stringify(kanon(planDerDatei)) !== JSON.stringify(kanon(PLAN_STANDARD)) ? { plan: planDerDatei } : {}) },
       worksWith: typeof p.meldetAn === "string" ? { reportsTo: p.meldetAn } : {}, notebook };
     seats.push(seat);
     if (typeof p.meldetAn === "string") edges.push({ from: id, to: p.meldetAn, kind: "reports-to" });
@@ -769,11 +829,17 @@ export async function setupAusDatei(raw: unknown, q: SetupQuellen = {}): Promise
   return `expected ${SETUP_FORMAT}, ${AGENT_FORMAT} or a fleet: "konstellation" file`;
 }
 
+// der Plan eines Profils, das der Import mit seinen Standardwerten anlegt (schreibeMehrSitz): er reist nicht als Wahl der Datei
+const PLAN_STANDARD = { schiene: "session", werte: {}, schalter: {}, autonomie: null, einV: 1, rechteV: 1 };
+
 // ---- import: preview, then write -----------------------------------------------------------------
 export interface SetupVorschau {
   format: typeof SETUP_FORMAT; name: string; seats: number;
   packs: { id: string; hash: string | null; source: "local" | "carried" | "collision" | "personal" }[];
   concepts: { id: string; hash: string | null; source: "local" | "carried" | "collision" | "personal" }[];
+  /** je Sitz Name, Rolle und Ziel, damit die Vorschau die Sitze nennt und nicht nur zählt; die Kanten dazu */
+  seatList: { id: string; name: string; role: string | null; goal: string | null }[];
+  edges: SetupEdge[];
   personalPlaces: string[]; emptyPlaces: string[];
   collisions: { kind: "pack" | "concept"; id: string; neu: string }[];
   /** die Rechte, die der Import erbittet: die des Sitzes und je Rolle ihr Bundel */
@@ -800,7 +866,9 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
   const shelf = liesShelf(dir);
   const neuPacks: SetupPack[] = [], neuConcepts: SetupConcept[] = [];
   const map = new Map<string, string>();
-  const vorschau: SetupVorschau = { format: SETUP_FORMAT, name: d.name, seats: d.seats.length, packs: [], concepts: [], personalPlaces: [], emptyPlaces: [],
+  const vorschau: SetupVorschau = { format: SETUP_FORMAT, name: d.name, seats: d.seats.length, packs: [], concepts: [],
+    seatList: d.seats.map((s) => ({ id: s.id, name: s.name, role: s.start.role ?? null, goal: s.start.goal ?? null })), edges: d.edges.map((e) => ({ ...e })),
+    personalPlaces: d.seats.flatMap((s) => s.start.folder ? [`folder:${s.id}`] : []), emptyPlaces: d.seats.flatMap((s) => s.start.folder ? [`folder:${s.id}`] : []),
     collisions: [], requestedRights: [...d.seats.flatMap((s) => s.may.rechte ? [s.may.rechte] : []), ...d.roles.map((r) => r.rights)],
     requestedRoles: d.roles.map((r) => ({ id: r.id, name: r.name, rights: [...r.rights] })), hinweise: [] };
   const packKey = (id: string, hash: string | null): string => `pack|${id}|${hash ?? "personal"}`;
@@ -842,6 +910,14 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
     idsPack.add(block.id);
     map.set(k, block.id);
     vorschau.packs.push({ id: block.id, hash: block.hash, source: "carried" });
+  }
+  // EINE ROLLE BRAUCHT IHRE PACKS AUF DEM REGAL: liesShelf prüft jede Rolle gegen die Packs des Regals, und roleStein liest den Text von dort. Ein Pack,
+  // den die Bibliothek des Empfängers schon hat (source local), stünde sonst nirgends auf dem Regal, und die Rolle fiele still heraus. Er wandert mit
+  // seinem Hash aufs Regal, es sei denn, das Regal trägt unter derselben Kennung schon einen anderen (ihn zu ersetzen risse die Rollen heraus, die ihn lesen).
+  for (const ref of d.roles.flatMap((r) => r.packs)) {
+    if (ref.hash === null || shelf.packs.some((x) => x.id === ref.id) || neuPacks.some((x) => x.id === ref.id)) continue;
+    const block = d.packs.find((x) => x.id === ref.id && x.hash === ref.hash && x.personal !== true && x.text !== null);
+    if (block) neuPacks.push({ ...block });
   }
   const lokalKonzepte: SetupConcept[] = [...shelf.concepts];
   for (const c of d.concepts) {
@@ -891,7 +967,7 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
   const persoenlichePacks = d.packs.filter((p) => p.personal === true);
   const persoenlicheKonzepte = d.concepts.filter((c) => c.personal === true);
   const datei: SetupDatei = { ...d, seats, packs: [...persoenlichePacks, ...neuPacks,
-    ...lokal.filter((p) => vorschau.packs.some((v) => v.source === "local" && v.id === p.id))],
+    ...lokal.filter((p) => vorschau.packs.some((v) => v.source === "local" && v.id === p.id) && !neuPacks.some((n) => n.id === p.id))],
     concepts: [...persoenlicheKonzepte, ...neuConcepts, ...lokalKonzepte.filter((c) => vorschau.concepts.some((v) => v.source === "local" && v.id === c.id))] };
   return { datei, vorschau, zuSpeichern: { version: 1, packs: neuPacks, concepts: neuConcepts, roles: d.roles } };
 }
@@ -918,8 +994,10 @@ async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string,
   const packIds = seat.reads.filter((r) => r.kind === "pack").map((r) => r.id);
   const conceptIds = seat.reads.filter((r) => r.kind === "concept").map((r) => r.id);
   const recht = rechteAus(seat.may.rechte);
-  const deckel = recht ? rechteGedeckelt(recht) : null;
-  if (deckel?.gedeckelt.length) hinweise.push(`die Rechte aus der Datei über „bauen“ (${deckel.gedeckelt.join(", ")}) kommen gedeckelt an`);
+  // Eine Datei erbittet Rechte, sie gibt keine: die Stufe über „bauen“, die Befehle und jede Zusage (recht) kommen nicht an (behalten: leer) und stehen im
+  // Hinweis; der Owner setzt sie selbst — sein PUT auf den Agenten nimmt die Marke „[Zitat entfernt]“ (eine Freigabe, POST /api/k15/freigabe, gibt es nur je Position).
+  const deckel = recht ? rechteGedeckelt(recht, new Set()) : null;
+  if (deckel?.gedeckelt.length) hinweise.push(`die Rechte aus der Datei über „bauen“ (${deckel.gedeckelt.join(", ")}) kommen gedeckelt an; der Owner setzt sie mit PUT /api/agenten/<id>`);
   const wahlen: Wahlen = {
     ...(seat.who.harness ? { harness: seat.who.harness } : {}), ...(seat.who.model ? { model: seat.who.model } : {}),
     ...(seat.who.effort ? { effort: seat.who.effort } : {}), ...(seat.may.permissionMode ? { permissionMode: seat.may.permissionMode } : {}),
@@ -934,7 +1012,10 @@ async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string,
     () => null, vergeben, Date.now(), { ...herkunft, importiert: true });
   if (typeof a === "string") throw new Error(a);
   schreibAgenten(dir, [...eigene, a]);
-  return { agent: eigeneAnsicht(a) };
+  // was die Datei erbat und nicht ankam, mit der Tür, die es gibt (nur wenn etwas fiel)
+  const erbeten = recht && deckel?.gedeckelt.length ? { erbetenRechte: { agent: a.id, stufe: recht.stufe, ...(recht.recht?.length ? { recht: [...recht.recht] } : {}),
+    door: `PUT /api/agenten/${a.id}` } } : {};
+  return { agent: eigeneAnsicht(a), ...erbeten };
 }
 
 function quelleAusText(titel: string, text: string): Quelle {
@@ -981,7 +1062,9 @@ function sitzAusSetup(seat: SetupSeat, d: SetupDatei): Record<string, unknown> {
 }
 
 const PLAN_ROLES: ReadonlySet<string> = new Set(["lane", "main", "orchestratorin", "nur-ordner"]);
-async function schreibeMehrSitz(d: SetupDatei, original: SetupDatei, dir: string, jetzt: number): Promise<Record<string, unknown>> {
+/** `marke`: wer die Konstellation schreibt, wenn nicht ein Import (der Autor und der Satz im Speicher); ohne sie ist es ein Import. */
+export async function schreibeMehrSitz(d: SetupDatei, original: Parameters<typeof herkunftAusDatei>[0], dir: string, jetzt: number,
+  marke: { autor: string; satz: string } = { autor: "setup", satz: "imported" }): Promise<Record<string, unknown>> {
   const roleOf = (s: SetupSeat): SetupRole | null => s.start.role ? d.roles.find((r) => r.id === s.start.role) ?? null : null;
   // A ROLE STAYS A BLOCK: its start text and sitz.darf.rolle travel; the profile never takes the built-in Orchestratorin name,
   // because the start door maps `rolle` alone to Fleet's bypass track. Other plan roles (lane/main) keep their id only so a
@@ -1002,10 +1085,11 @@ async function schreibeMehrSitz(d: SetupDatei, original: SetupDatei, dir: string
     const own = s.start.ownFile ?? (role && s.start.purpose ? s.start.purpose : null);
     return { id: s.id, name: s.name, profil: profile.find((p) => p.id === `setup-${s.id}`)!,
       ...(s.worksWith.reportsTo ? { meldetAn: s.worksWith.reportsTo } : {}), sitz: sitzAusSetup(s, d),
-      ...(own ? { eigeneDatei: quelleAusText(own.titel, own.text) } : {}) };
+      ...(own ? { eigeneDatei: quelleAusText(own.titel, own.text) } : {}),
+      ...(s.start.goal ? { ziel: s.start.goal } : {}), ...(s.start.folder ? { ordner: { hint: s.start.folder.hint } } : {}) };
   });
   const herkunft = herkunftAusDatei(original);
-  const roh = { fleet: "konstellation", format: 1, name: d.name, version: 1, satz: "imported", autor: "setup", positionen,
+  const roh = { fleet: "konstellation", format: 1, name: d.name, version: 1, satz: marke.satz, autor: marke.autor, positionen,
     ...herkunft, ...(d.task !== undefined ? { aufgabe: d.task } : {}),
     ...(Array.isArray(d.runs) ? { laeufe: d.runs } : {}) };
   const imp = importKonst(JSON.stringify(roh), PROFILE0, jetzt);

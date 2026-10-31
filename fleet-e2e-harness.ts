@@ -629,6 +629,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedAgent: null,
           // ...and what the seat gave itself (server/selbst-einrichten.ts), claude only — a codex fixture carries none
           carriedSelbst: null,
+          // ...and the role it was opened in and the board branch it stands on (the generic closure reads both before the kill)
+          carriedRolle: null, carriedBoardBranch: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });
@@ -1394,6 +1396,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const isSeat = () => false;
       // a codex fixture opens from no agent, so the extracted ensureSlot body carries no stones
       const agentSteineFuer = async () => null;
+      // ...nor the role it was opened in (server.ts#rolleSteinBlock, selbst-sitze.ts#zweckOhneRollentext): none here, the purpose stays whole
+      const rolleSteinBlock = () => null, zweckOhneRollentext = (agentMd) => agentMd;
       const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
       const fleetCheckoutForSpawn=()=>false;
       ${validators}

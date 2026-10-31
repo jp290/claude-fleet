@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sectionAt } from "../context-sections";
 import { type Answer, branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
-import { SEAT_BOX, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekGewaehlt, bibliothekNichtWirksam, packAuswahlFehlt, seatContextFacts, seatFassungAbschnitte,
+import { SEAT_BOX, SEAT_START_HEAD, bibliothekBeimSpawn, bibliothekDerTuer, bibliothekGewaehlt, bibliothekNichtWirksam, mitTuerenSkill, packAuswahlFehlt, seatContextFacts, seatFassungAbschnitte,
   seatPacks, seatSkillFiles, seatSkillsVerwaist, skillAufrufe, type SeatKnowledge } from "./sitz-wissen";
 
 const ROOT = realpathSync(join(import.meta.dir, ".."));
@@ -44,6 +44,8 @@ const erwartet = (fleet: boolean): string[] => register.filter((p) => p.triggers
   || (fleet && p.triggers.includes("seat-start"))).map((p) => p.id);
 const box = (fleet: boolean): string[] => erwartet(fleet).filter((id) => id in SEAT_BOX);
 const skills = (fleet: boolean): string[] => erwartet(fleet).filter((id) => !(id in SEAT_BOX));
+// ...und die Skills, die ein Sitz wirklich bekommt: außerhalb von Fleets Repo kommt die Tür-Zeile dazu (server/sitz-wissen.ts#mitTuerenSkill)
+const skillsOfSeat = (fleet: boolean): string[] => fleet ? skills(true) : [...skills(false), "fleet-doors", "setting-up-agents"];
 // der Text eines Packs, unabhängig vom Server gelesen: der Abschnitt jeder Quelle am HEAD
 const atHead = (path: string): string => Bun.spawnSync(["git", "-C", ROOT, "show", `HEAD:${path}`]).stdout.toString();
 const textOf = (id: string): string => pack(id).sources.map((s) => sectionAt(atHead(s.path), s.path, s.anchor) ?? "").join("\n");
@@ -157,31 +159,37 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     // ein Sitz in Fleets Repo ohne Board-Branch und ohne Wahl behält das geteilte Gedächtnis: das Branch-Notizbuch ohne Board-Branch
     // gibt es nur auf die Wahl `notizbuch: "branch"` (server.ts#notizbuchBranchOhneBoard)
     expect(readFileSync(join(ARGV, "slot-13"), "utf8")).not.toContain("/notizbuecher/branch-");
-    // im fremden Repo ohne Wahl: kein Start-Block, kein Ordner
+    // im fremden Repo ohne Wahl: nur die zwei Tür-Zeilen als Skill (der Text erst beim Aufruf), sonst nichts — ein schlanker Agent bleibt schlank
     const ohneWahl = await startOf(14);
-    expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([false, [], false]);
+    expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([true, [ordnerOf(f, 14)], true]);
+    expect([...skillsIn(ohneWahl.addDirs).keys()].sort()).toEqual(["fleet-doors", "setting-up-agents"]);
     // ...und das Fenster zeigt den Schalter an, ausgeschaltet beide aus
     type PlanZeile = { id: string; zustand: string; schaltbar: { ja: boolean } };
     const zeileIn = (a: Answer | undefined, id: string) => (a?.body.plan as { bausteine: PlanZeile[] } | undefined)?.bausteine.find((z) => z.id === id);
     expect(zeileIn(planVor, "bibliothek")).toMatchObject({ zustand: "aus", schaltbar: { ja: true } });
-    // im anderen Repo ist die Bibliothek ohne Wahl aus, und ihre Skills (your-seat-in-fleet) folgen ihr
+    // im anderen Repo ist die Bibliothek ohne Wahl aus; ihre Skills (your-seat-in-fleet) folgen ihr, aber die zwei Tür-Zeilen kommen trotzdem —
+    // das Fenster nennt sie, denn die Vorschau ist der Start (ohne Schalter für die Skills: sie folgen dem der Bibliothek)
     expect(skills(false).length).toBeGreaterThan(0);
-    expect(zeileIn(planVor, "bibliothek-skills")).toMatchObject({ zustand: "aus", schaltbar: { ja: false } });
+    type TuerZeile = PlanZeile & { bytes: number; details?: { text?: string; packs?: string[] } };
+    for (const plan of [planVor, planAus]) {
+      const sk = zeileIn(plan, "bibliothek-skills") as TuerZeile | undefined;
+      expect(sk).toMatchObject({ zustand: "an", schaltbar: { ja: false }, details: { packs: ["fleet-doors", "setting-up-agents"] } });
+      expect(sk!.details!.text!.split("\n").map((z) => z.split(":")[0])).toEqual(["- fleet-doors", "- setting-up-agents"]);
+    }
     expect(zeileIn(planAus, "bibliothek")).toMatchObject({ zustand: "aus" });
-    expect(zeileIn(planAus, "bibliothek-skills")).toMatchObject({ zustand: "aus" });
 
     // JE BELEGUNG EIN ORDNER (Abnahme 22.10., FIX): kein Sitz teilt seinen Skill-Ordner, auch nicht bei gleichem Inhalt
     // ein Sitz ohne Skill bekommt keinen Ordner
-    for (const [start, fleetSitz, slot] of starts) expect(start.addDirs).toEqual(skills(fleetSitz).length ? [ordnerOf(f, slot)] : []);
+    for (const [start, fleetSitz, slot] of starts) expect(start.addDirs).toEqual(skillsOfSeat(fleetSitz).length ? [ordnerOf(f, slot)] : []);
     const mitOrdner = starts.filter(([start]) => start.addDirs.length);
     expect(new Set(mitOrdner.map(([start]) => start.addDirs[0])).size).toBe(mitOrdner.length);
     for (const [start, fleetSitz] of starts) {
       expect(start.appended).toContain(SEAT_START_HEAD);
       for (const id of box(fleetSitz)) expect(start.appended).toContain(textOf(id));
-      for (const id of skills(fleetSitz)) expect(start.appended).not.toContain(textOf(id));
+      for (const id of skillsOfSeat(fleetSitz)) expect(start.appended).not.toContain(textOf(id));
       const geladen = skillsIn(start.addDirs);
-      expect([...geladen.keys()].sort()).toEqual(skills(fleetSitz).sort());
-      for (const id of skills(fleetSitz)) {
+      expect([...geladen.keys()].sort()).toEqual(skillsOfSeat(fleetSitz).sort());
+      for (const id of skillsOfSeat(fleetSitz)) {
         expect(geladen.get(id)!.startsWith(`---\nname: ${id}\ndescription: ${JSON.stringify(pack(id).useWhen)}\n---\n`)).toBe(true);
         expect(geladen.get(id)!.endsWith(textOf(id))).toBe(true);
       }
@@ -248,7 +256,9 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     expect(existsSync(ordnerOf(f, 15))).toBe(true);
     const [sa, sx] = [Number(selbstAn?.body.slot), Number(selbstAus?.body.slot)];
     expect(["bibliothek" in recordOf(f, sa), recordOf(f, sx).bibliothek]).toEqual([false, false]);
-    expect([(await startOf(sa)).appended.includes(SEAT_START_HEAD), (await startOf(sx)).appended.includes(SEAT_START_HEAD)]).toEqual([false, false]);
+    // `true` an der Selbst-Tür heißt: die Voreinstellung, also die Tür-Zeilen; `false` schaltet die Bibliothek ab, die Tür-Zeilen bleiben (sie gehören dem Token)
+    expect([(await startOf(sa)).appended.includes(SEAT_START_HEAD), (await startOf(sx)).appended.includes(SEAT_START_HEAD)]).toEqual([true, true]);
+    expect([...skillsIn((await startOf(sx)).addDirs).keys()].sort()).toEqual(["fleet-doors", "setting-up-agents"]);
 
     // zwei Leben statt einem: jedes hat seine Frist (LIFE_DEADLINE_MS), und im vollen Lauf ist die Maschine voll
     const [fassungB, fassung12, fassung15, leiheB, verwehrtB, leihe12, leihe15, sharpen14] = await life(f, [
@@ -283,9 +293,9 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     for (const [fassung, start, fleetSitz] of [[fassungB, starts[0][0], false], [fassung12, starts[1][0], false], [fassung15, wiederStart, true]] as const) {
       expect(fassung?.status).toBe(200);
       const wissen = wissenOf(fassung);
-      expect(wissen.length).toBe(1 + erwartet(fleetSitz).length);
+      expect(wissen.length).toBe(1 + erwartet(fleetSitz).length + (fleetSitz ? 0 : 2));
       for (const id of box(fleetSitz)) expect(wissen.some((a) => a.text?.endsWith(textOf(id)))).toBe(true);
-      for (const id of skills(fleetSitz)) {
+      for (const id of skillsOfSeat(fleetSitz)) {
         const a = wissen.find((x) => x.text === `- ${id}: ${pack(id).useWhen}`);
         expect(a?.quelle?.split("\n")[0]).toBe(`${start.addDirs[0]}/.claude/skills/${id}/SKILL.md`);
         expect(a?.grund).toContain("Skill");
@@ -305,12 +315,12 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
       expect(bib).toMatchObject({ zustand: "an", frage: "hintergrund", details: { packs: box(fleetSitz) } });
       expect(start.appended.slice(start.appended.indexOf(SEAT_START_HEAD))).toBe(bib!.details!.text!);
       expect(bib!.bytes).toBe(Buffer.byteLength(bib!.details!.text!));
-      if (!skills(fleetSitz).length) {
+      if (!skillsOfSeat(fleetSitz).length) {
         expect(sk).toMatchObject({ zustand: "aus", frage: "howto", details: { packs: [] } });
         expect((antwort?.body.lieferung as { geliefert: { id: string; weg: string }[] }).geliefert)
           .toEqual(expect.arrayContaining([{ id: "bibliothek", weg: "Systemprompt" }]));
       } else {
-        expect(sk).toMatchObject({ zustand: "an", frage: "howto", details: { packs: skills(fleetSitz) } });
+        expect(sk).toMatchObject({ zustand: "an", frage: "howto", details: { packs: skillsOfSeat(fleetSitz) } });
         const gelistet = [...skillsIn(start.addDirs).values()].map((datei) => {
           const kopf = /^---\nname: (.+)\ndescription: (.+)\n---\n/.exec(datei)!;
           return `- ${kopf[1]}: ${JSON.parse(kopf[2]!) as string}`;
@@ -389,10 +399,11 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     expect(bibliothekDerTuer({ bibliothek: false }, plan("an"), "owner").ok).toBe(false);
   });
   // Slot 16 für den Owner, 24.10.: „[Zitat entfernt]“
-  test("eine Liste wählt einzelne Packs: an, nur diese, in der Reihenfolge des Registers; leer ist aus; an der Selbst-Tür die Voreinstellung", () => {
+  test("eine Liste wählt einzelne Packs: an, nur diese, in der Reihenfolge des Registers; leer ist aus; an der Selbst-Tür ebenso", () => {
     expect(bibliothekDerTuer({ bibliothek: ["who-it-is-for"] }, null, "owner")).toEqual({ ok: true, wahl: ["who-it-is-for"] });
     expect(bibliothekDerTuer({ bibliothek: [] }, null, "owner")).toEqual({ ok: true, wahl: false });
-    expect(bibliothekDerTuer({ bibliothek: ["who-it-is-for"] }, null, "self")).toEqual({ ok: true, wahl: null });
+    // ...an der Selbst-Tür gilt sie auch (F3): sie gibt nur Text aus Fleets Register, den jeder Sitz mit Self-Token ohnehin ausleihen kann
+    expect(bibliothekDerTuer({ bibliothek: ["who-it-is-for"] }, null, "self")).toEqual({ ok: true, wahl: ["who-it-is-for"] });
     const p = (id: string) => ({ id, useWhen: null, sources: [], text: id });
     const k: SeatKnowledge = { tree: "foreign", repoRoot: "/f", head: "h", packs: [p("a"), p("b"), p("c")] };
     expect(bibliothekGewaehlt(k, ["c", "a"]).packs.map((x) => x.id)).toEqual(["a", "c"]);
@@ -410,6 +421,23 @@ describe("Die Wahl an der Tür und verwaiste Ordner", () => {
     expect(bibliothekGewaehlt(hart, null, ["hart"]).packs.map((x) => x.id)).toEqual(["a", "c", "hart"]);
     expect(packAuswahlFehlt(["a", "zz"], k)).toEqual(["zz"]);
     expect(packAuswahlFehlt(true, k)).toEqual([]);
+  });
+  test("die Tür-Zeilen gehören dem Token: jeder fremde Sitz bekommt sie als Skill — auch aus einer Datei, mit einer Liste ohne sie, ohne Bibliothek; ein gewählter Pack bleibt wörtlich", () => {
+    const p = (id: string) => ({ id, useWhen: `Wenn ${id}.`, sources: [], text: `# ${id}` });
+    const register: SeatKnowledge = { tree: "foreign", repoRoot: "/f", head: "h", packs: [p("a"), p("fleet-doors"), p("setting-up-agents")] };
+    const ids = (k: SeatKnowledge) => k.packs.map((x) => `${x.id}:${x.weg ?? "-"}`);
+    // ohne Bibliothek (false): nur die zwei Zeilen, beide als Skill
+    expect(ids(mitTuerenSkill(bibliothekGewaehlt(register, false, [], false), register))).toEqual(["fleet-doors:skill", "setting-up-agents:skill"]);
+    // eine Liste ohne sie: der gewählte Pack bleibt, die zwei Zeilen kommen dazu
+    expect(ids(mitTuerenSkill(bibliothekGewaehlt(register, ["a"]), register))).toEqual(["a:-", "fleet-doors:skill", "setting-up-agents:skill"]);
+    // gewählt: nicht doppelt, wörtlich wie gewählt
+    expect(ids(mitTuerenSkill(bibliothekGewaehlt(register, ["fleet-doors"]), register))).toEqual(["fleet-doors:-", "setting-up-agents:skill"]);
+    // ein Sitz aus einer Datei: seine Packs kommen aus der Datei, die Zeilen aus dem Register des Ordners
+    const ausDatei: SeatKnowledge = { ...register, packs: [p("a")] };
+    expect(ids(mitTuerenSkill(ausDatei, register))).toEqual(["a:-", "fleet-doors:skill", "setting-up-agents:skill"]);
+    // in Fleets Repo gilt die Regel nicht: dort gehören beide ohnehin zur Bibliothek
+    const imFleet: SeatKnowledge = { ...register, tree: "fleet", packs: [p("a")] };
+    expect(mitTuerenSkill(imFleet, register)).toBe(imFleet);
   });
   test("verwaist ist, was keiner laufenden Belegung gehört — auch ein Ordner vom alten Schnitt nach Inhalt", () => {
     expect(seatSkillsVerwaist(["3-100", "3-99", "4-100", "0123456789abcdef"], [{ slot: 3, openedAt: 100 }, { slot: 5, openedAt: 1 }]))

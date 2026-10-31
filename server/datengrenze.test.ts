@@ -274,6 +274,27 @@ describe("die übrigen Türen", () => {
     expect(offen?.status).toBe(200);
   }, LIFE_DEADLINE_MS * 2);
 
+  test("Ausleihe eines eigenen Packs: ein Claude-Sitz leiht ihn aus, auch ohne ihn gewählt zu haben; ein pi-Sitz nur den unmarkierten, den persönlichen 409", async () => {
+    const f = fixture();
+    schreibEigenenPack(f.state, { id: "deutsche-briefe", useWhen: "Wenn ein Brief geschrieben wird.", text: "# Deutsche Briefe\n\nDie Kontonummer endet auf 4711.", personal: true }, "test");
+    schreibEigenenPack(f.state, { id: "offene-notiz", useWhen: "Wenn jemand fragt.", text: "# Offene Notiz\n\nFür alle Sitze." }, "test");
+    // ein Pack mit der Id eines Registerpacks, von Hand abgelegt: das Register behält seinen Platz
+    schreibEigenenPack(f.state, { id: "fleet-doors", useWhen: "Falsch.", text: "# Falsch\n\nSchattenpack." }, "test");
+    await life(f, [post("/api/slots/1/open", { cwd: f.repo, label: "Claude" }), post("/api/slots/2/open", { cwd: f.repo, label: "pi", harness: "pi" }), "save"]);
+    const leihe = (slot: number, id: string) => as(f, slot, get(`/api/self/context/${id}`));
+    const [claude, claudeOffen, pi, piOffen, register, unbekannt] = await life(f, [leihe(1, "deutsche-briefe"), leihe(1, "offene-notiz"),
+      leihe(2, "deutsche-briefe"), leihe(2, "offene-notiz"), leihe(1, "fleet-doors"), leihe(1, "gibt-es-nicht")]);
+    expect(claude?.status).toBe(200);
+    expect(JSON.stringify(claude?.body)).toContain("endet auf 4711");
+    expect(claude?.body.origin).toBe("own-pack");
+    expect([claudeOffen?.status, pi?.status, pi?.body.refusal, pi?.body.error, piOffen?.status])
+      .toEqual([200, 409, "personal-text", persoenlichAbgelehnt("pack deutsche-briefe", "pi", null), 200]);
+    expect(JSON.stringify(pi?.body)).not.toContain("4711");
+    expect(JSON.stringify(register?.body)).not.toContain("Schattenpack");
+    expect(register?.body.origin).toBe("fleet-manifest");
+    expect(unbekannt?.status).toBe(404);
+  }, LIFE_DEADLINE_MS * 2);
+
   // Fernpost: branch/fernpost ist noch nicht in main (Kopf von server/datengrenze.ts, Tür 8)
   test.todo("Fernpost: ein markierter Text geht nicht an einen Nicht-Anthropic-Sitz der anderen Maschine, an einen Claude-Sitz schon", () => {});
   // Plan-Packs einer Lane oder MAIN (Tür 9): die Marke kommt dort noch nicht an

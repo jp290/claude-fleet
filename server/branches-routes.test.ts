@@ -288,7 +288,8 @@ describe("Postfach: Öffner und Branch-Session schreiben sich, sonst niemand", (
     const [, strand, , foreign] = await life(f, [post("/api/branches", { repo: f.repo, name: "Strang" }),
       { ...post("/api/branches/open", { repo: f.repo, branch: "branch/strang" }), self: leadTok },
       post("/api/branches", { repo: f.repo, name: "Fremd" }),
-      post("/api/branches/open", { repo: f.repo, branch: "branch/fremd" })]);
+      // der fremde Sitz ist ein pi-Sitz: zwei Claude-Sitze schreiben sich seit dem 30.10. auch ohne Paar (server/anthropic-post.test.ts)
+      post("/api/branches/open", { repo: f.repo, branch: "branch/fremd", harness: "pi" })]);
     const S = slotOf(strand), F = slotOf(foreign);
     const strandTok = tokenOf(f, S), foreignTok = tokenOf(f, F);
 
@@ -335,7 +336,8 @@ describe("Postfach: Öffner und Branch-Session schreiben sich, sonst niemand", (
 
     // Slot L wird frei und neu besetzt, in einem anderen Ordner
     const [killed, , other] = await life(f, [post(`/api/slots/${L}/kill`, {}), post("/api/branches", { repo: f.repo, name: "Anderswo" }),
-      post("/api/branches/open", { repo: f.repo, branch: "branch/anderswo" })]);
+      // die neue Besetzung ist ein pi-Sitz: einem Claude-Sitz stünde sonst auch ohne Paar nichts im Weg
+      post("/api/branches/open", { repo: f.repo, branch: "branch/anderswo", harness: "pi" })]);
     expect(killed?.status).toBe(200);
     expect(slotOf(other)).toBe(L);
     const otherTok = tokenOf(f, L);

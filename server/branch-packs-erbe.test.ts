@@ -72,8 +72,9 @@ describe("ein Sitz, den eine Session öffnet, erbt ihre Packs", () => {
     expect(sQ).toContain(SEAT_START_HEAD);
     for (const id of Q) expect(sQ).toContain(id);
     for (const id of P) expect(sQ).not.toContain(id);
-    // ohne Wahl der Öffnerin: wie heute kein Start-Block (dieses Repo ist ein eigenes Setup, die Bibliothek ist dort aus)
-    expect(sN).not.toContain(SEAT_START_HEAD);
+    // ohne Wahl der Öffnerin: kein Pack im Start (dieses Repo ist ein eigenes Setup, die Bibliothek ist dort aus), nur die Tür-Zeilen als Skills
+    expect(sN).not.toContain("--- ");
+    expect(sN).toContain("(Skill tool): fleet-doors, setting-up-agents.");
   }, 90_000);
 
   test("die Packs, die die Öffnerin sich selbst gab, gehen als Text mit — ihr Zweck nicht", async () => {

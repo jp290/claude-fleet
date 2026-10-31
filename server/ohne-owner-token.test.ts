@@ -277,7 +277,8 @@ describe("Schnitt 6 · POST /api/self/branches und /api/self/branches/open", () 
 
   // Gegenspieler-Fund an Schnitt 6: die ERSTE Nachricht der Orchestratorin an eine Session, die sie geöffnet hat, gab 409
   // (sie sendet als role:orchestrator, die Paar-Regel kannte nur Session-Absender) und ging deshalb über /send mit Owner-Token
-  test("die Orchestratorin schreibt die Session, die sie geöffnet hat, ohne replyTo an; eine fremde Session nicht", async () => {
+  // seit dem 30.10. (Owner: „[Zitat entfernt]“) schreibt sie auch jeden freien Claude-Sitz ohne replyTo an; eine MAIN nicht
+  test("die Orchestratorin schreibt die Session, die sie geöffnet hat, und eine freie Claude-Session ohne replyTo an; eine fremde MAIN nicht", async () => {
     const c = await cast();
     const [made, opened] = await life(c.f, [
       as(c.token(ORCH), post("/api/self/branches", { name: "Strang" })),
@@ -286,9 +287,9 @@ describe("Schnitt 6 · POST /api/self/branches und /api/self/branches/open", () 
     const partner = Number(opened?.body.slot);
     const note = (to: number, key: string) => as(c.token(ORCH), post("/api/self/messages",
       { to: { kind: "session", slot: to }, payload: { kind: "text", text: "Erste Nachricht" }, idempotencyKey: key }));
-    const [first, foreign, read] = await life(c.f, [note(partner, "erste"), note(FREE, "fremd"),
+    const [first, foreign, frei, read] = await life(c.f, [note(partner, "erste"), note(OTHER_MAIN, "fremd"), note(FREE, "frei"),
       as(c.token(partner), get("/api/self/messages?unread=1"))]);
-    expect([first?.status, foreign?.status]).toEqual([200, 409]);
+    expect([first?.status, foreign?.status, frei?.status]).toEqual([200, 409, 200]);
     const entries = read?.body.entries as { id: string; from: unknown }[];
     expect(entries.map((e) => [e.id, e.from])).toEqual([[(first?.body as SelfMessage).message?.id, { kind: "role", role: "orchestrator" }]]);
   }, LIFE_DEADLINE_MS * 3);

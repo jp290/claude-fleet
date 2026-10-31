@@ -71,6 +71,10 @@ export interface FassungEingang {
   readonly claudeCode?: unknown;
   /** der Agent, aus dem dieser Start kommt, mit dem Satz seiner Herkunft (server/agenten.ts#herkunftSatz); null/fehlt = keiner */
   readonly agent?: (AgentBezug & { readonly satz: string }) | null;
+  /** DER SETUP-HASH, AUS DEM DIESER START KAM (Richtung Schritt 4: „der Start-Hash nennt seinen Setup-Hash“): der eines
+   *  gespeicherten Agenten oder einer importierten Datei. Liegt NEBEN dem Hash wie `agent` und `claudeCode` — er nennt
+   *  nur, woraus der Start kam; der Start-Hash bleibt der über das, was hier startet. Fehlt = ohne gespeichertes Setup. */
+  readonly setupHash?: string;
 }
 
 export interface Fassung {
@@ -85,6 +89,8 @@ export interface Fassung {
   /** der Agent, aus dem dieser Start kommt, mit seinem Hash und „copy of“ — neben dem Hash wie claudeCode: sein Name erreicht die Session
    *  nicht, und was er wählt, steht schon in den Teilen. Fehlt, wenn der Start aus keinem Agenten kam. */
   readonly agent?: AgentBezug & { readonly satz: string };
+  /** der Setup-Hash, aus dem dieser Start kam (gespeicherter Agent oder importierte Datei); fehlt = ohne gespeichertes Setup */
+  readonly setupHash?: string;
 }
 
 export const textAbschnitt = (id: string, quelle: string | null, text: string, aenderbar: boolean | "unknown" = true,
@@ -162,7 +168,8 @@ export function baueFassung(e: FassungEingang): Fassung {
     teil("arbeitet", e.arbeitet),
   ];
   return { slot: e.slot, anlass: e.anlass, teile, hash: fassungsHash(teile),
-    claudeCode: e.claudeCode ?? null, hashUmfasst: "fuenf-teile", ...(e.agent ? { agent: e.agent } : {}) };
+    claudeCode: e.claudeCode ?? null, hashUmfasst: "fuenf-teile", ...(e.agent ? { agent: e.agent } : {}),
+    ...(e.setupHash ? { setupHash: e.setupHash } : {}) };
 }
 
 /**

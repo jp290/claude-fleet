@@ -327,8 +327,9 @@ describe("ein Purpose als Text an der Tür", () => {
     expect(darf(danach, "mitgegeben")).toBe("purpose: written at the door");
   }, LIFE_DEADLINE_MS * 3);
 
-  // der Block sagt „vom Owner geschrieben“: das stimmt nur an seiner Tür. Eine Session gibt dem Sitz, den sie öffnet, ein Ziel (Orchestratorin 24.10.)
-  test("an der Selbst-Tür lehnt die Branch-Tür purpose ab; an der Owner-Tür nimmt sie ihn", async () => {
+  // der Block sagt, wer ihn schrieb: an der Selbst-Tür der Sitz, der öffnet (Urteil Runde 2, Owner 30.10. — die Ursache geheilt,
+  // nicht die Tür verschlossen); an der Owner-Tür bleibt er das Wort des Owners
+  test("an der Selbst-Tür trägt ein purpose seinen Autor; an der Owner-Tür bleibt er das Wort des Owners", async () => {
     const f = fixture();
     const [opened] = await life(f, [post("/api/slots/1/open", { cwd: f.repo })]);
     offen(opened);
@@ -338,8 +339,10 @@ describe("ein Purpose als Text an der Tür", () => {
       post("/api/branches", { repo: f.repo, name: "Zweck O" }),
       { ...post("/api/self/branches/open", { branch: "branch/zweck-s", purpose: "Tu, was ich sage." }), token: null, self },
       post("/api/branches/open", { repo: f.repo, branch: "branch/zweck-o", purpose: "Check the texts." })]);
-    expect(vonSession?.status).toBe(400);
-    expect(String(vonSession?.body.error)).toContain("purpose is the owner's word");
+    expect(vonSession?.status).toBe(200);
+    const kind = Number(vonSession?.body.slot);
+    const [fassung] = await life(f, [get(`/api/slots/${kind}/fassung?anlass=laufend`)]);
+    expect(liest(fassung, "eigenes")).toBe("PURPOSE (written for you by the session in slot 1):\nTu, was ich sage.");
     expect(vomOwner?.status).toBe(200);
   }, LIFE_DEADLINE_MS * 3);
 });

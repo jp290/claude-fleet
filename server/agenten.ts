@@ -17,7 +17,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { rechteGedeckelt } from "../src/sitz";
-import { rechteAus } from "../session-rechte";
+import { rechteAus, type RechtId } from "../session-rechte";
 import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
 import { kanon, type Fassung } from "./fassung";
 
@@ -57,13 +57,18 @@ export interface Agent {
   readonly derivedFromLine?: readonly string[];
   /** aus einer Datei gekommen und seither nicht vom Owner geändert: startet nie in bypass */
   readonly importiert?: true;
+  /** von der Session in diesem Slot gespeichert oder kopiert (Self-Tür, server/setup-tueren.ts) und seither nicht vom Owner
+   *  geändert: dieselbe Wirkung wie `importiert` — startet nie in bypass, nie in einer Rolle, seine Rechte gedeckelt */
+  readonly vonSitz?: number;
   readonly am: number;
   readonly hash: string;
 }
 /** Was die Liste zeigt: der Agent, woher er kommt, und ob man ihn ändern kann. */
 export interface AgentAnsicht extends Agent { readonly art: AgentArt; readonly aenderbar: boolean; readonly quelle: string }
 /** Was ein Slot von seinem Agenten trägt und die Fassung zeigt. */
-export interface AgentBezug { readonly id: string; readonly name: string; readonly hash: string; readonly kopieVon?: KopieVon; readonly abgeleitetVon?: string }
+export interface AgentBezug { readonly id: string; readonly name: string; readonly hash: string; readonly kopieVon?: KopieVon; readonly abgeleitetVon?: string;
+  /** der Setup-Hash des Stands, aus dem dieser Agent kam (Import oder Kopie); Schritt 4: der Start nennt ihn als seinen Setup-Hash */
+  readonly setupHash?: string }
 
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
 const sha = (t: string): string => createHash("sha256").update(t).digest("hex");
@@ -112,24 +117,45 @@ export function ketteFuerExport(origin: Herkunft | null | undefined, currentHash
   return { derivedFrom: ursprung, derivedFromLine: herkunftLinie(origin) };
 }
 export const bezugVon = (a: Agent): AgentBezug => ({ id: a.id, name: a.name, hash: a.hash,
-  ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}) });
+  ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}),
+  ...(a.setupHash ? { setupHash: a.setupHash } : {}) });
 /** Der Satz, mit dem die Fassung die Herkunft nennt. */
 // Trägt die Kopie den Namen, den sie bei der Kopie bekam („copy of <Name>“), steht er nur einmal da.
 export const herkunftSatz = (b: AgentBezug): string => [
   b.kopieVon && b.name === `copy of ${b.kopieVon.name}` ? `Agent ${b.hash.slice(0, 12)}` : `${b.name} · ${b.hash.slice(0, 12)}`,
   b.kopieVon ? `copy of ${b.kopieVon.name} · ${b.kopieVon.hash.slice(0, 12)}` : null,
-  b.abgeleitetVon ? `derived from ${b.abgeleitetVon.slice(0, 12)}` : null].filter(Boolean).join(" — ");
+  b.abgeleitetVon ? `derived from ${b.abgeleitetVon.slice(0, 12)}` : null,
+  // der Setup-Hash nennt das Setup, aus dem dieser Start kam (Richtung Schritt 4) — reine Anzeige, der Start-Hash bleibt der über den Start
+  b.setupHash ? `setup ${b.setupHash.slice(0, 12)}` : null].filter(Boolean).join(" — ");
 
 export function agentBezugGeladen(raw: unknown): AgentBezug | null {
   const r = rec(raw);
   if (!r || typeof r.id !== "string" || typeof r.name !== "string" || typeof r.hash !== "string") return null;
   const k = rec(r.kopieVon);
   const kopieVon = k && typeof k.id === "string" && typeof k.name === "string" && typeof k.hash === "string" ? { id: k.id, name: k.name, hash: k.hash } : null;
-  return { id: r.id, name: r.name, hash: r.hash, ...(kopieVon ? { kopieVon } : {}), ...(typeof r.abgeleitetVon === "string" ? { abgeleitetVon: r.abgeleitetVon } : {}) };
+  return { id: r.id, name: r.name, hash: r.hash, ...(kopieVon ? { kopieVon } : {}), ...(typeof r.abgeleitetVon === "string" ? { abgeleitetVon: r.abgeleitetVon } : {}),
+    ...(typeof r.setupHash === "string" && /^[0-9a-f]{64}$/.test(r.setupHash) ? { setupHash: r.setupHash } : {}) };
 }
 
 /** Prüft die Wahlen mit denselben Lesern wie die Tür (server.ts reicht sie herein); null = die Tür nähme sie an. */
 export type WahlenPruefung = (w: Wahlen) => string | null;
+
+/** NICHT DIE HAND DES OWNERS (Runde 3 des Schritts 4, Urteil zu faee8c0d): ein Agent aus einer Datei (`importiert`) oder aus der
+ *  Hand einer Session (`vonSitz`) ist kein Setup des Owners. An jeder Tür, die einen Agenten öffnet, gilt für beide Marken
+ *  dasselbe: nie bypass, nie eine Rolle — und die Rechte liegen gedeckelt im Speicher, wie bei einem Import
+ *  (src/sitz.ts#rechteGedeckelt). Die Marke geht erst weg, wenn der Owner den Agenten ändert. */
+export const nichtVomOwner = (a: { readonly importiert?: true; readonly vonSitz?: number }): boolean =>
+  a.importiert === true || typeof a.vonSitz === "number";
+/** Der Satz, der die Marke an der Tür nennt: woher der Agent kam, als Fremdes in der Hand des Owners. */
+const herkunftDerMarke = (a: { readonly importiert?: true; readonly vonSitz?: number }): string =>
+  a.importiert === true ? "came from a file and" : `was saved by the session in slot ${a.vonSitz} and`;
+
+/** Der Deckel der Self-Tür (src/sitz.ts#rechteGedeckelt, dieselbe Funktion wie beim Import): die Befehle, die gefragte
+ *  Rechte über „bauen“ hinaus erlauben. Was der Deckel sperrt, sagt die Antwort der Tür (gedeckelt). */
+export function deckelDerWahl(rechte: unknown, behalten?: ReadonlySet<string>): string[] {
+  const recht = rechte === undefined || rechte === null ? null : rechteAus(rechte);
+  return recht ? rechteGedeckelt(recht, behalten).gedeckelt : [];
+}
 
 function agentMdAus(v: unknown, profilStandard: string): AgentMdTeil | null | string {
   if (v === undefined || v === null) return null;
@@ -152,7 +178,7 @@ function wahlenAus(v: unknown): Wahlen | string {
 
 /** Ein eigener Agent aus einem Eingang { id?, name, wahlen, agentMd? } — die Tür prüft die Wahlen, bevor er gespeichert wird. */
 export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now(),
-  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true } = {}): Agent | string {
+  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true; vonSitz?: number; sitzRechte?: ReadonlySet<RechtId> } = {}): Agent | string {
   const r = rec(eingang);
   if (!r) return "expected { name, wahlen, agentMd? }";
   const name = typeof r.name === "string" ? r.name.trim() : "";
@@ -175,7 +201,16 @@ export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben:
   // die Rechte in der Form, die die Tür daraus liest: dieselben Rechte ergeben denselben Hash, wie auch immer sie geschrieben waren
   const recht = wahlen.rechte === undefined ? null : rechteAus(wahlen.rechte);
   if (recht) wahlen.rechte = recht;
-  return { id, name, wahlen, agentMd: md, ...herkunft, am, hash: agentHash(wahlen, md) };
+  // DIE MARKE DER SELF-TÜR (server/setup-tueren.ts): was eine Session speichert, trägt seine Rechte gedeckelt in den
+  // Speicher — dieselbe Funktion wie beim Import (src/sitz.ts#rechteGedeckelt). Der Deckel deckt auch die Zusagen (recht):
+  // kein Agent aus der Hand einer Session gibt ein Recht, das sein neuer Owner nicht bestätigte. Die Marke selbst wirkt
+  // an jeder Tür, die einen Agenten öffnet (nichtVomOwner unten); sie geht erst weg, wenn der Owner den Agenten ändert.
+  if (herkunft.vonSitz !== undefined && wahlen.rechte !== undefined) {
+    const gedeckelt = rechteAus(wahlen.rechte);
+    if (gedeckelt) wahlen.rechte = rechteGedeckelt(gedeckelt, herkunft.sitzRechte).rechte;
+  }
+  const { sitzRechte: _sitzRechte, ...marken } = herkunft; // die Rechte der Speichernden gelten nur hier, sie gehören nicht zum Agenten
+  return { id, name, wahlen, agentMd: md, ...marken, am, hash: agentHash(wahlen, md) };
 }
 function freieId(name: string, vergeben: readonly string[]): string {
   const basis = name.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "agent";
@@ -186,7 +221,8 @@ function freieId(name: string, vergeben: readonly string[]): string {
 
 /** EINE KOPIE: derselbe Agent, mit dem, was `aenderung` anders macht (ein Feld auf null nimmt die Wahl weg), und „copy of“ mit dem Hash des
  *  Originals. Ein abgeleiteter Agent wird dabei ausgeschrieben: seine Agent-MD steht danach in der Kopie, nicht mehr im Profil. */
-export function kopie(original: AgentAnsicht, aenderung: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now()): Agent | string {
+export function kopie(original: AgentAnsicht, aenderung: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now(),
+  marke: { vonSitz?: number; sitzRechte?: ReadonlySet<RechtId> } = {}): Agent | string {
   const r = rec(aenderung) ?? {};
   const patch = rec(r.wahlen) ?? {};
   const fremd = Object.keys(patch).filter((k) => !ALLE_FELDER.includes(k));
@@ -195,10 +231,11 @@ export function kopie(original: AgentAnsicht, aenderung: unknown, pruefe: Wahlen
   const wahlen = { ...ohneProfil, ...patch };
   const agentMd = r.agentMd === undefined ? original.agentMd : r.agentMd;
   return eigenerAgent({ id: r.id, name: typeof r.name === "string" ? r.name : `copy of ${original.name}`, wahlen, agentMd }, pruefe, vergeben, am,
-    // eine Kopie legt ihren Ursprung ab wie ein Import: den Stand, von dem sie kopiert, und dessen Kopf vor dessen Linie
+    // eine Kopie legt ihren Ursprung ab wie ein Import: den Stand, von dem sie kopiert, und dessen Kopf vor dessen Linie. „Derived from“
+    // ist immer ein Setup-Hash; der Agent-Hash steht in keiner Datei und bleibt in „copy of“ (kopieVon).
     { kopieVon: { id: original.id, name: original.name, hash: original.hash },
-      setupHash: original.setupHash ?? original.hash, abgeleitetVon: original.abgeleitetVon,
-      derivedFromLine: herkunftLinie(original) });
+      ...(original.setupHash ? { setupHash: original.setupHash } : {}), abgeleitetVon: original.abgeleitetVon,
+      derivedFromLine: herkunftLinie(original), ...marke });
 }
 
 // DER SPEICHER: eine Datei, atomar geschrieben; eine unlesbare Datei ist eine leere Liste, nie ein Fehler beim Start
@@ -220,6 +257,7 @@ export function liesAgenten(dir: string): Agent[] {
       ...(Array.isArray(a.derivedFromLine) && a.derivedFromLine.every((x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x))
         ? { derivedFromLine: a.derivedFromLine as string[] } : {}),
       ...(a.importiert === true ? { importiert: true as const } : {}),
+      ...(typeof a.vonSitz === "number" && Number.isInteger(a.vonSitz) && a.vonSitz > 0 ? { vonSitz: a.vonSitz } : {}),
       am: a.am, hash: agentHash(wahlen, md) }];
   });
 }
@@ -280,7 +318,9 @@ export function abgeleitete(k15: unknown): AgentAnsicht[] {
   return [...ausProfil, ...ausPosition];
 }
 export const eigeneAnsicht = (a: Agent): AgentAnsicht => ({ ...a, art: "eigen", aenderbar: true,
-  quelle: a.importiert ? "importiert, noch nicht vom Owner geändert" : a.kopieVon ? `Kopie von „${a.kopieVon.name}“` : "eigener Agent" });
+  quelle: a.importiert ? "importiert, noch nicht vom Owner geändert"
+    : typeof a.vonSitz === "number" ? `von der Session in Slot ${a.vonSitz} gespeichert, noch nicht vom Owner geändert — startet nie in bypass, ihre Rechte gedeckelt`
+    : a.kopieVon ? `Kopie von „${a.kopieVon.name}“` : "eigener Agent" });
 
 /** Alle Agenten: eingebaut, eigen, abgeleitet. */
 export function katalog(dir: string, k15: unknown): AgentAnsicht[] {
@@ -301,8 +341,10 @@ export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly Ag
   if (daneben.length) return { ok: false, error: `agent „${a.id}“ carries its choices whole — ${daneben.join(", ")} beside it would start another setup than its Fassung shows; copy it (POST ${AGENTEN_ROUTE}/${encodeURIComponent(a.id)}/kopie) to change one` };
   const nichtGelesen = (Object.keys(a.wahlen) as WahlFeld[]).filter((k) => !tuerLiest.includes(k));
   if (nichtGelesen.length) return { ok: false, error: `this door does not read ${nichtGelesen.join(", ")} of agent „${a.id}“ — open it at POST /api/slots/:id/open` };
-  if (a.importiert && a.wahlen.permissionMode === "bypassPermissions") return { ok: false, error: `agent „${a.id}“ came from a file and never starts in bypass` };
-  if (a.importiert && a.wahlen.rolle !== undefined) return { ok: false, error: `agent „${a.id}“ came from a file and never starts in a role` };
+  if (nichtVomOwner(a) && a.wahlen.permissionMode === "bypassPermissions")
+    return { ok: false, error: `agent „${a.id}“ ${herkunftDerMarke(a)} never starts in bypass` };
+  if (nichtVomOwner(a) && a.wahlen.rolle !== undefined)
+    return { ok: false, error: `agent „${a.id}“ ${herkunftDerMarke(a)} never starts in a role` };
   const { rolle, ...wahlen } = a.wahlen;
   const rolleLabel = typeof rolle === "string" ? ROLLEN[rolle]?.label : undefined;
   if (rolleLabel && body.label !== undefined && body.label !== null && body.label !== rolleLabel)
@@ -322,6 +364,8 @@ export interface SlotWahlen {
   readonly notizbuchWahl: string | null; readonly remote: boolean; readonly autoModeEnvironment: boolean | null; readonly schwelle: number | null;
   readonly agentMd: AgentMd | null; readonly sitz: { konst: string; pos: string } | null; readonly rolle: string | null;
   readonly packMcp: readonly string[]; readonly worktree: boolean;
+  /** die gebildete Rolle (Slot.rolleStein), in der der Sitz startete: ein Agent trägt sie nicht, sie reist mit der Konstellation */
+  readonly gebildeteRolle?: string | null;
 }
 export function wahlenAusSlot(s: SlotWahlen): { wahlen: Wahlen; agentMd: { titel: string; text: string; profil: string } | null; nichtGetragen: string[] } {
   const wahlen = wahlenSauber({ harness: s.harness, model: s.model, effort: s.effort, permissionMode: s.permissionMode, rechte: s.rechte,
@@ -329,7 +373,8 @@ export function wahlenAusSlot(s: SlotWahlen): { wahlen: Wahlen; agentMd: { titel
     autoModeEnvironment: s.autoModeEnvironment, schwelle: s.schwelle, sitz: s.sitz ? `${s.sitz.konst}/${s.sitz.pos}` : null, rolle: s.rolle });
   const agentMd = s.agentMd && !s.sitz ? { titel: s.agentMd.titel, text: s.agentMd.text, profil: s.agentMd.profil } : null;
   return { wahlen, agentMd, nichtGetragen: [...(s.packMcp.length ? [`die MCP-Server der Packs (${s.packMcp.join(", ")})`] : []),
-    ...(s.worktree ? ["der Lane-Worktree"] : [])] };
+    ...(s.worktree ? ["der Lane-Worktree"] : []),
+    ...(s.gebildeteRolle ? [`die gebildete Rolle „${s.gebildeteRolle}“ (eine Agent-Datei trägt nie eine Rolle; sie reist mit der Konstellation: POST /api/self/konstellationen)`] : [])] };
 }
 
 // TEILEN: die Datei trägt den Agenten ganz (Wahlen und Agent-MD) und „derived from“ = seinen Hash hier. Bezüge auf diese Fleet gehen nie hinaus.
@@ -439,6 +484,12 @@ export interface AgentenServer {
   /** der Objektspeicher von Fleets eigenem Repo (`git rev-parse --git-common-dir`); null ohne git. Eine Funktion, gelesen erst beim
    *  Aufruf: e2e/lanes-lifecycle.ts übersetzt das Objekt in server.ts ohne die Konstante, an der es hängt. */
   fleetCommonDir: () => string | null;
+  /** gesetzt, wenn die SELF-TÜR speichert oder kopiert (server/setup-tueren.ts#selfAgentenTuer): der Slot der Session, die
+   *  schreibt. Alles, was diese Tür anlegt, trägt die Marke vonSitz — startet nie in bypass, nie in einer Rolle, seine
+   *  Rechte gedeckelt wie bei einem Import — bis der Owner den Agenten ändert. Ohne die Marke (das Owner-Tor) bleibt alles, wie es war. */
+  vonSitz?: number;
+  /** die wirksamen Rechte dieser Session (server/tuer-rechte.ts#wirksameRechte): was sie speichert, behält davon seine Zusagen; ohne sie fällt jede */
+  sitzRechte?: ReadonlySet<RechtId>;
 }
 const antwort = (body: unknown, status = 200): Response => Response.json(body, { status });
 export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jetzt = Date.now): Promise<Response> {
@@ -469,10 +520,12 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
       eingang = { id: body.id, name: body.name, wahlen: aus.wahlen, agentMd: aus.agentMd };
       nichtGetragen = aus.nichtGetragen;
     }
-    const a = eigenerAgent(eingang, q.pruefe, vergeben, jetzt());
+    const a = eigenerAgent(eingang, q.pruefe, vergeben, jetzt(), q.vonSitz === undefined ? {} : { vonSitz: q.vonSitz, ...(q.sitzRechte ? { sitzRechte: q.sitzRechte } : {}) });
     if (typeof a === "string") return antwort({ error: a }, 400);
     schreibAgenten(q.dir, [...eigene, a]);
-    return antwort({ agent: eigeneAnsicht(a), ...(nichtGetragen.length ? { nichtGetragen } : {}) }, 201);
+    // DIE SELF-TÜR LEGT IHREN DECKEL DARÜBER (nichtVomOwner): die Antwort nennt, was er sperrte, wie es der Import tut
+    const gedeckelt = q.vonSitz === undefined ? [] : deckelDerWahl((rec(eingang)?.wahlen as Wahlen | undefined)?.rechte, q.sitzRechte);
+    return antwort({ agent: eigeneAnsicht(a), ...(nichtGetragen.length ? { nichtGetragen } : {}), ...(gedeckelt.length ? { gedeckelt } : {}) }, 201);
   }
   if (rest.length === 1 && rest[0] === "import" && req.method === "POST") {
     const body = await lies();
@@ -504,10 +557,15 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
   if (rest.length === 2 && rest[1] === "kopie" && req.method === "POST") {
     const zuViel = voll();
     if (zuViel) return zuViel;
-    const k = kopie(a, await lies(), q.pruefe, vergeben, jetzt());
+    const aenderung = await lies();
+    const k = kopie(a, aenderung, q.pruefe, vergeben, jetzt(), q.vonSitz === undefined ? {} : { vonSitz: q.vonSitz, ...(q.sitzRechte ? { sitzRechte: q.sitzRechte } : {}) });
     if (typeof k === "string") return antwort({ error: k }, 400);
     schreibAgenten(q.dir, [...eigene, k]);
-    return antwort({ agent: eigeneAnsicht(k) }, 201);
+    // was Original und Änderung zusammen an Rechten fragen (null nimmt die Wahl weg): derselbe Deckel wie beim Speichern
+    const patch = rec(aenderung)?.wahlen;
+    const gefragt = patch && typeof patch === "object" && "rechte" in patch ? patch.rechte : a.wahlen.rechte;
+    const gedeckelt = q.vonSitz === undefined ? [] : deckelDerWahl(gefragt, q.sitzRechte);
+    return antwort({ agent: eigeneAnsicht(k), ...(gedeckelt.length ? { gedeckelt } : {}) }, 201);
   }
   if (rest.length === 2 && rest[1] === "datei" && req.method === "GET") {
     const d = agentDatei(a);

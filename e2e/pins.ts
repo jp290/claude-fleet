@@ -1131,6 +1131,8 @@ await import(pathToFileURL(process.argv[2]).href);
           const selfPosition = () => ({}), lineageSelfView = () => null, attentionFor = () => [], selfContextView = () => null;
           // the /api/self route also carries the live rights view (server/tuer-rechte.ts); this probe tests the occupant guard
           const rechteFuerStart = () => ({});
+          // and the seat view (server/position-start.ts); the probe does not read it
+          const sitzAnsicht = () => null;
           ${tested}
           throw Error('route did not execute');
         })();`;

@@ -1544,8 +1544,13 @@ export default function (pi) {
   // ...and the module that builds a start's --settings (server/weglassen.ts, a door's choice to leave plugins out) names enabledPlugins for
   // that flag only: it imports nothing from node:fs and calls no write or spawn, so the key reaches a command line and never a file.
   const LINE_BUILDER = "server/weglassen.ts";
+  // ...and ONE named exception (Mangel 175): the pi fence lets a sandboxed pi make the lock DIRECTORY `settings.json.lock` beside pi's own
+  // settings.json in its agent home. That is a sandbox allow-literal for a directory pi creates, not a setting Fleet writes. The exception
+  // is this module and this name only: any other mention of settings.json there, or the same name anywhere else, still fails the pin.
+  const SANDBOX_LOCK_FILE = "server/pi-zai-fence.ts";
+  const naming = (file: string, line: string): boolean => /settings\.json|enabledPlugins/.test(file === SANDBOX_LOCK_FILE ? line.replaceAll("settings.json.lock", "") : line);
   const runtimeNaming = serverU.files.filter((f) => !f.file.endsWith(".test.ts") && f.file !== SETTINGS_READER && f.file !== LINE_BUILDER)
-    .flatMap((f) => f.text.split("\n").filter((l) => !l.trim().startsWith("//") && /settings\.json|enabledPlugins/.test(l))
+    .flatMap((f) => f.text.split("\n").filter((l) => !l.trim().startsWith("//") && naming(f.file, l))
       .map((l) => `${f.file}: ${l.trim().slice(0, 80)}`));
   const reader = serverU.module(SETTINGS_READER);
   const readerFs = [...reader.matchAll(/^import \{([^}]*)\} from "node:fs(?:\/promises)?";/gm)]

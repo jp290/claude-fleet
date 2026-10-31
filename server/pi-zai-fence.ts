@@ -126,9 +126,9 @@ export interface PiZaiFenceInput {
 // there). Only these names, and only create and unlink: enough for the staged file to be made and
 // renamed out, while another process's staged content stays unreadable and unwritable.
 // The lock directories pi makes in its agent home (proper-lockfile: `<file>.lock`), the only names writable there on macOS.
-// (pi's settings.json, auth.json, trust.json and models-store.json - spelled by stem here: this is pi's agent home, not Claude's
-// ~/.claude/settings.json that e2e/pins.ts keeps Fleet from naming)
-export const PI_AGENT_HOME_LOCKS = ["settings", "auth", "trust", "models-store"].map((stem) => `${stem}.json.lock`);
+// Spelled out, not assembled: e2e/pins.ts#SANDBOX_LOCK_FILE lets exactly this module name `settings.json.lock` (a lock DIRECTORY of pi's
+// agent home, not a setting and not Claude's ~/.claude/settings.json) and nothing else called settings.json.
+export const PI_AGENT_HOME_LOCKS = ["settings.json.lock", "auth.json.lock", "trust.json.lock", "models-store.json.lock"] as const;
 export const PIZAI_NSIRD_TOOLS = ["swift-build", "swift-package", "swift-driver"] as const;
 
 // Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and
@@ -280,8 +280,9 @@ export function piZaiFenceProfile(i: PiZaiFenceInput): string | null {
 //   (A) closed        everything not mounted: home, /tmp, other worktrees, the main checkout, ~/.ssh,
 //                     the key file, fleet.json/.env, other sessions' transcripts, the live tmux socket
 //                     (/tmp is a fresh tmpfs, so /tmp/tmux-<uid> does not exist inside)
-//   (B) opened        the cwd and the pane's own temp home (rw), the pi agent dir (rw, but its sessions/
-//                     replaced by an empty tmpfs with only the OWN session dir bound back), the PATH
+//   (B) opened        the cwd and the pane's own temp home (rw), the pi agent dir (a throwaway overlay: readable, writes land
+//                     in a tmpfs and die with the fence; its sessions/ replaced by an empty tmpfs with only the OWN session dir
+//                     bound back rw), the PATH
 //                     tools under home and the targets their symlinks name (ro), /usr and a short /etc
 //                     list (ro), the worktree's git dirs (ro; objects/, the admin dir and the one
 //                     branch's directory rw)
@@ -402,7 +403,7 @@ export function piZaiBwrapArgs(i: PiZaiFenceInput, o: { newSession?: boolean } =
   const browserCache = `${i.home}/.cache/ms-playwright`;
   try { if (lstatSync(browserCache).isDirectory()) { a.push("--ro-bind", browserCache, browserCache); open(browserCache); } } catch { /* absent: no bind */ }
 
-  // (B) read-write: the lane, the pane's temp home, the pi agent dir
+  // (B) read-write: the lane and the pane's temp home; the pi agent dir below is an overlay, not a read-write bind
   a.push("--bind", i.cwd, i.cwd); open(i.cwd);
   a.push("--bind", i.ownTmp, i.ownTmp); open(i.ownTmp);
   // THE PI AGENT HOME IS A THROWAWAY COPY-ON-WRITE VIEW (Mangel 175, owner 31.10.): pi loads code and instructions from

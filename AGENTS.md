@@ -10,9 +10,9 @@ owner's word.
 - This file, the packs in `.fleet/context-packs.json` and the owner's corrections (`k-owner-korrekturen`).
 - `CLAUDE.md` and `rulebook/` no longer apply, and nothing new goes into a `CLAUDE.md`: knowledge goes into a pack,
   a concept or this file. A comment that cites "CLAUDE.md §…" is history.
-- Cards, the queue, the dispatcher, the MAIN role and the lanes are switched off. What serves the new system moves
-  into it, and the old system becomes a constellation in it. Don't build on them, and don't remove them. The lane
-  contract `.fleet/vertraege/lane.md` holds only inside a lane.
+- Cards, the queue, the dispatcher, the MAIN role and the lanes stay and get refined (owner correction
+  `karten-bleiben-stehen`). What serves the new system moves into it, and the old system becomes a constellation in
+  it. Never propose removing them. The lane contract `.fleet/vertraege/lane.md` holds only inside a lane.
 - For facts, current code and live state beat prose. When code and a text disagree, the code holds; report the
   text. When two rules really conflict, stop and report; never pick the convenient one.
 

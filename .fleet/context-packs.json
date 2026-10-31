@@ -375,6 +375,50 @@
     "status": "active"
   },
   {
+    "id": "clean-and-effective-code",
+    "useWhen": "Before you say a change someone else built fits: what to demand of the code beyond working, and what is only style.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": [
+      "seat-choice"
+    ],
+    "hardness": "guidance",
+    "sources": [
+      {
+        "id": "clean-and-effective-code.text",
+        "path": "docs/packs/clean-and-effective-code.md",
+        "anchor": "# Clean and effective code",
+        "sorte": "anleitung",
+        "positions": {
+          "lane": "ausleihe",
+          "main": "ausleihe",
+          "orchestratorin": "ausleihe"
+        }
+      }
+    ],
+    "requiredCapabilities": [
+      "tracked-source-read"
+    ],
+    "harnesses": [
+      "claude",
+      "pi",
+      "pi-zai",
+      "pi-deepseek",
+      "pi-zai-unfenced",
+      "pi-unfenced",
+      "container",
+      "codex"
+    ],
+    "modes": [
+      "read-only",
+      "mutating"
+    ],
+    "estimatedBytes": 4969,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "sharpening-an-order",
     "useWhen": "Before you give an order to a session that has a history: how sharpen3 reads it against its conversation.",
     "scope": "repo-contract",

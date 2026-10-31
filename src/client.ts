@@ -1,4 +1,4 @@
-import type { CodexFirstTurn } from "../server/conversation-read";
+import type { CodexFirstTurn, FileChange } from "../server/conversation-read";
 import type { ModelSwitch } from "../server/model-switch";
 import { PERF_BATCH_MAX, type PerfRecord, type PerfJourney, type PerfAttrs } from "./protocol";
 import { perfRebuild } from "./perfmarks";
@@ -848,7 +848,9 @@ let shareBase = ""; // public URL prefix for share links (FLEET_SHARE_URL server
 
 // --- transcript view model (mirrors server.ts's TEntry/TBlock) ---
 interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text: string; name?: string;
-  id?: string; ref?: string }
+  id?: string; ref?: string;
+  // a file change pi's tool call carried (server/conversation-read.ts#FileChange)
+  file?: FileChange }
 // meta = a harness-injected user turn (task-notification): shown folded, not as a "you" bubble
 export interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
@@ -2099,10 +2101,15 @@ class Pane {
       const step = document.createElement("details");
       step.className = "tstep";
       const sum = document.createElement("summary");
-      sum.textContent = b.t === "thinking" ? "💭 thinking"
-        : b.t === "tool" ? `${b.name ?? "tool"} ${b.text.slice(0, 90)}`
-        : "result";
-      step.append(sum, el("pre", "", b.text));
+      // A file change pi's call carried becomes the change, not the call's cut JSON; every other
+      // step keeps exactly the line it always had.
+      if (b.file) this.addFileStep(b.file, step, sum);
+      else {
+        sum.textContent = b.t === "thinking" ? "💭 thinking"
+          : b.t === "tool" ? `${b.name ?? "tool"} ${b.text.slice(0, 90)}`
+          : "result";
+        step.append(sum, el("pre", "", b.text));
+      }
       if (this.chatFresh) step.classList.add("fresh");
       g.body.appendChild(step);
       g.count++;
@@ -2110,6 +2117,22 @@ class Pane {
       g.lastStep = b.t === "tool" ? step : null;
     }
     g.sum.textContent = `⚙ ${g.count} step${g.count === 1 ? "" : "s"}`;
+  }
+
+  // WHAT A PI SESSION CHANGED (Owner 28.10.: „[Zitat entfernt]“). pi's `edit`/`write` carry the change in their arguments, so the card names the FILE and
+  // shows the changed lines as −/+, in the same language the board's diffs speak
+  // (renderDiffInto). Open, because "what did it change" is why the group was opened; the call's own
+  // JSON stays available as the tooltip. Capped by the reader — "gekappt" says the card is not all.
+  private addFileStep(f: FileChange, step: HTMLDetailsElement, sum: HTMLElement): void {
+    const base = f.path.split("/").filter(Boolean).pop() ?? f.path;
+    const add = f.after.length, del = f.before?.length ?? 0;
+    const counts = [add ? `+${add}` : "", del ? `−${del}` : ""].filter(Boolean);
+    sum.textContent = `✎ ${base}${counts.length ? ` · ${counts.join(" ")}` : ""}${f.cut ? " · gekappt" : ""}`;
+    sum.title = f.path;
+    const pre = el("pre", "fcbody");
+    renderDiffInto(pre, [...(f.before ?? []).map((l) => `-${l}`), ...f.after.map((l) => `+${l}`)].join("\n"));
+    step.append(sum, pre);
+    step.open = true;
   }
 
   // SUBAGENT CALLS RUN UNTIL THEIR RESULT LANDS. A tool_use named Agent/Task whose result has not

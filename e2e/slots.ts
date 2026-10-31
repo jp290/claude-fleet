@@ -3424,9 +3424,12 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
       // tool_result's tool_use_id through (TBlock id/ref); the client pairs a result to its call
       // by id — a subagent call shows "läuft" until the result lands — and the view carries a
       // work indicator on the sessionActive fact with the RECENT_MS hide bound as a one-shot
-      // timer (no new poll interval)
+      // timer (no new poll interval). The TBlock rule reads the FIELDS that carry it (id/ref, and
+      // each field a branch adds next to them), never the one-line SHAPE of the interface: the
+      // pinned text broke on `file?: FileChange` although nothing about the pairing changed. The new
+      // field gets no pin of its own: what it does is proven in server/conversation-read.test.ts.
       check("chat: a subagent call runs until its result — id through the server, paired on the client, no positional guess",
-        /TBlock \{ t: "text" \| "thinking" \| "tool" \| "tool_result"; text: string; name\?: string;\n  id\?: string; ref\?: string \}/.test(cliSrc)
+        /TBlock \{[^}]*\bid\?: string;[^}]*\bref\?: string;/.test(cliSrc)
           && serverSrc.includes("typeof blk.tool_use_id === \"string\" && blk.tool_use_id ? { ref: blk.tool_use_id } : {}")
           && serverSrc.includes("typeof blk.id === \"string\" && blk.id ? { id: blk.id } : {}")
           && cliSrc.includes("private openAgents = new Map<string, { step: HTMLElement; run: HTMLElement }>()")

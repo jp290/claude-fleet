@@ -16,7 +16,20 @@ export interface TBlock { t: "text" | "thinking" | "tool" | "tool_result"; text:
   // owner transcript routes only (row 1e01b4f3): a native Claude Code AskUserQuestion call, typed
   // from the ORIGINAL input — never from the 600-char `text` — and whether it is bound to the
   // terminal of the confirmed current occupant; on its tool_result, the typed answer
-  ask?: NativeAsk; terminal?: Binding; answer?: NativeAnswer }
+  ask?: NativeAsk; terminal?: Binding; answer?: NativeAnswer;
+  // pi only: a tool call that CHANGES a file carries the change itself, not only its cut JSON
+  // (`edit {"path":"src/…","oldText":"…`) — so the board can show the file and its −/+ lines.
+  // Claude blocks never set it: their Edits arrive structurally elsewhere.
+  file?: FileChange }
+// `before` is the text the call replaced (absent for `write`), `after` what stands there now — as
+// LINES, capped at FILE_LINES per side and LINE_MAX per line, `cut` when the real text was longer.
+// A whole-file write must not become the conversation, and the board caps a card anyway.
+export interface FileChange { path: string; before?: string[]; after: string[]; cut: boolean }
+export const FILE_LINES = 20;
+export const LINE_MAX = 400;
+// a side's whole budget: a call carrying two capped sides must not become the conversation view's
+// payload on every poll
+export const SIDE_MAX = 2000;
 // meta: a harness-injected user turn — real content, not typed by the owner (folded in the view)
 export interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
@@ -362,6 +375,53 @@ export function readCodexRollout(lines: string[]): ConversationRead {
   return { entries, branch: "", cache, model, effort, total, firstTurn: readCodexFirstTurn(lines, 0) };
 }
 
+// pi's file-changing tools carry the change in their ARGUMENTS: measured pi 1.0.2 types `edit` as
+// {path, edits:[{oldText, newText}]} and `write` as {path, content} (dist/core/tools/edit.d.ts,
+// write.d.ts in the pi package). The flat {path, oldText, newText} is read too, because the call is
+// named that way in the owner's brief and older calls may carry it. Every other tool — bash, read,
+// the subagent calls — returns null and keeps the one line it always had.
+function fileChange(name: string, args: unknown): FileChange | null {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const path = str(a.path);
+  const tool = name.toLowerCase();
+  if (!path) return null;
+  const pairs: [string, string][] = [];
+  if (tool === "write") {
+    if (!("content" in a)) return null;
+    pairs.push(["", str(a.content)]);
+  } else if (tool === "edit") {
+    if (Array.isArray(a.edits))
+      for (const e of a.edits as unknown[]) {
+        const o = (e ?? {}) as Record<string, unknown>;
+        pairs.push([str(o.oldText), str(o.newText)]);
+      }
+    else if ("oldText" in a || "newText" in a) pairs.push([str(a.oldText), str(a.newText)]);
+    if (!pairs.length) return null;
+  } else return null;
+  const before: string[] = [], after: string[] = [];
+  let cut = false;
+  cut = pushLines(before, pairs.map(([o]) => o).join("\n")) || cut;
+  cut = pushLines(after, pairs.map(([, n]) => n).join("\n")) || cut;
+  return tool === "write" ? { path, after, cut } : { path, before, after, cut };
+}
+// a final newline ENDS the last line instead of starting an empty one; past FILE_LINES, LINE_MAX per
+// line or SIDE_MAX per side the rest is dropped and `cut` says so — what the card shows is then a
+// capped view, never a wrong one
+function pushLines(into: string[], text: string): boolean {
+  if (!text) return false;
+  const all = text.replace(/\r\n/g, "\n").split("\n");
+  if (all.length > 1 && all[all.length - 1] === "") all.pop();
+  let cut = false, chars = 0;
+  for (const line of all) {
+    const l = line.length > LINE_MAX ? line.slice(0, LINE_MAX) : line;
+    if (l !== line) cut = true;
+    if (into.length >= FILE_LINES || chars + l.length > SIDE_MAX) return true;
+    into.push(l);
+    chars += l.length;
+  }
+  return cut;
+}
+
 // --- pi session ---------------------------------------------------------------------------------
 // A TREE (id/parentId), not a log: /tree and /fork leave abandoned branches in the same file. The
 // conversation is the path from the NEWEST entry (the leaf pi appends under) back to the root; only
@@ -411,8 +471,13 @@ export function readPiSession(lines: string[]): ConversationRead {
       for (const b of parts) {
         if (b.type === "text" && str(b.text)) blocks.push({ t: "text", text: trim(str(b.text), 40_000) });
         else if (b.type === "thinking" && str(b.thinking)) blocks.push({ t: "thinking", text: trim(str(b.thinking), 10_000) });
-        else if (b.type === "toolCall")
-          blocks.push({ t: "tool", name: str(b.name) || "tool", text: trim(JSON.stringify(b.arguments ?? {}), 600) });
+        else if (b.type === "toolCall") {
+          const name = str(b.name) || "tool";
+          const block: TBlock = { t: "tool", name, text: trim(JSON.stringify(b.arguments ?? {}), 600) };
+          const file = fileChange(name, b.arguments);
+          if (file) block.file = file;
+          blocks.push(block);
+        }
       }
       if (blocks.length) entries.push({ n, role: "assistant", ts, blocks });
       const at = typeof m.timestamp === "number" ? m.timestamp : ts ? Date.parse(ts) : NaN;

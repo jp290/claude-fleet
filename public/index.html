@@ -758,6 +758,10 @@
     user-select: none; -webkit-user-select: none; }
   .tstep > pre { padding: 4px 10px 8px; color: #a1a1aa; font-size: var(--chat-code-fs); max-height: 260px; overflow-y: auto; }
   .tstep .tres { border-top: 1px solid var(--chat-edge-soft); color: #8a8a93; }
+  /* a file change pi's tool call made: code lines, no wrapping, and the board's diff colours —
+     the same −/+ language as .difftxt, in the compact step card */
+  .tstep > pre.fcbody { white-space: pre; font-family: var(--chat-mono); }
+  .tstep > pre.fcbody .add { color: var(--add); } .tstep > pre.fcbody .del { color: var(--del); }
   /* task-notifications: same collapsed-accordion language as .toolgroup, amber accent so
      they read as "the harness spoke," and hidden by default (collapsed) — click to view */
   .notifgroup { margin: 0 0 16px; border: 1px solid #2a2415; border-radius: 10px; background: #0d0b06cc; }

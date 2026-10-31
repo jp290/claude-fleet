@@ -2,7 +2,7 @@
 // Zeile das sagen und pi NICHT starten, nie auf eine schreibbare Bindung ausweichen. Der Test erzeugt die echte Zeile von PI_ZAI_HARNESS
 // (in einem Kindprozess, wie server/load.test.ts den Import beweist), setzt ein Stub-bwrap ein, das die Option ablehnt, und führt die Zeile aus.
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,7 +63,18 @@ describe("ein bwrap ohne Overlay-Unterstützung: das Banner, kein pi", () => {
     const ok = stub(join(root, "neu"), "bwrap", `while [ $# -gt 0 ] && [ "$1" != pi ] && [ "$1" != /usr/bin/true ]; do shift; done\nexec "$@"`);
     expect(existsSync(marker)).toBe(false);
     const line2 = await zeileMit(ok, join(root, "work"));
+    // Mangel 175: ein Sitz hat die Lock-Namen im Home mit einer Datei und einem Symlink belegt, ein Ordner steht für ein laufendes Geschwister.
+    // Die erzeugte Zeile räumt Nicht-Ordner VOR dem Zaun (also auch bei diesem Stub) und lässt den Ordner stehen.
+    const agent = join(root, "agent"), ziel = join(root, "ziel");
+    mkdirSync(ziel, { recursive: true });
+    writeFileSync(join(agent, "settings.json.lock"), "x");
+    symlinkSync(ziel, join(agent, "auth.json.lock"));
+    mkdirSync(join(agent, "trust.json.lock", "inhalt"), { recursive: true });
     run(line2);
     expect(existsSync(marker)).toBe(true);
+    const art = (p: string) => { try { const s = lstatSync(p); return s.isSymbolicLink() ? "link" : s.isDirectory() ? "ordner" : "datei"; } catch { return "weg"; } };
+    expect([art(join(agent, "settings.json.lock")), art(join(agent, "auth.json.lock")), art(join(agent, "trust.json.lock")), art(ziel)])
+      .toEqual(["weg", "weg", "ordner", "ordner"]);
+    expect(art(join(agent, "trust.json.lock", "inhalt"))).toBe("ordner");
   }, 60_000);
 });

@@ -64,7 +64,7 @@ const MAX_ZIEL = 8000;
 function gelesenePacks(k: SeatKnowledge | null, wahl: boolean | readonly string[] | null): { packs: SetupPack[]; fehlt: string[] } {
   if (!k) return { packs: [], fehlt: Array.isArray(wahl) ? [...wahl] : [] };
   const gewaehlt = Array.isArray(wahl) ? new Set<string>(wahl) : null;
-  const packs = k.packs.filter((p) => p.text !== null && (gewaehlt ? gewaehlt.has(p.id) : !(wahl === false || p.privat || p.zurWahl))).map(alsPack);
+  const packs = k.packs.filter((p) => p.text !== null && (gewaehlt ? gewaehlt.has(p.id) : !(wahl === false || p.privat || p.zurWahl || p.mitgereist))).map(alsPack);
   return { packs, fehlt: gewaehlt ? [...gewaehlt].filter((id) => !k.packs.some((p) => p.id === id)) : [] };
 }
 

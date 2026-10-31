@@ -58,7 +58,7 @@ reads mail sent to `{kind:"role", role:"<id>"}` when it is the newest live holde
 (or the branch door) reaches the child as "written for you by the session in slot N", never as the owner's word. Only a
 role formed here opens at this door, and an imported role once the owner has confirmed its rights (`POST /api/k15/freigabe`
 on the position that carries it; a role with no rights has nothing to confirm). Until then the door refuses it. A role keeps the
-packs it reads on the receiver's shelf, also when the receiver's library has them already; it stays with a seat through
+packs it reads on the receiver's shelf, also when the receiver's library has them already (so does every pack of an imported file: a seat from it reads them in any folder, with the hash the file carried); it stays with a seat through
 succession on every harness (a harness without Fleet's system prompt reads its start text in the brief). A seat the owner opens
 from a position of an imported constellation carries the role of that position once its rights are confirmed, so its address works;
 the owner's open door also takes `role: „[Zitat entfernt]“` for a role formed or confirmed here. The start text of a role names who formed it

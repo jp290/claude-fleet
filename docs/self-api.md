@@ -1092,6 +1092,40 @@ ohne Recht antwortet die Tür 409 mit `missingRight`:
   `erbetenRechte` (`agent`, `stufe`, `recht`, `door`). Die Tür dafür ist `PUT /api/agenten/<id>` des Owners: sein Speichern
   setzt die Rechte und nimmt die Marke „importiert“ (eine Freigabe, `POST /api/k15/freigabe`, gibt es nur je Position).
 
+**Ein Sitz aus einer importierten Datei öffnet in jedem Ordner.** Der Import legt den Text jedes Packs, den die Datei trägt, aufs Regal
+(`setup-bausteine.json`, mit dem Hash der Datei), auch wenn die Bibliothek des Empfängers denselben Pack hat: Fleets Register gibt manche
+Packs nur im eigenen Repo (`seat-start`), und der Sitz aus der Datei liest sie sonst im fremden Ordner nirgends (vorher 400 „Fleet's library has
+no pack … for a seat in this folder“). `server.ts#seatKnowledgeFor` hängt die Regal-Packs hinter Register und eigene Packs an, nur wo die Kennung
+frei ist: ein Text aus einer Datei tritt nie an die Stelle eines Packs aus Fleets Register, und trägt eine Datei unter derselben Kennung einen
+anderen Hash, steht er unter `id@hash8` (`vorschau.collisions`). An der Tür heißt diese Kennung `id-hash8` (`tuerPackId`). Ein Regal-Pack kommt nur,
+wenn er gewählt ist (`SeatPack.mitgereist`), steht nicht im Katalog des Startfensters, und die Self-Tür wählt ihn für ein Kind nicht
+(„came with an imported file“). Ein Pack, für den die Datei keinen Text hat, reist nicht mit: ein persönlicher Platz des Absenders ohne eigenen Text
+beim Empfänger (das Regal merkt sich den leeren Platz, die Tür lässt den Namen durch, der Start nennt `− pack <id>: the file brought no text …`), und
+eine alte Agent-Datei (`fleet-agent/1`, nur Kennungen) mit einer Kennung, die die Bibliothek des Empfängers nicht kennt. Das Schreiben antwortet
+mit `weggelassen: [<pack-id>]`. Der Agent, den ein Ein-Sitz-Import anlegt, behält je Pack Kennung **und Hash** (`Agent.packHashes`, `GET /api/agenten` zeigt sie): sein Start liest je
+Pack den Text mit diesem Hash (`server.ts#packsNachHash`) — den des Registers (oder des Ordners), wenn der Hash passt, sonst den vom Regal, das je
+(Kennung, Hash) einen Text hält und beim zweiten Import nichts ersetzt. Ist Fleets Register weitergegangen, steht im Start `~ pack <id>: read from the
+file's text (<hash12>); this folder's library has <hash12> now`; gibt es den Text zum Hash nirgends, wird der heutige gelesen und `~ pack <id>: the file
+names <hash12>, no text with that hash is here …` nennt es, nie ein stilles Tauschen. Ohne Hash am Agenten entscheidet die Kennung allein, wie vorher; ein Sitz
+im Fleet-Repo, dessen Hash passt, liest Fleets Packs wie vorher. Damit hängt es nicht mehr davon ab, ob der Import einen Pack „local“ nannte (gegen Fleets
+Bibliothek) und der Sitz ihn in seinem Ordner fand: der Text der Datei steht immer auf dem Regal. Ein gewähltes Konzept, das es hier nicht gibt (keine
+`FLEET_KONZEPT_ROOT`, unbekannte Kennung), steht im Start als `− concept <id>: not found here …`.
+
+**Wie ein Konzept in die Wahl eines Agenten kommt.** Ein eigener Agent wählt Konzepte mit `wahlen.konzepte`, einer Liste von Konzept-Kennungen
+(`POST /api/agenten` oder `…/kopie`); der Agent trägt nur die Kennungen, nie den Text. Beim Start sucht `server/setup-datei.ts#steineFuerAgentWahl` jede Kennung
+zuerst im Regal (`setup-bausteine.json`: ein Konzept, das eine importierte Datei trug), dann im Konzept-Ledger, dem Ordner `FLEET_KONZEPT_ROOT`: darin liegt je
+Konzept ein Ordner `<konzept>/` mit `versionen.jsonl` und `v1.md`, `v2.md` …, und gelesen wird die höchste Version, deren Text den `sha256` ihrer Zeile hat
+(`liesKonzept`). Steht `personal: true` im Kopf des Textes, ist das Konzept persönlich: es reist nie in eine Datei (ein leerer Platz), und ein Sitz, der nicht
+Anthropic ist, bekommt es nicht (`− concept <id>: … left out`). Ein Konzept, das es weder auf dem Regal noch im Ledger gibt, steht im Start als
+`− concept <id>: not found here …`. Im Start steht jedes gefundene Konzept als `+ concept <id> (author: …)` samt Text, hinter der Rolle, wenn der Agent eine
+hat (`FLEET ROLE (<id>, author: …)`, dann `DIRECTION — empty place …`). Dieselben Zeilen zeigt die Vorschau vor dem Start: `GET /api/founding-plan?…&anlass=neu&agent=<id>`
+liest auch die `rolle` des Agenten (sie gibt nur Text, keine Rechte: die Rechte kommen aus `wahlen.rechte`) und liefert denselben Start-Hash, den die Tür beim Öffnen
+prüft. Nur Fleets eigene Orchestratorin (`agent=orchestratorin`) hat einen Plan der eigenen Rolle (`role=orchestratorin`).
+
+Dieselbe Tür liest alle drei Formate (`fleet-setup/1`, `fleet-agent/1`, `fleet: "konstellation"`); das Board
+teilt und importiert nur noch über `GET /api/setups/<id>/datei` und `POST /api/setups/import`. `GET /api/agenten/<id>/datei` und
+`POST /api/agenten/import` bleiben für ältere Aufrufer.
+
 Was der Setup-Hash deckt: Name, Sitze, Kanten, Rollen, die Aufgabe und jeden Baustein mit seinem Text-Hash und mit jedem Feld,
 das den Start formt — bei einem Pack `way`, `useWhen`, Quellen und Autor, bei einem Konzept Autor, Zweck und Geltung. Nicht
 darin: `derivedFrom`, `derivedFromLine` und Läufe. Eine Datei, die vor dieser Erweiterung gehasht wurde (Bausteine nur mit

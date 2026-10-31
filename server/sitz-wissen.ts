@@ -90,6 +90,9 @@ export interface SeatPack {
   readonly privat?: true;
   /** ein Pack des Registers mit dem Auslöser seat-choice: er steht im Katalog und kommt nur, wenn er gewählt ist */
   readonly zurWahl?: true;
+  /** ein Pack, den eine importierte Setup-Datei mitbrachte (server/setup-datei.ts#liesShelf, „Regal“): sein Text ist der der Datei, mit dem Hash, den sie
+   *  trug; er kommt nur, wenn er gewählt ist, und ersetzt nie einen Pack des Registers oder einen eigenen gleicher Kennung */
+  readonly mitgereist?: true;
   /** sein Feld `statt`: wer ihn wählt, bekommt diesen Pack nicht */
   readonly statt?: string;
   /** wer ihn diesem Start gab (die Vorgängerin über POST /api/self/einrichten), für die + Zeile mit Autor */
@@ -177,7 +180,7 @@ const ersterAbsatz = (text: string): string | null => {
   return absatz && !/^[#\-*|>`]/.test(absatz) && absatz.length <= 280 ? absatz : null;
 };
 export function seatKatalog(k: SeatKnowledge): KatalogPack[] {
-  return [...boxOf(k), ...skillsOf(k)].filter((pack) => !pack.privat).map((pack) => ({
+  return [...boxOf(k), ...skillsOf(k)].filter((pack) => !pack.privat && !pack.mitgereist).map((pack) => ({
     id: pack.id, titel: pack.text!.match(/^#\s+(.+?)\s*$/m)?.[1] ?? pack.id, useWhen: pack.useWhen,
     bytes: new TextEncoder().encode(pack.text!).length, weg: isBox(pack) ? "start" as const : "skill" as const,
     konzept: pack.sources.some((source) => source.path.startsWith("docs/start/")),
@@ -277,7 +280,7 @@ export function packAuswahlFehlt(wahl: BibliothekWahl | null, k: SeatKnowledge):
  *  auch wenn die Liste ihn trägt: das Startfenster schickt die Standardpacks mit. Rein. */
 export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null, dazu: readonly string[] = [], an = true): SeatKnowledge {
   const ids = Array.isArray(wahl) ? new Set(wahl) : null, extra = new Set(dazu);
-  const da = k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat && !pack.zurWahl))
+  const da = k.packs.filter((pack) => extra.has(pack.id) || an && (ids ? ids.has(pack.id) : !pack.privat && !pack.zurWahl && !pack.mitgereist))
     .map((pack) => extra.has(pack.id) ? { ...pack, autor: "your predecessor in this slot" } : pack);
   const weg = new Set(da.flatMap((pack) => pack.statt ? [pack.statt] : []));
   return { ...k, packs: da.filter((pack) => !weg.has(pack.id)) };
@@ -333,7 +336,7 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`
-        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : "so mitgereist")}`)),
+        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.mitgereist ? "ein Pack aus einer importierten Setup-Datei, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : "so mitgereist")}`)),
     ...skills.map((pack) => textAbschnitt("wissen", `${skillsPfad}/${pack.id}/SKILL.md\n`
       + pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,

@@ -184,7 +184,8 @@ describe("der Importtisch", () => {
     const l = await loeseBausteine(datei, { bibliothek: () => SEAT }, dir);
     if (typeof l === "string") throw new Error(l);
     expect(l.vorschau.packs.find((p) => p.id === "shared-pack")?.source).toBe("local");
-    expect(l.zuSpeichern.packs).toEqual([]);
+    // kein Text wird gespeichert (der leere persönliche Platz der Datei ist ohne Text und kein mitgereister)
+    expect(l.zuSpeichern.packs.filter((p) => p.text !== null)).toEqual([]);
   });
   test("neue Id: der mitgereiste Text landet im Regal", async () => {
     const dir = frisch();

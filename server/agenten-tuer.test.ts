@@ -79,6 +79,68 @@ describe("ein Slot öffnet aus einem Agenten", () => {
     expect(ok(fassung).wahlen.permissionMode).toBe("auto");
   }, LIFE_DEADLINE_MS * 2);
 
+  test("die Vorschau vor dem Start zeigt einen Agenten mit Rolle und Konzept wie sein laufender Sitz: dieselben Steine mit Autor, derselbe Hash", async () => {
+    const f = fixture();
+    const stein = roleStein("lane", null);
+    if (!stein) throw new Error("role stone missing");
+    const konzeptText = "# Bauen\n\nSo baust du.";
+    schreibShelf(f.state, { version: 1, packs: stein.packs,
+      concepts: [{ kind: "concept", id: "k-bau", version: 1, hash: hashText(konzeptText), text: konzeptText, author: "owner" }], roles: [stein.role] });
+    const [made, vorschau] = await life(f, [
+      post("/api/agenten", { id: "stein", name: "Stein", wahlen: { rolle: "lane", konzepte: ["k-bau"] } }),
+      get(`/api/founding-plan?repo=${encodeURIComponent(f.repo)}&role=nur-ordner&anlass=neu&agent=stein`),
+    ]);
+    ok(made);
+    // die Tür liest die Rolle (früher 400 „does not read rolle“); die Vorschau trägt Rolle und Konzept als Steine des Starts
+    const gezeigt = ok(vorschau).fassung as Record<string, any>;
+    const [offen, laufend] = await life(f, [
+      post("/api/slots/1/open", { cwd: f.repo, agent: "stein", fassung: gezeigt.hash }),
+      get("/api/slots/1/fassung?anlass=laufend"),
+    ]);
+    // die Tür nimmt den gezeigten Hash an (sonst 409), und der laufende Sitz trägt ihn
+    expect({ status: offen?.status, error: offen?.body.error }).toEqual({ status: 200, error: undefined });
+    const texte = (x: unknown): string => ((x as { teile: { abschnitte: { text: string | null }[] }[] }).teile)
+      .flatMap((t) => t.abschnitte.flatMap((a) => typeof a.text === "string" ? [a.text] : [])).join("\n");
+    const vor = texte(gezeigt);
+    expect(vor).toContain("FLEET ROLE (lane");
+    expect(vor).toContain(`+ concept k-bau (author: owner)\n\n${konzeptText}`);
+    expect(vor).toContain(RICHTUNG_PLATZ);
+    expect(vor).toBe(texte(ok(laufend)));
+    expect(ok(laufend).hash).toBe(gezeigt.hash);
+  }, LIFE_DEADLINE_MS * 3);
+
+  for (const laeuftSchon of [false, true]) {
+    test(`die Vorschau eines eigenen Agenten mit der Rolle orchestratorin im fremden Repo zeigt Rolle und Konzept und denselben Hash wie sein laufender Sitz${laeuftSchon ? ", auch wenn eine Orchestratorin schon läuft" : ""}`, async () => {
+      const f = fixture();
+      const konzeptText = "# Bauen\n\nSo baust du.";
+      schreibShelf(f.state, { version: 1, packs: [],
+        concepts: [{ kind: "concept", id: "k-bau", version: 1, hash: hashText(konzeptText), text: konzeptText, author: "owner" }], roles: [] });
+      // eine laufende Orchestratorin (ein Sitz mit dem Label): neben ihr löst sich die Rolle nicht auf, der neue Sitz trägt ihr Bundel nicht
+      const [made, ersterSitz, vorschau] = await life(f, [
+        post("/api/agenten", { id: "orch-eigen", name: "Orch eigen", wahlen: { rolle: "orchestratorin", konzepte: ["k-bau"] } }),
+        ...(laeuftSchon ? [post("/api/slots/1/open", { cwd: f.repo, label: "Orchestrator" })] : [get("/api/agenten")]),
+        get(`/api/founding-plan?repo=${encodeURIComponent(zwei(f))}&role=nur-ordner&anlass=neu&agent=orch-eigen`),
+      ]);
+      ok(made); ok(ersterSitz);
+      const gezeigt = ok(vorschau).fassung as Record<string, any>;
+      const [offen, laufend] = await life(f, [
+        post(`/api/slots/${laeuftSchon ? 2 : 1}/open`, { cwd: zwei(f), agent: "orch-eigen", fassung: gezeigt.hash }),
+        get(`/api/slots/${laeuftSchon ? 2 : 1}/fassung?anlass=laufend`),
+      ]);
+      // die Tür nimmt den gezeigten Hash an (sonst 409), und der laufende Sitz trägt ihn
+      expect({ status: offen?.status, error: offen?.body.error }).toEqual({ status: 200, error: undefined });
+      type Teile = { id: string; abschnitte: { id: string; text: string | null; grund?: string }[] }[];
+      const je = (x: unknown): Record<string, string> => Object.fromEntries((x as { teile: Teile }).teile
+        .flatMap((t) => t.abschnitte.map((a) => [`${t.id}/${a.id}`, a.text ?? a.grund ?? ""])));
+      const vor = je(gezeigt), lauf = je(ok(laufend));
+      // jede Zeile der Vorschau ist die des Sitzes: Rolle, Konzept, Rechte, Schwelle, Warmhalten
+      expect(Object.keys({ ...vor, ...lauf }).filter((k) => vor[k] !== lauf[k])).toEqual([]);
+      expect(vor["liest/rolle"]).toContain("FLEET ROLE (orchestratorin");
+      expect(Object.values(vor).join("\n")).toContain(`+ concept k-bau (author: owner)\n\n${konzeptText}`);
+      expect(ok(laufend).hash).toBe(gezeigt.hash);
+    }, LIFE_DEADLINE_MS * 4);
+  }
+
   test("ein Agent mit Konzept und ohne Rolle: sein Konzept steht unter „Wissen“, ohne Rollenkarte und ohne Richtungsplatz", async () => {
     const f = fixture();
     const konzeptText = "# Bauen\n\nSo baust du.";

@@ -57,6 +57,10 @@ export interface Agent {
   readonly derivedFromLine?: readonly string[];
   /** aus einer Datei gekommen und seither nicht vom Owner geändert: startet nie in bypass */
   readonly importiert?: true;
+  /** DIE PACKS, DIE DIE DATEI NANNTE, MIT IHREM HASH ({ Kennung: sha256 des Textes }, nur die der Liste `wahlen.bibliothek`): ein Sitz aus diesem Agenten
+   *  liest je Pack den Text mit diesem Hash — den des Registers, wenn er passt, sonst den vom Regal —, nicht den, den die Kennung im Ordner gerade
+   *  hat (server.ts#packsNachHash). Ohne Eintrag gilt die Kennung allein. */
+  readonly packHashes?: Readonly<Record<string, string>>;
   /** von der Session in diesem Slot gespeichert oder kopiert (Self-Tür, server/setup-tueren.ts) und seither nicht vom Owner
    *  geändert: dieselbe Wirkung wie `importiert` — startet nie in bypass, nie in einer Rolle, seine Rechte gedeckelt */
   readonly vonSitz?: number;
@@ -71,6 +75,14 @@ export interface AgentBezug { readonly id: string; readonly name: string; readon
   readonly setupHash?: string }
 
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
+/** `packHashes` aus dem Speicher oder der Tür: Kennung → sha256, sonst nichts. Rein. */
+export function packHashesAus(v: unknown): Record<string, string> | null {
+  const r = rec(v);
+  if (!r) return null;
+  const out = Object.fromEntries(Object.entries(r).filter((e): e is [string, string] => typeof e[1] === "string" && /^[0-9a-f]{64}$/.test(e[1]) && ID_PACK.test(e[0])));
+  return Object.keys(out).length ? out : null;
+}
+const ID_PACK = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const sha = (t: string): string => createHash("sha256").update(t).digest("hex");
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,59}$/;
 
@@ -178,7 +190,8 @@ function wahlenAus(v: unknown): Wahlen | string {
 
 /** Ein eigener Agent aus einem Eingang { id?, name, wahlen, agentMd? } — die Tür prüft die Wahlen, bevor er gespeichert wird. */
 export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now(),
-  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true; vonSitz?: number; sitzRechte?: ReadonlySet<RechtId> } = {}): Agent | string {
+  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true; vonSitz?: number; sitzRechte?: ReadonlySet<RechtId>;
+    packHashes?: Readonly<Record<string, string>> } = {}): Agent | string {
   const r = rec(eingang);
   if (!r) return "expected { name, wahlen, agentMd? }";
   const name = typeof r.name === "string" ? r.name.trim() : "";
@@ -209,8 +222,12 @@ export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben:
     const gedeckelt = rechteAus(wahlen.rechte);
     if (gedeckelt) wahlen.rechte = rechteGedeckelt(gedeckelt, herkunft.sitzRechte).rechte;
   }
-  const { sitzRechte: _sitzRechte, ...marken } = herkunft; // die Rechte der Speichernden gelten nur hier, sie gehören nicht zum Agenten
-  return { id, name, wahlen, agentMd: md, ...marken, am, hash: agentHash(wahlen, md) };
+  const { sitzRechte: _sitzRechte, packHashes: roh, ...marken } = herkunft; // die Rechte der Speichernden gelten nur hier, sie gehören nicht zum Agenten
+  // ein Hash gilt nur für eine Kennung, die die Liste dieses Agenten wirklich wählt
+  const liste = Array.isArray(wahlen.bibliothek) ? wahlen.bibliothek : [];
+  const hashes = packHashesAus(roh) ?? {};
+  const packHashes = Object.fromEntries(Object.entries(hashes).filter(([k]) => liste.includes(k)));
+  return { id, name, wahlen, agentMd: md, ...marken, ...(Object.keys(packHashes).length ? { packHashes } : {}), am, hash: agentHash(wahlen, md) };
 }
 function freieId(name: string, vergeben: readonly string[]): string {
   const basis = name.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "agent";
@@ -235,7 +252,7 @@ export function kopie(original: AgentAnsicht, aenderung: unknown, pruefe: Wahlen
     // ist immer ein Setup-Hash; der Agent-Hash steht in keiner Datei und bleibt in „copy of“ (kopieVon).
     { kopieVon: { id: original.id, name: original.name, hash: original.hash },
       ...(original.setupHash ? { setupHash: original.setupHash } : {}), abgeleitetVon: original.abgeleitetVon,
-      derivedFromLine: herkunftLinie(original), ...marke });
+      derivedFromLine: herkunftLinie(original), ...(original.packHashes ? { packHashes: original.packHashes } : {}), ...marke });
 }
 
 // DER SPEICHER: eine Datei, atomar geschrieben; eine unlesbare Datei ist eine leere Liste, nie ein Fehler beim Start
@@ -257,6 +274,7 @@ export function liesAgenten(dir: string): Agent[] {
       ...(Array.isArray(a.derivedFromLine) && a.derivedFromLine.every((x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x))
         ? { derivedFromLine: a.derivedFromLine as string[] } : {}),
       ...(a.importiert === true ? { importiert: true as const } : {}),
+      ...(packHashesAus(a.packHashes) ? { packHashes: packHashesAus(a.packHashes)! } : {}),
       ...(typeof a.vonSitz === "number" && Number.isInteger(a.vonSitz) && a.vonSitz > 0 ? { vonSitz: a.vonSitz } : {}),
       am: a.am, hash: agentHash(wahlen, md) }];
   });
@@ -548,7 +566,7 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
     const neu = eigenerAgent({ name: body?.name ?? a.name, wahlen: body?.wahlen ?? a.wahlen, agentMd: body?.agentMd === undefined ? a.agentMd : body.agentMd, id: a.id },
       q.pruefe, vergeben.filter((x) => x !== a.id), a.am, { ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}),
         ...(a.setupHash ? { setupHash: a.setupHash } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}),
-        ...(a.derivedFromLine?.length ? { derivedFromLine: a.derivedFromLine } : {}) });
+        ...(a.derivedFromLine?.length ? { derivedFromLine: a.derivedFromLine } : {}), ...(a.packHashes ? { packHashes: a.packHashes } : {}) });
     if (typeof neu === "string") return antwort({ error: neu }, 400);
     // ein Speichern ändert nur den Körper; die abgelegte Herkunft bleibt, bis ein Import oder eine Kopie sie ersetzt
     schreibAgenten(q.dir, eigene.map((x) => x.id === a.id ? neu : x));

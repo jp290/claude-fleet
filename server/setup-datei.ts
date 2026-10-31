@@ -44,6 +44,9 @@ const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "o
   ? Object.fromEntries(Object.entries(v)) : null;
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
 export const hashText = (text: string): string => sha(text);
+/** Die Kennung, unter der ein Pack des Regals an einer Tür gewählt wird: die Kollisionsform `id@hash8` (loeseBausteine) hat an der Tür keinen
+ *  Platz (sie ist auch ein Ordnername unter skills/), dort heißt sie `id-hash8`. Jede andere Kennung bleibt, wie sie ist. */
+export const tuerPackId = (id: string): string => id.replace(/@([0-9a-f]{8})$/, "-$1");
 
 // kanonisch: Schlüssel sortiert, Arrays in ihrer Reihenfolge. Dieselbe Form hat schon server/konst-fassungen.ts.
 const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
@@ -455,11 +458,11 @@ export function roleStein(id: string, dir: string | null | undefined, root = FLE
 
 /** Rolle und Konzepte, die ein eigener Agent als Steine wählt: aus dem Regal oder aus Fleet's Rollen, die Konzepte aus Regal oder Ledger. */
 export function steineFuerAgentWahl(wahlen: Wahlen | null | undefined, dir: string | null | undefined, root = FLEET_ROOT, konzeptRoot: string | null = null,
-  ohnePersoenliches = false): { role: SetupRole | null; concepts: SetupConcept[]; block: string | null; weggelassen: string[] } {
+  ohnePersoenliches = false): { role: SetupRole | null; concepts: SetupConcept[]; block: string | null; weggelassen: string[]; nichtGefunden: string[] } {
   const role = typeof wahlen?.rolle === "string" ? roleStein(wahlen.rolle, dir, root)?.role ?? null : null;
   const ids = Array.isArray(wahlen?.konzepte) ? wahlen.konzepte.filter((x): x is string => typeof x === "string") : [];
   const shelf = ids.length && dir ? liesShelf(dir) : null;
-  const weggelassen: string[] = [];
+  const weggelassen: string[] = [], nichtGefunden: string[] = [];
   const concepts = ids.flatMap((id): SetupConcept[] => {
     const ausShelf = shelf?.concepts.find((c) => c.id === id && c.text !== null);
     // die Datengrenze am Text (server/datengrenze.ts): ein Sitz, der nicht Anthropic ist, bekommt kein persönliches Konzept
@@ -467,10 +470,14 @@ export function steineFuerAgentWahl(wahlen: Wahlen | null | undefined, dir: stri
     if (ausShelf) return [ausShelf];
     const c = liesKonzept(konzeptRoot, id);
     if (c && ohnePersoenliches && c.personal) { weggelassen.push(id); return []; }
+    // ein gewähltes Konzept, das es hier nicht gibt (keine FLEET_KONZEPT_ROOT, eine unbekannte Kennung), fehlt nicht still: der Start nennt es
+    if (!c) nichtGefunden.push(id);
     return c ? [{ kind: "concept", id: c.id, version: c.version, hash: c.hash, text: c.text, ...(c.personal ? { personal: true as const } : {}),
       ...(c.author ? { author: c.author } : {}), ...(c.purpose ? { purpose: c.purpose } : {}), ...(c.validity ? { validity: c.validity } : {}) }] : [];
   });
-  return { role, concepts, block: role || concepts.length ? startBlockAusSteinen(role, concepts) : null, weggelassen };
+  const zeilen = nichtGefunden.map((id) => `− concept ${id}: not found here (no concept of that id on the shelf or in the concept root) — left out`);
+  const block = role || concepts.length ? startBlockAusSteinen(role, concepts) : null;
+  return { role, concepts, block: [block, ...zeilen].filter(Boolean).join("\n") || null, weggelassen, nichtGefunden };
 }
 
 /** Der leere Platz der Richtung, wie ein Sitz ihn in seinem Start liest: die Person füllt ihn, oder der Sitz startet ohne. */
@@ -520,7 +527,8 @@ export interface SetupQuellen {
   privateTexte?: readonly string[];
   jetzt?: () => number;
 }
-export interface SetupExport { datei: SetupDatei; hinweise: string[] }
+/** `weggelassen`: die Packs, für die die Quelle keinen Text hat und die darum nicht mitreisen (Kennungen, die die Bibliothek, die den Agenten las, nicht kennt) */
+export interface SetupExport { datei: SetupDatei; hinweise: string[]; weggelassen?: string[] }
 
 const quelle = (q: { path: string; anchor: string }): SetupQuelle => ({ path: q.path, anchor: q.anchor });
 export const alsPack = (p: SeatPack): SetupPack => {
@@ -601,11 +609,14 @@ export async function setupAusAgent(a: Agent, q: SetupQuellen = {}): Promise<Set
   };
   for (const p of k.packs) {
     if (p.text === null) continue;
-    if (gewaehlt ? !gewaehlt.has(p.id) : (wahl === false || p.privat || p.zurWahl)) continue;
+    if (gewaehlt ? !gewaehlt.has(p.id) : (wahl === false || p.privat || p.zurWahl || p.mitgereist)) continue;
     refs.push(addPack(alsPack(p)));
   }
-  if (Array.isArray(wahl)) for (const id of gewaehlt ?? []) if (!k.packs.some((p) => p.id === id))
+  const weggelassen: string[] = [];
+  if (Array.isArray(wahl)) for (const id of gewaehlt ?? []) if (!k.packs.some((p) => p.id === id)) {
     hinweise.push(`der Pack ${id} steht nicht in Fleets Bibliothek und reist nicht mit`);
+    weggelassen.push(id);
+  }
   const konzepte = Array.isArray(a.wahlen.konzepte) ? a.wahlen.konzepte.filter((x): x is string => typeof x === "string") : [];
   const privateKonzepte: string[] = [];
   for (const id of konzepte) {
@@ -646,7 +657,7 @@ export async function setupAusAgent(a: Agent, q: SetupQuellen = {}): Promise<Set
   const texte = [...privateTexteAusWissen(k), ...privateTexteAusNotizen(notebook), ...privateKonzepte, ...(q.privateTexte ?? [])];
   const fund = persoenlicherTextInDatei(datei, texte);
   if (fund) return `die Datei enthielte persönlichen Text („${fund}…“) und geht so nicht hinaus`;
-  return { datei, hinweise };
+  return { datei, hinweise, ...(weggelassen.length ? { weggelassen } : {}) };
 }
 
 /** EINE GEBILDETE ROLLE ALS SETUP-DATEI (Richtung Schritt 5): ein Sitz, der die Rolle als Stein trägt, so wie ein Rollensitz einer
@@ -809,7 +820,7 @@ export function setupAusKonstellation(datei: Record<string, unknown>, form: Reco
 }
 
 /** ALTE DATEIEN: fleet-agent/1 und fleet: "konstellation" werden durch dieselbe Tür gelesen. */
-export async function setupAusDatei(raw: unknown, q: SetupQuellen = {}): Promise<{ datei: SetupDatei; hinweise: string[]; legacy: boolean } | string> {
+export async function setupAusDatei(raw: unknown, q: SetupQuellen = {}): Promise<{ datei: SetupDatei; hinweise: string[]; legacy: boolean; weggelassen?: string[] } | string> {
   const r = rec(raw);
   if (!r) return "expected a JSON object";
   if (r.format === SETUP_FORMAT) {
@@ -820,7 +831,8 @@ export async function setupAusDatei(raw: unknown, q: SetupQuellen = {}): Promise
     const a = agentAusDatei(r, {}, () => null, []);
     if (typeof a === "string") return a;
     const d = await setupAusAgent(a.agent, q);
-    return typeof d === "string" ? d : { datei: d.datei, hinweise: ["alte Agent-Datei fleet-agent/1 als Ein-Sitz-Setup gelesen", ...d.hinweise], legacy: true };
+    return typeof d === "string" ? d : { datei: d.datei, hinweise: ["alte Agent-Datei fleet-agent/1 als Ein-Sitz-Setup gelesen", ...d.hinweise], legacy: true,
+      ...(d.weggelassen ? { weggelassen: d.weggelassen } : {}) };
   }
   if (r.fleet === "konstellation") {
     const d = setupAusKonstellation(r, r, ["alte Konstellationsdatei fleet: \"konstellation\" als Setup gelesen"], q);
@@ -856,7 +868,8 @@ async function lokalePacks(dir: string, q: SetupQuellen): Promise<SetupPack[]> {
   const shelf = liesShelf(dir).packs;
   let k: SeatKnowledge | null = null;
   try { k = await (q.bibliothek?.() ?? null); } catch { /* shelf remains */ }
-  const ausWissen = k ? k.packs.filter((p) => p.text !== null).map(alsShelfPack) : [];
+  // a pack the shelf brought shows up in the knowledge too (server.ts#seatKnowledgeFor): it is already in `shelf`, once
+  const ausWissen = k ? k.packs.filter((p) => p.text !== null && p.mitgereist !== true).map(alsShelfPack) : [];
   return [...shelf, ...ausWissen];
 }
 
@@ -864,7 +877,7 @@ async function lokalePacks(dir: string, q: SetupQuellen): Promise<SetupPack[]> {
 export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string): Promise<Loesung | string> {
   const lokal = await lokalePacks(dir, q);
   const shelf = liesShelf(dir);
-  const neuPacks: SetupPack[] = [], neuConcepts: SetupConcept[] = [];
+  const neuPacks: SetupPack[] = [], neuConcepts: SetupConcept[] = [], leereAufRegal: SetupPack[] = [];
   const map = new Map<string, string>();
   const vorschau: SetupVorschau = { format: SETUP_FORMAT, name: d.name, seats: d.seats.length, packs: [], concepts: [],
     seatList: d.seats.map((s) => ({ id: s.id, name: s.name, role: s.start.role ?? null, goal: s.start.goal ?? null })), edges: d.edges.map((e) => ({ ...e })),
@@ -883,7 +896,11 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
     if (p.personal) {
       vorschau.personalPlaces.push(`pack:${p.id}`);
       const eigen = lokal.find((x) => x.id === p.id && x.personal === true && x.text !== null);
-      if (!eigen) vorschau.emptyPlaces.push(`pack:${p.id}`);
+      if (!eigen) {
+        vorschau.emptyPlaces.push(`pack:${p.id}`);
+        // ...und das Regal merkt sich den leeren Platz: die Tür weiß, dass der Name gewollt leer ist, und der Sitz liest ihn nicht (weggelassen)
+        if (!shelf.packs.some((x) => x.id === p.id)) leereAufRegal.push({ ...p });
+      }
       map.set(k, p.id);
       vorschau.packs.push({ id: p.id, hash: null, source: "personal" });
       continue;
@@ -892,6 +909,10 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
     if (gleich) {
       map.set(k, gleich.id);
       vorschau.packs.push({ id: gleich.id, hash: gleich.hash, source: "local" });
+      // DER TEXT DER DATEI BLEIBT AUF DEM REGAL, auch wo die Bibliothek denselben Pack hat: Fleets Register gibt manchen nur im eigenen Repo
+      // (seat-start), und ein Sitz aus dieser Datei in einem anderen Ordner liest ihn sonst nirgends (server.ts#seatKnowledgeFor). Im Register
+      // steht der Pack weiter vorn, das Regal ersetzt ihn dort nie; es trägt nur denselben Text mit demselben Hash.
+      if (p.text !== null && !shelf.packs.some((x) => x.id === gleich.id && x.hash === p.hash)) neuPacks.push({ ...p, id: gleich.id });
       continue;
     }
     const anders = lokal.find((x) => x.id === p.id && x.hash !== p.hash);
@@ -915,7 +936,7 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
   // den die Bibliothek des Empfängers schon hat (source local), stünde sonst nirgends auf dem Regal, und die Rolle fiele still heraus. Er wandert mit
   // seinem Hash aufs Regal, es sei denn, das Regal trägt unter derselben Kennung schon einen anderen (ihn zu ersetzen risse die Rollen heraus, die ihn lesen).
   for (const ref of d.roles.flatMap((r) => r.packs)) {
-    if (ref.hash === null || shelf.packs.some((x) => x.id === ref.id) || neuPacks.some((x) => x.id === ref.id)) continue;
+    if (ref.hash === null || shelf.packs.some((x) => x.id === ref.id && x.hash === ref.hash) || neuPacks.some((x) => x.id === ref.id && x.hash === ref.hash)) continue;
     const block = d.packs.find((x) => x.id === ref.id && x.hash === ref.hash && x.personal !== true && x.text !== null);
     if (block) neuPacks.push({ ...block });
   }
@@ -969,7 +990,7 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
   const datei: SetupDatei = { ...d, seats, packs: [...persoenlichePacks, ...neuPacks,
     ...lokal.filter((p) => vorschau.packs.some((v) => v.source === "local" && v.id === p.id) && !neuPacks.some((n) => n.id === p.id))],
     concepts: [...persoenlicheKonzepte, ...neuConcepts, ...lokalKonzepte.filter((c) => vorschau.concepts.some((v) => v.source === "local" && v.id === c.id))] };
-  return { datei, vorschau, zuSpeichern: { version: 1, packs: neuPacks, concepts: neuConcepts, roles: d.roles } };
+  return { datei, vorschau, zuSpeichern: { version: 1, packs: [...neuPacks, ...leereAufRegal], concepts: neuConcepts, roles: d.roles } };
 }
 
 async function k15Lesen(dir: string): Promise<Record<string, unknown>> {
@@ -991,7 +1012,7 @@ async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string,
   // importiereSetup schickt einen Rollensitz ohnehin durch schreibeMehrSitz; dieser Riegel hält den Weg auch für einen
   // künftigen Aufrufer zu (die Starttür liest eine Rolle nur als Block, sitz.darf.rolle).
   if (seat.start.role) throw new Error("a seat with a role travels as a constellation with its role block, never as a one-seat agent");
-  const packIds = seat.reads.filter((r) => r.kind === "pack").map((r) => r.id);
+  const packIds = seat.reads.filter((r) => r.kind === "pack").map((r) => tuerPackId(r.id));
   const conceptIds = seat.reads.filter((r) => r.kind === "concept").map((r) => r.id);
   const recht = rechteAus(seat.may.rechte);
   // Eine Datei erbittet Rechte, sie gibt keine: die Stufe über „bauen“, die Befehle und jede Zusage (recht) kommen nicht an (behalten: leer) und stehen im
@@ -1009,7 +1030,9 @@ async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string,
   const herkunft = herkunftAusDatei(original);
   const a = eigenerAgent({ name: d.name, wahlen,
     ...(seat.start.purpose ? { agentMd: { titel: seat.start.purpose.titel, text: seat.start.purpose.text } } : {}) },
-    () => null, vergeben, Date.now(), { ...herkunft, importiert: true });
+    () => null, vergeben, Date.now(), { ...herkunft, importiert: true,
+      // der Agent behält je Pack die Kennung UND den Hash der Datei: sein Start liest den Text mit diesem Hash (server.ts#packsNachHash)
+      packHashes: Object.fromEntries(seat.reads.flatMap((r) => r.kind === "pack" && r.hash ? [[tuerPackId(r.id), r.hash]] : [])) });
   if (typeof a === "string") throw new Error(a);
   schreibAgenten(dir, [...eigene, a]);
   // was die Datei erbat und nicht ankam, mit der Tür, die es gibt (nur wenn etwas fiel)
@@ -1120,7 +1143,8 @@ export async function importiereSetup(raw: unknown, q: SetupQuellen & { dir: str
   const vorschau = { ...loes.vorschau, hinweise: [...gel.hinweise, ...loes.vorschau.hinweise] };
   if (!opts.schreiben) return { status: 200, body: { geschrieben: false, vorschau } };
   const shelf = liesShelf(q.dir);
-  schreibShelf(q.dir, { version: 1, packs: [...shelf.packs.filter((p) => !loes.zuSpeichern.packs.some((n) => n.id === p.id)), ...loes.zuSpeichern.packs],
+  // das Regal hält je (Kennung, Hash) einen Text: ein zweiter Import mit derselben Kennung und anderem Hash ersetzt den ersten nicht
+  schreibShelf(q.dir, { version: 1, packs: [...shelf.packs.filter((p) => !loes.zuSpeichern.packs.some((n) => n.id === p.id && n.hash === p.hash)), ...loes.zuSpeichern.packs],
     concepts: [...shelf.concepts.filter((c) => !loes.zuSpeichern.concepts.some((n) => n.id === c.id)), ...loes.zuSpeichern.concepts],
     roles: [...(shelf.roles ?? []).filter((r) => !loes.zuSpeichern.roles?.some((n) => n.id === r.id)), ...(loes.zuSpeichern.roles ?? [])] });
   const hinweise = [...vorschau.hinweise];
@@ -1131,7 +1155,10 @@ export async function importiereSetup(raw: unknown, q: SetupQuellen & { dir: str
     const geschrieben = loes.datei.seats.length === 1 && !mitRolle
       ? await schreibeEinSitz(loes.datei, gel.datei, q.dir, hinweise)
       : await schreibeMehrSitz(loes.datei, gel.datei, q.dir, opts.jetzt ?? Date.now());
-    return { status: 201, body: { geschrieben: true, vorschau: { ...vorschau, hinweise }, ...geschrieben } };
+    // `weggelassen`: die Packs, die der Sitz nicht liest, weil die Datei keinen Text für sie hat (die Bibliothek des Lesers kennt sie nicht, oder es ist ein
+    // persönlicher Platz des Absenders, für den hier kein eigener Text steht): beim Namen, damit der Owner sie sieht
+    const weggelassen = [...new Set([...(gel.weggelassen ?? []), ...loes.vorschau.emptyPlaces.filter((x) => x.startsWith("pack:")).map((x) => x.slice(5))])];
+    return { status: 201, body: { geschrieben: true, vorschau: { ...vorschau, hinweise }, ...geschrieben, ...(weggelassen.length ? { weggelassen } : {}) } };
   } catch (e) { return { status: 500, body: { error: e instanceof Error ? e.message : String(e) } }; }
 }
 

@@ -197,16 +197,20 @@ function agenten(s: St): Liste {
 }
 const istRepo = (a: AgentZeile | null): boolean => !a || a.id === "repo";
 // a role of Fleet's (the Orchestratorin): its preview is its role's plan, and its role card is its first message
-const rolleVon = (a: AgentZeile | null): PlanRolle | null => a && typeof a.wahlen.rolle === "string" ? a.wahlen.rolle as PlanRolle : null;
+// Fleet's own role (the Orchestrator) has a plan of its own; a role from the shelf is a stone of the agent, and its preview is the agent's (agent=<id>)
+// (only Fleet's built-in Orchestrator: an agent of your own with that role carries concepts of its own, and its preview is its own — agent=<id>)
+const rolleVon = (a: AgentZeile | null): PlanRolle | null => a && a.art === "eingebaut" && a.wahlen.rolle === "orchestratorin" ? "orchestratorin" : null;
 function agentName(a: AgentZeile): string {
   if (a.id === "repo") return "The repo's agent";
-  if (a.wahlen.rolle === "orchestratorin") return "Orchestrator";
+  if (rolleVon(a)) return "Orchestrator";
   return a.name;
 }
 function agentSatz(a: AgentZeile): string {
   if (a.id === "repo") return "Claude Code as you would start it here yourself";
   const { wahl, fremd } = wahlAus(a.wahlen);
-  if (typeof a.wahlen.rolle === "string") return "a role of Fleet's: plans the work, opens the branches, brings back the results";
+  if (rolleVon(a)) return "a role of Fleet's: plans the work, opens the branches, brings back the results";
+  // a role from the shelf is a stone the agent carries: its start reads the role's text (and its concepts), as the preview shows
+  if (typeof a.wahlen.rolle === "string") return `reads the role „${a.wahlen.rolle}“${a.agentMd ? ` · ${a.agentMd.titel}` : ""}`;
   if (fremd.includes("profil") || fremd.includes("sitz")) return "from the old start window";
   // its packs as one count: their names are in the window once it is open
   const d = abweichungen(wahl, modelName).filter((x) => !x.id.startsWith("pack:")).map((x) => x.wort);
@@ -389,7 +393,8 @@ function spalteAgenten(s: St): HTMLElement {
   col.append(karte);
   return col;
 }
-// IMPORT: an agent someone shared as a file (GET /api/agenten/:id/datei elsewhere); it never starts with No limits
+// IMPORT: a setup someone shared as a file (the Share button, or GET /api/setups/:id/datei elsewhere; the older agent and constellation files read too);
+// it never starts with No limits
 function einwurf(s: St): HTMLElement {
   const box = el("label", "sfdrop");
   const inp = el("input", "") as HTMLInputElement;
@@ -398,7 +403,7 @@ function einwurf(s: St): HTMLElement {
   inp.hidden = true;
   inp.onchange = (e) => { const f = (e.currentTarget as HTMLInputElement).files?.[0]; if (f) void importiere(s, f); };
   box.append(el("b", "", "Drop its file here, or choose one…"),
-    el("span", "", "It brings its choices: model, guides, how it asks, and rights up to Builds. It runs on your own Claude Code, with your rules, skills and connectors. A file that asks for No limits or for a role is refused."), inp);
+    el("span", "", "It brings its choices: model, guides, how it asks, and rights up to Builds. A guide it carries is read from the file, in any folder. It runs on your own Claude Code, with your rules, skills and connectors. A file that asks for No limits is refused; a role in it waits for your word."), inp);
   box.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).classList.add("ueber"); };
   box.ondragleave = (e) => (e.currentTarget as HTMLElement).classList.remove("ueber");
   box.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).classList.remove("ueber"); const f = e.dataTransfer?.files[0]; if (f) void importiere(s, f); };
@@ -417,8 +422,22 @@ async function importiere(s: St, f: File): Promise<void> {
   let datei: unknown;
   try { datei = JSON.parse(await f.text()); } catch { s.sitz.fehler = `${f.name} is not an agent file (no JSON).`; render(); return; }
   const roh = datei && typeof datei === "object" && "datei" in datei ? (datei as { datei: unknown }).datei : datei;
-  const a = await agentAntwort(s, await post("/api/agenten/import", { datei: roh }));
-  if (a) oeffne(s, a);
+  // ONE DOOR FOR EVERY SETUP FILE (server/setup-datei.ts#importiereSetup): fleet-setup/1, and the older agent and constellation files
+  const r = await post("/api/setups/import", { datei: roh, schreiben: true });
+  const j = r ? await r.json().catch(() => null) as { agent?: AgentZeile; konstellation?: { name: string; seats: number }; weggelassen?: string[]; error?: string } | null : null;
+  if (S !== s) return;
+  if (!r?.ok || !j || (!j.agent && !j.konstellation)) { s.sitz.fehler = j?.error ?? (r ? `The server answered ${r.status}.` : "The server is not reachable."); render(); return; }
+  if (s.repo) s.sitz.agenten.delete(s.repo);
+  const weg = j.weggelassen?.length ? ` Left out, the file has no text for: ${j.weggelassen.join(", ")}.` : "";
+  if (j.agent) {
+    if (weg) meldung(`Imported „${j.agent.name}“.${weg}`);
+    oeffne(s, j.agent);
+    return;
+  }
+  // a file of several seats: each seat shows under the agents of every repo
+  Object.assign(s.sitz, { liste: "agenten", fehler: null });
+  meldung(`Imported „${j.konstellation!.name}“ with ${mehrzahl(j.konstellation!.seats, "seat")}. They show under the agents of every repo.${weg}`);
+  render();
 }
 async function kopiere(s: St, a: AgentZeile): Promise<void> {
   const k = await agentAntwort(s, await post(`/api/agenten/${encodeURIComponent(a.id)}/kopie`, {}));
@@ -446,7 +465,7 @@ function held(s: St, p: ReturnType<typeof plaene>): HTMLElement {
   links.append(knopf("sfback", [`‹ ${s.repo ? baseName(s.repo) : ""} · all agents`], () => zurueck(s)), el("h2", "", z.name));
   const a = z.agent, repo = s.repo ? baseName(s.repo) : "";
   // under the name only what the agent is for; whether it starts as your normal Claude Code is the banner's to say, its parts the tiles'
-  const wozu = typeof a?.wahlen.rolle === "string" ? "Plans the work, opens the branches and brings back the results." : a?.agentMd?.titel ?? null;
+  const wozu = rolleVon(a ?? null) ? "Plans the work, opens the branches and brings back the results." : a?.agentMd?.titel ?? null;
   links.append(el("div", "sfpurpose", wozu ?? (z.wahl.harness === null ? "Your Claude Code with what Fleet adds on top."
     : `${agentWort(z.wahl.harness)} with what Fleet adds on top.`)));
   const her = a?.importiert || a?.abgeleitetVon ? `Imported from a file · derived from ${(a.abgeleitetVon ?? a.hash).slice(0, 12)}. It brings its choices; your rules, skills and connectors stay yours.`
@@ -517,8 +536,8 @@ function banner(s: St, f: Fassung | null): HTMLElement | null {
   if (z.fremd.length) {
     b.classList.add("fleet");
     b.append(el("span", "sfbi", "F"));
-    satz(typeof z.agent?.wahlen.rolle === "string" ? `${z.name}: a role of Fleet's` : `${z.name}: starts as it was saved`,
-      [typeof z.agent?.wahlen.rolle === "string" ? "It reads its role, Fleet's direction and your corrections, and its role sets how it works. " : "It brings what it carries whole. ",
+    satz(rolleVon(z.agent) ? `${z.name}: a role of Fleet's` : `${z.name}: starts as it was saved`,
+      [rolleVon(z.agent) ? "It reads its role, Fleet's direction and your corrections, and its role sets how it works. " : "It brings what it carries whole. ",
         "Copy it to change a block."]);
     b.append(knopf("sfsec sfbb", ["Copy it"], () => { if (z.agent) void kopiere(s, z.agent); }));
     return b;
@@ -1278,15 +1297,18 @@ async function speichere(s: St, name: string): Promise<void> {
 async function teile(s: St): Promise<void> {
   const z = s.sitz, a = z.agent;
   if (!a) return;
-  const r = await api(`/api/agenten/${encodeURIComponent(a.id)}/datei`).catch(() => null);
-  const j = r ? await r.json().catch(() => null) as { datei?: unknown; error?: string } | null : null;
+  // ONE FILE FOR A SETUP (server/setup-datei.ts, format fleet-setup/1): its packs travel with their text and hash
+  const r = await api(`/api/setups/${encodeURIComponent(a.id)}/datei`).catch(() => null);
+  const j = r ? await r.json().catch(() => null) as { datei?: unknown; hinweise?: string[]; error?: string } | null : null;
   if (!r?.ok || !j?.datei) { z.fehler = j?.error ?? "The file could not be made."; render(); return; }
   const url = URL.createObjectURL(new Blob([JSON.stringify(j.datei, null, 2)], { type: "application/json" }));
   const l = document.createElement("a");
   l.href = url;
-  l.download = `${a.name.replace(/[^\w.-]+/g, "-")}.fleet-agent.json`;
+  l.download = `${a.name.replace(/[^\w.-]+/g, "-")}.fleet-setup.json`;
   l.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // what the file leaves out or what to look at before it goes on, said once
+  if (j.hinweise?.length) meldung(`The file is made. Look at this before you pass it on: ${j.hinweise.join(" · ")}`);
 }
 async function loesche(s: St): Promise<void> {
   const z = s.sitz, a = z.agent;

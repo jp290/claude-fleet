@@ -282,7 +282,7 @@ import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
 import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, liesAgenten, type AgentBezug, type Wahlen as AgentWahlen,
   type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
-import { RICHTUNG_PLATZ, SETUP_ROUTE, liesKonzept, roleStein, setupAusRolle, setupRoute, startBlockAusSteinen, steineFuerAgentWahl, type SetupServer } from "./server/setup-datei";
+import { RICHTUNG_PLATZ, SETUP_ROUTE, hashText, liesKonzept, liesShelf, roleStein, setupAusRolle, setupRoute, startBlockAusSteinen, steineFuerAgentWahl, tuerPackId, type SetupServer } from "./server/setup-datei";
 import { selfAgentenTuer, selfSetupTuer } from "./server/setup-tueren";
 import { konstellationDerTuer, type SitzBild } from "./server/konstellation-aus-sitzen";
 import { konstellationSicht, liesPositionen, type SichtSlot } from "./server/konstellation-sicht";
@@ -9392,11 +9392,12 @@ const laufServer: LaufServer = {
 };
 // DIE AGENTEN AN DEN TÜREN (server/agenten.ts): welche Wahlen eine Tür liest, die Prüfung mit ihren Lesern und was ein Slot trägt.
 // Eine Rolle gibt nur die Slot-Tür (ihr Label); an der Branch-Tür ist der Board-Name das Label, und eine Rolle bleibt dort abgelehnt —
-// das ist die Sicherheitsgrenze, die eine Session an der Self-Tür nicht überschreitet. Die Vorschau rechnet keinen Rollen-Agenten.
+// das ist die Sicherheitsgrenze, die eine Session an der Self-Tür nicht überschreitet. Die Vorschau liest die Rolle wie die Slot-Tür: der Stein
+// (Rollentext, Packs, Konzepte) steht im Start, also steht er in der Vorschau; Rechte gibt sie nicht (die Rolle eines Agenten ist Text).
 const AGENT_TUER_SLOT: readonly AgentWahlFeld[] = ["harness", "model", "effort", "permissionMode", "rechte", "tools", "weglassen", "bibliothek",
   "konzepte", "notizbuch", "remote", "autoModeEnvironment", "schwelle", "profil", "sitz", "rolle"];
 const AGENT_TUER_BRANCH: readonly AgentWahlFeld[] = AGENT_TUER_SLOT.filter((k) => k !== "rolle");
-const AGENT_TUER_VORSCHAU: readonly AgentWahlFeld[] = AGENT_TUER_SLOT.filter((k) => k !== "rolle");
+const AGENT_TUER_VORSCHAU: readonly AgentWahlFeld[] = AGENT_TUER_SLOT;
 const k15Gespeichert = (): Promise<unknown> => Bun.file(`${STATE_DIR}/${K15_SPEICHER_DATEI}`).json().catch(() => null);
 async function agentDerTuer(body: Record<string, unknown>, liest: readonly AgentWahlFeld[]):
   Promise<{ ok: true; tuer: AgentAnDerTuer } | { ok: false; error: string }> {
@@ -11130,7 +11131,7 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           // spawn is where the skills of an earlier spawn go away (server/sitz-skills.ts#piSkillsWrite)
           // ...and a seat in its own setup always gets the doors lines, whatever it chose (server/sitz-wissen.ts#mitTuerenSkill)
           if (an || dazu.length || pi || eigen) {
-            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an, occupant.model);
+            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an, occupant.model, packHashesDesAgenten(s.agent));
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
         } catch (e) { logError("ensureSlot:seat-library", e); }
@@ -12867,6 +12868,10 @@ function selfDoorRoleOf(s: Slot): SelfDoorRole | null {
 }
 const SELF_DOOR_ROLE_REFUSAL = "this door answers the Orchestratorin and a bound Program-MAIN only — "
   + "a lane, the steward and an unbound session have no role here";
+// EINE VORSCHAU ÜBER EINEN NOCH NICHT BELEGTEN SLOT: er wird die aufgelöste Orchestratorin nur, wenn kein anderer Sitz das Label trägt — mit
+// einem zweiten Träger löst die Rolle sich nicht auf (deliveryRecipient), und der neue Sitz startet mit den Rechten, der Schwelle und dem
+// Warmhalten eines freien Sitzes. So rechnet die Vorschau, was der laufende Sitz dann trägt (Hash der Vorschau = Hash des Sitzes).
+const wuerdeOrchestratorin = (s: Slot): boolean => !s.worktree && isOrchestratorLabel(s.label) && orchestratorLabelHolders().length === 0;
 function orchestratorLabelHolders(): Slot[] {
   return slots.filter((s) => s.cwd && !s.worktree && isOrchestratorLabel(s.label));
 }
@@ -22357,7 +22362,11 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
   if (s.label === STEWARD_LABEL) return [unknownAbschnitt("wissen", "der Steward hat keinen Kontextplan")];
   return fassungSeatWissen(cwd, s.harness ?? null, s.bibliothek, { slot: s.id, openedAt: s.openedAt,
     spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz, eigen,
-    s.selbst?.jetzt.packs ?? [], s.model);
+    s.selbst?.jetzt.packs ?? [], s.model, packHashesDesAgenten(s.agent));
+}
+// the hashes an own agent from a file keeps for its packs (server/agenten.ts#Agent.packHashes); null = the ids alone decide
+function packHashesDesAgenten(agent: AgentBezug | null | undefined): Readonly<Record<string, string>> | null {
+  return agent ? liesAgenten(STATE_DIR).find((a) => a.id === agent.id)?.packHashes ?? null : null;
 }
 
 // EIN SITZ OHNE STEHENDE ROLLE (server/sitz-wissen.ts): was sein Start wörtlich trägt und welche Skills er bekommt, je
@@ -22366,7 +22375,7 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
 // `dazu`: the packs the seat gave itself (Slot.selbst), read as the spawn reads them
 async function fassungSeatWissen(cwd: string, harness: string | null, wahl: BibliothekWahl | null,
   laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }, sitz: SitzStart | null = null,
-  eigen = false, dazu: readonly string[] = [], model: string | null = null): Promise<FassungAbschnittEingang[]> {
+  eigen = false, dazu: readonly string[] = [], model: string | null = null, hashes: Readonly<Record<string, string>> | null = null): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
     const pi = harnessFamilie(harness ?? "claude") === "pi";
@@ -22378,7 +22387,7 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     if (aus && !((claude || pi) && eigen))
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an, model);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an, model, hashes);
     if (aus && !start.knowledge.packs.length)
       return [unknownAbschnitt("wissen", "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst")];
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn (Claude Code);
@@ -22685,7 +22694,7 @@ function fassungLaufwerte(o: { art: SessionKind; claude: boolean; onBand: boolea
 // `eigenesSetup`: a preview reads it as the spawn will (fassungFuerSlot), a running slot from its spawn record
 function fassungLaufwerteFuer(s: Slot, eigenesSetup = spawnImEigenenSetup(s)): FassungAbschnittEingang[] {
   const live = slots.includes(s);
-  const art: SessionKind = live ? sessionKindOf(s) : s.worktree ? "lane" : isOrchestratorLabel(s.label) ? "orchestrator"
+  const art: SessionKind = live ? sessionKindOf(s) : s.worktree ? "lane" : wuerdeOrchestratorin(s) ? "orchestrator"
     : boundProgramsForMain(s).length ? "program-main" : s.cwd && isBauCwd(s.cwd) ? "bau" : "session";
   return fassungLaufwerte({ art, claude: harnessOf(s.harness) === CLAUDE_HARNESS, onBand: onHandoverBand(harnessOf(s.harness).id),
     steward: s.label === STEWARD_LABEL, eigen: ownHandover(s),
@@ -22788,6 +22797,8 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       : await fassungWissen(s, rolle, cwd, eigen)),
     ...(steine?.weggelassen.length ? [textAbschnitt("wissen", "server/datengrenze.ts#weggelassenZeile",
       steine.weggelassen.map((id) => weggelassenZeile(`concept ${id}`, spawnPick.harness, spawnPick.model)).join("\n"), false)] : []),
+    ...(steine?.nichtGefunden.length ? [textAbschnitt("wissen", "server/setup-datei.ts#steineFuerAgentWahl",
+      steine.nichtGefunden.map((id) => `− concept ${id}: not found here (no concept of that id on the shelf or in the concept root) — left out`).join("\n"), false)] : []),
     ...(await fassungKorrekturZeiger(rolle, cwd)),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil || null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
@@ -43816,6 +43827,12 @@ async function seatKnowledgeFor(cwd: string, harness: string | null, borrow = fa
   for (const eigen of liesEigenePacks(STATE_DIR)) if (!packs.some((pack) => pack.id === eigen.id))
     packs.push({ id: eigen.id, useWhen: eigen.useWhen, sources: [{ path: tildePfad(eigen.pfad), anchor: `# ${eigen.titel}` }], text: eigen.text,
       weg: "start", privat: true, ...(eigen.personal === true ? { personal: true as const } : {}) });
+  // ...and the packs an imported setup file brought (server/setup-datei.ts#liesShelf: its text, checked against the hash it carried): a seat from
+  // that file reads them in any folder, also the ones Fleet's register gives only in its own repo. Only where the id is still free — a pack of the
+  // register or of one's own comes first, so a carried text never stands in for one of them; and only when chosen (SeatPack.mitgereist)
+  for (const mit of liesShelf(STATE_DIR).packs) if (mit.text !== null && mit.personal !== true && !packs.some((pack) => pack.id === tuerPackId(mit.id)))
+    packs.push({ id: tuerPackId(mit.id), useWhen: mit.useWhen, sources: mit.sources.map((source) => ({ path: source.path, anchor: source.anchor })), text: mit.text,
+      weg: mit.way ?? "start", mitgereist: true });
   return { knowledge: { tree, repoRoot: fleetRoot, head, packs }, plan, blobShas, blobModes };
 }
 // the ids of Fleet's register as its folder holds it now: a pack of its own may not take one (server/eigene-packs.ts#eigenerPackDerTuer)
@@ -43847,7 +43864,12 @@ async function packAuswahlAnDerTuer(wahl: BibliothekWahl | null, cwd: string, ha
     // at a self door a pack of the owner's own is no choice for another seat: only the register's text, which every seat may borrow anyway
     const privat = nurRegister ? wahl.filter((id) => wissen.packs.some((pack) => pack.id === id && pack.privat)) : [];
     if (privat.length) return `bibliothek: ${privat.join(", ")} is a private pack — at a session's door only packs from Fleet's library can be chosen`;
-    const fehlt = packAuswahlFehlt(wahl, wissen);
+    const mitgereist = nurRegister ? wahl.filter((id) => wissen.packs.some((pack) => pack.id === id && pack.mitgereist)) : [];
+    if (mitgereist.length) return `bibliothek: ${mitgereist.join(", ")} came with an imported file — at a session's door only packs from Fleet's library can be chosen`;
+    // a name an imported file brought as the sender's own, empty place (the shelf keeps it, server/setup-datei.ts#loeseBausteine) is no mistake: the seat
+    // starts without it and its start names it as left out (server.ts#seatStartFor)
+    const leer = new Set(liesShelf(STATE_DIR).packs.filter((pack) => pack.personal === true && pack.text === null).map((pack) => pack.id));
+    const fehlt = packAuswahlFehlt(wahl, wissen).filter((id) => !leer.has(id));
     return fehlt.length ? `bibliothek: Fleet's library has no pack ${fehlt.join(", ")} for a seat in this folder` : null;
   } catch (e) {
     return `bibliothek: Fleet's library could not be read (${e instanceof Error ? e.message : String(e)})`;
@@ -43896,25 +43918,57 @@ async function halteBestandFest(): Promise<number[]> {
   }
   return fest;
 }
+// A CHOSEN PACK IS READ BY ITS HASH (docs/self-api.md, „Ein Sitz aus einer importierten Datei“): an agent from a file keeps { id, hash } per pack
+// (Agent.packHashes). The text with that hash is the register's (or the folder's own) when it matches, else the shelf's. When the library's
+// current text has moved on, the start says so; when no text with the hash is to be had, the current one is read and the start names the
+// mismatch — never a silent swap. Without a hash for an id the id alone decides, as before. Rein bis auf das Regal (liesShelf).
+function packsNachHash(k: SeatKnowledge, wahl: BibliothekWahl | null, hashes: Readonly<Record<string, string>> | null): { knowledge: SeatKnowledge; zeilen: string[] } {
+  if (!hashes || !Array.isArray(wahl)) return { knowledge: k, zeilen: [] };
+  const regal = liesShelf(STATE_DIR).packs.filter((p) => p.text !== null && p.personal !== true && p.hash !== null);
+  const zeilen: string[] = [];
+  const kurz = (h: string): string => h.slice(0, 12);
+  const packs = k.packs.map((pack) => {
+    const soll = hashes[pack.id];
+    if (!soll || !wahl.includes(pack.id) || pack.personal === true) return pack;
+    const jetzt = pack.text === null ? null : hashText(pack.text);
+    if (jetzt === soll) return pack;
+    const aus = regal.find((p) => tuerPackId(p.id) === pack.id && p.hash === soll);
+    if (aus) {
+      // the shelf's text stands for the file's; a library that moved on (not another shelf copy) is named
+      if (jetzt !== null && pack.mitgereist !== true) zeilen.push(`~ pack ${pack.id}: read from the file's text (${kurz(soll)}); this folder's library has ${kurz(jetzt)} now`);
+      return { ...pack, text: aus.text, useWhen: aus.useWhen, sources: aus.sources.map((s) => ({ path: s.path, anchor: s.anchor })), weg: aus.way ?? pack.weg ?? "start", mitgereist: true as const };
+    }
+    zeilen.push(`~ pack ${pack.id}: the file names ${kurz(soll)}, no text with that hash is here; ${jetzt === null ? "none" : `this library's ${kurz(jetzt)}`} is read instead`);
+    return pack;
+  });
+  return { knowledge: { ...k, packs }, zeilen };
+}
 // `belegung`: the occupancy whose folder this is; null for a start not yet made (the plan), which names no folder
 // `sitz`: ein Sitz einer importierten Konstellation liest, was mitreiste; die eigene Bibliothek füllt nur seine persönlichen Plätze
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
-  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true, model: string | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
+  sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true, model: string | null = null,
+  hashes: Readonly<Record<string, string>> | null = null): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
     skillOrt: SkillOrt | null; zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[]; weggelassen: string[] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
   // a carried seat may start without a readable library; its own block still gives sitzWissen the carried packs
   const eigene = sitz?.block ? await seatKnowledgeFor(cwd, harness).then((k) => k.knowledge, () => null) : null;
   // DIE DATENGRENZE AM TEXT (server/datengrenze.ts): ein Sitz, der nicht Anthropic ist, bekommt keinen Pack mit der Marke — weder im Start
   // noch als Skill noch im Katalog des Startfensters; das Erben der Öffnerin und die Steine der Vorgängerin laufen durch dieselbe Stelle
-  const roh: SeatKnowledge = sitz?.block ? sitzWissen(sitz, eigene) : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  const ausBibliothek: SeatKnowledge = sitz?.block ? sitzWissen(sitz, eigene) : (await seatKnowledgeFor(cwd, harness)).knowledge;
+  // THE AGENT'S PACKS ARE READ BY HASH (Agent.packHashes): the text its file named, not what the id means in this folder today
+  const nachHash = packsNachHash(ausBibliothek, wahl, hashes);
+  const roh = nachHash.knowledge;
   const voll = wissenFuerSitz(roh, harness, model);
   // the two door lines belong to the token the seat holds: a seat from a file takes them from the folder's register, not from its file
   const register = eigene ? wissenFuerSitz(eigene, harness, model) : voll;
   const knowledge = mitTuerenSkill(bibliothekGewaehlt(voll, wahl, dazu, an), register);
   // ...und was der Sitz ohne die Grenze bekommen hätte, steht in der Fassung als Zeile, nicht still weg
-  const weggelassen = voll === roh ? [] : bibliothekGewaehlt(roh, wahl, dazu, an).packs.filter((pack) => pack.personal === true)
-    .map((pack) => weggelassenZeile(`pack ${pack.id}`, harness, model));
+  const weggelassen = [...(voll === roh ? [] : bibliothekGewaehlt(roh, wahl, dazu, an).packs.filter((pack) => pack.personal === true)
+    .map((pack) => weggelassenZeile(`pack ${pack.id}`, harness, model))), ...nachHash.zeilen];
+  // ...and a pack the seat's list names that nothing here has text for (an empty place of the file's sender): left out by name, not silently
+  if (Array.isArray(wahl)) for (const id of wahl) if (!roh.packs.some((pack) => pack.id === id))
+    weggelassen.push(`− pack ${id}: the file brought no text for it and this machine has none`);
   // die leeren persönlichen Plätze und, bei einer Rolle, die Richtung: sie stehen im Start UND unter „Wissen“ der Fassung
   const leer = sitz?.block ? leererPlatzZeilen(sitz, eigene) : [];
   // WO DIE SKILLS DIESES SITZES HIN GEHEN (server/sitz-wissen.ts#SkillOrt): Claude Code in den Ordner seiner Belegung
@@ -43970,7 +44024,7 @@ function rechteRollen(s: Slot): RechtRolle[] {
   // Orchestratorin die einzige Quelle (ein zweiter Labelträger trägt das Bundel nicht).
   const orchestrator = slots.includes(s)
     ? deliveryRecipient({ kind: "orchestrator" }) === s
-    : !s.worktree && isOrchestratorLabel(s.label);
+    : wuerdeOrchestratorin(s);
   if (orchestrator) rollen.push("orchestrator");
   if (boundProgramsForMain(s).length > 0) rollen.push("program-main");
   if (s.worktree) rollen.push("lane");
@@ -44771,7 +44825,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       if (!rc.ok) return refuse(rc.error);
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
       const eingang: OeffnungEingang = { cwd: resolve(expandCwd(repo)),
-        label: rolle === "orchestratorin" ? "Orchestrator" : null, harness: ho.harness, model: mo.model, effort: eo.effort,
+        label: rolle === "orchestratorin" ? "Orchestrator" : typeof startBody.label === "string" ? startBody.label : null, harness: ho.harness, model: mo.model, effort: eo.effort,
         rechte: wr.rechte, agentMd: am.agentMd ?? q.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch,
         schwelle: sw.schwelle, notizbuchWahl: nb.wahl, permissionMode: pm.wahl,
         weglassen: wg.wahl, autoModeEnvironment: um.wahl, tools: tw.wahl, agent: q.agent ?? null, remote: rc.remote,

@@ -267,6 +267,27 @@ describe("pi-zai-unfenced: die Startzeile", () => {
     expect(line).not.toContain("FLEET_PZ_SB");
   });
 
+  // Mangel 175: pi lädt aus seinem Agent-Home Code und Anweisungen ohne Trust-Frage. Die gezäunten Sitze können ihr Home nicht
+  // mehr beschreiben, aber was dort vor dem Zaun lag, lädt auch ein ungezäunter Sitz, wenn er dasselbe Home hätte.
+  test("pi-zai-unfenced hat ein anderes Agent-Home als pi-zai: eigenes Verzeichnis, eigener Katalog, nie das des gezäunten Sitzes", async () => {
+    const { PI_ZAI_UNFENCED_HARNESS, PI_ZAI_HARNESS } = await load();
+    const zaiHome = `${process.env.HOME}/.config/claude-fleet/pi-zai-agent`;
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-zai-home-"));
+    try {
+      const open = PI_ZAI_UNFENCED_HARNESS.spawnCmd(base);
+      const fenced = PI_ZAI_HARNESS.spawnCmd({ ...base, cwd, fenceBwrap: "/usr/bin/bwrap" as string | null });
+      expect(fenced).toContain(`PI_CODING_AGENT_DIR='${zaiHome}'`);
+      expect(open).toContain(`PI_CODING_AGENT_DIR='${zaiHome}-unfenced'`);
+      expect(open).toContain(`> '${zaiHome}-unfenced/models.json'`);
+      expect(open).not.toContain(`PI_CODING_AGENT_DIR='${zaiHome}'`);
+      expect(open).not.toContain(`'${zaiHome}/`);
+      // der gezäunte Sitz sieht sein Home als Overlay (Lesen, Schreiben nur im Zaun) und das andere Home gar nicht
+      expect(fenced).toContain(`'--overlay-src' '${zaiHome}' '--tmp-overlay' '${zaiHome}'`);
+      expect(fenced).not.toContain(`'--bind' '${zaiHome}' '${zaiHome}'`);
+      expect(fenced).not.toContain(`${zaiHome}-unfenced`);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   test("ein gewähltes Modell, die Session und der Effort landen auf der Zeile", async () => {
     const { PI_ZAI_UNFENCED_HARNESS } = await load();
     const line = PI_ZAI_UNFENCED_HARNESS.spawnCmd({ ...base, sessionId: "sess-2", model: "glm-5.3-flash", effort: "high" });

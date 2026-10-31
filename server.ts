@@ -1224,6 +1224,12 @@ function safeSpawnPath(name: string, dflt: string): string {
   return path.replace(/\/+$/, "");
 }
 const PI_ZAI_AGENT_DIR = safeSpawnPath("FLEET_PI_ZAI_AGENT_DIR", `${HOME}/.config/claude-fleet/pi-zai-agent`);
+// pi-zai-unfenced has a home of its own (Mangel 175): pi loads code and instructions from its agent home without a trust
+// question, and the fenced seats can no longer write theirs but share it with every seat of their adapter. Were the unfenced
+// seat to run from the same directory, whatever a fenced seat planted before the fence closed would run unfenced. The default
+// is a sibling of pi-zai's home, so a test that moves FLEET_PI_ZAI_AGENT_DIR moves this one with it. A session an unfenced seat
+// began in pi-zai's home stays there: pi starts the same session id fresh in the new home (see docs/neuaufbau/maengel.md, 175).
+const PI_ZAI_UNFENCED_AGENT_DIR = safeSpawnPath("FLEET_PI_ZAI_UNFENCED_AGENT_DIR", `${PI_ZAI_AGENT_DIR}-unfenced`);
 const PI_ZAI_KEY_FILE = safeSpawnPath("FLEET_PI_ZAI_KEY_FILE", `${HOME}/.config/claude-fleet/secrets/zai-coding-plan.key`);
 // The DeepSeek seat (owner 2026-10-26, stage 2: „[Zitat entfernt]“) owns its own agent home and its own key file. The key
 // file's DEFAULT is the owner's path on the Workhorse, spelled here because Fleet may only ever name
@@ -1615,11 +1621,11 @@ function piZaiCatalogJson(): string {
 }
 // The key and catalogue guard shared by both GLM adapters. The key stays a FILE that the pane shell
 // reads into the environment: this line never contains its contents and never puts it on argv.
-function piZaiSpawnGuard(prefix: string): string {
+function piZaiSpawnGuard(prefix: string, agentDir: string = PI_ZAI_AGENT_DIR): string {
   const keyError = `${prefix}: missing or empty Z.ai Coding Plan key file: ${PI_ZAI_KEY_FILE}`;
-  const catalogError = `${prefix}: could not prepare process-local agent directory: ${PI_ZAI_AGENT_DIR}`;
+  const catalogError = `${prefix}: could not prepare process-local agent directory: ${agentDir}`;
   return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
-    + `mkdir -p '${PI_ZAI_AGENT_DIR}' && printf '%s\\n' '${piZaiCatalogJson()}' > '${PI_ZAI_AGENT_DIR}/models.json' `
+    + `mkdir -p '${agentDir}' && printf '%s\\n' '${piZaiCatalogJson()}' > '${agentDir}/models.json' `
     + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `;
 }
 const PI_ZAI_HARNESS: Harness = {
@@ -1746,12 +1752,12 @@ const PI_ZAI_UNFENCED_HARNESS: Harness = {
     cmd += PI_TUI_REGULAR;
     // No fence, no sandbox-exec, no bwrap: this is the whole point of the seat. The guard and the
     // key expansion are the same two words pi-zai uses, so the credential handling cannot drift.
-    return `${piZaiSpawnGuard("pi-zai-unfenced")}PI_CODING_AGENT_DIR='${PI_ZAI_AGENT_DIR}' `
+    return `${piZaiSpawnGuard("pi-zai-unfenced", PI_ZAI_UNFENCED_AGENT_DIR)}PI_CODING_AGENT_DIR='${PI_ZAI_UNFENCED_AGENT_DIR}' `
       + `ZAI_API_KEY="$(cat '${PI_ZAI_KEY_FILE}')" ${cmd}; exec ${SHELL}`;
   },
   worker: () => null,
-  context: { file: piZaiContextFile, used: readPiUsedTokens, tail: readPiTail },
-  conversation: { file: piZaiContextFile, read: readPiSession },
+  context: { file: piZaiUnfencedContextFile, used: readPiUsedTokens, tail: readPiTail },
+  conversation: { file: piZaiUnfencedContextFile, read: readPiSession },
   pinsSession: true,
   comms: ["pi"],
   composer: PI_COMPOSER,
@@ -26145,7 +26151,7 @@ function timelineReceipt(s: Slot): TimelineReceipt[] {
     proof: createHash("sha256").update(evidence).digest("hex") }];
 }
 function timelineSource(r: TimelineReceipt): TimelineSource | null {
-  const names = r.harness ? [r.harness] : ["claude", "codex", "pi", "pi-zai"];
+  const names = r.harness ? [r.harness] : ["claude", "codex", "pi", "pi-zai", "pi-zai-unfenced"];
   const found: TimelineSource[] = [];
   for (const harness of names) {
     let file: string | null = null, cwd = r.cwd;
@@ -26160,7 +26166,7 @@ function timelineSource(r: TimelineReceipt): TimelineSource | null {
     } else {
       const o = { sessionId: r.session, cwd: r.cwd };
       file = harness === "pi" ? piSeatContextFile(o) : harness === "pi-zai" ? piZaiContextFile(o)
-        : harness === "pi-deepseek" ? piDeepseekContextFile(o) : null;
+        : harness === "pi-zai-unfenced" ? piZaiUnfencedContextFile(o) : harness === "pi-deepseek" ? piDeepseekContextFile(o) : null;
       if (file) cwd = realpathLoose(r.cwd);
     }
     if (file) found.push({ file, cwd, harness, format: harness === "claude" ? "claude-jsonl"
@@ -45938,12 +45944,12 @@ function piStartDatei(harness: string, text: string): string {
   const dir = piAgentDirOf(harness);
   return startDateiUnter(dir ? `${dir}/fleet-start` : SEAT_START_ROOT, text);
 }
-/** DAS AGENT-VERZEICHNIS, DAS EIN PI-ADAPTER SEINEM SITZ GIBT (das PI_CODING_AGENT_DIR seiner Zeile): pi-zai und
- *  pi-zai-unfenced teilen eins, pi-deepseek hat sein eigenes. Die übrigen pi-Adapter (pi, pi-unfenced) setzen keins —
+/** DAS AGENT-VERZEICHNIS, DAS EIN PI-ADAPTER SEINEM SITZ GIBT (das PI_CODING_AGENT_DIR seiner Zeile): pi-zai, pi-zai-unfenced
+ *  und pi-deepseek haben je ein eigenes (Mangel 175). Die übrigen pi-Adapter (pi, pi-unfenced) setzen keins —
  *  dort läge pi's eigenes Zuhause des Users, das Fleet nicht füllt. `null` = kein eigenes Agent-Verzeichnis. */
 function piAgentDirOf(harness: string): string | null {
   const id = harnessOf(harness).id;
-  return id === "pi-zai" || id === "pi-zai-unfenced" ? PI_ZAI_AGENT_DIR
+  return id === "pi-zai" ? PI_ZAI_AGENT_DIR : id === "pi-zai-unfenced" ? PI_ZAI_UNFENCED_AGENT_DIR
     : id === "pi-deepseek" ? PI_DEEPSEEK_AGENT_DIR : null;
 }
 const orchestratorStartImSystemprompt = (harness: string | null): boolean => IS_CLAUDE && harnessOf(harness).id === "claude";
@@ -50079,6 +50085,10 @@ function piSeatContextFile(o: { cwd: string; sessionId: string }): string | null
 // as before, while this adapter can never observe or mutate that global directory.
 function piZaiContextFile(o: { cwd: string; sessionId: string }): string | null {
   return isolatedPiContextFile(PI_ZAI_AGENT_DIR, o);
+}
+// pi-zai-unfenced reads its sessions back from its OWN home (PI_ZAI_UNFENCED_AGENT_DIR), not pi-zai's
+function piZaiUnfencedContextFile(o: { cwd: string; sessionId: string }): string | null {
+  return isolatedPiContextFile(PI_ZAI_UNFENCED_AGENT_DIR, o);
 }
 // pi-deepseek runs the same Pi, so the same format under its OWN agent home: a DeepSeek session's
 // conversations must not be read from (or written into) the GLM seat's directory.

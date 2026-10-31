@@ -258,7 +258,12 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     const redirected = await scanModels({ home: join(home, "unused"), env: {
       CODEX_HOME: override, CLAUDE_CONFIG_DIR: join(home, ".claude"), FLEET_PI_ZAI_AGENT_DIR: pi,
     } });
-    deepStrictEqual(redirected.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai", "pi-zai-unfenced", "pi-deepseek"]);
+    deepStrictEqual(redirected.harnesses.map((row) => row.harness), ["claude", "codex", "pi-zai", "pi-zai-unfenced", "pi-deepseek", "pi", "pi-unfenced"]);
+    // the plain Pi seats have no catalogue to compare with: unknown, never a false 'registeredButUnavailable'
+    for (const row of redirected.harnesses.filter((r) => r.harness === "pi" || r.harness === "pi-unfenced")) {
+      strictEqual(row.status, "unknown");
+      deepStrictEqual(row.registeredButUnavailable, null);
+    }
     deepStrictEqual(redirected.harnesses[1].available, ["codex-present"]);
     strictEqual(redirected.harnesses[0].status, "unknown");
     match(redirected.harnesses[0].reason ?? "", /stale cc catalogue$/);

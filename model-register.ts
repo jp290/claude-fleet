@@ -146,6 +146,17 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "codex", id: "gpt-5.6-luna", status: "superseded", supersededBy: "gpt-6-luna", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.5", status: "current", displayWindow: 272_000 },
   { harness: "codex", id: "gpt-5.3-codex-spark", status: "current" },
+  { harness: "pi-zai", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-zai", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  // The same two models on the unfenced GLM seat: the model list is a fact about the provider, not
+  // about the fence around it. Separate rows because the harness is separately choosable.
+  { harness: "pi-zai-unfenced", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-zai-unfenced", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
+  // The DeepSeek seat (owner 2026-10-26, stage 2): the ids and the 1M window are pi's OWN catalogue
+  // (`dist/providers/data/deepseek.json` of the installed 1.0.2 — „[Zitat entfernt]“ and
+  // "DeepSeek V4 Pro", both contextWindow 1000000), not this register's guesswork.
+  { harness: "pi-deepseek", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
+  { harness: "pi-deepseek", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
   // The plain Pi seats (`pi`, `pi-unfenced`) — owner 27.10.: „[Zitat entfernt]“
   // .
   // The same four ids their start line now really carries (server.ts#PI_SEAT_MODELS), and nothing
@@ -159,17 +170,6 @@ export const MODEL_REGISTER: readonly ModelEntry[] = [
   { harness: "pi-unfenced", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
   { harness: "pi-unfenced", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
   { harness: "pi-unfenced", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
-  { harness: "pi-zai", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
-  { harness: "pi-zai", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
-  // The same two models on the unfenced GLM seat: the model list is a fact about the provider, not
-  // about the fence around it. Separate rows because the harness is separately choosable.
-  { harness: "pi-zai-unfenced", id: "glm-5.3", status: "current", displayWindow: 1_000_000 },
-  { harness: "pi-zai-unfenced", id: "glm-5.3-flash", status: "current", displayWindow: 1_000_000 },
-  // The DeepSeek seat (owner 2026-10-26, stage 2): the ids and the 1M window are pi's OWN catalogue
-  // (`dist/providers/data/deepseek.json` of the installed 1.0.2 — „[Zitat entfernt]“ and
-  // "DeepSeek V4 Pro", both contextWindow 1000000), not this register's guesswork.
-  { harness: "pi-deepseek", id: "deepseek-flash", status: "current", displayWindow: 1_000_000 },
-  { harness: "pi-deepseek", id: "deepseek-v4-pro", status: "current", displayWindow: 1_000_000 },
 ];
 
 export const MODEL_ALIASES: Readonly<Record<string, string>> = {

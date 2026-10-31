@@ -117,6 +117,10 @@ export async function scanModels(options: {
       const usable = available !== null && available.length > 0 && cacheTime !== null;
       harnesses.push(compare(harness, [label], usable ? available : null, source.reason ?? (usable ? null
         : `${label}: missing or incomplete zai catalogue (expected nonempty models[].id and checkedAt)`), cacheTime, register));
+    } else if (harness === "pi" || harness === "pi-unfenced") {
+      // The plain Pi seats start a fixed list of provider models (server.ts#PI_SEAT_MODELS) and keep no catalogue of their own
+      // to compare against; the Claude catalogue below says nothing about them and would call all four "registeredButUnavailable".
+      harnesses.push(compare(harness, ["no catalogue source"], null, "no model catalogue source for this seat", null, register));
     } else {
       const label = "CLAUDE_CONFIG_DIR/cache/model-catalog/";
       const catalogue = await readClaudeCatalogue(join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"),

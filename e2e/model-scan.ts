@@ -2,7 +2,7 @@ import { deepStrictEqual, strictEqual, match } from "node:assert";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanModels, makeModelScanTick, modelScanStateFrom, MODEL_SCAN_INTERVAL_MS } from "../model-scan";
+import { scanModels, makeModelScanTick, modelScanStateFrom, MODEL_SCAN_INTERVAL_MS, ZAI_CATALOGUE_MAX_AGE_MS } from "../model-scan";
 import { type ModelEntry } from "../model-register";
 
 const fixtureRegister: readonly ModelEntry[] = [
@@ -51,6 +51,26 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     strictEqual(JSON.stringify(result).includes("SECRET"), false);
     strictEqual(await readFile(codexPath, "utf8"), cache);
     check("model-scan: exact fixture catalogue differences include superseded register entries", true);
+
+    // Mangel 175: a fenced pi seat no longer writes models-store.json, so the file freezes. Past the age limit the scan says
+    // 'stale' and claims neither difference; a fresh entry (and the limit itself) stays known.
+    const zaiAt = (checkedAt: number) => writeFile(piPath, JSON.stringify({ zai: { checkedAt, models: [{ id: "pi-present" }, { id: "pi-new" }] } }));
+    await zaiAt(now - ZAI_CATALOGUE_MAX_AGE_MS);
+    strictEqual((await scan()).harnesses[2].status, "known");
+    await zaiAt(now - ZAI_CATALOGUE_MAX_AGE_MS - 1);
+    const frozen = (await scan()).harnesses[2];
+    strictEqual(frozen.status, "unknown");
+    match(frozen.reason ?? "", /: stale zai catalogue \(checkedAt older than 7 days\)$/);
+    deepStrictEqual([frozen.available, frozen.newlyAvailable, frozen.registeredButUnavailable], [null, null, null]);
+    strictEqual(frozen.cacheTime, now - ZAI_CATALOGUE_MAX_AGE_MS - 1);
+    // ...and a stale catalogue sends no message: the tick skips every row that is not known
+    const staleTick: string[] = [];
+    await makeModelScanTick({ state: modelScanStateFrom(null), scan: async () => ({ harnesses: [frozen] }),
+      send: async (m) => { staleTick.push(m); return true; }, persist: async () => {}, now: () => now })();
+    strictEqual(staleTick.length, 0);
+    check("model-scan: a pi-zai catalogue older than seven days is stale (unknown, no differences, no message); at the limit it is still known", true);
+    await writeFile(piPath, JSON.stringify({ zai: { checkedAt: 1234,
+      models: [{ id: "pi-present", provider: "zai" }, { id: "pi-new" }] }, other: { models: [{ id: "foreign" }] }, apiKey: "SECRET-KEY" }));
 
     await rm(codexPath);
     await mkdir(codexPath);
@@ -254,7 +274,7 @@ export async function run(check: (name: string, ok: boolean) => void = (name, ok
     const override = join(home, "override");
     await mkdir(override);
     await writeFile(join(override, "models_cache.json"), '{"models":[{"slug":"codex-present"}]}');
-    await writeFile(piPath, '{"zai":{"models":[{"id":"pi-present"}],"checkedAt":1234}}');
+    await writeFile(piPath, `{"zai":{"models":[{"id":"pi-present"}],"checkedAt":${Date.now()}}}`);
     const redirected = await scanModels({ home: join(home, "unused"), env: {
       CODEX_HOME: override, CLAUDE_CONFIG_DIR: join(home, ".claude"), FLEET_PI_ZAI_AGENT_DIR: pi,
     } });

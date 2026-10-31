@@ -32,6 +32,11 @@ function ids(value: unknown, field: "slug" | "id"): string[] | null {
   return [...new Set(value.map((row: JsonObject) => row[field] as string))].sort();
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Seven days: the scan runs every 24 h (MODEL_SCAN_INTERVAL_MS), so a week is six missed refreshes in a row, and still long
+// enough that a host whose pi seats rest over a weekend does not flap between known and unknown.
+export const ZAI_CATALOGUE_MAX_AGE_MS = 7 * DAY_MS;
+
 async function readSource(path: string, label: string): Promise<{ value: unknown; reason: string | null }> {
   let text: string;
   try { text = await readFile(path, "utf8"); }
@@ -96,6 +101,7 @@ export async function scanModels(options: {
   const home = options.home ?? homedir();
   const env = options.env ?? process.env;
   const register = options.register ?? MODEL_REGISTER;
+  const now = options.now ?? Date.now();
   const harnesses: HarnessScan[] = [];
   for (const harness of [...new Set(register.map((entry) => entry.harness))]) {
     if (harness === "codex") {
@@ -115,7 +121,12 @@ export async function scanModels(options: {
       const cacheTime = provider && typeof provider.checkedAt === "number" && Number.isFinite(provider.checkedAt)
         ? provider.checkedAt : null;
       const usable = available !== null && available.length > 0 && cacheTime !== null;
-      harnesses.push(compare(harness, [label], usable ? available : null, source.reason ?? (usable ? null
+      // A catalogue nobody refreshes any more says nothing about what exists NOW (Mangel 175): pi wrote this file itself, and a
+      // fenced pi seat no longer can (its agent home is a throwaway overlay), so it freezes at the last write outside a fence.
+      // Past ZAI_CATALOGUE_MAX_AGE_MS it is unknown, like a stale Claude catalogue, and claims neither difference.
+      const stale = usable && now - cacheTime > ZAI_CATALOGUE_MAX_AGE_MS;
+      harnesses.push(compare(harness, [label], usable && !stale ? available : null, source.reason ?? (stale
+        ? `${label}: stale zai catalogue (checkedAt older than ${ZAI_CATALOGUE_MAX_AGE_MS / DAY_MS} days)` : usable ? null
         : `${label}: missing or incomplete zai catalogue (expected nonempty models[].id and checkedAt)`), cacheTime, register));
     } else if (harness === "pi" || harness === "pi-unfenced") {
       // The plain Pi seats start a fixed list of provider models (server.ts#PI_SEAT_MODELS) and keep no catalogue of their own
@@ -124,7 +135,7 @@ export async function scanModels(options: {
     } else {
       const label = "CLAUDE_CONFIG_DIR/cache/model-catalog/";
       const catalogue = await readClaudeCatalogue(join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
-        "cache/model-catalog"), label, options.now ?? Date.now());
+        "cache/model-catalog"), label, now);
       harnesses.push(compare(harness, [label], catalogue.available, catalogue.reason, catalogue.cacheTime, register));
     }
   }

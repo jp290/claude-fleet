@@ -192,12 +192,14 @@ export function renderSkillFile(pack: SeatPack, head: string): string {
 /** WO DIE SKILLS EINES SITZES LIEGEN: Claude Code im Ordner seiner Belegung, den der Start mit `--add-dir` bekommt
  *  (`<ordner>/.claude/skills`); pi in `skills/` seines Agent-Verzeichnisses (docs/configuration.md des installierten
  *  Pakets: `<agent-dir>/skills/` — „User skills and supporting files“, ohne weitere Einstellung geladen).
- *  `agentDir: null` heißt: dieser pi-Adapter (pi, pi-unfenced) gibt seinem Sitz kein eigenes Agent-Verzeichnis, dann gibt
- *  es auch keinen Skill-Ordner. `null` als Ganzes: der Harness liest weder Start-Block noch Skills (codex). */
-export type SkillOrt = { readonly art: "claude" } | { readonly art: "pi"; readonly agentDir: string | null };
+ *  `agentDir: null` heißt: dieser pi-Adapter (pi, pi-unfenced) gibt seinem Sitz kein eigenes Agent-Verzeichnis (dort läge pi's
+ *  Zuhause des Users, das Fleet nicht füllt). Seine Skills liegen dann in `ordner`, dem Ordner der Belegung in Fleets Zustand,
+ *  den die Zeile mit `pi --skill` bekommt (pi findet `<id>/SKILL.md` darin rekursiv: dist/core/skills.js loadSkillsFromDirInternal);
+ *  ohne `ordner` (der Plan, vor dem Start) gibt es noch keine Datei. `null` als Ganzes: der Harness liest weder Start-Block noch Skills (codex). */
+export type SkillOrt = { readonly art: "claude" } | { readonly art: "pi"; readonly agentDir: string | null; readonly ordner?: string | null };
 /** Der Ordner, unter dem dieses Harness seine Skills sucht; null = es liest keine (der Sitz bekommt keine Dateien). */
 const skillBasis = (ort: SkillOrt | null): string | null =>
-  ort === null ? null : ort.art === "claude" ? ".claude/skills" : ort.agentDir ? `${ort.agentDir}/skills` : null;
+  ort === null ? null : ort.art === "claude" ? ".claude/skills" : ort.agentDir ? `${ort.agentDir}/skills` : ort.ordner ?? null;
 
 /** Die Skill-Dateien dieses Sitzes, Kopf und Text für beide Harnesses aus demselben Renderer: relativ zum Verzeichnis,
  *  das `--add-dir` bekommt (Claude Code), oder absolut unter `skills/` im Agent-Verzeichnis des pi-Adapters. Leer, wenn
@@ -317,11 +319,13 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
   // pi liest seine Skills wie Claude Code (nur aus einem anderen Ordner): die Fassung zeigt sie ihm (Info → Setup),
   // statt sie zu verschweigen. Claude Code: der Ordner der Belegung; pi: `skills/` im Agent-Verzeichnis seines Adapters.
   const piBasis = claude ? null : skillBasis(skillOrt);
-  const skills = claude || piBasis !== null ? skillsOf(k) : [];
+  const piOhneAgentDir = !claude && skillOrt?.art === "pi" && !skillOrt.agentDir;
+  const skills = claude || piBasis !== null || piOhneAgentDir ? skillsOf(k) : [];
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"
       ? "Fleet-Repo" : "anderes Repo"}, ${k.head.slice(0, 8)})`)];
-  const skillsPfad = claude ? `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills` : piBasis!;
+  const skillsPfad = claude ? `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills`
+    : piBasis ?? "<Ordner dieser Belegung, entsteht beim Start>";
   return [
     textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k, claude), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),

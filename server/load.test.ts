@@ -168,6 +168,28 @@ describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  // pi und pi-unfenced haben kein eigenes Agent-Verzeichnis: ihre Skill-Packs liegen im Ordner der Belegung in Fleets Zustand
+  // und kommen per `--skill`; pi-zai und pi-deepseek lesen ihr Agent-Verzeichnis und bekommen die Flagge nicht.
+  test("pi und pi-unfenced: --skill mit dem Ordner der Belegung steht vor --tui-mode regular, nie unter ~/.pi; pi-zai und pi-deepseek bleiben", async () => {
+    const m = await load();
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-skill-"));
+    const skillsDir = "/state/sitz skills/7-1700"; // mit Leerzeichen: nur das Quote-Paar haelt es zusammen
+    const o = { ...base, cwd, startDatei: "/tmp/start.md", seat: { text: "", skillsDir } };
+    try {
+      for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS]) {
+        const line = h.spawnCmd(o);
+        const aufruf = line.slice(0, line.lastIndexOf("; exec "));
+        expect([h.id, aufruf.endsWith(` --skill '${skillsDir}' --tui-mode regular`)]).toEqual([h.id, true]);
+        expect(line).not.toContain("/.pi");
+        expect(line.match(/--skill/g)?.length).toBe(1);
+        // ohne Skill-Ordner (Bibliothek aus) keine Flagge
+        expect(h.spawnCmd({ ...base, cwd })).not.toContain("--skill");
+      }
+      for (const h of [m.PI_ZAI_HARNESS, m.PI_ZAI_UNFENCED_HARNESS, m.PI_DEEPSEEK_HARNESS])
+        expect([h.id, h.spawnCmd({ ...base, cwd, startDatei: "/tmp/start.md" }).includes("--skill")]).toEqual([h.id, false]);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   // Der Live-Wechsel eines laufenden pi-Sitzes bleibt im Anbieter (model-register.ts#piLiveSwitchRefusal): seine Anbieter-Tabelle
   // und die Startzeile muessen dieselben Modelle denselben Anbietern zuordnen.
   test("jedes Modell, das das Register fuer pi und pi-unfenced fuehrt, hat einen Anbieter, und die Startzeile faehrt genau diesen", async () => {

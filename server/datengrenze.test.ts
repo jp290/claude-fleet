@@ -218,6 +218,10 @@ describe("die übrigen Türen", () => {
     const pfade = (harness: string | null, model: string | null) => seatSkillFiles(wissenFuerSitz(k, harness, model)).map((d) => d.pfad);
     expect(pfade(null, null)).toEqual([".claude/skills/privat-probe/SKILL.md", ".claude/skills/offen-probe/SKILL.md"]);
     expect(pfade("pi-zai", "glm-5.3")).toEqual([".claude/skills/offen-probe/SKILL.md"]);
+    // ...auch nicht in den Belegungsordner von pi und pi-unfenced
+    const piPfade = (harness: string) => seatSkillFiles(wissenFuerSitz(k, harness, "deepseek-flash"), { art: "pi", agentDir: null, ordner: "/s/1-2" }).map((d) => d.pfad);
+    expect(piPfade("pi")).toEqual(["/s/1-2/offen-probe/SKILL.md"]);
+    expect(piPfade("pi-unfenced")).toEqual(["/s/1-2/offen-probe/SKILL.md"]);
   });
 
   test("setup-datei-Import: ein mitgereister persönlicher Platz trägt die Marke in den Start und fällt für einen Nicht-Anthropic-Sitz weg", () => {

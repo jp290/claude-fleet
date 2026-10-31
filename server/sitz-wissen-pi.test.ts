@@ -50,7 +50,7 @@ describe("ein pi-Sitz liest den Start-Block, seine Skills liegen in seinem Agent
     expect(ohne.packs).toEqual([]);
     expect(seatSkillFiles(ohne, ZAI)).toEqual([]);
     expect(seatSkillFiles(ohne)).toEqual([]);
-    // ein pi-Adapter ohne eigenes Agent-Verzeichnis (pi, pi-unfenced) schreibt keine: ihn gibt es nicht
+    // ein pi-Adapter ohne eigenes Agent-Verzeichnis (pi, pi-unfenced) hat vor dem Start (der Plan) noch keinen Ordner und keine Datei
     expect(seatSkillFiles(K, { art: "pi", agentDir: null })).toEqual([]);
   });
   test("die Fassung (Info → Setup) zeigt dem pi-Sitz seine Skills mit dem Pfad im Agent-Verzeichnis", () => {
@@ -62,10 +62,21 @@ describe("ein pi-Sitz liest den Start-Block, seine Skills liegen in seinem Agent
     const zeile = a.find((x) => x.text === "- running-fleet: Bevor du landest.");
     expect(zeile?.quelle?.split("\n")[0]).toBe(`${ZAI.agentDir}/skills/running-fleet/SKILL.md`);
     expect(zeile?.grund).toContain("Skill");
-    // ein pi ohne eigenes Agent-Verzeichnis zeigt den Start, aber keine Skill-Zeile
-    const ohne = seatFassungAbschnitte(K, false, null, undefined, { art: "pi", agentDir: null }).map((x) => x.text ?? "").join("\n");
-    expect(ohne).toContain("--- fleet-doors (");
-    expect(ohne).not.toContain("- running-fleet:");
+    // ein pi ohne eigenes Agent-Verzeichnis (pi, pi-unfenced) zeigt den Start UND seine Skill-Zeile; vor dem Start steht der Ordner noch aus
+    const ohneAbschnitte = seatFassungAbschnitte(K, false, null, undefined, { art: "pi", agentDir: null });
+    expect(ohneAbschnitte.map((x) => x.text ?? "").join("\n")).toContain("--- fleet-doors (");
+    expect(ohneAbschnitte.find((x) => x.text === "- running-fleet: Bevor du landest.")?.quelle?.split("\n")[0])
+      .toBe("<Ordner dieser Belegung, entsteht beim Start>/running-fleet/SKILL.md");
+  });
+  // PI UND PI-UNFENCED: EIN ORDNER JE BELEGUNG IN FLEETS ZUSTAND (per `pi --skill`), NIE ~/.pi
+  test("pi ohne Agent-Verzeichnis: die Skills liegen im Ordner der Belegung, ein Eintrag je Pack, nirgends unter ~/.pi", () => {
+    const ort: SkillOrt = { art: "pi", agentDir: null, ordner: "/state/sitz-skills/7-1700" };
+    const files = seatSkillFiles(K, ort);
+    expect(files.map((f) => f.pfad)).toEqual(["/state/sitz-skills/7-1700/running-fleet/SKILL.md"]);
+    expect(files[0]!.text).toBe(renderSkillFile(K.packs.find((p) => p.id === "running-fleet")!, K.head));
+    for (const f of files) expect(f.pfad).not.toContain("/.pi");
+    const zeile = seatFassungAbschnitte(K, false, null, undefined, ort).find((x) => x.text === "- running-fleet: Bevor du landest.");
+    expect(zeile?.quelle?.split("\n")[0]).toBe("/state/sitz-skills/7-1700/running-fleet/SKILL.md");
   });
   test("der Plan nennt für pi dieselben Skills, die er als Datei bekommt", () => {
     expect(seatPacks(K, true)).toEqual({ box: ["who-it-is-for", "fleet-doors"], skills: ["running-fleet"],

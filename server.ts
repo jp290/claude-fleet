@@ -1405,6 +1405,8 @@ function piSeatSpawnCmd(o: SpawnOpts): string {
   if (o.model) cmd += ` --model '${o.model}'`;
   if (o.effort) cmd += ` --thinking ${o.effort}`;
   if (o.startDatei) cmd += ` --append-system-prompt ${shellSingleQuote(o.startDatei)}`;
+  // pi and pi-unfenced have no agent directory of their own: their library skills sit in the occupancy's folder in Fleet's state
+  if (o.seat?.skillsDir) cmd += ` --skill ${shellSingleQuote(o.seat.skillsDir)}`;
   cmd += PI_TUI_REGULAR;
   // untracked provider model: the owner's own pi, unchanged (its key, its agent home, its trust prompt).
   if (!seat) return `${PATH_EXPORT}${cmd}; exec ${SHELL}`;
@@ -43909,13 +43911,19 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   // (--add-dir), ein pi-Sitz in `skills/` des Agent-Verzeichnisses, das sein Adapter ihm gibt (PI_ZAI_AGENT_DIR,
   // PI_DEEPSEEK_AGENT_DIR — pi docs/configuration.md). Ein Harness ohne beides (codex) liest keine Skill-Dateien.
   const familie = harnessFamilie(harness ?? "claude");
+  // ...ein pi-Adapter ohne eigenes Agent-Verzeichnis (pi, pi-unfenced) in den Ordner seiner Belegung, per `pi --skill`; pi's
+  // eigenes ~/.pi/agent bleibt unberührt
+  const piAgentDir = familie === "pi" ? piAgentDirOf(harness ?? "") : null;
+  const piOrdner = familie === "pi" && !piAgentDir && belegung ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
   const skillOrt: SkillOrt | null = familie === "claude" ? { art: "claude" }
-    : familie === "pi" ? { art: "pi", agentDir: piAgentDirOf(harness ?? "") } : null;
+    : familie === "pi" ? { art: "pi", agentDir: piAgentDir, ordner: piOrdner } : null;
   const files = skillOrt ? seatSkillFiles(knowledge, skillOrt) : [];
   // Claude Code lädt Skills aus einem --add-dir in der laufenden Session neu, darum bekommt jede Belegung ihren eigenen
   // Ordner; der Skill-Ordner eines pi-Adapters gehört dem Adapter und wird an Ort und Stelle aufgeräumt (piSkillsWrite)
-  const skillsDir = belegung && files.length && skillOrt?.art === "claude" ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt) : null;
-  if (write && skillsDir) seatSkillsWrite(skillsDir, files);
+  const skillsDir = belegung && files.length && skillOrt?.art === "claude" ? seatSkillsDir(SEAT_SKILLS_ROOT, belegung.slot, belegung.openedAt)
+    : files.length ? piOrdner : null;
+  // (the pi folder's file paths are absolute under it; seatSkillsWrite takes them relative to the folder)
+  if (write && skillsDir) seatSkillsWrite(skillsDir, skillsDir === piOrdner ? files.map((f) => ({ ...f, pfad: f.pfad.slice(skillsDir.length + 1) })) : files);
   if (write && skillOrt?.art === "pi" && skillOrt.agentDir) piSkillsWrite(skillOrt.agentDir, files);
   // the register's packs a seat may choose (trigger seat-choice), chosen or not: the start window offers each as a stone
   const zurWahl = voll.packs.filter((pack) => pack.zurWahl);
@@ -44301,13 +44309,13 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
   // but only where its adapter gives it an agent directory (piAgentDirOf; pi and pi-unfenced have none: no skill is written)
   // (server/sitz-wissen.ts#seatSkillFiles); the window names both for it, as it does for a Claude seat
   const bibliothek = o.rolle === "nur-ordner" && (familie === "claude" || familie === "pi")
-    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude" || familie === "pi" && piAgentDirOf(o.harness ?? "") !== null) }),
+    ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude" || familie === "pi") }),
       (e: unknown) => ({ grund: `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}` }))
     : null;
   // WHAT THE START GIVES WITH THE LIBRARY OFF: outside Fleet's repo a seat with a self token still gets the two door lines as skills
   // (server/sitz-wissen.ts#mitTuerenSkill), so the skills row is "an" with exactly those while the switch is off, and the whole list when on
   const tueren = bibliothek && "start" in bibliothek && (familie === "claude" || familie === "pi") && (await fleetBaumVon(fp.repoRoot)) === null
-    ? await seatStartFor(fp.repoRoot, o.harness, null, false, null, false, [], false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude" || familie === "pi" && piAgentDirOf(o.harness ?? "") !== null) }),
+    ? await seatStartFor(fp.repoRoot, o.harness, null, false, null, false, [], false).then((start) => ({ start, ...seatPacks(start.knowledge, familie === "claude" || familie === "pi") }),
       () => null)
     : null;
   const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills] : []);

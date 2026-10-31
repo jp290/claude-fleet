@@ -9,7 +9,7 @@
 // weil sie im Auftrag so genannt ist und ältere Aufrufe sie tragen können. Der Leser ist rein (kein
 // Server, keine Datei): die Zeilen kommen hier synthetisch herein.
 import { describe, expect, test } from "bun:test";
-import { FILE_LINES, LINE_MAX, SIDE_MAX, readPiSession, type TBlock } from "./conversation-read";
+import { FILE_LINES, LINE_MAX, PATH_MAX, SIDE_MAX, readPiSession, type TBlock } from "./conversation-read";
 
 const TS = "2026-10-28T10:00:00.000Z";
 const kopf = JSON.stringify({ type: "session", id: "s0", timestamp: TS });
@@ -65,5 +65,31 @@ describe("ein pi-Werkzeugaufruf, der eine Datei ändert, trägt die Änderung st
     const r = block("read", { path: "src/a.ts", offset: 1, limit: 20 });
     expect(r.file).toBeUndefined();
     expect(r.text).toBe('{"path":"src/a.ts","offset":1,"limit":20}');
+  });
+});
+
+describe("ein kaputter Eintrag nimmt die Unterhaltung nicht mit", () => {
+  const msg = (id: string, parent: string, role: string, content: unknown) => JSON.stringify({ type: "message", id, parentId: parent,
+    timestamp: TS, message: { role, timestamp: 1761645600000, provider: "anthropic", model: "m", content } });
+
+  test("ein null-Element in content einer Assistant-Nachricht: die übrigen Blöcke und die Nachbarn kommen an", () => {
+    const r = readPiSession([kopf, frage,
+      msg("a1", "u1", "assistant", [null, 7, { type: "text", text: "heil" }]),
+      msg("u2", "a1", "user", [null, { type: "text", text: "weiter" }]),
+      msg("t1", "u2", "toolResult", [null, { type: "text", text: "ergebnis" }])]);
+    expect(r.entries.map((e) => e.blocks[0]!)).toEqual([
+      { t: "text", text: "änder was" }, { t: "text", text: "heil" },
+      { t: "text", text: "weiter" }, { t: "tool_result", text: "ergebnis" }]);
+  });
+
+  test("ein Pfad über der Kappe ist gekappt und als gekappt erkennbar", () => {
+    const b = block("write", { path: "p/".repeat(PATH_MAX), content: "x" });
+    expect(b.file!.path.length).toBeLessThan(PATH_MAX + 40);
+    expect(b.file!.path).toContain("[+");
+    expect(b.file!.cut).toBe(true);
+  });
+
+  test("ein Pfad unter der Kappe bleibt unberührt", () => {
+    expect(block("write", { path: "a/b.ts", content: "x" }).file).toEqual({ path: "a/b.ts", after: ["x"], cut: false });
   });
 });

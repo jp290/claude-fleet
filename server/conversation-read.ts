@@ -30,6 +30,9 @@ export const LINE_MAX = 400;
 // a side's whole budget: a call carrying two capped sides must not become the conversation view's
 // payload on every poll
 export const SIDE_MAX = 2000;
+// a file path shown on a card: real paths stay far below 500, a longer one is a broken or hostile entry
+// and must not blow a board line; it is cut with trim's marker and the change says `cut`
+export const PATH_MAX = 500;
 // meta: a harness-injected user turn — real content, not typed by the owner (folded in the view)
 export interface TEntry { n: number; role: "user" | "assistant"; ts: string | null; blocks: TBlock[]; meta?: boolean }
 
@@ -354,14 +357,14 @@ export function readCodexRollout(lines: string[]): ConversationRead {
     if (p.type === "message") {
       if (p.role !== "user" && p.role !== "assistant") return;
       const text = Array.isArray(p.content)
-        ? p.content.map((c) => str((c as { text?: unknown }).text)).filter(Boolean).join("\n")
+        ? p.content.map((c) => str((c as { text?: unknown } | null)?.text)).filter(Boolean).join("\n")
         : "";
       if (!text) return;
       if (p.role === "user" && CODEX_INJECTED.test(text)) return;
       entries.push({ n, role: p.role, ts, blocks: [{ t: "text", text: trim(text, p.role === "user" ? 20_000 : 40_000) }] });
     } else if (p.type === "reasoning") {
       const text = Array.isArray(p.summary)
-        ? p.summary.map((s) => str((s as { text?: unknown }).text)).filter(Boolean).join("\n") : "";
+        ? p.summary.map((s) => str((s as { text?: unknown } | null)?.text)).filter(Boolean).join("\n") : "";
       if (text) entries.push({ n, role: "assistant", ts, blocks: [{ t: "thinking", text: trim(text, 10_000) }] });
     } else if (p.type === "function_call" || p.type === "custom_tool_call") {
       const args = p.type === "function_call" ? str(p.arguments) : str(p.input);
@@ -382,7 +385,8 @@ export function readCodexRollout(lines: string[]): ConversationRead {
 // the subagent calls — returns null and keeps the one line it always had.
 function fileChange(name: string, args: unknown): FileChange | null {
   const a = (args ?? {}) as Record<string, unknown>;
-  const path = str(a.path);
+  const fullPath = str(a.path);
+  const path = trim(fullPath, PATH_MAX);
   const tool = name.toLowerCase();
   if (!path) return null;
   const pairs: [string, string][] = [];
@@ -402,6 +406,7 @@ function fileChange(name: string, args: unknown): FileChange | null {
   let cut = false;
   cut = pushLines(before, pairs.map(([o]) => o).join("\n")) || cut;
   cut = pushLines(after, pairs.map(([, n]) => n).join("\n")) || cut;
+  cut = cut || path !== fullPath;
   return tool === "write" ? { path, after, cut } : { path, before, after, cut };
 }
 // a final newline ENDS the last line instead of starting an empty one; past FILE_LINES, LINE_MAX per
@@ -462,7 +467,7 @@ export function readPiSession(lines: string[]): ConversationRead {
     const n = i + 1;
     const content = m.content;
     const parts = typeof content === "string" ? [{ type: "text", text: content }]
-      : Array.isArray(content) ? (content as Record<string, unknown>[]) : [];
+      : Array.isArray(content) ? (content as unknown[]).filter((b): b is Record<string, unknown> => !!b && typeof b === "object") : [];
     if (m.role === "user") {
       const text = parts.map((b) => (b.type === "text" ? str(b.text) : "")).filter(Boolean).join("\n");
       if (text) entries.push({ n, role: "user", ts, blocks: [{ t: "text", text: trim(text, 20_000) }] });

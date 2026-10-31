@@ -1371,7 +1371,10 @@ function piZaiFenceFor(cwd: string, laneBranch: string | null): string | null {
 // at /usr/bin/true refused it (sandbox-exec missing: not found; invalid profile: exit 65, f18c1ec).
 // Mechanically visible too: no pi process, so comms finds nothing and canDeliver refuses the pane.
 // No apostrophe by construction: it sits inside a single-quoted shell word.
+// ...and the same sentence naming the fence the platform really builds: bwrap on Linux (a bwrap too old for --overlay-src ends here too).
 const PI_ZAI_FENCE_FAILED = "pi-zai: pi was NOT started - its read fence (sandbox-exec) failed its self-test. "
+  + "This pane is a plain shell, not an agent.";
+const PI_ZAI_BWRAP_FAILED = "pi-zai: pi was NOT started - its read fence (bwrap) failed its self-test. "
   + "This pane is a plain shell, not an agent.";
 
 // ONE start line for BOTH plain Pi seats (`pi`, `pi-unfenced`), because those two adapters differ in
@@ -1603,7 +1606,7 @@ function piFencedBwrapLine(seat: PiFencedSeat, guard: string,
 }
 function piZaiBwrapLine(guard: string, o: { cwd: string; laneBranch?: string | null; fenceBwrap?: string | null }, cmd: string): string {
   return piFencedBwrapLine({ prefix: "pi-zai", agentDir: PI_ZAI_AGENT_DIR, keyFile: PI_ZAI_KEY_FILE,
-    keyEnv: "ZAI_API_KEY", fenceFailed: PI_ZAI_FENCE_FAILED }, guard, o, cmd);
+    keyEnv: "ZAI_API_KEY", fenceFailed: PI_ZAI_BWRAP_FAILED }, guard, o, cmd);
 }
 const PI_ZAI_DEFAULT_MODEL = "glm-5.3";
 const PI_ZAI_MODEL_RE = /^glm-5\.3(-flash)?$/;

@@ -3,7 +3,7 @@
 // Anthropic ist: nicht als Nachricht, nicht im Start, nicht als Pack. Unmarkiertes fließt wie vorher. Die Türen sind die echten
 // (ein Server je `life`, branches-testkit), die Packs liegen als Dateien im Zustandsordner, wie die Tür sie schreibt.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, type Answer, type Fixture } from "./branches-testkit";
 import { mkdtempSync } from "node:fs";
@@ -160,6 +160,37 @@ describe("ein persönlicher Pack steht nicht im Start eines Sitzes, der nicht An
     expect(sPi).not.toContain(PACK);
     // der Rest der Wahl kommt an: die Grenze nimmt nur den persönlichen Pack
     expect(sPi).toContain("--- fleet-doors (");
+  }, LIFE_DEADLINE_MS * 2);
+
+  // DER ECHTE WEG (ensureSlot → seatStartFor → seatSkillsWrite → piSeatSpawnCmd): die Zeile von pi und pi-unfenced nennt den Ordner der
+  // Belegung, er liegt unter <state>/sitz-skills/<slot>-<openedAt>/ und trägt eine SKILL.md je Skill-Pack, ohne den persönlichen
+  test("pi und pi-unfenced: der Ordner der Belegung trägt die Skill-Packs, die Zeile nennt ihn", async () => {
+    const f = fixture();
+    await life(f, [post("/api/slots/1/open", { cwd: f.repo, label: "pi", harness: "pi" }),
+      post("/api/slots/2/open", { cwd: f.repo, label: "pi unfenced", harness: "pi-unfenced" }), "save"]);
+    for (const slot of [1, 2]) {
+      await startOf(slot);
+      const args = readFileSync(join(ARGV, `slot-${slot}`), "utf8").split("\0");
+      const dir = join(f.state, "sitz-skills", `${slot}-${seat(f, slot).openedAt}`);
+      expect([slot, args[args.indexOf("--skill") + 1]]).toEqual([slot, dir]);
+      expect(args.indexOf("--skill")).toBeLessThan(args.indexOf("--tui-mode"));
+      const ids = readdirSync(dir).sort();
+      expect([slot, ids.length > 0]).toEqual([slot, true]);
+      // Skill-Packs der Bibliothek liegen da, der persönlich markierte (proaktiv-arbeiten, im Register ein Skill) fehlt
+      expect(ids).toEqual(expect.arrayContaining(["fleet-doors", "setting-up-agents", "your-seat-in-fleet"]));
+      expect(ids).not.toContain("proaktiv-arbeiten");
+      for (const id of ids) expect(readFileSync(join(dir, id, "SKILL.md"), "utf8")).toMatch(new RegExp(`^---\\nname: ${id}\\n`));
+    }
+  }, LIFE_DEADLINE_MS * 2);
+
+  // schlägt das Schreiben des Ordners fehl, verliert der pi-Sitz nur die Flagge, nicht seinen Start
+  test("pi: ein Fehler beim Schreiben des Skill-Ordners lässt nur --skill weg, der Start bleibt", async () => {
+    const f = fixture();
+    mkdirSync(join(f.state, "sitz-skills"), { mode: 0o555 }); // die Wurzel ist nicht beschreibbar: der Ordner der Belegung entsteht nicht
+    await life(f, [post("/api/slots/1/open", { cwd: f.repo, label: "pi", harness: "pi" }), "save"]);
+    const start = await startOf(1);
+    expect(start).toContain("--- who-it-is-for (");
+    expect(readFileSync(join(ARGV, "slot-1"), "utf8").split("\0")).not.toContain("--skill");
   }, LIFE_DEADLINE_MS * 2);
 
   test("der persönliche Pack des Registers (working-with-the-owner) kommt nur in den Start des Claude-Sitzes", async () => {

@@ -185,8 +185,17 @@ describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
         // ohne Skill-Ordner (Bibliothek aus) keine Flagge
         expect(h.spawnCmd({ ...base, cwd })).not.toContain("--skill");
       }
+      // der Zweig mit Anbieter-Schluessel (KEY="$(cat …)" vor pi): die Flagge steht auch dort im pi-Aufruf, vor dem Modus
+      for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS]) {
+        const model = modelsForHarness(h.id as "pi" | "pi-unfenced").find((x) => piSeatProvider(x) !== null)!;
+        const line = h.spawnCmd({ ...o, model });
+        expect([h.id, line.includes('="$(cat ')]).toEqual([h.id, true]);
+        expect([h.id, line.slice(0, line.lastIndexOf("; exec ")).endsWith(` --skill '${skillsDir}' --tui-mode regular`)]).toEqual([h.id, true]);
+      }
+      // pi-zai, pi-zai-unfenced und pi-deepseek lesen ihr Agent-Verzeichnis: auch mit seat und Ordner keine Flagge
       for (const h of [m.PI_ZAI_HARNESS, m.PI_ZAI_UNFENCED_HARNESS, m.PI_DEEPSEEK_HARNESS])
-        expect([h.id, h.spawnCmd({ ...base, cwd, startDatei: "/tmp/start.md" }).includes("--skill")]).toEqual([h.id, false]);
+        for (const model of [null, "glm-5.3", "deepseek-flash"])
+          expect([h.id, model, h.spawnCmd({ ...o, model }).includes("--skill")]).toEqual([h.id, model, false]);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

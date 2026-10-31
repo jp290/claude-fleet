@@ -1,9 +1,12 @@
 // DIE SKILL-ORDNER, DIE FLEET SCHREIBT (Owner-Ja 22.10. zu Skills; pi-Skills 27.10. über Slot 11): eine Datei je Pack
 // (`<ort>/<id>/SKILL.md`), Kopf und Text aus server/sitz-wissen.ts#renderSkillFile — für beide Harnesses derselbe Renderer.
-// Zwei Orte, ein Unterschied:
+// Drei Orte, zwei Arten:
 // - CLAUDE CODE: ein Ordner je Belegung in Fleets Zustand (server/sitz-wissen.ts#seatSkillsDir), den der Start mit
 //   `--add-dir` bekommt. Er wird bei jedem Spawn als Ganzes neu geschrieben und geht mit der Belegung.
-// - PI: `skills/` im Agent-Verzeichnis, das der Adapter seinem Sitz gibt (server.ts#piAgentDirOf, PI_CODING_AGENT_DIR der
+// - PI OHNE EIGENES AGENT-VERZEICHNIS (pi, pi-unfenced): derselbe Belegungsordner wie bei Claude, direkt mit `<id>/SKILL.md` darin
+//   (kein `.claude/skills`); die Zeile bekommt ihn mit `pi --skill '<ordner>'`, pi's eigenes ~/.pi/agent bleibt unberührt.
+//   Ein Fehler beim Schreiben kostet den Sitz nur die Flagge (server.ts#seatStartFor).
+// - PI MIT AGENT-VERZEICHNIS (pi-zai, pi-deepseek): `skills/` im Agent-Verzeichnis, das der Adapter seinem Sitz gibt (server.ts#piAgentDirOf, PI_CODING_AGENT_DIR der
 //   Zeile); pi lädt es ohne weitere Einstellung (docs/configuration.md „<agent-dir>/skills/“, docs/skills.md des
 //   installierten Pakets). Diesen Ordner teilen sich alle Belegungen des Adapters und er kann eigene Skills des Owners
 //   enthalten: er wird nicht ersetzt, sondern ergänzt. Ein Manifest sagt, was Fleet schrieb, und nur das wird beim

@@ -147,6 +147,8 @@ export function renderSeatStart(k: SeatKnowledge, withSkills = true): string {
   return [headOf(k, withSkills), ...boxOf(k).map(boxBlock)].join("\n\n");
 }
 
+/** Der Ordner einer Belegung, bevor es sie gibt (Plan, Fassung vor dem Start): fest, damit auch der Plan-Hash die Skill-Dateien trägt. */
+export const BELEGUNGSORDNER_PLATZ = "<Ordner dieser Belegung, entsteht beim Start>";
 const skillZeile = (pack: SeatPack): string => `- ${pack.id}: ${pack.useWhen}`;
 /** Was ein Sitz aus der Bibliothek bekommt, je Weg die Packs: wörtlich im Start, als Skill (mit der Zeile, die Claude in
  *  seiner Skill-Liste sieht). Der Gründungsplan zeigt damit, was der Spawn gibt. `withSkills` false = ein Harness, der
@@ -195,7 +197,7 @@ export function renderSkillFile(pack: SeatPack, head: string): string {
  *  `agentDir: null` heißt: dieser pi-Adapter (pi, pi-unfenced) gibt seinem Sitz kein eigenes Agent-Verzeichnis (dort läge pi's
  *  Zuhause des Users, das Fleet nicht füllt). Seine Skills liegen dann in `ordner`, dem Ordner der Belegung in Fleets Zustand,
  *  den die Zeile mit `pi --skill` bekommt (pi findet `<id>/SKILL.md` darin rekursiv: dist/core/skills.js loadSkillsFromDirInternal);
- *  ohne `ordner` (der Plan, vor dem Start) gibt es noch keine Datei. `null` als Ganzes: der Harness liest weder Start-Block noch Skills (codex). */
+ *  ohne `ordner` gibt es keine Datei (der Plan rechnet mit dem Platzhalter BELEGUNGSORDNER_PLATZ). `null` als Ganzes: der Harness liest weder Start-Block noch Skills (codex). */
 export type SkillOrt = { readonly art: "claude" } | { readonly art: "pi"; readonly agentDir: string | null; readonly ordner?: string | null };
 /** Der Ordner, unter dem dieses Harness seine Skills sucht; null = es liest keine (der Sitz bekommt keine Dateien). */
 const skillBasis = (ort: SkillOrt | null): string | null =>
@@ -302,7 +304,7 @@ export function mitTuerenSkill(gewaehlt: SeatKnowledge, register: SeatKnowledge)
  *  Grund. `skillsDir` ist der Ordner, den der Start mit `--add-dir` bekommt; null vor dem Start (er gehört der Belegung). `nichtWirksam`: warum der Start-Block in der
  *  laufenden Unterhaltung (noch) nicht gilt — dann sagt die Fassung nicht „wörtlich im Start“. `skillOrt`: wo die Skills
  *  dieses Harness liegen (server/sitz-wissen.ts#SkillOrt) — für Claude Code im --add-dir-Ordner, für pi in `skills/`
- *  seines Agent-Verzeichnisses; null = ein Harness, der weder Start-Block noch Skills liest (codex). */
+ *  seines Agent-Verzeichnisses oder, ohne eins (pi, pi-unfenced), im Ordner der Belegung (`pi --skill`); null = ein Harness, der weder Start-Block noch Skills liest (codex). */
 export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsDir: string | null, nichtWirksam?: string,
   skillOrt: SkillOrt | null = null): FassungAbschnittEingang[] {
   if (!claude && skillOrt === null) {
@@ -324,8 +326,8 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
   if (!box.length && !skills.length)
     return [unknownAbschnitt("wissen", `kein lesbarer Pack in Fleets Bibliothek passt zu diesem Sitz (${k.tree === "fleet"
       ? "Fleet-Repo" : "anderes Repo"}, ${k.head.slice(0, 8)})`)];
-  const skillsPfad = claude ? `${skillsDir ?? "<Ordner dieser Belegung, entsteht beim Start>"}/.claude/skills`
-    : piBasis ?? "<Ordner dieser Belegung, entsteht beim Start>";
+  const skillsPfad = claude ? `${skillsDir ?? BELEGUNGSORDNER_PLATZ}/.claude/skills`
+    : piBasis ?? BELEGUNGSORDNER_PLATZ;
   return [
     textAbschnitt("wissen", "server/sitz-wissen.ts#renderSeatStart", headOf(k, claude), false, undefined, undefined,
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),

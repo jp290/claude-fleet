@@ -4,10 +4,10 @@
 // Wortlaut: bwrap an den Argumenten, die das Kernel-Verhalten festlegen (die echte Probe steht in e2e/pi-zai-bwrap-probe.ts),
 // SBPL an einer kleinen Auswertung der Regeln nach Apples Reihenfolge (die spätere Regel gewinnt; Standard erlaubt).
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PI_AGENT_HOME_LOCKS, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiTmpFor, type PiZaiFenceInput } from "./pi-zai-fence";
+import { PI_AGENT_HOME_LOCKS, piHomeLockCleanup, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiTmpFor, type PiZaiFenceInput } from "./pi-zai-fence";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "fleet-pihome-")));
 const home = join(root, "home");
@@ -146,5 +146,41 @@ describe("SBPL: das pi-Agent-Home im Zaun", () => {
   test("pi-zai-unfenced nennt ein anderes Home als pi-zai: dessen Dateien sind im Zaun von pi-zai nicht beschreibbar", () => {
     expect(writable(`${other}/settings.json`)).toBe(false);
     expect(writable(`${other}/extensions/x.ts`)).toBe(false);
+  });
+});
+
+// Ein Sitz kann (SBPL erlaubt auf einem Literal auch Datei und Symlink) einen Lock-Namen mit etwas belegen, das kein Ordner ist; pis Lock ist ein
+// Ordner, der nächste Start meldet ENOTDIR und lädt settings.json nicht. Der Startpfad räumt das vor dem Zaun (server.ts: piZaiSpawnGuard,
+// piDeepseekSpawnGuard). Der Lauf ist der echte: die Zeichenkette in sh, gegen ein Verzeichnis.
+describe("Start: Lock-Namen, die kein Ordner sind, werden vor dem Zaun geräumt", () => {
+  const frisch = (): string => realpathSync(mkdtempSync(join(root, "locks-")));
+  const raeume = (dir: string): void => {
+    const r = Bun.spawnSync(["/bin/sh", "-c", piHomeLockCleanup(dir)], { stdin: "ignore" });
+    expect(r.exitCode).toBe(0);
+  };
+  const art = (p: string): "weg" | "ordner" | "datei" | "link" => {
+    try { const s = lstatSync(p); return s.isSymbolicLink() ? "link" : s.isDirectory() ? "ordner" : "datei"; } catch { return "weg"; }
+  };
+
+  test("eine Datei, ein Symlink auf einen Ordner und ein hängender Symlink gehen; der Ordner des laufenden Geschwisters bleibt samt Inhalt", () => {
+    const d = frisch(), ziel = frisch();
+    const [a, b, c, e] = PI_AGENT_HOME_LOCKS.map((n) => `${d}/${n}`);
+    writeFileSync(a!, "x");                       // Datei
+    symlinkSync(ziel, b!);                        // Symlink auf einen echten Ordner (rm -f nimmt den Link, nicht das Ziel)
+    symlinkSync(`${d}/gibt-es-nicht`, c!);        // hängender Symlink
+    mkdirSync(`${e}/inhalt`, { recursive: true }); // der echte Lock-Ordner eines laufenden Geschwisters
+    raeume(d);
+    expect([a, b, c, e].map((p) => art(p!))).toEqual(["weg", "weg", "weg", "ordner"]);
+    expect(art(`${e}/inhalt`)).toBe("ordner");
+    expect(art(ziel)).toBe("ordner"); // das Ziel des Symlinks blieb
+  });
+
+  test("ein fehlendes Home, andere Dateien daneben und ein zweiter Lauf: nichts passiert", () => {
+    raeume(join(root, "gibt-es-nicht-home"));
+    const d = frisch();
+    writeFileSync(`${d}/settings.json`, "{}");
+    writeFileSync(`${d}/models.json`, "{}");
+    raeume(d); raeume(d);
+    expect([art(`${d}/settings.json`), art(`${d}/models.json`)]).toEqual(["datei", "datei"]);
   });
 });

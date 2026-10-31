@@ -12,6 +12,7 @@ import { pendingSettledBy } from "../src/pendingsend";
 import { safetySystemNote } from "../src/safety-note";
 import { katalogAus, modelleVon } from "../src/k15-agent";
 import { MODEL_REGISTER, modelsForHarness, piSeatProvider } from "../model-register";
+import { piHomeLockCleanup } from "./pi-zai-fence";
 
 const ROOT = join(import.meta.dir, "..");
 const SERVER = join(ROOT, "server.ts");
@@ -285,6 +286,30 @@ describe("pi-zai-unfenced: die Startzeile", () => {
       expect(fenced).toContain(`'--overlay-src' '${zaiHome}' '--tmp-overlay' '${zaiHome}'`);
       expect(fenced).not.toContain(`'--bind' '${zaiHome}' '${zaiHome}'`);
       expect(fenced).not.toContain(`${zaiHome}-unfenced`);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // Mangel 175: ein Lock-Name, den ein Sitz mit einer Datei belegt hat, würde den nächsten Start stören; jede der drei Zeilen räumt ihr eigenes Home
+  // in der äußeren Shell, VOR dem Zaun (der Lauf der Zeichenkette selbst steht in server/pi-zai-fence-home.test.ts)
+  test("pi-zai, pi-zai-unfenced und pi-deepseek räumen die Lock-Namen ihres eigenen Homes, bevor pi oder der Zaun starten", async () => {
+    const { PI_ZAI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS } = await load();
+    const zaiHome = `${process.env.HOME}/.config/claude-fleet/pi-zai-agent`;
+    const dsHome = `${process.env.HOME}/.config/claude-fleet/pi-deepseek-agent`;
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-lock-"));
+    try {
+      const fenced = { ...base, cwd, fenceBwrap: "/usr/bin/bwrap" as string | null };
+      const lines: [string, string, string][] = [
+        [PI_ZAI_UNFENCED_HARNESS.spawnCmd(base), `${zaiHome}-unfenced`, "PI_CODING_AGENT_DIR="],
+        [PI_ZAI_HARNESS.spawnCmd(fenced), zaiHome, "fleet_pz() {"],
+        [PI_DEEPSEEK_HARNESS.spawnCmd(fenced), dsHome, "fleet_pz() {"],
+      ];
+      for (const [line, home, spaeter] of lines) {
+        const cleanup = piHomeLockCleanup(home);
+        expect(line).toContain(cleanup);
+        expect(line.indexOf(cleanup)).toBeLessThan(line.indexOf(spaeter));
+        // ...und räumt nur das eigene Home, nie das eines Geschwister-Adapters
+        for (const other of [zaiHome, `${zaiHome}-unfenced`, dsHome].filter((h) => h !== home)) expect(line).not.toContain(piHomeLockCleanup(other));
+      }
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

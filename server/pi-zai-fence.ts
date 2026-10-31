@@ -129,6 +129,13 @@ export interface PiZaiFenceInput {
 // Spelled out, not assembled: e2e/pins.ts#SANDBOX_LOCK_FILE lets exactly this module name `settings.json.lock` (a lock DIRECTORY of pi's
 // agent home, not a setting and not Claude's ~/.claude/settings.json) and nothing else called settings.json.
 export const PI_AGENT_HOME_LOCKS = ["settings.json.lock", "auth.json.lock", "trust.json.lock", "models-store.json.lock"] as const;
+/** The start path's clean-up of those four names, run in the pane shell BEFORE the fence (server.ts guards): pi's lock is a DIRECTORY, so a seat
+ *  that left a FILE or a symlink under one of the names would make the next start fail with ENOTDIR and not load its settings (Mac measurement
+ *  31.10.). Anything there that is not a real directory goes; a real lock directory - a running sibling's - stays. Plain sh, also for zsh. */
+export function piHomeLockCleanup(agentDir: string): string {
+  return `for _pl in ${PI_AGENT_HOME_LOCKS.join(" ")}; do _pp='${agentDir}'/"$_pl"; `
+    + `if [ -L "$_pp" ] || { [ -e "$_pp" ] && [ ! -d "$_pp" ]; }; then rm -f "$_pp"; fi; done; unset _pl _pp; `;
+}
 export const PIZAI_NSIRD_TOOLS = ["swift-build", "swift-package", "swift-driver"] as const;
 
 // Every path in the generated profile must be a realpath: SBPL compares against the path the kernel resolved, and

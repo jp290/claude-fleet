@@ -214,7 +214,7 @@ import { TRANSKRIPT_JOURNAL, openTranscriptJournal } from "./server/transkript-g
 import { repoGraph, roleOf } from "./server/deploy-classify";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import type { PiZaiFenceInput } from "./server/pi-zai-fence";
-import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
+import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piHomeLockCleanup, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
 import { STATIC, bundleV, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
@@ -1629,7 +1629,8 @@ function piZaiSpawnGuard(prefix: string, agentDir: string = PI_ZAI_AGENT_DIR): s
   const catalogError = `${prefix}: could not prepare process-local agent directory: ${agentDir}`;
   return `${PATH_EXPORT}if [ ! -s '${PI_ZAI_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `
     + `mkdir -p '${agentDir}' && printf '%s\\n' '${piZaiCatalogJson()}' > '${agentDir}/models.json' `
-    + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `;
+    + `|| { printf '%s\\n' '${catalogError}'; exec ${SHELL}; }; `
+    + piHomeLockCleanup(agentDir);
 }
 const PI_ZAI_HARNESS: Harness = {
   id: "pi-zai",
@@ -1814,7 +1815,7 @@ const PI_DEEPSEEK_FENCE_FAILED = "pi-deepseek: pi was NOT started - its read fen
 // environment, expanded by the outer shell.
 function piDeepseekSpawnGuard(): string {
   const keyError = `pi-deepseek: missing or empty DeepSeek key file: ${PI_DEEPSEEK_KEY_FILE}`;
-  return `${PATH_EXPORT}if [ ! -s '${PI_DEEPSEEK_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; `;
+  return `${PATH_EXPORT}if [ ! -s '${PI_DEEPSEEK_KEY_FILE}' ]; then printf '%s\\n' '${keyError}'; exec ${SHELL}; fi; ` + piHomeLockCleanup(PI_DEEPSEEK_AGENT_DIR);
 }
 const PI_DEEPSEEK_HARNESS: Harness = {
   id: "pi-deepseek",

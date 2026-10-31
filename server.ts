@@ -38,7 +38,7 @@ import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:f
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
 import { resolve, dirname, basename, isAbsolute } from "node:path";
 import { tmpdir, homedir, hostname, loadavg, cpus } from "node:os";
-import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, harnessOffReason, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
+import { MODEL_DEFAULTS, MODEL_REGISTER, codexAvailability, harnessAvailability, harnessOffReason, roleDefaultsFor, codexModelSupport, type CodexModelSupport, modelsForHarness, piLiveSwitchRefusal, supersededModel, resolveWorkerModel, workerModelWarnings, type FleetWorkerRole, type ModelHarness, type ModelRole } from "./model-register";
 import { makeModelScanTick, modelScanStateFrom, scanModels } from "./model-scan";
 import { randomBytes, createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -57686,6 +57686,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (!mo.ok) return json({ error: mo.error }, 400);
         const eo = effortOf(body, hh);
         if (!eo.ok) return json({ error: effortErrFor(hh) }, 400);
+        // a model on another provider needs another key and agent directory than the running pi has (model-register.ts#piLiveSwitchRefusal)
+        const refused = body.model !== undefined ? piLiveSwitchRefusal(hh.id, s.model, mo.model) : null;
+        if (refused) return json({ error: refused }, 409);
         if (body.model !== undefined) s.model = mo.model;
         if (body.effort !== undefined) s.effort = eo.effort;
         // the next spawn runs another setup than the agent it was opened from: it no longer names that agent (its held start still does)

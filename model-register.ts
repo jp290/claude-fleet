@@ -287,3 +287,22 @@ export function workerModelWarnings(selection: ReturnType<typeof resolveWorkerMo
       ? [`codexAvailability=${codexAvailability(cache, selection.model)}`] : []),
   ];
 }
+
+// The plain Pi seats (`pi`, `pi-unfenced`) start a model of the register with its own provider key and agent directory
+// (server.ts#PI_SEAT_MODELS, which the start line reads). A running seat can only change its model with `/model <id>`:
+// that keeps provider and agent directory. So a live switch stays inside one provider; null is a name the seat does not
+// file (the owner's own pi, its own key and ~/.pi). Pinned against the start line by server/load.test.ts.
+const PI_SEAT_PROVIDER: Readonly<Record<string, string>> = {
+  "glm-5.3": "zai", "glm-5.3-flash": "zai", "deepseek-flash": "deepseek", "deepseek-v4-pro": "deepseek",
+};
+export function piSeatProvider(model: string | null | undefined): string | null {
+  return model && Object.hasOwn(PI_SEAT_PROVIDER, model) ? PI_SEAT_PROVIDER[model]! : null;
+}
+// The sentence that says why a running `pi`/`pi-unfenced` seat cannot go from one model to another, or null when it can.
+export function piLiveSwitchRefusal(harness: string, from: string | null | undefined, to: string | null | undefined): string | null {
+  if (harness !== "pi" && harness !== "pi-unfenced") return null;
+  // same provider (or two names the seat does not file, both the owner's own pi): `/model <id>` does the switch
+  if (piSeatProvider(from) === piSeatProvider(to)) return null;
+  return `a running ${harness} seat cannot switch from ${from || "its default"} to ${to || "its default"}: the other provider needs its own key and agent directory, `
+    + "and a new start would lose this conversation — open a new seat with that model instead";
+}

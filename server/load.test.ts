@@ -11,7 +11,7 @@ import { appendEvent } from "./persist";
 import { pendingSettledBy } from "../src/pendingsend";
 import { safetySystemNote } from "../src/safety-note";
 import { katalogAus, modelleVon } from "../src/k15-agent";
-import { MODEL_REGISTER, modelsForHarness } from "../model-register";
+import { MODEL_REGISTER, modelsForHarness, piSeatProvider } from "../model-register";
 
 const ROOT = join(import.meta.dir, "..");
 const SERVER = join(ROOT, "server.ts");
@@ -165,6 +165,22 @@ describe("pi-Sitze: Start auf dem normalen Bildschirm", () => {
         }
       }
       expect(m.CLAUDE_HARNESS.spawnCmd({ ...base, cwd })).not.toContain("--tui-mode");
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  // Der Live-Wechsel eines laufenden pi-Sitzes bleibt im Anbieter (model-register.ts#piLiveSwitchRefusal): seine Anbieter-Tabelle
+  // und die Startzeile muessen dieselben Modelle denselben Anbietern zuordnen.
+  test("jedes Modell, das das Register fuer pi und pi-unfenced fuehrt, hat einen Anbieter, und die Startzeile faehrt genau diesen", async () => {
+    const m = await load();
+    const cwd = mkdtempSync(join(tmpdir(), "fleet-pi-provider-"));
+    try {
+      for (const h of [m.PI_HARNESS, m.PI_UNFENCED_HARNESS]) {
+        for (const model of modelsForHarness(h.id as "pi" | "pi-unfenced")) {
+          const anbieter = piSeatProvider(model);
+          expect([h.id, model, anbieter !== null]).toEqual([h.id, model, true]);
+          expect(h.spawnCmd({ ...base, cwd, model })).toContain(`--provider ${anbieter}`);
+        }
+      }
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

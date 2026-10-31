@@ -1,3 +1,4 @@
+import { piSeatProvider } from "../model-register";
 import { $, el, ta, send, panes, focused, fleet, isMobile, baseName, laneBandNames, laneLabel, stacksOf, parkedSendLine, heldDeliveriesLine, harnessEntry, canChatOn, defaultModel, modelNotice, setSlotSetting, switchText, switchesInPane, paneCommand, deliver, serverClockSkew, RECENT_MS, dropFile, dropBtn, chipsEl, togglePrefix, updateChips, boxOrphan, adoptBox, type HarnessInfo } from "./client";
 import type { ModelSwitch } from "../server/model-switch";
 import { icon, harnessMark, MASCOT_MOTIONS, type IconName } from "./icons";
@@ -401,6 +402,8 @@ function modelChoices(h: HarnessInfo, current: string): string[] {
   const byName = new Map<string, string>();
   for (const m of h.models ?? []) {
     if (m !== current && modelNotice(h.id, m).startsWith("superseded")) continue;
+    // a running pi seat switches with `/model <id>`, which keeps its provider key and agent directory: only that provider's models
+    if ((h.id === "pi" || h.id === "pi-unfenced") && m !== current && piSeatProvider(m) !== piSeatProvider(current)) continue;
     const name = modelLabel(m);
     if (!byName.has(name) || m === current) byName.set(name, m);
   }

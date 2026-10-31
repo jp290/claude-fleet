@@ -577,8 +577,14 @@ export async function run(ctx: Ctx): Promise<void> {
   rmSync(lostPath, { force: true });
   await tmuxOut("kill-session", "-t", "s15");
   const lost = await waitCodex(15, (r) => r.state === "lost", 7000);
-  const lostCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}"))
-    .out.replaceAll("\\", "");
+  // „lost“ steht, bevor die Heilung ihre Pane baut (server.ts#ensureSlot): auf die Pane warten wie beim attended heal oben
+  let lostCmd = "";
+  const lostCmdUntil = Date.now() + 7000;
+  do {
+    lostCmd = (await tmuxOut("display-message", "-p", "-t", "s15", "#{pane_start_command}")).out.replaceAll("\\", "");
+    if (lostCmd.trim()) break; // ohne Pane antwortet tmux mit einer leeren Zeile
+    await Bun.sleep(100);
+  } while (Date.now() < lostCmdUntil);
   check("a bound id whose rollout vanished is visible as lost", lost?.state === "lost" && lost.sessionId === LOST,
     JSON.stringify(lost));
   check("a missing exact rollout never reaches codex resume and only boots the unchanged fresh form",

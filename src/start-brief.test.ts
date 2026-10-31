@@ -167,3 +167,23 @@ describe("what a successor has that its predecessor didn't", () => {
     expect(gegenVorgaengerin(fassung({}), fassung({}), dazu.repo)).toEqual([]);
   });
 });
+
+// the owner's corrections a seat without a role in Fleet's repo carries (server/korrektur-stein.ts): with every request, as yours,
+// word for word; a seat whose door refused carries the pointer instead, which is no text it reads
+describe("start brief: your corrections", () => {
+  const STEIN = "+ corrections k-owner-korrekturen v4 (author: owner)\nYOUR OWNER'S CORRECTIONS (sha256 abcdef012345): …\n- Karten bleiben stehen. [karten-bleiben-stehen]";
+  const mit = (text: string): Fassung => {
+    const f = fassung({});
+    return { teile: f.teile.map((t) => t.id === "liest" ? { ...t, abschnitte: [...t.abschnitte, { id: "korrekturen", text }] } : t) };
+  };
+  test("they stand with every request under their own name, as yours, with their + line; against a start without them every line is a +", () => {
+    const b = startbrief(mit(STEIN), fassung({}), dazu);
+    const k = b.anweisungen.find((x) => x.key === "korrekturen")!;
+    expect([k.pfad, k.wer, k.herkunft, k.zeichen, k.text]).toEqual(["your corrections", "Yours", "fleet", "+", STEIN]);
+    expect(k.diff![0]).toEqual({ z: "+", t: "+ corrections k-owner-korrekturen v4 (author: owner)" });
+  });
+  test("the pointer of a refused door is not shown as a text the seat reads", () => {
+    const b = startbrief(mit("Zeiger, nicht im Start: GET /api/self/konzepte/k-owner-korrekturen/leseansicht"), fassung({}), dazu);
+    expect(b.anweisungen.some((x) => x.key === "korrekturen")).toBe(false);
+  });
+});

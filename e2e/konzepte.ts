@@ -456,7 +456,7 @@ async function ledgerDoors(): Promise<void> {
       ["duplicate id", { eintraege: [...base, eintrag("ok-c"), eintrag("ok-c")] }, /entry id ok-c appears twice/],
       ["two successors", { eintraege: [...base, eintrag("ok-c", ["ok-b"]), eintrag("ok-d", ["ok-b"])] }, /entry ok-b has two successors: ok-c and ok-d/],
       ["a second successor of a replaced entry", { eintraege: [...base, eintrag("ok-c", ["ok-a"])] }, /entry ok-a has two successors: ok-b and ok-c/],
-      ["another geltung", { eintraege: [...base, eintrag("ok-c", ["ok-b"], { ...ALL, harnesses: ["codex"] })] }, /different geltung/],
+      ["another geltung", { eintraege: [...base, eintrag("ok-c", ["ok-b"], { ...ALL, harnesses: ["codex"] })] }, /narrower geltung on harnesses/],
       ["a published entry changed", { eintraege: [eintrag("ok-a"), { ...eintrag("ok-b", ["ok-a"]), aussage: "umgeschrieben" }] }, /entry ok-b of the previous fassung is missing or changed/],
       ["withdrawn and replaced at once", { eintraege: [...base, eintrag("ok-c", ["ok-b"])], zurueckgezogen: [{ id: "ok-b", grund: "synthetisch" }] },
         /entry ok-b is withdrawn and replaced by ok-c at once/],
@@ -1384,7 +1384,8 @@ async function privatePackHandover(): Promise<void> {
           await call("/send", "POST", { slot: genericSlot, text: "fleet generic fixture prompt", submit: true });
           const received = opened.status === 200 ? await receive(genericSlot) : null;
           // a seat without a role in Fleet's repo (the product checkout IS this server's repo) reads with the lane's geltung
-          // (server.ts#korrekturLeserFor, Orchestratorin 24.10.); its start carries no pointer, its Fassung names the door
+          // (server.ts#korrekturLeserFor, Orchestratorin 24.10.); its first prompt carries no pointer — its system prompt carries the
+          // corrections as a stone (server/korrektur-stein.ts, server.ts#freierSitzKorrekturStein)
           const read = await fetch(`${i.base}${door}`, { headers: { "x-fleet-self-token": tokenFor(genericSlot) } });
           const readBody = await read.text();
           const readJson = (() => { try { return JSON.parse(readBody) as Received["body"]; } catch { return null; } })();

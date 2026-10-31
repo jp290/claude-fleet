@@ -6,6 +6,7 @@
 // server/sitz-reise.ts#leererPlatzZeilen, server/tuer-rechte.ts#rechteZeilen): die Texte hier sind die, die diese
 // Funktionen wirklich schreiben.
 import { describe, expect, test } from "bun:test";
+import { korrekturStein } from "../server/korrektur-stein";
 import { startSteine } from "./start-steine";
 import type { UmfeldAbschnitt, UmfeldTeil } from "./fassung-umfeld-zeilen";
 
@@ -198,5 +199,28 @@ describe("start-steine: was ein Stein nicht mitbringt", () => {
         + "Source: role generic + 1 grant(s).\nFLEET'S FENCE: the four start switches are Claude Code permission rules.")])
       : t);
     expect(startSteine(teile)).toEqual([]);
+  });
+});
+
+// SITZ 4 · EIN SITZ OHNE ROLLE IN FLEETS REPO trägt die Korrekturen des Owners als Stein (server/korrektur-stein.ts#korrekturStein,
+// server.ts#fassungKorrekturZeiger); steht an ihrer Stelle der Zeiger, weil die Tür abwies, ist das kein Stein.
+describe("start-steine: die Korrekturen des Owners", () => {
+  const stein = korrekturStein({ konzept: "k-owner-korrekturen", version: 4, sha256: "abcdef0123456789", geltendeEintraege: [
+    { id: "karten-bleiben-stehen", aussage: "Karten bleiben stehen.", geltung: { modi: "*" } },
+    { id: "plan-an-vorgabe-abschneiden", aussage: "Pläne an der Vorgabe abschneiden.", geltung: { modi: ["planung"] } }] }, "http://h:1/tuer");
+  const quelle = "konzept k-owner-korrekturen · server/korrektur-stein.ts#korrekturStein";
+  test("eine Zeile gleich nach der Rolle: deine Korrekturen, vom Owner, mit der Zahl seiner Entscheidungen, der Klick zeigt den ganzen Stein", () => {
+    const steine = startSteine([teil("liest", [abschnitt("korrekturen", quelle, stein)])]);
+    expect(steine.map((s) => [s.art, s.label, s.id, s.name, s.autor, s.satz])).toEqual([
+      ["korrekturen", "Your corrections", "k-owner-korrekturen", "your corrections v4", "owner",
+        `2 of your decisions, each with its id · ${stein.length} B`]]);
+    // die Größe steht wie im Startfenster: ab 1000 Bytes in kB
+    const gross = startSteine([teil("liest", [{ ...abschnitt("korrekturen", quelle, stein), bytes: 5039 }])]);
+    expect(gross[0]!.satz).toBe("2 of your decisions, each with its id · 5.0 kB");
+    expect([steine[0]!.quelle, steine[0]!.text]).toEqual([quelle, stein]);
+  });
+  test("der Zeiger, der bei einer abweisenden Tür an ihrer Stelle steht, ist kein Stein", () => {
+    expect(startSteine([teil("liest", [abschnitt("korrekturen", "AGENTS.md (What applies here) · server.ts#korrekturLeserFor",
+      "Zeiger, nicht im Start: GET /api/self/konzepte/k-owner-korrekturen/leseansicht …")])])).toEqual([]);
   });
 });

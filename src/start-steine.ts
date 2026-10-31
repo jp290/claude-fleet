@@ -15,6 +15,7 @@
 // eines Packs oder Konzepts ist der Titel seines Texts — dasselbe Wort, mit dem das Startfenster ihn nennt
 // (src/start-fenster.ts, „pk?.titel ?? id“).
 import type { UmfeldAbschnitt, UmfeldTeil } from "./fassung-umfeld-zeilen";
+import { KORREKTUR_STEIN_KOPF } from "../server/korrektur-stein";
 
 // die Quellen, an denen server.ts#fassungFuerSlot einen Stein setzt
 const ROLLE_EIGEN_QUELLE = "server/setup-datei.ts#steineFuerAgentWahl (role stone)";
@@ -28,7 +29,7 @@ const DARF_QUELLE = "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)
 const MITGEREIST_QUELLE = "mitgereist";
 const KONZEPT_ID = /^k-[a-z0-9-]{1,64}$/;
 
-export type SteinArt = "rolle" | "pack" | "konzept" | "richtung" | "platz" | "rechte";
+export type SteinArt = "rolle" | "korrekturen" | "pack" | "konzept" | "richtung" | "platz" | "rechte";
 export interface StartStein {
   readonly art: SteinArt;
   /** das Wort über der Zeile (Rolle, Richtung, leerer Platz, Rechte) oder über der Box (Pack, Konzept) */
@@ -54,6 +55,15 @@ const SKILL_ZEILE = /^- ([a-z0-9][a-z0-9._@-]{0,85}): (.+)$/s;
 const ROLLE_EIGEN_KOPF = /^FLEET ROLE \(([a-z0-9-]+), author: (.+?)\)\n\n([\s\S]*)$/;
 const ROLLE_DATEI_KOPF = /^FLEET ROLE ([a-z0-9-]+)(?: \(author: ([^)]+)\))? — /;
 const KONZEPT_KOPF = /^\+ concept (k-[a-z0-9-]{1,64}) \(author: ([^)]+)\)\n\n([\s\S]*)$/;
+// die Größe eines Steins, wie das Startfenster sie schreibt (src/start-fenster.ts#KB): die Bytes, die die Fassung an seinen Abschnitt schreibt
+const groesse = (a: UmfeldAbschnitt): string => {
+  const b = typeof a.bytes === "number" ? a.bytes : new TextEncoder().encode(a.text ?? "").length;
+  return b < 1000 ? `${b} B` : `${(b / 1000).toFixed(1)} kB`;
+};
+// DIE + ZEILE DER OWNER-KORREKTUREN (server/korrektur-stein.ts#korrekturStein): ihr Kopf, dann Konzept, Fassung, Autor
+const KORREKTUR_REST = /^(k-[a-z0-9-]{1,64}) v(\d+) \(author: ([^)]+)\)$/;
+const korrekturKopf = (zeile: string): RegExpExecArray | null =>
+  zeile.startsWith(KORREKTUR_STEIN_KOPF) ? KORREKTUR_REST.exec(zeile.slice(KORREKTUR_STEIN_KOPF.length)) : null;
 const RECHTE_ZEILE = /^FLEET SERVER RIGHTS \(checked at Fleet's doors\): (.+?)\. Source: role (.+) \+ (\d+) grant\(s\)\.$/;
 const EIGENES_KOPF = /^(?:AGENT-MD|PURPOSE)[^\n]*:\n([\s\S]*)$/;
 
@@ -80,12 +90,12 @@ const satzDerRolle = (start: string | null): string | null => {
   return kurz.length <= 140 ? kurz : `${kurz.slice(0, 139).replace(/\s+\S*$/, "")}…`;
 };
 
-/** Die Steine, mit denen dieser Sitz startete, in der Ordnung der Ansicht: Rolle, Packs, Konzepte, Richtung, leere Plätze, Rechte. Eine Fassung ohne Steine ergibt []. */
+/** Die Steine, mit denen dieser Sitz startete, in der Ordnung der Ansicht: Rolle, Korrekturen, Packs, Konzepte, Richtung, leere Plätze, Rechte. Eine Fassung ohne Steine ergibt []. */
 export function startSteine(teile: readonly UmfeldTeil[]): StartStein[] {
   const alle = teile.flatMap((t) => t.abschnitte);
   const mit = (id: string): readonly UmfeldAbschnitt[] => alle.filter((a) => a.id === id);
   const packs: StartStein[] = [], konzepte: StartStein[] = [], platz: StartStein[] = [];
-  let rolle: StartStein | null = null, richtung: StartStein | null = null, rechte: StartStein | null = null;
+  let rolle: StartStein | null = null, richtung: StartStein | null = null, rechte: StartStein | null = null, korrekturen: StartStein | null = null;
   let rolleBewilligt = false;
 
   const richtungStein = (quelle: string, text: string): StartStein => ({ art: "richtung", label: "Direction", id: null,
@@ -168,6 +178,17 @@ export function startSteine(teile: readonly UmfeldTeil[]): StartStein[] {
     }
   }
 
+  // DIE KORREKTUREN DES OWNERS: ein Sitz ohne Rolle in Fleets Repo trägt sie als eigenen Stein (server.ts#fassungKorrekturZeiger);
+  // der Zeiger, der an seiner Stelle steht, wenn die Tür abweist, ist kein Stein
+  for (const a of mit("korrekturen")) {
+    const k = a.text ? korrekturKopf(a.text.split("\n")[0]!) : null;
+    if (!k) continue;
+    // je Eintrag eine Zeile, die mit seiner Id in Klammern endet
+    const n = a.text!.split("\n").filter((z) => /^- .+ \[[a-z0-9][a-z0-9-]*\]$/.test(z)).length;
+    korrekturen ??= { art: "korrekturen", label: "Your corrections", id: k[1]!, name: `your corrections v${k[2]}`, autor: k[3]!,
+      satz: `${n === 1 ? "1 of your decisions, with its id" : `${n} of your decisions, each with its id`} · ${groesse(a)}`, quelle: a.quelle ?? "", text: a.text! };
+  }
+
   // DIE RECHTE: die Zeile des Startbriefs nennt jedes wirksame Recht mit seiner Bedeutung und seine Herkunft
   // (Rollenbundel ∪ Zusagen). Eine Zeile zeigt nur, was der Sitz ALS STEIN DES STARTS mitbekam — die Freigabe eines
   // Rollensteins, die der Text selbst sagt („granted to this seat“ / „confirmed … the seat starts with them“).
@@ -182,6 +203,6 @@ export function startSteine(teile: readonly UmfeldTeil[]): StartStein[] {
       quelle: DARF_QUELLE, text: darf!.text! };
   }
 
-  // DIE ORDNERUNG DER ANSICHT: Rolle, Packs, Konzepte, Richtung, leere Plätze, Rechte (Mockup des Owners, 29.10.)
-  return [rolle, ...packs, ...konzepte, richtung, ...platz, rechte].filter((s): s is StartStein => s !== null);
+  // DIE ORDNERUNG DER ANSICHT: Rolle, Packs, Konzepte, Richtung, leere Plätze, Rechte (Mockup des Owners, 29.10.); seine Korrekturen gleich nach der Rolle
+  return [rolle, korrekturen, ...packs, ...konzepte, richtung, ...platz, rechte].filter((s): s is StartStein => s !== null);
 }

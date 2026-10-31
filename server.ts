@@ -14,6 +14,7 @@ import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./serv
 import { halteFassung, halteVorgaengerin, holeFassung, holeVorgaengerin, vergissFassung } from "./server/start-fassung";
 import { AUTOMODE_ENVIRONMENT } from "./server/automode-environment";
 import { agentMdBlock, agentMdDerTuer, agentMdGeladen, type AgentMd } from "./server/agentmd";
+import { istLeseantwort, korrekturFaltung, type KorrekturFaltung, korrekturStein } from "./server/korrektur-stein";
 import { einrichtenDerTuer, einrichtenZeilen, mitNaechstem, nachfolgeSteineBlock, nachfolgeZeile, selbstDerNachfolge, selbstGeerbt, slotSelbstGeladen, zweckBlock, type NachfolgeStein, type SlotSelbst } from "./server/selbst-einrichten";
 import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./server/eigene-packs";
 import { istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
@@ -223,7 +224,7 @@ import { json, HOST, PORT } from "./server/http";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, failStrike, shareLocked, shareSource, strikesCleared,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
-import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KonzeptOp, type KorrekturGeltung, type KorrekturLeser } from "./konzept-ledger";
+import { konzeptIndex, konzeptLeseansicht, konzeptOpOf, konzeptRequest, OWNER_KORREKTUREN, type KonzeptOp, type KorrekturLeser } from "./konzept-ledger";
 import { harvestStep, transcriptTailText, type HarvestCursor } from "./server/transcript-read";
 import { createLiveReader, readTranscript } from "./server/live-state";
 import { expandPaneInboxText } from "./server/pane-inbox";
@@ -11154,8 +11155,11 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // new-session exited 1). A pi seat gets the owner's purpose here too: its system-prompt addition is this file.
       const seatZweck = h.id === "claude" || pi ? occupant.selbst?.jetzt.zweck ?? null : null;
       const zweckStart = zweckOhneRollentext(occupant.agentMd, s.rolleStein, STATE_DIR); // der Rollenstein trägt denselben Text schon
+      // ...and the owner's corrections as a stone of their own, for a seat without a role in Fleet's repo (freierSitzKorrekturStein)
+      const korrekturen = await freierSitzKorrekturStein(positionRole(s), occupant.cwd, h.id, { slot: s.id, openedAt: occupant.openedAt });
+      if (!current()) return;
       const seatStart = [pi ? (zweckStart ? agentMdBlock(zweckStart) : null) : null,
-        seatZweck ? zweckBlock(seatZweck) : null, agentSteine, richtung, pi ? serverRechte : null, seat?.text || null].filter(Boolean).join("\n\n");
+        seatZweck ? zweckBlock(seatZweck) : null, agentSteine, richtung, pi ? serverRechte : null, seat?.text || null, korrekturen].filter(Boolean).join("\n\n");
       const fleetStart = listRole === "orchestrator" && IS_CLAUDE && !(steine?.role && !fleetRepo);
       const startDatei = fleetStart ? orchestratorStartDatei(occupant.cwd)
         : seatStart ? (pi ? piStartDatei(h.id, seatStart) : seatStartDatei(seatStart)) : null;
@@ -18334,20 +18338,7 @@ Die Eintraege sind Owner-Korrekturen; eine Abweisung oder fehlende Fassung ist u
 // trigger line in `ausloeser` — {id, modi, wann}, `wann` built from the modes and the first clause of the
 // aussage — and the reader fetches it whole at GET <KORREKTUR_DOOR>/<id> when a mode meets its work.
 // Nothing falls out: every gilt entry of the binding is in one of the two lists, status.gilt counts both.
-type KorrekturVoll = { id: string; aussage: string; geltung: KorrekturGeltung; ersetzt: string[] };
-function korrekturThema(aussage: string): string {
-  const clause = aussage.split(/;\s| — /)[0]!.replace(/[.!]$/, "").trim();
-  const words = clause.split(/\s+/);
-  return words.length <= 9 ? clause : `${words.slice(0, 8).join(" ").replace(/,$/, "")} …`;
-}
-function korrekturFaltung(body: Record<string, unknown>): Record<string, unknown> {
-  const alle = body.geltendeEintraege as KorrekturVoll[];
-  return { konzept: body.konzept, version: body.version, sha256: body.sha256,
-    geltendeEintraege: alle.filter((e) => e.geltung.modi === "*"),
-    ausloeser: alle.flatMap(({ id, aussage, geltung: { modi } }) => modi === "*" ? []
-      : [{ id, modi, wann: `Bei ${modi.join(" oder ")}: ${korrekturThema(aussage)}` }]),
-    volllesen: `GET ${KORREKTUR_DOOR}/<id>`, status: body.status, bindung: body.bindung };
-}
+// The fold is server/korrektur-stein.ts#korrekturFaltung, the one split the door, this brief and a free seat's stone all read.
 
 // THE FOLD IN THE BRIEF (Charge 4; docs/messungen/2026-10-11-red-team-2-subagenten.md §4.1, §6.1 Fix A):
 // 27 of 27 lanes followed the pointer above and read the view, median 2 758 tokens a read. The view's
@@ -18360,12 +18351,11 @@ function korrekturFaltung(body: Record<string, unknown>): Record<string, unknown
 type KorrekturRolle = "lane" | "program-main" | "orchestrator";
 const korrekturLeserOf = (repo: string, rolle: KorrekturRolle, harness: string | null): KorrekturLeser =>
   ({ projekt: projectKeyOf(repo), rolle, harness: harnessOf(harness).id });
-function ownerKorrekturenFolded(f: Record<string, unknown>): string {
-  const whole = f.geltendeEintraege as KorrekturVoll[];
-  const triggers = f.ausloeser as { id: string; wann: string }[];
-  const bindung = f.bindung as KorrekturLeser;
-  return [`OWNER-KORREKTUREN — ${String(f.konzept)} v${String(f.version)} (sha256 ${String(f.sha256).slice(0, 12)}), `
-    + `gefaltet fuer ${bindung.rolle}/${bindung.harness} beim Bau dieses Briefs; Owner-Korrekturen, sie gelten fuer dich:`,
+function ownerKorrekturenFolded(f: KorrekturFaltung, leser: KorrekturLeser): string {
+  const whole = f.geltendeEintraege;
+  const triggers = f.ausloeser;
+  return [`OWNER-KORREKTUREN — ${f.konzept} v${f.version} (sha256 ${f.sha256.slice(0, 12)}), `
+    + `gefaltet fuer ${leser.rolle}/${leser.harness} beim Bau dieses Briefs; Owner-Korrekturen, sie gelten fuer dich:`,
     ...(whole.length ? whole.map((e) => `- ${e.aussage} [${e.id}]`) : ["- (kein Eintrag gilt in jedem Modus)"]),
     ...(triggers.length ? ["Ausloeser — gilt nur in seinem Modus; trifft er deine Arbeit, lies den Eintrag ganz unter <Live-Quelle>/<id>:",
       ...triggers.map((t) => `- ${t.id} · ${t.wann}`)] : []),
@@ -18377,9 +18367,13 @@ async function ownerKorrekturenText(leser: KorrekturLeser | null): Promise<strin
     console.error(`owner corrections fold unavailable: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   });
-  return answer?.status === 200 ? ownerKorrekturenFolded(korrekturFaltung(answer.body)) : ownerKorrekturenPointer();
+  return answer?.status === 200 && istLeseantwort(answer.body)
+    ? ownerKorrekturenFolded(korrekturFaltung(answer.body, KORREKTUR_DOOR), leser) : ownerKorrekturenPointer();
 }
 
+// the reader of a seat without a role in Fleet's repo: Fleet's primary checkout, the one a lane's worktree.repo names, with the lane's geltung
+const freierSitzLeser = (harness: string | null): KorrekturLeser =>
+  korrekturLeserOf(FLEET_GIT_COMMON ? dirname(FLEET_GIT_COMMON) : import.meta.dir, "lane", harness);
 async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
   const binding = mainBindingOf(s);
   const rolle = positionRole(s, binding);
@@ -18387,8 +18381,7 @@ async function korrekturLeserFor(s: Slot): Promise<KorrekturLeserAnswer> {
     // A SEAT WITHOUT A ROLE IN FLEET'S REPO builds Fleet (a board branch, a free seat in the checkout) and reads with the lane's
     // geltung: the heft names no other builder, and its lane entries are the builder's (Orchestratorin 24.10.). Its project is
     // Fleet's primary checkout, the one a lane's worktree.repo names. A seat in another repository stays refused: the heft is personal.
-    if (s.cwd && await fleetBaumVon(s.cwd) !== null)
-      return { ok: true, leser: korrekturLeserOf(FLEET_GIT_COMMON ? dirname(FLEET_GIT_COMMON) : import.meta.dir, "lane", s.harness) };
+    if (s.cwd && await fleetBaumVon(s.cwd) !== null) return { ok: true, leser: freierSitzLeser(s.harness) };
     return { ok: false, error: "the owner's corrections are read by a lane, a bound Program-MAIN, the Orchestratorin or a seat in Fleet's repository — this session is none of them: it has no role and works in another repository, and the heft does not travel there" };
   }
   const repo = s.cwd ? await repoKeyOf(s) : null;
@@ -22572,7 +22565,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
       ...fassungProjektregelnAus(o.repoRoot, o.harness, fassungImFleetCheckout(o.repoRoot, null), o.rolle === "orchestrator", false,
         o.rolle === "generic" ? fleetBaum : null, fleetBaum !== null),
       ...(await fassungWissenFuerPlan(o.rolle, o.repoRoot, o.harness, eigen)),
-      ...(await fassungKorrekturZeiger(o.rolle, o.repoRoot)),
+      ...(await fassungKorrekturZeiger(o.rolle, o.repoRoot, o.harness, null)),
       // the notebook of the role's first spawn: a MAIN founded in the window starts "generic" (spawnListRole)
       ...(await fassungGedaechtnisAus(claude ? await notizbuchFuerStart(o.repoRoot,
         o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : "generic", null, eigen) : null, o.harness)),
@@ -22701,10 +22694,45 @@ function fassungLaufwerteFuer(s: Slot, eigenesSetup = spawnImEigenenSetup(s)): F
     wahl: thresholdChoiceOf(s, art), warmFleet: live ? keepCacheFleetOn(s) : art === "orchestrator" || art === "program-main", eigenesSetup });
 }
 
-// DAS HEFT EINES SITZES OHNE ROLLE IN FLEETS REPO (korrekturLeserFor): er liest die Owner-Korrekturen an ihrer Tür, mit der Geltung einer
-// Lane. Sein Start trägt sie nicht, darum steht unter „[Zitat entfernt]“ der Zeiger und nicht der Inhalt; in einem fremden Repo steht nichts.
-async function fassungKorrekturZeiger(rolle: FassungRolle, cwd: string): Promise<FassungAbschnittEingang[]> {
-  if (rolle !== "generic" || await fleetBaumVon(cwd) === null) return [];
+// EINE PROGRAM-MAIN IM WERDEN: Gründung und Nachfolge öffnen den Slot, bevor sie ihn binden (server.ts#bootstrapProgramMainReserved,
+// earlyMain), also liest positionRole beim ersten Spawn „generic“. Ihr Heft kommt im Brief, gefaltet für program-main; der Stein eines
+// freien Sitzes gehört nicht zusätzlich in ihren Start.
+const wirdProgramMain = (slot: number, openedAt: number): boolean =>
+  programs.some((p) => p.founding?.target.slot === slot && p.founding.target.openedAt === openedAt);
+// DAS HEFT EINES SITZES OHNE ROLLE IN FLEETS REPO (korrekturLeserFor) als Stein seines Starts (Plan 31.10. W4a, server/korrektur-stein.ts):
+// Claude Code und pi tragen die Einträge, die für ihn gelten, im angehängten Systemprompt — eine + Zeile mit dem Owner als Autor, darunter
+// was in jeder Arbeit gilt mit seiner ganzen Aussage und je Auslöser Modus und Thema, alle mit Id. Spawn (ensureSlot) und Fassung
+// (fassungKorrekturZeiger) fragen beide liestFreiesHeft und lesen den Stein bei korrekturSteinFuer, damit „Liest“ zeigt, was der Start trägt.
+// Wer das Heft eines freien Sitzes liest: ein Sitz ohne Rolle in Fleets Repo, keine MAIN im Werden (`belegung`, wirdProgramMain).
+async function liestFreiesHeft(rolle: FassungRolle, cwd: string, belegung: { slot: number; openedAt: number } | null): Promise<boolean> {
+  return rolle === "generic" && await fleetBaumVon(cwd) !== null && !(belegung && wirdProgramMain(belegung.slot, belegung.openedAt));
+}
+// ein Stein im Start braucht einen angehängten Systemprompt: Claude Code und die pi-Familie haben einen, Codex nicht
+const traegtKorrekturStein = (harness: string): boolean => harnessOf(harness) === CLAUDE_HARNESS || harnessFamilie(harness) === "pi";
+async function freierSitzKorrekturStein(rolle: FassungRolle, cwd: string, harness: string,
+    belegung: { slot: number; openedAt: number } | null): Promise<string | null> {
+  // die Harness zuerst, ohne git: der Spawn eines Codex-Sitzes wartet sonst auf zwei git-Aufrufe, die nichts ergeben
+  if (!traegtKorrekturStein(harness)) return null;
+  return await liestFreiesHeft(rolle, cwd, belegung) ? korrekturSteinFuer(harness) : null;
+}
+// der Stein für einen Leser des freien Hefts; null = kein Stein: ein Harness ohne angehängten Systemprompt (Codex) oder eine Lesetür, die
+// abweist (keine Wurzel, keine Owner-Fassung, Hash-Drift)
+async function korrekturSteinFuer(harness: string): Promise<string | null> {
+  if (!traegtKorrekturStein(harness)) return null;
+  const answer = await konzeptLeseansicht(KONZEPT_ROOT, OWNER_KORREKTUREN, freierSitzLeser(harness)).catch((e: unknown) => {
+    console.error(`owner corrections stone unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  });
+  if (answer?.status !== 200 || !istLeseantwort(answer.body)) return null;
+  return korrekturStein(answer.body, `http://${HOST}:${PORT}${KORREKTUR_DOOR}`);
+}
+// ...unter „Liest“ der Stein; wo er fehlt, der Zeiger auf die Tür, den der Start nicht trägt (Codex, eine abweisende Tür); in einem fremden
+// Repo nichts, und bei einer MAIN im Werden nichts: ihr Heft kommt im Brief, gefaltet für program-main
+async function fassungKorrekturZeiger(rolle: FassungRolle, cwd: string, harness: string,
+    belegung: { slot: number; openedAt: number } | null): Promise<FassungAbschnittEingang[]> {
+  if (!await liestFreiesHeft(rolle, cwd, belegung)) return [];
+  const stein = await korrekturSteinFuer(harness);
+  if (stein) return [textAbschnitt("korrekturen", "konzept k-owner-korrekturen · server/korrektur-stein.ts#korrekturStein", stein, false)];
   return [textAbschnitt("korrekturen", "AGENTS.md (What applies here) · server.ts#korrekturLeserFor",
     `Zeiger, nicht im Start: GET ${KORREKTUR_DOOR} mit Header "x-fleet-self-token: $FLEET_SELF_TOKEN" — die Owner-Korrekturen, die für eine Lane in Fleets Repo gelten.`, false)];
 }
@@ -22799,7 +22827,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       steine.weggelassen.map((id) => weggelassenZeile(`concept ${id}`, spawnPick.harness, spawnPick.model)).join("\n"), false)] : []),
     ...(steine?.nichtGefunden.length ? [textAbschnitt("wissen", "server/setup-datei.ts#steineFuerAgentWahl",
       steine.nichtGefunden.map((id) => `− concept ${id}: not found here (no concept of that id on the shelf or in the concept root) — left out`).join("\n"), false)] : []),
-    ...(await fassungKorrekturZeiger(rolle, cwd)),
+    ...(await fassungKorrekturZeiger(rolle, cwd, spawnPick.harness, { slot: s.id, openedAt: s.openedAt })),
     ...(await fassungGedaechtnisAus(harnessFamilie(spawnPick.harness) === "claude"
       ? await notizbuchFuerStart(cwd, spawnRolle, s.agentMd?.profil || null, eigen, s.notizbuchWahl) : null, spawnPick.harness, saat)),
     ...(nachfolge ? await fassungUebergabe(s, rolle) : []),
@@ -52568,9 +52596,10 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         if (s.openedAt !== p.openedAt || still?.kind !== "session" || still.slot !== s.id || still.openedAt !== p.openedAt)
           return json({ error: "the slot changed occupant while this read ran — nothing is served on the old credential" }, 409);
         if (answer.status !== 200) return json(answer.body, answer.status);
-        const body = answer.body as Record<string, unknown>;
-        if (voll === null) return json(korrekturFaltung(body));
-        const eintrag = (body.geltendeEintraege as KorrekturVoll[]).find((e) => e.id === voll);
+        const body = answer.body;
+        if (!istLeseantwort(body)) return json({ error: "the leseansicht answered without its entries" }, 500);
+        if (voll === null) return json(korrekturFaltung(body, KORREKTUR_DOOR));
+        const eintrag = body.geltendeEintraege.find((e) => e.id === voll);
         if (!eintrag) return json({ error: `that id is no gilt entry of your binding in v${String(body.version)} — the leseansicht lists every one, whole or as a trigger` }, 404);
         return json({ konzept: body.konzept, version: body.version, sha256: body.sha256, eintrag, bindung: body.bindung });
       }

@@ -1398,6 +1398,8 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const agentSteineFuer = async () => null;
       // ...nor the role it was opened in (server.ts#rolleSteinBlock, selbst-sitze.ts#zweckOhneRollentext): none here, the purpose stays whole
       const rolleSteinBlock = () => null, zweckOhneRollentext = (agentMd) => agentMd;
+      // ...nor the owner's corrections: a codex seat carries no stone of them (server.ts#freierSitzKorrekturStein)
+      const positionRole = () => "generic", freierSitzKorrekturStein = async () => null;
       const modelOf=()=>({ok:true}),modelsForHarness=()=>[],codexSpawnSupport=async()=>null;
       const fleetCheckoutForSpawn=()=>false;
       ${validators}

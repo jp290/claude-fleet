@@ -5439,7 +5439,7 @@ export function openPacks(setup: BriefSetup, want?: string): void {
 // Setup-Fenster: links die Steine, rechts der Text; kein Zielfenster, denn der Stein ist keine Datei des Ordners.
 let steineShell: Shell | null = null;
 const STEIN_WORT: Readonly<Record<StartStein["art"], string>> =
-  { rolle: "role", pack: "context pack", konzept: "concept", richtung: "direction", platz: "empty place", rechte: "rights" };
+  { rolle: "role", korrekturen: "your corrections", pack: "context pack", konzept: "concept", richtung: "direction", platz: "empty place", rechte: "rights" };
 // the source as a person reads it: a text that came inside an imported setup file says so, and the Fassung's own
 // title suffix (" · # Title") stays out, since the name above already carries it
 const steinQuelle = (q: string): string => {

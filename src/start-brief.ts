@@ -8,6 +8,7 @@
 // file with `paths:`, the lists by name, each context pack that waits as a skill —. Settings without text come last. A part carries the
 // name the left side gives it (a pack its title, never its path); the path stays in `datei`.
 import { agentWort } from "./k15-agent";
+import { KORREKTUR_STEIN_KOPF } from "../server/korrektur-stein";
 
 export interface Datei { pfad: string; bytes: number; eigentum?: string }
 export interface Abschnitt { id: string; quelle?: string | null; bytes?: number | string; text?: string | null; grund?: string | null; dateien?: Datei[] | null }
@@ -178,6 +179,9 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
   fleetText("eigenes", "its agent file", "what it is for, in your words", text1(jetzt, "liest", "eigenes"), text1(normal, "liest", "eigenes"), ["purpose"]);
   // the purpose a predecessor wrote for it (POST /api/self/einrichten): its own text, beside the owner's
   fleetText("zweck", "its purpose", "what it is for, written by the session before it", text1(jetzt, "liest", "zweck"), text1(normal, "liest", "zweck"), ["purpose"], undefined, "Your predecessor");
+  // the owner's corrections a seat without a role in Fleet's repo carries (server/korrektur-stein.ts): his words, one line each; a pointer is no text it reads
+  const korrektur = (f: Fassung | null) => { const t = text1(f, "liest", "korrekturen"); return t?.startsWith(KORREKTUR_STEIN_KOPF) ? t : null; };
+  fleetText("korrekturen", "your corrections", "your standing decisions, one line each with its id", korrektur(jetzt), korrektur(normal), [], undefined, "Yours");
   // the rights sentence: appended only when rights are set; without, the Fassung says what holds instead
   const rj = text1(jetzt, "darf", "darf"), rn = text1(normal, "darf", "darf");
   if (rj !== rn) fleetText("rechte", "Rights", "what it may change", rj, null, ["rights"]);

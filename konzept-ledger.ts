@@ -183,7 +183,8 @@ function folded(l: Ledgers): KonzeptAnmerkung[] {
 export const OWNER_KORREKTUREN = "k-owner-korrekturen";
 export const EINTRAG_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // who an entry is for, axis by axis: "*" is ALL on purpose, a list names its members, and an empty list
-// is refused — it would apply nowhere, and "nothing said" must never read as "everywhere"
+// is refused — it would apply nowhere, and "nothing said" must never read as "everywhere". `rollen: "*"` is EVERY SEAT:
+// lane, Program-MAIN, the Orchestratorin and a seat without a role, which reads as a lane in Fleet's repo (server.ts#korrekturLeserFor)
 export const GELTUNG_ACHSEN = ["projekte", "rollen", "harnesses", "modi"] as const;
 export type KorrekturGeltung = Record<typeof GELTUNG_ACHSEN[number], "*" | string[]>;
 export interface KorrekturEintrag { id: string; aussage: string; quelle: string | TraceDetailRef;
@@ -257,6 +258,12 @@ export function parseKorrekturHeft(text: string): KorrekturHeft | string {
   return { eintraege, zurueckgezogen };
 }
 
+// A WIDER SCOPE IS A SUCCESSOR (Plan 31.10. W4a: "the entry gets a wider scope instead of a second line"): an entry that ersetzt
+// another holds for every reader the old one held for, so no reader loses a correction when the old one folds to veraltet.
+// The same or a wider list on every axis; a narrower one would drop the correction for some reader and stays refused.
+const umfasst = (neu: "*" | string[], alt: "*" | string[]): boolean =>
+  neu === "*" || (alt !== "*" && alt.every((x) => neu.includes(x)));
+
 // the graph rules of ONE publication, against the fassung it follows (null for the first). Each refusal
 // is named by its own sentence, in this order — a test reads the first one that applies.
 export function checkKorrekturHeft(heft: KorrekturHeft, prior: KorrekturHeft | null): string | null {
@@ -279,8 +286,9 @@ export function checkKorrekturHeft(heft: KorrekturHeft, prior: KorrekturHeft | n
       if (!target) return `entry ${e.id} ersetzt unknown entry ${old} — the fassung carries the whole heft, the replaced entry included`;
       if (successor.has(old)) return `entry ${old} has two successors: ${successor.get(old)} and ${e.id}`;
       if (withdrawn.has(old)) return `entry ${old} is withdrawn and replaced by ${e.id} at once — one end per entry`;
-      if (JSON.stringify(target.geltung) !== JSON.stringify(e.geltung))
-        return `entry ${e.id} ersetzt ${old} with a different geltung — in this cut only an identical geltung replaces an entry; split it into entries first`;
+      const enger = GELTUNG_ACHSEN.find((k) => !umfasst(e.geltung[k], target.geltung[k]));
+      if (enger)
+        return `entry ${e.id} ersetzt ${old} with a narrower geltung on ${enger} — a successor holds wherever its predecessor held (the same or a wider geltung on every axis); split it into entries first`;
       successor.set(old, e.id);
     }
   for (const start of successor.keys()) {

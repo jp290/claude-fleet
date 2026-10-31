@@ -20,8 +20,8 @@ export type FassungByte = number | "unknown";
  *  `unknown` aufzutauchen. „systemzusatz“ ist, was Fleet selbst an den Systemprompt hängt (Listenschnitt, Auto-Mode-Zeile). */
 export const LIEST_REIHENFOLGE = ["richtung", "rolle", "systemzusatz", "projektregeln", "wissen", "korrekturen", "gedaechtnis", "uebergabe", "eigenes", "zweck"] as const;
 export type LiestAbschnittId = (typeof LIEST_REIHENFOLGE)[number];
-/** Abschnitte, die nur eine Rolle trägt: fehlen sie, wird kein `unknown` erfunden. „korrekturen“ ist der Zeiger auf die Owner-Korrekturen,
- *  den ein Sitz ohne Rolle in Fleets Repo trägt (server.ts#fassungKorrekturZeiger); die anderen Rollen bekommen das Heft im Brief. „[Zitat entfernt]“ trägt
+/** Abschnitte, die nur eine Rolle trägt: fehlen sie, wird kein `unknown` erfunden. „korrekturen“ sind die Owner-Korrekturen eines Sitzes ohne Rolle
+ *  in Fleets Repo: der Stein seines Starts, oder der Zeiger auf ihre Tür, wo die Tür abweist (server.ts#fassungKorrekturZeiger); die anderen Rollen bekommen das Heft im Brief. „[Zitat entfernt]“ trägt
  *  nur ein Sitz, dem seine Vorgängerin einen schrieb (server/selbst-einrichten.ts). */
 export const OPTIONALE_LIEST: ReadonlySet<LiestAbschnittId> = new Set(["richtung", "korrekturen", "zweck"]);
 

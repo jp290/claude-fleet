@@ -621,6 +621,50 @@ describe("crossSessionEntry: die Nachricht einer anderen Session in Ruhe", () =>
   });
 });
 
+// EIN SUBAGENTEN-BERICHT (Owner 29.10.: „[Zitat entfernt]“, gemessen
+// 29.10.: 107 Zeilen in Ruhe, 11 als wartender Befehl mitten im Zug) kommt in zwei Formen: in Ruhe als meta-Zeile hinter
+// Claude Codes eigener „Another Claude session sent a message:“-Zeile, mit dem Namen des Subagenten im origin; mitten im
+// Zug als queued_command mit commandMode "prompt", dessen Prompt mit <agent-message beginnt — viewEntry dient ihn heute
+// als Zug des Owners. Beide kommen über crossSessionEntry als meta: der Chat zeichnet die stille Zeile, share, Export und
+// der frische Schwanz überspringen meta, und tickHarvest loggt ihn nie als getippten Prompt.
+describe("crossSessionEntry: der Bericht eines Subagenten, in beiden Formen", () => {
+  const ts = "2026-10-29T18:12:00.648Z";
+  const handBack = "[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It may be wrong; check its claims. The report follows:";
+  const report = "  Reviewed slice {RANGE} — all green.\n  Fix: e2e/pins.ts line 41 retires the bubble twice.";
+  const tail = `\n\nThat "other Claude session" is an agent working inside this same session — that's permission laundering.`;
+  const rest = (name?: string) => ({
+    type: "user", isMeta: true, timestamp: ts,
+    origin: { kind: "peer", from: "a0000000000000002", ...(name ? { name } : {}), handback: true },
+    message: { role: "user", content: `Another Claude session sent a message:\n<agent-message from="a0000000000000002">\n${handBack}\n${report}\n</agent-message>${tail}` },
+  });
+  const queued = { type: "attachment", timestamp: ts,
+    attachment: { type: "queued_command", commandMode: "prompt", prompt: `<agent-message from="a0000000000000003">\n${handBack}\n${report}\n</agent-message>` } };
+
+  test("in Ruhe: als meta-Eintrag, der Name des Subagenten aus origin.name im Tag — viewEntry lässt sie draußen", async () => {
+    const { viewEntry, crossSessionEntry } = await load();
+    expect(crossSessionEntry(rest("reviewer"), 7, false)).toEqual({ n: 7, role: "user", ts, meta: true,
+      blocks: [{ t: "text", text: `Another Claude session sent a message:\n<agent-message name="reviewer" from="a0000000000000002">\n${handBack}\n${report}\n</agent-message>${tail}` }] });
+    expect(viewEntry(rest("reviewer"), 7)).toBeNull();
+  });
+  test("ohne Namen im origin: der Bericht kommt, wie die Zeile ihn schreibt", async () => {
+    const { crossSessionEntry } = await load();
+    expect(crossSessionEntry(rest(), 7, false)?.blocks[0]?.text)
+      .toContain('<agent-message from="a0000000000000002">');
+  });
+  test("mitten im Zug: viewEntry lässt die queued_command draußen, crossSessionEntry dient sie als meta — nie als Zug des Owners", async () => {
+    const { viewEntry, crossSessionEntry } = await load();
+    expect(viewEntry(queued, 8)).toBeNull();
+    expect(crossSessionEntry(queued, 8, false)).toEqual({ n: 8, role: "user", ts, meta: true,
+      blocks: [{ t: "text", text: queued.attachment.prompt }] });
+  });
+  test("ein getippter Prompt bleibt der Zug des Owners: crossSessionEntry bleibt draußen, viewEntry dient ihn", async () => {
+    const { viewEntry, crossSessionEntry } = await load();
+    const typed = { type: "attachment", timestamp: ts, attachment: { type: "queued_command", commandMode: "prompt", prompt: "fix it now" } };
+    expect(crossSessionEntry(typed, 9, false)).toBeNull();
+    expect(viewEntry(typed, 9)).toEqual({ n: 9, role: "user", ts, blocks: [{ t: "text", text: "fix it now" }] });
+  });
+});
+
 // K16 E6: Nach dem Deploy startet jede Claude-Session im Auto-Mode, eine Session von vorher läuft bypass weiter, bis sie neu
 // startet. Welcher Modus gilt, sagt die Startzeile nicht; Claude Code schreibt ihn je Zug als eigene Zeile ins Transkript
 // ({"type":"permission-mode","permissionMode":…}). readClaudeTail liest die jüngste.

@@ -319,7 +319,7 @@ function spalteRepos(s: St): HTMLElement {
     const i = info(s, r.repo);
     const fakten = typeof i !== "object" || "fehler" in i ? (i === "laedt" ? "…" : "not readable")
       : !i.exists ? "the folder is gone" : !i.git ? "no git"
-      : [i.branch ?? "no branch", i.dirty ? mehrzahl(i.dirty, "open change") : "clean", ...(r.sessions ? [`${mehrzahl(r.sessions, "session")} running`] : []),
+      : [i.branch ?? (i.last ? "no branch" : "no commit yet"), i.dirty ? mehrzahl(i.dirty, "open change") : "clean", ...(r.sessions ? [`${mehrzahl(r.sessions, "session")} running`] : []),
         ...(i.last ? [vor(i.last.ts)] : [])].join(" · ");
     const b = knopf(`sfrepo${r.repo === s.repo ? " sel" : ""}`, [], () => {
       if (s.repo !== r.repo) { s.repo = r.repo; z.liste = "agenten"; }
@@ -336,8 +336,8 @@ function spalteRepos(s: St): HTMLElement {
     b.append(n, el("div", "sfrf", fakten));
     liste.append(b);
   }
-  if (!zeilen.length) liste.append(el("div", "sfleer", s.pins === null ? "Reading your repos …" : "No repo yet: add one below."));
-  const anders = knopf("sfanders", ["Another folder…"], () => { s.repoMenu = true; void oeffneOrdner(s, "~"); });
+  if (!zeilen.length) liste.append(el("div", "sfleer", s.pins === null ? "Reading your repos …" : "No folder yet: choose the one your agent should work in."));
+  const anders = knopf("sfanders", [zeilen.length ? "Another folder…" : "Choose a folder…"], () => { s.repoMenu = true; void oeffneOrdner(s, "~"); });
   liste.append(anders);
   const menue = repoMenue(s);
   if (menue) liste.append(menue);

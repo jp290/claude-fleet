@@ -30,7 +30,7 @@ class K15VerdictIn extends Error {
 }
 export interface K15StartMutant {
   name: string; claim: string;
-  file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts"
+  file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/k15-repo.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts"
     | "src/start-fenster.ts" | "src/start-wahl.ts" | "src/start-brief.ts" | "src/dom-morph.ts";
   needle: string; with: string; width?: 1200 | 390;
 }
@@ -59,6 +59,8 @@ export const K15_START_CLAIM = {
   quick: "⎇+ under a session opens the start window (orchestrator 26.10.: a session on a branch of its own, no lane): on the repo's agent Branch & land is on and blocks Start until it has a name; named, the sentence under Start says it starts from that session's branch, and Start sends POST /api/branches { repo, name, points: [], base: <that branch> }, then POST /api/branches/open, and never /api/lanes",
   plus: "the + of a repo opens the start window with that repo chosen; its own agent unchanged starts in the checkout with exactly { cwd, fassung } at /api/slots/<first free>/open, and never /api/lanes",
   unreadable: "a plan that cannot be read (500, network, malformed) blocks the start in the start window with a sentence that says so („The preview is not readable: …“), and nothing is sent",
+  ordnerOhneGit: "„Another folder…“ takes a folder without git: Add on its row and Add <folder> in it each pin it (POST /api/pins), and the window then lists it as the chosen place with its badge „no git“, its agents beside it",
+  leereFlotte: "on a board with no open seat the pane offers „Start your agent“, on top of the terminal where a press reaches it, and a press opens the start window; with a seat open the pane does not",
   zu: "after a successful start from the start window the window closes and the started slot is the one shown",
 } as const;
 // the claims read on the phone; every other one at 1200
@@ -154,6 +156,12 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
   { name: "Branch & land is offered where the branch door refuses the repo", claim: C.ohneGit, file: "src/start-fenster.ts",
     needle: "const branchGeht = (i: DirInfoResp | null): boolean => i?.git === true && i.branches !== false;",
     with: "const branchGeht = (i: DirInfoResp | null): boolean => i?.git === true;" },
+  { name: "a folder without git cannot be added from its own listing", claim: C.ordnerOhneGit, file: "src/k15-repo.ts",
+    needle: "hier.disabled = schon.has(liste.path);", with: "hier.disabled = schon.has(liste.path) || !liste.git;" },
+  { name: "a folder without git has no Add on its row", claim: C.ordnerOhneGit, file: "src/k15-repo.ts",
+    needle: "    if (!schon.has(pfad)) {", with: "    if (git && !schon.has(pfad)) {" },
+  { name: "the empty board offers nothing", claim: C.leereFlotte, file: "src/client.ts",
+    needle: `document.body.classList.toggle("noseats", fleet.length > 0 && !fleet.some(isActive));`, with: `document.body.classList.toggle("noseats", false);` },
   { name: "the Workplace block offers a branch without git", claim: C.ohneGit, file: "src/start-fenster.ts",
     needle: "if (frei && branchGeht(i)) d.append(opts(", with: "if (frei) d.append(opts(" },
   { name: "an unticked server stays in the start", claim: C.connectors, file: "src/start-wahl.ts",
@@ -299,12 +307,14 @@ interface Fx {
   dirinfoHalt: boolean; planHalt: boolean;
   // the fixture repo is a git checkout; false: a plain folder. branches: the branch doors take it (a workplace repo)
   git: boolean; branches: boolean;
+  // no session is open at all (a board fresh from the install); the folders the picker pinned
+  leer: boolean; pins: string[];
   // the branch /api/dirinfo names for the fixture repo's checkout, where slot 1 works
   zweig: string;
   occupied: Map<number, Record<string, unknown>>;
 }
 const fx0 = (): Fx => ({ head: "fixture-head", plan: "ok", ordnerStartbar: false, orch: false, move: false, programs: "ok", bootstrap: "ok",
-  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, git: true, branches: true, zweig: "main", occupied: new Map() });
+  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, git: true, branches: true, leer: false, pins: [], zweig: "main", occupied: new Map() });
 
 export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   only: { widths?: readonly number[]; mutate?: K15StartMutant } = {}): Promise<K15StartDomResult[]> {
@@ -349,6 +359,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
     const id = i + 1;
     const taken = fx.occupied.get(id);
     if (taken) return { id, lastOutput: 0, ...taken };
+    if (fx.leer) return { id, cwd: null, label: null, lastOutput: 0 };
     if (id === 1) return { id, cwd: REPO, label: "Fleet", openedAt: 1000, lastOutput: 0, model: "claude-opus-5-5[1m]", effort: "high",
       git: { branch: "main", dirty: 0, ahead: 0, behind: 0 } };
     if (id === 2 && fx.orch) return { id, cwd: REPO, label: "Orchestrator", role: "orchestrator", openedAt: 2000, lastOutput: 0, model: "claude-opus-5-5[1m]", effort: "high" };
@@ -496,6 +507,10 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         let body: Record<string, unknown> = {};
         try { body = JSON.parse(request.postData ?? "{}") as Record<string, unknown>; } catch { /* a beacon's blob: not a start */ }
         posts.push({ url: p, body });
+        if (p === "/api/pins" && typeof body.path === "string") {
+          fx.pins = body.on === false ? fx.pins.filter((x) => x !== body.path) : [body.path, ...fx.pins.filter((x) => x !== body.path)];
+          return json(requestId, { ok: true, pins: fx.pins });
+        }
         const a = START.test(p) ? answerPost(p, body) : p.startsWith("/api/agenten") ? answerAgent(p, body) : { status: 200, body: { ok: true } };
         return json(requestId, a.body, a.status);
       }
@@ -517,7 +532,12 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       if (p === "/api/machine-settings") return json(requestId, { settings: [{ name: "FLEET_MIGRATE_PCT", value: 40 }, { name: "FLEET_LANE_MIGRATE_PCT", value: 37 },
         { name: "FLEET_MODEL", value: "claude-opus-5-5[1m]" }] });
       if (p === "/api/k15/eigenes") return json(requestId, { eigenes: { fassungen: [], packs: [], profile: [] } });
-      if (p === "/api/dirs") return json(requestId, { path: "/fixture", parent: null, dirs: [], repos: [], git: false, pins: [] });
+      if (p === "/api/dirs") {
+        // the folder the picker stands in: the home holds one folder, notizen, which has no git; every pinned folder is in the answer
+        const at = u.searchParams.get("path") ?? "~";
+        const home = at === "~" || at === "/fixture";
+        return json(requestId, { path: home ? "/fixture" : at, parent: home ? null : "/fixture", dirs: home ? ["notizen"] : [], repos: [], git: false, pins: fx.pins });
+      }
       // the fixture repo has no ci/merge-check.ts, as none of the owner's own repos (server.ts#hasMergeCheck)
       if (p === "/api/dirinfo" && fx.dirinfoHalt) return new Promise<void>((ok) => { haltend.push(() => { fx.dirinfoHalt = false; void serve(requestId, request).finally(() => ok()); }); });
       if (p === "/api/dirinfo") return json(requestId, { path: u.searchParams.get("path"), exists: true, git: fx.git, branch: fx.git ? fx.zweig : null, dirty: 0, orphans: [], mergeCheck: false, branches: fx.git && fx.branches });
@@ -660,6 +680,15 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0 }));
           localStorage.setItem('fleet.board', ${JSON.stringify(fx.board ? "1" : "0")}); })()`);
         await navigate("http://fleet.fixture/");
+        if (fx.leer) {
+          // a board fresh from the install: nothing open, nothing stored, the pane has no session
+          await evaluate(`localStorage.clear()`);
+          await navigate("http://fleet.fixture/");
+          if (!await wait(`!!document.querySelector('#slots .slot.empty[data-slot="1"]') && document.body.classList.contains('noseats')`, 15000))
+            throw new Error("the empty board never showed its free places: " + await evaluate<string>("document.body.innerText.slice(0, 300)"));
+          await idle();
+          return;
+        }
         if (!await wait(`document.querySelector('#comptarget')?.dataset.slot === '1' && !!document.querySelector('#slots .slot[data-slot="${FREE}"]')`, 15000))
           throw new Error(`the board never showed slot 1 and free slot ${FREE}: ` + await evaluate<string>("document.body.innerText.slice(0, 300)"));
         await idle();
@@ -1189,6 +1218,42 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         const ordner = await blick({ git: false }), fremd = await blick({ branches: false });
         facts.ohneGit = { ordner, fremd };
         verdicts[C.ohneGit] = ordner.ok && fremd.ok;
+      });
+
+      // „Another folder…“ takes a folder without git: the row's own Add and Add <folder> in the listing, each one pins and chooses it
+      await caseOf("ordner-ohne-git", async () => {
+        await fresh({ git: false });
+        await fenster();
+        const picker = async () => { await click(`${WIN}?.querySelector('.sfanders')`); await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000); };
+        await picker();
+        const zeileHat = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15ordnz .k15ordnadd')`);
+        await click(`${WIN}?.querySelector('.k15ordnz .k15ordnadd')`);
+        await wait(`${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo === '/fixture/notizen'`, 5000);
+        const gewaehlt = await evaluate<{ repo: string | null; abzeichen: string | null }>(`({ repo: ${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo ?? null,
+          abzeichen: ${WIN}?.querySelector('.sfrepo.sel .sfbd')?.textContent ?? null })`);
+        await picker();
+        const hierOffen = await evaluate<boolean>(`!!${WIN}?.querySelector('.k15ordnhier') && !${WIN}.querySelector('.k15ordnhier').disabled`);
+        await click(`${WIN}?.querySelector('.k15ordnhier')`);
+        await wait(`${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo === '/fixture'`, 5000);
+        const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+        facts.ordnerOhneGit = { zeileHat, gewaehlt, hierOffen, pins };
+        verdicts[C.ordnerOhneGit] = zeileHat && hierOffen && gewaehlt.repo === "/fixture/notizen" && gewaehlt.abzeichen === "no git"
+          && canon(pins) === canon([{ path: "/fixture/notizen", on: true }, { path: "/fixture", on: true }]);
+      });
+
+      // a board fresh from the install: the pane offers one thing, on top of the terminal; with a seat open it does not
+      await caseOf("leere-flotte", async () => {
+        const knopf = `(() => { const b = document.querySelector('.panehint .hintgo'); if (!b) return { da: false, oben: false };
+          const r = b.getBoundingClientRect(); const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return { da: r.width > 0 && r.height > 0, oben: at === b || b.contains(at) }; })()`;
+        await fresh({ leer: true });
+        const leer = await evaluate<{ da: boolean; oben: boolean }>(knopf);
+        await click(`document.querySelector('.panehint .hintgo')`);
+        const fensterAuf = await wait(`!!${WIN}`, 8000);
+        await fresh();
+        const belegt = await evaluate<{ da: boolean; oben: boolean }>(knopf);
+        facts.leereFlotte = { leer, fensterAuf, belegt };
+        verdicts[C.leereFlotte] = leer.da && leer.oben && fensterAuf && !belegt.da;
       });
 
       // a saved agent as saved, changed and deleted, „Save as agent…“, the Orchestratorin

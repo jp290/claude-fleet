@@ -19,7 +19,7 @@ import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./serve
 import { istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { fassungAufgabeAusSitz, ordnerFehlt, ordnerSatz, ordnerVorschlag, sitzAnsicht, zielAusPosition, zielNachricht } from "./server/position-start";
-import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzStartGeladen, sitzWissen, type SitzStart } from "./server/sitz-reise";
+import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -273,7 +273,7 @@ import { eigenerModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschni
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
-import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatKatalog, seatPacks, seatSkillFiles, seatSkillsDir,
+import { bibliothekBeimSpawn, bibliothekDerTuer, bibliothekNichtWirksam, packBlock, renderSeatStart, seatContextFacts, seatFassungAbschnitte, seatKatalog, seatPacks, seatSkillFiles, seatSkillsDir,
   seatSkillsVerwaist, bibliothekQuelle, bibliothekGewaehlt, mitTuerenSkill, nurAufWahl, bibliothekWahlGeladen, packAuswahlFehlt, type BibliothekWahl, type SeatKnowledge, type SeatTree, type SkillOrt } from "./server/sitz-wissen";
 // die Skill-Ordner selbst: Claude Codes einer je Belegung, pi's `skills/` im Agent-Verzeichnis seines Adapters
 import { piSkillsWrite, seatSkillsRemove, seatSkillsWrite } from "./server/sitz-skills";
@@ -8989,7 +8989,7 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   let packsResult: Record<string, unknown> | null = po.packs !== null && po.packs.length === 0
     ? { packsDelivered: true } : null;
   if (po.packs !== null && po.packs.length > 0) {
-    const fp = await foundingPlanOf(typeof body.cwd === "string" ? body.cwd : "~", ho.harness, "main");
+    const fp = await foundingPlanOf(typeof body.cwd === "string" ? body.cwd : "~", ho.harness, "main", undefined, undefined, !isOrchestratorLabel(label));
     guard();
     if (!fp.ok) return json({ error: `no context plan for this founding: ${fp.error}` }, 400);
     const pick = chooseFoundingPacks(fp.value.plan, po.packs);
@@ -22357,6 +22357,20 @@ function fassungRolleKarte(rolle: FassungRolle, repoRoot: string): FassungAbschn
     : [unknownAbschnitt("rolle", "keine stehende Rolle — eine freie Session startet ohne Rollenkarte")];
 }
 
+// DIE ROLLE EINES IMPORTIERTEN SITZES (Slot.sitz.rolle, mitgereist aus fleet-setup/1): sein Starttext reist im Profil und
+// steht EINMAL unter „Liest › Eigenes“ — hier steht der Verweis darauf, mit der Kennung, dem Autor des Rollensteins und ob
+// das Rechtebundel der Rolle nur erbeten oder schon freigegeben ist (server/sitz-reise.ts#sitzRolleDerDatei). Der
+// Platzhalter der freien Session gilt für ihn nicht: dieser Sitz startet mit einer Rolle.
+function fassungSitzRolle(id: string, r: SitzRolleRef | null): FassungAbschnittEingang {
+  return textAbschnitt("rolle", "Slot.sitz.rolle (role stone from fleet-setup/1)", [
+    `FLEET ROLE ${id}${r?.autor ? ` (author: ${r.autor})` : ""} — the role stone this seat was imported with; its start text rides in „Liest › Eigenes“.`,
+    !r ? "ROLE RIGHTS: the saved constellation no longer names this role's bundle — whether it was granted is not readable here"
+      : !r.bundel ? "ROLE RIGHTS: the file asks for no rights bundle"
+      : `ROLE RIGHTS (step 2 bundle, ${r.bestaetigt ? "confirmed by this Fleet's owner — the seat starts with them"
+        : "only requested by the file — not confirmed, the seat starts without them"}): ${r.bundel.join(", ")}`,
+  ].join("\n"), false);
+}
+
 function fassungAufgabeFuerPlan(rolle: FassungRolle, repoRoot: string): FassungAbschnittEingang[] {
   if (rolle === "orchestrator") return fassungOrchestratorAufgabe(repoRoot);
   if (rolle === "lane")
@@ -22689,6 +22703,9 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   // ROLE-RIGHTS-Zeile — die Rechte selbst kamen als Zusagen dazu und stehen unter „Darf“ wie jede Zusage.
   const gebildeteRolle = s.rolleStein ? rolleSteinBlock(s.rolleStein) : null;
   const zweckStart = zweckOhneRollentext(s.agentMd, s.rolleStein, STATE_DIR); // der Rollenstein trägt denselben Text schon
+  // DIE ROLLE EINES MITGEREISTEN SITZES (Slot.sitz.rolle): „Liest › Rolle“ nennt sie als Verweis — Kennung, Autor und ob
+  // ihr Rechtebundel nur erbeten oder schon freigegeben ist. Erst nach einem eigenen Agenten mit Rolle, der seinen Stein ganz zeigt.
+  const sitzRolleRef = !steine?.role && s.sitz?.rolle ? await sitzRolleDerDatei(STATE_DIR, s.sitz.konst, s.sitz.pos) : null;
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
@@ -22699,12 +22716,21 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     ...(steine?.role ? [textAbschnitt("rolle", "server/setup-datei.ts#steineFuerAgentWahl (role stone)", steine.block ?? "", false),
       textAbschnitt("richtung", "server/setup-datei.ts#RICHTUNG_PLATZ", RICHTUNG_PLATZ, false)]
       : gebildeteRolle ? [textAbschnitt("rolle", `server/selbst-sitze.ts (gebildete Rolle „${s.rolleStein!.id}“)`, gebildeteRolle, false)]
-      : fassungRolleKarte(rolle, repoRoot)),
+      : s.sitz?.rolle ? [fassungSitzRolle(s.sitz.rolle, sitzRolleRef)] : fassungRolleKarte(rolle, repoRoot)),
     fleet.zusatz,
     ...(fleet.start ? [fleet.start] : []),
     ...projektregelnDerLage(s, { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau }, s.weglassen),
+    // WISSEN: ein eigener Agent MIT ROLLE zeigt die Packs seines Rollensteins, je Pack mit Quelle und Autor im Kopf wie ein
+    // mitgereister Pack (server/sitz-wissen.ts#packBlock). Einer MIT KONZEPTEN OHNE ROLLE zeigt sie als dieselben Zeilen, die
+    // sein Start trägt, und die Bibliothek bleibt daneben, wie der Start sie liest. Ohne Steine gilt der Sitz wie bisher.
     ...(steine?.role ? (steinVoll?.packs ?? []).filter((p) => p.text !== null).map((p) => textAbschnitt("wissen",
-      `server/setup-datei.ts#roleStein (${p.id})`, p.text as string, false)) : await fassungWissen(s, rolle, cwd, eigen)),
+      `server/setup-datei.ts#roleStein (${p.id})`,
+      packBlock({ id: p.id, sources: p.sources, text: p.text, ...(p.author ? { autor: p.author } : {}) }), false))
+      : steine?.block ? [
+        ...steine.concepts.filter((c) => (c.text ?? "").trim()).map((c) => textAbschnitt("wissen",
+          `server/setup-datei.ts#steineFuerAgentWahl (${c.id})`, startBlockAusSteinen(null, [c]), false)),
+        ...await fassungWissen(s, rolle, cwd, eigen)]
+      : await fassungWissen(s, rolle, cwd, eigen)),
     ...(steine?.weggelassen.length ? [textAbschnitt("wissen", "server/datengrenze.ts#weggelassenZeile",
       steine.weggelassen.map((id) => weggelassenZeile(`concept ${id}`, spawnPick.harness, spawnPick.model)).join("\n"), false)] : []),
     ...(await fassungKorrekturZeiger(rolle, cwd)),
@@ -25957,6 +25983,10 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
     const a = d.attachment;
     if (!a || a.type !== "queued_command" || a.commandMode !== "prompt"
       || typeof a.prompt !== "string" || !a.prompt) return null;
+    // a subagent's report waits here mid-turn, wrapped in <agent-message …> (measured 29.10.): not the owner's
+    // words — crossSessionEntry serves it as meta, so no reader takes it for his turn (and tickHarvest
+    // never logs it as a typed prompt)
+    if (a.prompt.startsWith("<agent-message ")) return null;
     return {
       n, role: "user",
       ts: ts ?? (typeof a.timestamp === "string" ? a.timestamp : null),
@@ -26025,18 +26055,36 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
 }
 // A MESSAGE ANOTHER CLAUDE SESSION SENT reaches a resting session as a meta user line, "Another Claude session sent a
 // message:\n<cross-session-message …>" (measured 15.10.: 348 of 540 such messages in three days of this host's
-// transcripts; the other 192 came mid-turn as queued commands, which viewEntry serves as a prompt). viewEntry drops every
-// meta line, so the chat view never showed it; the conversation readers get it as meta — share, export and the fresh tail
-// skip meta, the chat view draws it as a quiet line (Mangel 78). Not inside viewEntry: tickHarvest takes each user entry
-// that returns as a typed prompt.
+// transcripts; the other 192 came mid-turn as queued commands, which viewEntry serves as a prompt). A SUBAGENT'S REPORT
+// comes the same two ways, wrapped in <agent-message …> (measured 29.10.: 107 resting meta lines, 11 queued mid-turn):
+// the resting line carries the subagent's name in its origin, and mid-turn viewEntry leaves the queued command out, so
+// both come here as meta. viewEntry drops every meta line, so the chat view never showed it; the conversation readers
+// get it as meta — share, export and the fresh tail skip meta, the chat view draws it as a quiet line (Mangel 78). Not
+// inside viewEntry: tickHarvest takes each user entry that returns as a typed prompt.
 const CROSS_SESSION_LEAD = "Another Claude session sent a message:\n<cross-session-message ";
+const AGENT_LEAD = "Another Claude session sent a message:\n<agent-message ";
 function crossSessionEntry(raw: unknown, n: number, full: boolean): TEntry | null {
-  const d = raw as { type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown; message?: { content?: unknown } };
+  const d = raw as { type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown; origin?: { name?: unknown };
+    message?: { content?: unknown }; attachment?: { type?: unknown; commandMode?: unknown; prompt?: unknown; timestamp?: unknown } };
+  // mid-turn, a subagent's report waits as a queued command (viewEntry leaves it out above): meta here too,
+  // so the chat view draws its quiet line and no reader takes it for the owner's turn
+  if (d.type === "attachment") {
+    const a = d.attachment;
+    if (!a || a.type !== "queued_command" || a.commandMode !== "prompt" || typeof a.prompt !== "string"
+      || !a.prompt.startsWith("<agent-message ")) return null;
+    const at = typeof d.timestamp === "string" ? d.timestamp : typeof a.timestamp === "string" ? a.timestamp : null;
+    return { n, role: "user", ts: at, blocks: [{ t: "text", text: full ? a.prompt : trim(a.prompt, 20_000) }], meta: true };
+  }
   const content = d.message?.content;
   if (d.type !== "user" || d.isMeta !== true || d.isSidechain === true || typeof content !== "string"
-    || !content.startsWith(CROSS_SESSION_LEAD)) return null;
+    || (!content.startsWith(CROSS_SESSION_LEAD) && !content.startsWith(AGENT_LEAD))) return null;
+  // the subagent's NAME stands on the line's origin; the tag carries it to the chat view as a name="…"
+  // attribute (src/agent-message.ts reads it back), so the quiet line says who reported
+  const name = typeof d.origin?.name === "string" && d.origin.name && !/["\n]/.test(d.origin.name) ? d.origin.name : null;
+  const served = name && content.startsWith(AGENT_LEAD)
+    ? content.replace("<agent-message ", `<agent-message name="${name}" `) : content;
   return { n, role: "user", ts: typeof d.timestamp === "string" ? d.timestamp : null,
-    blocks: [{ t: "text", text: full ? content : trim(content, 20_000) }], meta: true };
+    blocks: [{ t: "text", text: full ? served : trim(served, 20_000) }], meta: true };
 }
 
 const timelineHost = hostname();
@@ -43908,24 +43956,33 @@ type FoundingPlan = {
   /** the repo manifest as read at `head` — the plan route reads a repo pack's declared rule facts off it */
   readonly manifest: ContextManifestRead;
 };
+// the tree of no commit at all: git knows it in every repo. A seat in a folder that has no commit (a git repo before its first one, or no git
+// repo) plans at it: nothing is committed there, so no manifest and no pack, and every read at it comes back absent
+const LEERER_BAUM = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+// `ohneCommit`: the plan a start of a seat WITHOUT a role in any folder asks for ("anyone gets in"); a lane, a MAIN or the Orchestratorin
+// still need a repo with a commit
 async function foundingPlanOf(repo: string, harness: string | null,
-  foundingMode: FoundingPlanMode, position?: ContextPosition, variante: ContextPositionVariante | null = null): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
+  foundingMode: FoundingPlanMode, position?: ContextPosition, variante: ContextPositionVariante | null = null, ohneCommit = false): Promise<{ ok: true; value: FoundingPlan } | { ok: false; error: string }> {
   let repoRoot: string;
+  let keinGit = false;
   try {
     repoRoot = await repoRootOf(repo);
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "not a git repository" };
+    const grund = e instanceof Error ? e.message : "not a git repository";
+    if (!ohneCommit || grund !== "not a git repository") return { ok: false, error: grund };
+    repoRoot = repoCanon(resolve(expandCwd(repo)));
+    keinGit = true;
   }
   // The commit the plan AND the later receipt assert — the integration tip, the same choice the
   // dispatch seam and preflightProgramMain make, so no seam invents its own head rule.
   // a checkout on a detached HEAD (`git worktree add --detach`, step 5 run 2) has no integration branch: it plans at the commit it stands on
   const branchRead = await gitRead(repoRoot, "symbolic-ref", "--short", "HEAD");
   const detached = branchRead.code !== 0 ? await gitRead(repoRoot, "rev-parse", "--verify", "HEAD") : null;
-  const head = await integrationHead(repoRoot) ?? (detached?.code === 0 && detached.out ? detached.out : null);
+  const head = await integrationHead(repoRoot) ?? (detached?.code === 0 && detached.out ? detached.out : null) ?? (ohneCommit && (keinGit || (await gitRead(repoRoot, "rev-parse", "--verify", "--quiet", "HEAD")).code !== 0) ? LEERER_BAUM : null);
   if (!head) return { ok: false, error: "could not read the repository's integration HEAD" };
   // THE ONE CLASSIFIER, shared with dispatch: which tree this founding is about, derived from the
   // git toplevel comparison dispatchSourceTree owns — never declared, never re-classified here.
-  const sourceTree = await dispatchSourceTree(repoRoot);
+  const sourceTree = keinGit ? "foreign" as const : await dispatchSourceTree(repoRoot);
   const frame: ProgramMainFrame = sourceTree === "fleet" ? "fleet-control" : "target-repo";
   const baseFacts = foundingMode === "lane"
     ? { sourceTree, harness,
@@ -44523,7 +44580,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
     if (at <= 0) return refuse(`bausteine entry '${entry}' must be <id>=<an|aus|ersetzt:id>`);
     schalter[entry.slice(0, at)] = entry.slice(at + 1);
   }
-  const fp = await foundingPlanOf(repo, ho.harness, mode, rolle === "orchestratorin" ? "orchestratorin" : mode === "lane" ? "lane" : "main");
+  const fp = await foundingPlanOf(repo, ho.harness, mode, rolle === "orchestratorin" ? "orchestratorin" : mode === "lane" ? "lane" : "main", undefined, rolle === "nur-ordner");
   if (!fp.ok) return refuse(fp.error);
   const seedIds = new Set<string>(CONTEXT_PACKS.map((pack) => pack.id));
   const { plan, manifest } = fp.value;

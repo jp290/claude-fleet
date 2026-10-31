@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openSteine, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { COLUMN_FULL, SIZE_SPEC, chatSize, onChatSize } from "./chatsize";
@@ -28,6 +28,7 @@ import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 import { fassungKurz } from "./fassung-zeile";
 import { GRUPPE, setupDateien, umfeldZeilen, type SetupDatei, type UmfeldGruppe, type UmfeldTeil, type UmfeldZeile } from "./fassung-umfeld-zeilen";
+import { startSteine, type StartStein } from "./start-steine";
 import { gegenVorgaengerin, type Block as BriefBlock, type Fassung as BriefFassung } from "./start-brief";
 
 // WHAT THIS INSTANCE IS (ranke-notiz R11, card 2026-10-06): the instance.source of the sessions
@@ -2468,7 +2469,7 @@ function moreSection(c: BoardCtx): HTMLElement {
 // vor dem Start dieselben acht Zeichen; null = die Antwort kam nicht, dann steht keine Zeile. Darunter, was den Sitz außer Fleets Zeile formt
 // (src/fassung-umfeld-zeilen.ts).
 // `neu`: after a succession in which the seat gave itself something, what this start has that the one before it didn't (src/start-brief.ts)
-interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; dateien: SetupDatei[]; nachgefuehrt: string[]; neu: BriefBlock[]; at: number }
+interface FassungGelesen { hash: string; zeilen: UmfeldZeile[]; dateien: SetupDatei[]; steine: StartStein[]; nachgefuehrt: string[]; neu: BriefBlock[]; at: number }
 const FASSUNG_FRISCH_MS = 15_000;
 const fassungLaeuft = new Map<string, FassungGelesen | null>(), fassungImFlug = new Set<string>();
 function fassungLesen(c: BoardCtx, openedAt: number, wohin: HTMLElement | null): void {
@@ -2482,6 +2483,7 @@ function fassungLesen(c: BoardCtx, openedAt: number, wohin: HTMLElement | null):
     const teile = Array.isArray(o?.teile) ? o.teile as UmfeldTeil[] : [];
     const vorher = o?.vorgaengerin && typeof o.vorgaengerin === "object" && Array.isArray((o.vorgaengerin as BriefFassung).teile) ? o.vorgaengerin as BriefFassung : null;
     const gelesen = h ? { hash: h, zeilen: umfeldZeilen(teile, c.s.cwd ?? null), dateien: setupDateien(teile, c.s.cwd ?? null),
+      steine: startSteine(teile),
       nachgefuehrt: Array.isArray(o?.festgehalten?.nachgefuehrt) ? o.festgehalten.nachgefuehrt.map(String) : [],
       neu: vorher ? gegenVorgaengerin({ teile: teile as BriefFassung["teile"] }, vorher, c.s.cwd ?? "") : [], at: Date.now() } : null;
     // eine Neulesung, die scheitert, nimmt die alte Antwort nicht weg
@@ -2510,6 +2512,23 @@ function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
     setze(k);
     for (const b of f.neu) setze(neuZeile(c, b));
   }
+  // DIE STEINE DES STARTS zuerst in Fleets Gruppe (Owner 29.10., Mockup Slot 16): was der Sitz als Stein mitbekam — Rolle,
+  // Richtung, leere Plätze und Rechte als Zeilen, Packs und Konzepte als eigene Kästchen. Jede Zeile sagt, was der Stein
+  // dem Agenten gibt, der Klick zeigt den ganzen Stein (src/client.ts#openSteine); ein Sitz ohne Steine ändert nichts.
+  if (f.steine.length) {
+    gruppe = "fleet";
+    const k = el("div", "bsumfeld bsgruppe");
+    k.append(el("span", "bsgkopf", GRUPPE.fleet.kopf), el("span", "bsgsatz", GRUPPE.fleet.satz));
+    setze(k);
+    let kopf = "";
+    f.steine.forEach((s, i) => {
+      if (s.art !== "pack" && s.art !== "konzept") { setze(steinZeile(f.steine, s, i)); return; }
+      // ein Unterkopf je Steinart, wie das Mockup: „Context packs“, „Concept“ — Mehrzahl nur, wo mehrere stehen
+      const wort = s.label + (f.steine.filter((x) => x.art === s.art).length > 1 ? "s" : "");
+      if (wort !== kopf) { kopf = wort; setze(el("div", "bsumfeld bssteinkopf", wort)); }
+      setze(steinBox(f.steine, s, i));
+    });
+  }
   for (const z of f.zeilen) {
     if (z.gruppe !== gruppe) {
       gruppe = z.gruppe;
@@ -2532,6 +2551,30 @@ function fassungZeigen(v: HTMLElement, f: FassungGelesen, c: BoardCtx): void {
     };
     setze(zr);
   }
+}
+// EIN STEIN ALS ZEILE (Rolle, Richtung, leerer Platz, Rechte): das Wort über der Zeile, was der Stein dem Agenten gibt,
+// und der Pfeil, der den ganzen Stein öffnet (src/client.ts#openSteine) — dieselbe Form wie die übrigen Zeilen der Gruppe
+function steinZeile(steine: readonly StartStein[], s: StartStein, bei: number): HTMLElement {
+  const zr = el("button", "bsrow bsumfeld bsgo");
+  zr.appendChild(el("span", "bskey", s.label));
+  zr.appendChild(el("span", "bsval", s.satz));
+  zr.appendChild(el("span", "bsgopfeil", "›"));
+  zr.title = [s.id ? `${s.id}${s.autor ? ` · by ${s.autor}` : ""}` : null, `Source: ${s.quelle}`].filter(Boolean).join("\n");
+  zr.onclick = () => openSteine(steine, bei);
+  return zr;
+}
+// EIN PACK ODER KONZEPT ALS EIGENES KÄSTCHEN (Owner 29.10.: „[Zitat entfernt]“): Name und Autor oben — derselbe Name wie
+// im Startfenster —, darunter der Satz, der sagt, was der Stein dem Agenten gibt; der Klick öffnet den ganzen Stein
+function steinBox(steine: readonly StartStein[], s: StartStein, bei: number): HTMLElement {
+  const box = el("button", "bsumfeld bsstein");
+  const h = el("span", "bssteinh");
+  h.appendChild(el("span", "bssteinname", s.autor ? `${s.name} · by ${s.autor}` : s.name));
+  h.appendChild(el("span", "bsgopfeil", "›"));
+  box.appendChild(h);
+  box.appendChild(el("span", "bssteins", s.satz));
+  box.title = [s.id, s.autor ? `by ${s.autor}` : null, `Source: ${s.quelle}`].filter(Boolean).join("\n");
+  box.onclick = () => openSteine(steine, bei);
+  return box;
 }
 // one part that differs from the predecessor's start: its sign, its name and size, then its changed lines; the first four, the rest a click away
 const neuOffen = new Set<string>();

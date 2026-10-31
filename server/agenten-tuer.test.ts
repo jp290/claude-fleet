@@ -6,7 +6,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Answer, branchTestkit, get, LIFE_DEADLINE_MS, persisted, post } from "./branches-testkit";
-import { hashText, RICHTUNG_PLATZ, roleStein, schreibShelf } from "./setup-datei";
+import { hashText, RICHTUNG_PLATZ, roleHash, roleStein, schreibShelf, type SetupRole } from "./setup-datei";
 
 const { SOCKETS, fixture, life, cleanup } = branchTestkit();
 afterAll(cleanup);
@@ -77,6 +77,49 @@ describe("ein Slot öffnet aus einem Agenten", () => {
     expect(texte).toContain(konzeptText);
     expect(texte).toContain(RICHTUNG_PLATZ);
     expect(ok(fassung).wahlen.permissionMode).toBe("auto");
+  }, LIFE_DEADLINE_MS * 2);
+
+  test("ein Agent mit Konzept und ohne Rolle: sein Konzept steht unter „Wissen“, ohne Rollenkarte und ohne Richtungsplatz", async () => {
+    const f = fixture();
+    const konzeptText = "# Bauen\n\nSo baust du.";
+    schreibShelf(f.state, { version: 1, packs: [],
+      concepts: [{ kind: "concept", id: "k-bau", version: 1, hash: hashText(konzeptText), text: konzeptText, author: "owner" }], roles: [] });
+    const [made, offen, fassung] = await life(f, [
+      post("/api/agenten", { id: "nur-konzept", name: "Nur Konzept", wahlen: { konzepte: ["k-bau"] } }),
+      post("/api/slots/1/open", { cwd: f.repo, agent: "nur-konzept" }),
+      get("/api/slots/1/fassung?anlass=laufend"),
+    ]);
+    ok(made); ok(offen);
+    const liest = ((ok(fassung).teile as { id: string; abschnitte: { id: string; quelle: string | null; text: string | null; grund?: string }[] }[])
+      .find((t) => t.id === "liest") ?? { abschnitte: [] }).abschnitte;
+    // DAS KONZEPT ALS EIGENE ZEILE UNTER „WISSEN“, mit seinem Autor — dieselben Zeilen, die der Start trägt
+    const konzept = liest.find((a) => a.quelle === "server/setup-datei.ts#steineFuerAgentWahl (k-bau)");
+    expect(konzept?.text).toBe(`+ concept k-bau (author: owner)\n\n${konzeptText}`);
+    // ohne Rolle gilt der Platzhalter der freien Session weiter, und der Richtungsplatz fehlt (er gehört nur einer Rolle)
+    expect(liest.find((a) => a.id === "rolle")?.grund).toBe("keine stehende Rolle — eine freie Session startet ohne Rollenkarte");
+    expect(liest.some((a) => (a.text ?? "").includes(RICHTUNG_PLATZ))).toBe(false);
+  }, LIFE_DEADLINE_MS * 2);
+
+  test("die Packs eines Rollensteins nennen Quelle und Autor im Kopf, wie ein mitgereister Pack", async () => {
+    const f = fixture();
+    const packText = "# Rollenpack\n\nWas die Rolle liest.";
+    const rollenPack = { kind: "pack" as const, id: "p-rolle", hash: hashText(packText), text: packText, useWhen: null,
+      sources: [{ path: "docs/packs/p-rolle.md", anchor: "# Rollenpack" }], author: "die Rollenbauerin" };
+    const stein: Omit<SetupRole, "hash"> = { id: "baumeisterin", name: "Baumeisterin",
+      start: { titel: "Baumeisterin", text: "Du baust mit Stein." }, rights: ["seat.open"], packs: [{ kind: "pack", id: "p-rolle", hash: rollenPack.hash }] };
+    schreibShelf(f.state, { version: 1, packs: [rollenPack], concepts: [], roles: [{ ...stein, hash: roleHash(stein) }] });
+    const [made, offen, fassung] = await life(f, [
+      post("/api/agenten", { id: "mit-rolle", name: "Mit Rolle", wahlen: { rolle: "baumeisterin" } }),
+      post("/api/slots/1/open", { cwd: f.repo, agent: "mit-rolle" }),
+      get("/api/slots/1/fassung?anlass=laufend"),
+    ]);
+    ok(made); ok(offen);
+    const liest = ((ok(fassung).teile as { id: string; abschnitte: { id: string; quelle: string | null; text: string | null }[] }[])
+      .find((t) => t.id === "liest") ?? { abschnitte: [] }).abschnitte;
+    expect(liest.find((a) => a.id === "rolle")?.text).toContain("FLEET ROLE (baumeisterin, author: Baumeisterin)");
+    // der Pack des Rollensteins unter „Wissen“: Kennung, Quelle und Autor im Kopf, dann der Text (server/sitz-wissen.ts#packBlock)
+    const pack = liest.find((a) => a.quelle === "server/setup-datei.ts#roleStein (p-rolle)");
+    expect(pack?.text).toBe(`--- p-rolle (docs/packs/p-rolle.md · # Rollenpack · author: die Rollenbauerin) ---\n${packText}`);
   }, LIFE_DEADLINE_MS * 2);
 
   test("ein laufender Sitz wird gespeichert und startet als Agent wieder mit seinen Wahlen", async () => {
@@ -170,6 +213,14 @@ describe("was das Startfenster liest", () => {
     expect(ok(fb).agent.id).toBe("repo");
     // ein fremdes Repo: eigenes Setup, der Ort gibt nichts dazu
     expect(ok(vorschau).ort).toMatchObject({ modus: "eigenes-setup", zugaben: [] });
+    // EIN NACKTER SITZ BLEIBT, WIE ER WAR: dieselben Abschnitte unter „Liest“ in derselben Folge — ändert sich einer,
+    // ändert sich sein Hash (dass der Hash am Inhalt hängt, hält server/fassung.test.ts fest)
+    const liest = (x: Record<string, any>) => (x.teile as { id: string; abschnitte: { id: string; quelle: string | null; grund?: string }[] }[])
+      .find((t) => t.id === "liest")!.abschnitte;
+    // (drei „wissen“: seit dem Zug zeigt die Fassung die Tür-Packs und die Bibliothek je als eigenen Abschnitt — gemessen auch ohne diese Änderung)
+    expect(liest(ok(fa)).map((a) => a.id)).toEqual(["rolle", "systemzusatz", "projektregeln", "wissen", "wissen", "wissen", "gedaechtnis", "eigenes"]);
+    expect(liest(ok(fa))[0]).toMatchObject({ id: "rolle", grund: "keine stehende Rolle — eine freie Session startet ohne Rollenkarte" });
+    expect(liest(ok(fa)).map((a) => a.id)).toEqual(liest(ok(fb)).map((a) => a.id));
   }, LIFE_DEADLINE_MS * 2);
 });
 

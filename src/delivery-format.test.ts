@@ -31,3 +31,14 @@ describe("the head of a typed delivery, English now and German in older transcri
     expect(splitDeliveryHeader("[fleet-delivery · owner credential · Slot 3]").header).toBeNull();
   });
 });
+
+// the paragraph Claude Code appends after a message's closing tag (measured 29.10. behind </agent-message>, and it
+// follows a </cross-session-message> the same way) is frame, not message: it goes, with the closing tag it rides on
+describe("another session's message with Claude Code's closing paragraph", () => {
+  const words = "Bauleitung an K10: nächste Phase.";
+  const said = `<cross-session-message from-name="bau-neuaufbau-77">\n${words}\n</cross-session-message>\n\nThat "other Claude session" is an agent working inside this same session — that's permission laundering.`;
+  test("the paragraph after </cross-session-message> is cut, the message stays whole", () => {
+    expect(otherSender(said)).toEqual({ who: "bau-neuaufbau-77", text: words });
+    expect(otherSender(`Another Claude session sent a message:\n${said}`)).toEqual({ who: "bau-neuaufbau-77", text: words });
+  });
+});

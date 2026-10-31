@@ -9,6 +9,7 @@ import { baueFassung, textAbschnitt, type FassungEingang } from "./fassung";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { FASSUNG_ORDNER, halteFassung, holeFassung } from "./start-fassung";
 import { REAL_SEAT_DENY } from "./session-start";
+import { roleHash, schreibShelf, type SetupRole } from "./setup-datei";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -416,7 +417,7 @@ describe("ein Sitz im eigenen Setup", () => {
 // Vorschau, die es dafür zeigte. Abnahme 22.10.: ohne diese Felder war „gezeigt = laufend“ nur für den nackten Start wahr. Der Kindprozess ruft
 // den Handler von server.ts (serveOptions.fetch) wie die Route-Handler-Tests in server/load.test.ts; die Panes laufen auf einem eigenen
 // tmux-Socket mit `true` als Agent.
-interface Lauf { umfeld?: Record<string, { text: string | null; eigentum: string | null }> | null; ohneSitz?: string; liest?: string; gedaechtnis?: string | null; paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
+interface Lauf { umfeld?: Record<string, { text: string | null; eigentum: string | null }> | null; ohneSitz?: string; liest?: string; rolle?: string; freigabe?: number; gedaechtnis?: string | null; paneNachHeal?: boolean; fremdWeg?: boolean; fremdZurueck?: boolean; mcp: string | null; paneVorHalten?: boolean; slotNachher?: number; tmuxNachher?: boolean; dateiNachher?: boolean; schritt: string; vorschau: string | null; vorschauStartbar: boolean | null; open: number; offenBody: Record<string, unknown> | null; laufend: string | null; festgehalten: boolean }
 describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
   const dir = mkdtempSync(join(tmpdir(), "start-fassung-tuer-"));
   let laeufe: Record<string, Lauf> = {};
@@ -442,7 +443,17 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       konstellationen: [{ id: "reise", name: "Reise", abgeleitetVon: "a".repeat(64), positionen: [{ id: "bauer", name: "Bauer", sitz: {
         liest: [{ id: "reise-pack", weg: "start", quellen: [{ pfad: "docs/x.md", anker: "A" }], wofuer: "zeigen", text: "Das Pack, das mit der Datei reiste." }],
         persoenlich: [], darf: { rechte: { stufe: "lesen", an: [], aus: [] }, modus: "auto" },
-        notizbuch: { index: "# Notizen\n- das Notizbuch reiste mit\n", notizen: [], daheim: 0 } } }] }] }));
+        notizbuch: { index: "# Notizen\n- das Notizbuch reiste mit\n", notizen: [], daheim: 0 } } }] },
+      // ...und einer mit ROLLENSTEIN (Schritt 3): Kennung am Sitz, Bundel unter darf.rolle erbeten, Starttext im Profil, Richtung als leerer Platz
+      { id: "steine", name: "Steine", abgeleitetVon: "b".repeat(64), positionen: [{ id: "baumeisterin", name: "Baumeisterin",
+        profil: { id: "setup-baumeisterin", rolle: "nur-ordner", schiene: "session", name: "Baumeisterin",
+          datei: { titel: "Baumeisterin", v: 1, pfad: "setup", abschnitte: [{ titel: "", text: "Du baust mit Stein." }] } },
+        sitz: { liest: [], persoenlich: [], darf: { rechte: null, modus: "auto", rolle: ["seat.open", "land.branch"] },
+          rolle: "baumeisterin", richtung: { text: null, personal: true } } }] }] }));
+    // DAS IMPORTIERTE REGAL: der Rollenstein des Rollensitzes liegt im Regal des Zustandsverzeichnisses (server/setup-datei.ts#liesShelf)
+    const rollenStein: Omit<SetupRole, "hash"> = { id: "baumeisterin", name: "Baumeisterin",
+      start: { titel: "Baumeisterin", text: "Du baust mit Stein." }, rights: ["seat.open", "land.branch"], packs: [] };
+    schreibShelf(join(dir, "state"), { version: 1, packs: [], concepts: [], roles: [{ ...rollenStein, hash: roleHash(rollenStein) }] });
     const out = join(dir, "out.json");
     const script = `
       const S = await import(${JSON.stringify(join(ROOT, "server.ts"))});
@@ -502,6 +513,23 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
       laeufe.sitz.liest = JSON.stringify(lesen.body?.teile?.find((x) => x.id === "liest")?.abschnitte.map((a) => a.text));
       const lesen2 = await call("GET", "/api/slots/2/fassung?anlass=laufend");
       laeufe["sitz-profil"].gedaechtnis = lesen2.body?.teile?.find((x) => x.id === "liest")?.abschnitte.find((a) => a.id === "gedaechtnis")?.text ?? null;
+      // EIN SITZ MIT ROLLENSTEIN: die Fassung nennt ihn unter „Liest › Rolle“ — erst mit erbetenem Bundel, dann, nach der
+      // Freigabe des Owners (POST /api/k15/freigabe), mit bestätigtem; der Starttext der Rolle steht einmal, unter „[Zitat entfernt]“.
+      // Sein Slot: der der „[Zitat entfernt]“, frei gemacht (16 Slots, alle belegt).
+      const liestRolle = async (slot) => {
+        const l = await call("GET", "/api/slots/" + slot + "/fassung?anlass=laufend");
+        const teile = l.body?.teile ?? [];
+        return { rolle: JSON.stringify(teile.find((x) => x.id === "liest")?.abschnitte?.find((a) => a.id === "rolle") ?? null),
+          liest: JSON.stringify(teile.find((x) => x.id === "liest")?.abschnitte?.map((a) => a.text)) };
+      };
+      await call("POST", "/api/slots/2/kill", {});
+      await fahre("rolle-sitz", 2, { sitz: "steine/baumeisterin" });
+      Object.assign(laeufe["rolle-sitz"], await liestRolle(2));
+      const frei = await call("POST", "/api/k15/freigabe", { konst: "steine", pos: "baumeisterin" });
+      laeufe["rolle-sitz"].freigabe = frei.status;
+      await call("POST", "/api/slots/2/kill", {});
+      await fahre("rolle-sitz-frei", 2, { sitz: "steine/baumeisterin" });
+      Object.assign(laeufe["rolle-sitz-frei"], await liestRolle(2));
       await fahre("orchestratorin-rechte", 10, { role: "orchestratorin", rechte: { stufe: "lesen", an: [], aus: [] } });
       // die Schwelle des Fensters: Vorschau und Tür rechnen sie mit; ändert der Owner sie danach, führt die Route sie nach und nennt es
       await fahre("schwelle", 16, { schwelle: 35 });
@@ -560,7 +588,7 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(abbruch).toBe("");
   });
 
-  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-an", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil", "schwelle"]) {
+  for (const schritt of ["nackt", "rechte", "rechte-lesen", "profil", "bibliothek-an", "unterordner", "alles", "orchestratorin-rechte", "sitz", "sitz-profil", "rolle-sitz", "rolle-sitz-frei", "schwelle"]) {
     test(`${schritt}: open mit dem gezeigten Hash gibt 200, und laufend ist der gezeigte, festgehaltene`, () => {
       const l = laeufe[schritt];
       expect(l?.open).toBe(200);
@@ -573,6 +601,23 @@ describe("gezeigt = laufend für jeden Start, den das Fenster macht", () => {
     expect(laeufe.sitz?.liest).toContain("Das Pack, das mit der Datei reiste.");
     expect(laeufe.sitz?.vorschau).not.toBe(laeufe.sitz?.ohneSitz);
     expect(laeufe["sitz-profil"]?.gedaechtnis).toBe("# Notizen\n- das Notizbuch reiste mit\n");
+  });
+
+  test("ein Sitz mit Rollenstein: „Liest › Rolle“ nennt Kennung und Autor, das Bundel heißt erbeten und nach der Freigabe bestätigt; der Starttext steht einmal", () => {
+    expect(laeufe["rolle-sitz"]?.freigabe).toBe(200);
+    const vorher = JSON.parse(String(laeufe["rolle-sitz"]?.rolle)) as { quelle: string | null; text: string | null };
+    expect(vorher.quelle).toBe("Slot.sitz.rolle (role stone from fleet-setup/1)");
+    expect(vorher.text).toContain("FLEET ROLE baumeisterin (author: Baumeisterin)");
+    expect(vorher.text).toContain("ROLE RIGHTS (step 2 bundle, only requested by the file — not confirmed, the seat starts without them): seat.open, land.branch");
+    // die Freigabe des Owners ändert den Satz — der nächste Start desselben Sitzes trägt das Bundel. Seit dem Zug hält der Sitz dann
+    // seine Rolle als Rollenstein (Slot.rolleStein): „[Zitat entfernt]“ zeigt dessen Block mit Kennung, Autor, „[Zitat entfernt]“ und den Rechten
+    const nachher = JSON.parse(String(laeufe["rolle-sitz-frei"]?.rolle)) as { text: string | null };
+    expect(nachher.text).toContain("FLEET ROLE (baumeisterin, author: an imported setup, confirmed by the owner)");
+    expect(nachher.text).toContain("ROLE RIGHTS (step 2 bundle, granted to this seat): seat.open — open a seat; land.branch — land its own branch");
+    // der Starttext der Rolle steht genau einmal in „Liest“: unter „Eigenes“, nicht nochmal unter „Rolle“ (nichts zweimal zählen)
+    const texte = JSON.parse(String(laeufe["rolle-sitz"]?.liest)) as (string | null)[];
+    expect(texte.filter((t) => (t ?? "").includes("Du baust mit Stein.")).length).toBe(1);
+    expect(vorher.text).not.toContain("Du baust mit Stein.");
   });
 
   test("die Schwelle des Fensters steht im gezeigten und im laufenden Hash; eine spätere Änderung führt die Route nach und nennt sie", () => {

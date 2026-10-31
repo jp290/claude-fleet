@@ -791,6 +791,18 @@
   .sizehint { font-size: 11px; color: var(--chat-faint); }
   .panehint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: #555; font-size: 12px; pointer-events: none; }
+  /* THE EMPTY BOARD'S ONE THING (body.noseats, renderSlots): the pane says what to do, not "click a slot" */
+  .panehint .hintstart { display: none; flex-direction: column; align-items: center; gap: 10px; max-width: 320px;
+    padding: 0 20px; text-align: center; pointer-events: auto; }
+  .panehint .hintstart b { font-size: 18px; font-weight: 600; color: var(--chat-ink); }
+  .panehint .hintstart span { font-size: 13px; line-height: 1.45; color: var(--chat-mute); }
+  .panehint .hintgo { margin-top: 6px; font: inherit; font-size: 14px; font-weight: 600; color: #0B0B0C; background: #8DBE86;
+    border: 0; border-radius: 14px; padding: 11px 22px; cursor: pointer; }
+  .panehint .hintgo:hover { background: #A0CE99; }
+  /* above the terminal's link layer, which would take the click (a pane with no session still has its xterm canvases) */
+  .noseats .panehint { z-index: 6; }
+  .noseats .panehint .hinttext { display: none; }
+  .noseats .panehint .hintstart { display: flex; }
   .jump { position: absolute; display: none; bottom: 12px; right: 14px; z-index: 5;
     width: 34px; height: 34px; border-radius: 50%; border: 1px solid #444;
     background: rgba(30, 30, 30, 0.7); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
@@ -3293,6 +3305,15 @@
   #board .bsetup .bsgo { width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px; background: none;
     color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
   #board .bsetup .bsgo:hover { background: var(--chat-raised); }
+  /* DIE STEINE DES STARTS (src/board.ts#steinZeile/steinBox): Rolle, Richtung, leere Plätze und Rechte als Zeilen der
+     Gruppe, Packs und Konzepte als eigene Kästchen — Name und Autor oben, darunter der Satz, der sagt, was der Stein gibt */
+  #board .bsetup .bssteinkopf { display: block; margin: 3px 0 1px; font-size: 11px; color: var(--b-ink3); }
+  #board .bsetup .bsstein { display: block; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px; border: 0; border-radius: 6px;
+    background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
+  #board .bsetup .bsstein:hover { background: var(--chat-raised); }
+  #board .bsetup .bssteinh { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; color: var(--b-ink2); }
+  #board .bsetup .bssteinname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #board .bsetup .bssteins { display: block; font-size: 11px; line-height: 1.4; color: var(--b-ink3); overflow-wrap: anywhere; }
   /* WHAT IS NEW SINCE THE SESSION BEFORE IT (src/board.ts#neuZeile): sign, name and size on one line, the changed lines under it */
   #board .bsetup .bsneu { margin: 2px 0 6px; }
   #board .bsetup .bsneuh { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; color: var(--b-ink2); }
@@ -3336,13 +3357,14 @@
   .rgbtn.link:hover:not(:disabled) { background: none; color: var(--chat-ink); text-decoration-color: var(--chat-mute); }
 
   /* the context-packs window: a pack is a pointer list, and its sources open the file itself */
-  /* the setup window (src/client.ts#openSetupFiles) lists its files like the packs window */
-  #shell-setup .cpkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px;
+  /* the setup window (src/client.ts#openSetupFiles) lists its files like the packs window, and the start stones
+     (src/client.ts#openSteine) list their stones the same way */
+  #shell-setup .cpkrow, #shell-steine .cpkrow { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px;
     background: none; color: #e6e6e6; font: inherit; text-align: left; cursor: pointer; -webkit-appearance: none; appearance: none; }
-  #shell-setup .cpkrow:hover { background: var(--chat-raised); }
-  #shell-setup .cpkrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
-  #shell-setup .cpkid { flex: 1; min-width: 0; font-family: var(--chat-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #shell-setup .cpkn { flex: none; font-size: 10.5px; color: var(--chat-mute); }
+  #shell-setup .cpkrow:hover, #shell-steine .cpkrow:hover { background: var(--chat-raised); }
+  #shell-setup .cpkrow.sel, #shell-steine .cpkrow.sel { background: var(--chat-raised); box-shadow: inset 0 0 0 1px var(--chat-edge); }
+  #shell-setup .cpkid, #shell-steine .cpkid { flex: 1; min-width: 0; font-family: var(--chat-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #shell-setup .cpkn, #shell-steine .cpkn { flex: none; font-size: 10.5px; color: var(--chat-mute); }
   #shell-setup .cpkhead { margin: 12px 10px 4px; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--chat-faint); }
   #shell-setup .rgbtn.link { margin-top: 12px; }
   #shell-packs .cpkrow, #shell-packs .cpksrc { border: 0; background: none; font: inherit; color: inherit;

@@ -35,6 +35,7 @@ import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { syncWichte } from "./wicht";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
+import { AGENT_LINE_TITLE } from "./agent-message";
 import { foldOwnerToggle } from "./bubble-fold";
 import { safetySystemNote, type SafetyNote } from "./safety-note";
 import { pendingTakeBack } from "./pending-takeback";
@@ -73,6 +74,7 @@ import {
 // the outcome feed. Chrome only — every renderer below still owns its own rows and data.
 import { openShell, type Shell, type ShellRow } from "./shell";
 import { GRUPPE, type SetupDatei } from "./fassung-umfeld-zeilen";
+import type { StartStein } from "./start-steine";
 import { loadTimeline, type TimelineEvent, type TimelineKind, type TimelineModel, type TimelineSession } from "./timeline";
 import { flotteNeu, openK15Entwurf } from "./k15-lader";
 import { runningEffort, runningModel } from "./running";
@@ -1494,7 +1496,14 @@ class Pane {
     this.hoverOn = prefJSON<{ hovers?: boolean[] }>("fleet.view").hovers?.[index] ?? false;
     this.root = el("div", "pane");
     const termEl = el("div", "paneterm");
-    this.hint = el("div", "panehint", "no session — click a slot");
+    // an empty pane says "click a slot"; on a board with no open seat at all it offers the one thing a newcomer can do (body.noseats, renderSlots)
+    this.hint = el("div", "panehint");
+    const start = el("div", "hintstart");
+    const startBtn = el("button", "hintgo", "Start your agent");
+    startBtn.onclick = () => openK15Entwurf();
+    start.append(el("b", "", "Nothing is running yet"),
+      el("span", "", "Choose a folder and your own agent starts in it, like Claude Code in a terminal."), startBtn);
+    this.hint.append(el("span", "hinttext", "no session — click a slot"), start);
     this.jump = el("button", "jump", "▼");
     this.chatEl = el("div", "panechat");
     attachEntityCards(this.chatEl, (kind, id) => this.hoverOn ? describeEntity(kind, id, this.slot) : null);
@@ -2196,10 +2205,10 @@ class Pane {
     const stopped = e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text")
       ? safetySystemNote({ content: e.blocks.map((b) => b.text).join("\n") }) : null;
     if (stopped) { this.addStopLine(e, stopped); return; }
-    // a message another session sent reaches a RESTING session as meta (server.ts#crossSessionEntry): its quiet line, not
-    // a task notification
+    // a message another session sent reaches a RESTING session as meta (server.ts#crossSessionEntry), and so does a
+    // subagent's handed-back report in both its forms: its quiet line, not a task notification
     const said = e.meta && e.blocks.length === 1 && e.blocks[0]!.t === "text" ? otherSender(e.blocks[0]!.text) : null;
-    if (said) { this.toolGroup = null; this.notifGroup = null; this.addFleetLine({ owner: false, mark: null, text: said.text }, null, said.who, e.ts); return; }
+    if (said) { this.toolGroup = null; this.notifGroup = null; this.addFleetLine({ owner: false, mark: null, text: said.text }, null, said.who, e.ts, this.agentOf(said)); return; }
     if (e.meta) { this.addNotif(e); return; }
     this.notifGroup = null; // a real entry ends the notification run
     for (const b of e.blocks) {
@@ -2220,10 +2229,10 @@ class Pane {
         // no such turn, so neither does this view — a bubble of ours waiting for it retires with it
         if (this.live?.withdrawn.includes(e.n)) { this.settlePending(raw); continue; }
         if (!parts) {
-          // one delivery: a bubble only for YOUR words — every other path, and another session's message, is a quiet
-          // line (Mangel 78) that retires no pending bubble of yours
+          // one delivery: a bubble only for YOUR words — every other path, another session's message, a subagent's
+          // handed-back report, is a quiet line (Mangel 78) that retires no pending bubble of yours
           const other = otherSender(raw);
-          if (other) this.addFleetLine({ owner: false, mark: null, text: other.text }, header, other.who, e.ts);
+          if (other) this.addFleetLine({ owner: false, mark: null, text: other.text }, header, other.who, e.ts, this.agentOf(other));
           else this.addMessage(e, body, header, null, this.settlePending(raw));
           continue;
         }
@@ -2264,10 +2273,16 @@ class Pane {
     this.chatAdd(msg);
     return msg;
   }
+  // a subagent's report among the messages the owner did not write (src/agent-message.ts): its quiet line also says
+  // how long the report is before it is opened, and its tooltip names what the line is; every other quiet line keeps
+  // the form it had
+  private agentOf(said: { note?: string }): { note: string; title: string } | null {
+    return said.note === undefined ? null : { note: said.note, title: AGENT_LINE_TITLE };
+  }
   // A message you did not write (a bundle part, a single Fleet delivery, another session's message — Mangel 78): one
   // quiet line, not a bubble — ↑/↓ and the outline jump between YOUR messages. `who` labels it: Fleet, or the session by
   // its name. Its first line shows; a click opens the rest. Time, mark and head ride in the tooltip.
-  private addFleetLine(part: DeliveryPart, header: string | null, who: string, ts: string | null) {
+  private addFleetLine(part: DeliveryPart, header: string | null, who: string, ts: string | null, agent: { note: string; title: string } | null = null) {
     const line = document.createElement("details");
     line.className = "msys";
     const sum = document.createElement("summary");
@@ -2276,8 +2291,9 @@ class Pane {
     // as the label instead of "fleet [fleet] …" (Abnahme 6936ed0b, owner picture nachher-1200-3-ereignisse)
     const own = who === "fleet" ? /^\[(fleet(?: [A-Za-z][\w-]*){0,3})\] /.exec(lead) : null;
     const first = own ? lead.slice(own[0].length) : lead;
-    sum.append(el("span", "msyswho", own?.[1] ?? who), el("span", "msystext", first));
-    sum.title = [ts && fmtClock(ts), who === "fleet" ? null : `Message from the Claude session “${who}”`,
+    // a subagent's report says its length beside its sender: the label never truncates, the first line may
+    sum.append(el("span", "msyswho", agent?.note ? `${who} · ${agent.note}` : own?.[1] ?? who), el("span", "msystext", first));
+    sum.title = [ts && fmtClock(ts), who === "fleet" ? null : agent?.title ?? `Message from the Claude session “${who}”`,
       header && `fleet-delivery · ${header}`, part.mark].filter(Boolean).join("\n");
     line.appendChild(sum);
     const more = rest.join("\n").trim();
@@ -5395,6 +5411,47 @@ export function openPacks(setup: BriefSetup, want?: string): void {
   }
 }
 
+// DIE STEINE DES STARTS, JE EIN GANZER TEXT (Owner 29.10., Slot 16): eine Zeile unter „[Zitat entfernt]“ sagt nur, was der Stein
+// dem Agenten gibt — der Klick zeigt Kennung, Autor, Quelle und den ganzen Stein, wie die Fassung ihn trägt. Wie das
+// Setup-Fenster: links die Steine, rechts der Text; kein Zielfenster, denn der Stein ist keine Datei des Ordners.
+let steineShell: Shell | null = null;
+const STEIN_WORT: Readonly<Record<StartStein["art"], string>> =
+  { rolle: "role", pack: "context pack", konzept: "concept", richtung: "direction", platz: "empty place", rechte: "rights" };
+// the source as a person reads it: a text that came inside an imported setup file says so, and the Fassung's own
+// title suffix (" · # Title") stays out, since the name above already carries it
+const steinQuelle = (q: string): string => {
+  const pfad = q.split(" · #")[0]!;
+  return pfad.startsWith("mitgereist/") ? `came with the imported setup (${pfad.slice("mitgereist/".length)})` : pfad;
+};
+export function openSteine(steine: readonly StartStein[], bei?: number): void {
+  steineShell?.close();
+  const shell = openShell({ id: "steine", title: "Start stones", listWidth: 280,
+    subtitle: "what Fleet set this seat up with — every stone, as its Fassung carries it",
+    detailHint: "Pick a stone on the left.", onClose: () => { steineShell = null; } });
+  steineShell = shell;
+  const show = (s: StartStein) => {
+    shell.detail.replaceChildren();
+    shell.detail.appendChild(el("div", "rvhead", s.name));
+    shell.detail.appendChild(el("div", "fvsource",
+      [s.id ? `${STEIN_WORT[s.art]} ${s.id}` : STEIN_WORT[s.art], s.autor ? `by ${s.autor}` : null, `Source: ${steinQuelle(s.quelle)}`]
+        .filter(Boolean).join(" · ")));
+    shell.detail.appendChild(el("div", "fvtext", s.text));
+  };
+  const rows: ShellRow[] = [];
+  for (const s of steine) {
+    const r = el("button", "cpkrow") as HTMLButtonElement;
+    r.appendChild(el("span", "cpkid", s.name));
+    r.appendChild(el("span", "cpkn", STEIN_WORT[s.art]));
+    r.title = s.satz;
+    r.onclick = () => { shell.select(rows.findIndex((x) => x.el === r), false, false); show(s); shell.showDetail(true); };
+    shell.list.appendChild(r);
+    rows.push({ el: r, open: () => show(s) });
+  }
+  shell.setRows(rows);
+  const pick = typeof bei === "number" && bei >= 0 && bei < steine.length ? bei : 0;
+  if (steine.length) { shell.select(pick, true, false); show(steine[pick]!); }
+}
+
 // THE SETUP WINDOW (owner 2026-10-23: each point of the setup leads to where it is set): the Claude Code files a session reads
 // besides Fleet's start line, the repo's and the owner's own, grouped as the Setup block groups them (src/fassung-umfeld-zeilen.ts).
 // A file opens as itself, at the line that sets the point; a repo file is editable with the session's slot, the owner's own are read
@@ -7400,6 +7457,8 @@ new ResizeObserver(() => placeMarks(marks, slotsEl, markItems)).observe(slotsEl)
 
 export function renderSlots() {
   updateTitle();
+  // before the first read the fleet is empty too: only a read board with no open seat is an empty board
+  document.body.classList.toggle("noseats", fleet.length > 0 && !fleet.some(isActive));
   // harness-dependent pane affordances follow the POLL, not just pane assignment: a session
   // started from another device (or another tab) changes what its slot can do, and a 💬 that
   // only re-decides on click would keep offering a conversation view that has nothing behind it.

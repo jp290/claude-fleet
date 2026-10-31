@@ -61,7 +61,7 @@ export function toast(text: string, aktion?: { wort: string; tu: () => void }): 
 }
 
 // DIE REPOS (Z32): die mit laufender Session wie im Startfenster (src/founding.ts#repoList), claude-fleet zuerst, dahinter die
-// gepinnten ohne Session (GET /api/dirs → pins). Ein gepinnter Ordner, den /api/dirinfo nicht als Git-Repo kennt, steht nicht darin;
+// gepinnten ohne Session (GET /api/dirs → pins). Jeder gepinnte Ordner steht darin, auch einer ohne Git;
 // das gewählte Repo steht immer darin.
 export interface RepoZeile { repo: string; sessions: number; gepinnt: boolean }
 export function repoZeilen(s: St | null): RepoZeile[] {
@@ -72,8 +72,7 @@ export function repoZeilen(s: St | null): RepoZeile[] {
   for (const x of flotte()) if (x.cwd) { const r = wie(x.repo ?? x.cwd); zahl.set(r, (zahl.get(r) ?? 0) + 1); }
   const laufend = [...zahl].sort((a, b) => Number(baseName(b[0]) === "claude-fleet") - Number(baseName(a[0]) === "claude-fleet") || b[1] - a[1])
     .map(([repo, n]) => ({ repo, sessions: n, gepinnt: pins.includes(repo) }));
-  const keinGit = (p: string) => { const i = s?.infos.get(p); return typeof i === "object" && "git" in i && !i.git; };
-  const ohne = pins.filter((p) => !zahl.has(p) && (p === s?.repo || !keinGit(p))).map((repo) => ({ repo, sessions: 0, gepinnt: true }));
+  const ohne = pins.filter((p) => !zahl.has(p)).map((repo) => ({ repo, sessions: 0, gepinnt: true }));
   const gewaehlt = s?.repo && ![...zahl.keys(), ...pins].some((r) => echt(r) === echt(s.repo!)) ? [{ repo: s.repo, sessions: 0, gepinnt: false }] : [];
   return [...laufend, ...ohne, ...gewaehlt];
 }
@@ -130,7 +129,7 @@ export async function pinne(s: St, pfad: string, an: boolean, zurueck?: string |
   }
   render();
 }
-// die Ordnerwahl von „Repo hinzufügen“: eine Ebene je Schritt über /api/dirs; wählbar ist ein Git-Repo
+// die Ordnerwahl von „Repo hinzufügen“: eine Ebene je Schritt über /api/dirs; wählbar ist jeder Ordner
 export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
   const seq = (s.ordner?.seq ?? 0) + 1;
   s.ordner = { pfad, liste: null, fehler: null, seq };

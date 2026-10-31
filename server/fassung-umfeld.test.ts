@@ -9,6 +9,7 @@ import { baueFassung, fuehreNach, textAbschnitt, type FassungEingang } from "./f
 import { leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, warmhaltenAbschnitt, type SchwelleFakten, type WarmFakten } from "./fassung-umfeld";
 import { onHandoverBand } from "./succession";
 import { setupDateien, umfeldZeilen } from "../src/fassung-umfeld-zeilen";
+import { startSteine } from "../src/start-steine";
 
 const ordner: string[] = [];
 afterEach(() => { for (const d of ordner.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -180,6 +181,11 @@ describe("was dem Owner gehört", () => {
       ["eigen", "Rules"], ["eigen", "MCP"],
     ]);
     expect(zeilen[0]!.wert).toBe("hand over at 35 %, due at 45 % · cache not kept warm");
+  });
+  test("kein Stein des Starts: eine Fassung ohne Steine ändert die Zeilen nicht", () => {
+    // DIE STEINE DES STARTS (src/start-steine.ts) kommen nur dazu, wo die Fassung sie trägt — dieser Sitz
+    // hat eine Rolle ohne Steinquelle, seine Rechte sind das Bundel ohne Zusage, und die Zeilen bleiben, wie sie sind.
+    expect(startSteine(fassung(welt()).teile)).toEqual([]);
   });
   test("jede Zeile führt dahin, wo sie gesetzt wird", () => {
     const w = welt(), teile = fassung(w).teile;

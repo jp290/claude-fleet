@@ -5,6 +5,7 @@
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
 import { deliveryHeaderPrefixOf, deliveryParts, OWNER_HEADER } from "./delivery-format";
+import { agentMessage } from "./agent-message";
 import { slashCommand } from "./slashcommand";
 
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
@@ -33,13 +34,20 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
 // path but the owner door's (server.ts#deliveryHeader types the short „[Zitat entfernt]“ head there and a long
 // one with its path everywhere else), Fleet's own "[fleet…" words where no head is typed, and a message another Claude
 // session sent — Claude Code wraps it in <cross-session-message from-name="…">, in a resting session behind its own
-// "Another Claude session sent a message:" line (both forms measured 15.10.). `who` labels the chat's quiet line, `text`
-// is the message without head or wrapper. null = the owner's own words: typed in the terminal or sent through the owner
+// "Another Claude session sent a message:" line (both forms measured 15.10.) — and a subagent's report handed back into
+// this session, wrapped in <agent-message …> in both forms Claude Code writes it (src/agent-message.ts, measured 29.10.).
+// `who` labels the chat's quiet line, `text` is the message without head or wrapper (for a subagent's report, `note` says
+// its length). null = the owner's own words: typed in the terminal or sent through the owner
 // door. A bundle says whose each part is itself (src/delivery-format.ts#deliveryParts).
 const CROSS_SESSION = /^(?:Another Claude session sent a message:\n)?<cross-session-message((?: [a-z-]+="[^"]*")*)>\n?([\s\S]*?)\n?(?:<\/cross-session-message>\s*)?$/;
-export function otherSender(entry: string): { who: string; text: string } | null {
+// the paragraph Claude Code appends after the closing tag (measured 29.10. behind </agent-message>; it follows a
+// </cross-session-message> the same way) is frame, not message — the closing tag it rides on goes with it
+const FRAMED_TAIL = /\n?<\/cross-session-message>\n\nThat "other Claude session" is an agent working inside this same session[\s\S]*$/;
+export function otherSender(entry: string): { who: string; text: string; note?: string } | null {
   const session = CROSS_SESSION.exec(entry);
-  if (session) return { who: / from-name="([^"]+)"/.exec(session[1] ?? "")?.[1] ?? "session", text: session[2] ?? "" };
+  if (session) return { who: / from-name="([^"]+)"/.exec(session[1] ?? "")?.[1] ?? "session", text: (session[2] ?? "").replace(FRAMED_TAIL, "") };
+  const agent = agentMessage(entry);
+  if (agent) return { who: agent.who, text: agent.text, note: agent.note };
   const { header, body } = splitDeliveryHeader(entry);
   if (header === null) return body.startsWith("[fleet") ? { who: "fleet", text: body } : null;
   return OWNER_HEADER.test(header) ? null : { who: "fleet", text: body };

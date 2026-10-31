@@ -20,13 +20,13 @@ import type { ModellAbschnitt } from "../src/modell-verlauf";
 import {
   istPersoenlich, notizbuchZumTeilen, notizIstPersoenlich, persoenlichIn, sitzAus, sitzRechte, sitzZumTeilen, type PersoenlichPlatz, type Sitz, type SitzKonzept, type SitzNotizbuch, type SitzPack, type SitzRichtung,
 } from "../src/sitz";
-import { rechteAus, type Rechte } from "../session-rechte";
+import { rechteAus, istRechtId, type RechtId, type Rechte } from "../session-rechte";
 import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
 import { fassungsHash } from "./konst-fassungen";
 import { kindNieWeiter, type Oeffnerin } from "./kind-weite";
 import type { Lauf } from "./laeufe";
 import { seatPacks, type SeatKnowledge, type SeatPack } from "./sitz-wissen";
-import { RICHTUNG_PLATZ } from "./setup-datei";
+import { liesShelf, RICHTUNG_PLATZ } from "./setup-datei";
 
 const rec = (v: unknown): Record<string, unknown> | null => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v)) : null;
 
@@ -93,6 +93,26 @@ export const leererPlatzZeilen = (s: SitzStart, eigene: SeatKnowledge | null): s
     : `EMPTY PLACE ${p.id} — the person's own concept, empty here; the importer fills it with their own concept of that name.`),
   ...(s.rolle || s.richtung ? [RICHTUNG_PLATZ] : []),
 ];
+
+// DIE ROLLE EINES IMPORTIERTEN SITZES, wie seine Fassung sie nennt: die Kennung aus dem Sitz-Block der gespeicherten Position,
+// der Name des Rollensteins aus dem importierten Regal und das Rechtebundel, das die Datei erbittet — erbeten, bis der Owner
+// hier es freigibt (`darf.bestaetigt` steht nur im Speicher, nie in einer Datei). Null: die gespeicherte Position ist nicht
+// mehr zu lesen; dann nennt die Fassung nur die Kennung, die der Slot trägt.
+export interface SitzRolleRef { readonly id: string; readonly autor: string | null; readonly bundel: readonly RechtId[] | null; readonly bestaetigt: boolean }
+export async function sitzRolleDerDatei(dir: string, konst: string, pos: string): Promise<SitzRolleRef | null> {
+  const gespeichert: unknown = await Bun.file(join(dir, SPEICHER_DATEI)).json().catch(() => null);
+  const alle = rec(gespeichert)?.konstellationen;
+  const form = Array.isArray(alle) ? alle.map(rec).find((k) => k?.id === konst) ?? null : null;
+  const positionen = form?.positionen;
+  const position = Array.isArray(positionen) ? positionen.map(rec).find((p) => p?.id === pos) ?? null : null;
+  const sitz = rec(position?.sitz);
+  const id = typeof sitz?.rolle === "string" && sitz.rolle ? sitz.rolle : null;
+  if (!sitz || !id) return null;
+  const darf = rec(sitz.darf);
+  const bundel = Array.isArray(darf?.rolle) && darf.rolle.every(istRechtId) ? [...new Set(darf.rolle as RechtId[])] : null;
+  return { id, autor: liesShelf(dir).roles?.find((r) => r.id === id)?.name ?? null,
+    bundel: bundel?.length ? bundel : null, bestaetigt: darf?.bestaetigt === true };
+}
 
 // DIE POSITION HINTER `sitz`: "<konst>/<position>" einer gespeicherten Konstellation, oder an der Self-Tür nur "<position>" in der Konstellation
 // der Öffnerin (`eigene`, ihr Slot.sitz.konst)

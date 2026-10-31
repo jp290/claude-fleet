@@ -41,8 +41,9 @@ function repoStand(s: St): HTMLElement[] {
   const i = info(s, s.repo);
   if (i === "laedt") return [el("span", "", "reading …")];
   if ("fehler" in i) return [el("span", "", `not readable: ${i.fehler}`)];
-  if (!i.exists || !i.git) return [el("span", "", i.exists ? "Not a Git repo: a session with a role needs one." : "The folder no longer exists.")];
-  const stand = el("span", "k15wos", [i.branch ? `Branch ${i.branch}` : "no branch",
+  if (!i.exists) return [el("span", "", "The folder no longer exists.")];
+  if (!i.git) return [el("span", "", "Not a git repo: your agent works in the folder itself.")];
+  const stand = el("span", "k15wos", [i.branch ? `Branch ${i.branch}` : i.last ? "no branch" : "no commit yet",
     i.dirty ? plural(i.dirty, "open change", "open changes") : "nothing open",
     ...(i.ahead ? [`${i.ahead} ahead`] : []), ...(i.behind ? [`${i.behind} behind`] : []),
     ...(i.lanes ? [plural(i.lanes, "Worktree", "Worktrees")] : [])].join(" · "));
@@ -123,7 +124,7 @@ export function menueZu(s: St, signal: AbortSignal): void {
   });
 }
 
-// die Ordnerwahl von „Repo hinzufügen“: Git-Repos zuerst, nur sie lassen sich hinzufügen. Ein Klick auf eine Zeile öffnet den Ordner,
+// die Ordnerwahl von „Repo hinzufügen“: Git-Repos zuerst, jeder Ordner lässt sich hinzufügen (Jeder kommt rein: auch ein Ordner ohne Git). Ein Klick auf eine Zeile öffnet den Ordner,
 // hinzugefügt wird nur über den Knopf „Hinzufügen“ (Prüfung Punkt 7: ein Klick auf die Zeile pinnte sofort)
 function ordnerWahl(s: St, o: Ordner): HTMLElement {
   const box = el("div", "k15ordner");
@@ -142,13 +143,11 @@ function ordnerWahl(s: St, o: Ordner): HTMLElement {
   if (!o.liste) { box.append(el("div", "k15leer", "reading …")); return box; }
   const liste = o.liste;
   const schon = new Set(repoZeilen(s).map((r) => r.repo));
-  if (liste.git) {
-    const hier = knopf("k15ghost k15ordnhier");
-    hier.append(icon("plus"), el("span", "", `Add ${baseName(liste.path)}`));
-    hier.disabled = schon.has(liste.path);
-    hier.onclick = () => { void pinne(s, liste.path, true); };
-    box.append(hier);
-  }
+  const hier = knopf("k15ghost k15ordnhier");
+  hier.append(icon("plus"), el("span", "", `Add ${baseName(liste.path)}`));
+  hier.disabled = schon.has(liste.path);
+  hier.onclick = () => { void pinne(s, liste.path, true); };
+  box.append(hier);
   const rows = el("div", "k15ordnl");
   const repoSet = new Set(liste.repos);
   for (const d of [...liste.dirs.filter((x) => repoSet.has(x)), ...liste.dirs.filter((x) => !repoSet.has(x))]) {
@@ -156,11 +155,11 @@ function ordnerWahl(s: St, o: Ordner): HTMLElement {
     const git = repoSet.has(d);
     const r = el("div", "k15ordnz");
     const b = knopf(`k15ordnb${git ? " git" : ""}`);
-    b.append(icon(git ? "branch" : "folder"), el("span", "k15ordnn", d), el("span", "k15ordnt", git && schon.has(pfad) ? "in the list" : ""));
+    b.append(icon(git ? "branch" : "folder"), el("span", "k15ordnn", d), el("span", "k15ordnt", schon.has(pfad) ? "in the list" : ""));
     b.title = `Open ${d}`;
     b.onclick = () => { void oeffneOrdner(s, pfad); };
     r.append(b);
-    if (git && !schon.has(pfad)) {
+    if (!schon.has(pfad)) {
       const dazu = el("button", "k15ordnadd", "Add");
       dazu.title = `Add ${tilde(pfad)} to the list`;
       dazu.onclick = () => { void pinne(s, pfad, true); };

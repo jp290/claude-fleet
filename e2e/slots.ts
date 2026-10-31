@@ -2279,6 +2279,22 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("client: a session with no packs draws no `none` row — absence is the ordinary case",
     !/row\("Packs", "none"/.test(setupSrc) && /if \(packs\.length\) \{/.test(setupSrc),
     "the packs branch in renderBoard");
+  // THE STONES OF THE START (owner 29.10., step 3): what a seat got as a stone — role, packs, concepts, the direction,
+  // empty personal places, rights — shows under „[Zitat entfernt]“, every row saying what the stone lets the agent do and
+  // opening its whole text. Asserted over the wiring, for the same reason as the rows above: the suite's DOM probe
+  // reads a fixture without stones; the module itself is held by src/start-steine.test.ts against three seats.
+  check("client: the stones of the start sit under \"Set by Fleet\" and every one opens its whole text",
+    // the Fassung carries them: fassungLesen reads the same teile into startSteine, and fassungZeigen draws them
+    /steine: startSteine\(teile\),/.test(boardSrc)
+    // first in Fleet's group, before the rows the view already knows — never outside it
+    && /gruppe = "fleet";\n    const k = el\("div", "bsumfeld bsgruppe"\);/.test(boardSrc)
+    // a seat without stones sees no row: the guard is the whole difference for a plain seat
+    && /if \(f\.steine\.length\) \{/.test(boardSrc)
+    // role, direction, empty places and rights are rows; packs and concepts are boxes of their own
+    && /setze\(steinZeile\(f\.steine, s, i\)\);/.test(boardSrc) && /setze\(steinBox\(f\.steine, s, i\)\);/.test(boardSrc)
+    // the click opens the whole stone, like every row of this view leads somewhere
+    && /zr\.onclick = \(\) => openSteine\(steine, bei\);/.test(boardSrc) && /box\.onclick = \(\) => openSteine\(steine, bei\);/.test(boardSrc),
+    "the stone rows in src/board.ts (src/start-steine.ts, src/client.ts#openSteine)");
   // I13 (card R4), and since 2026-10-08 (owner: „[Zitat entfernt]“
   // ): this session's checks are its lane's points, opened under Arbeitsorte — since
   // 2026-10-10 no flag on the closed row (owner: „[Zitat entfernt]“) — no Check or Land

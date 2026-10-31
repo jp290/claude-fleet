@@ -110,7 +110,8 @@ const isBox = (pack: SeatPack): boolean => pack.weg ? pack.weg === "start" : pac
 // ein Pack ohne lesbaren Text kommt weder in den Start noch als Skill: ein leerer Text wäre eine falsche Zusage
 const boxOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => isBox(pack) && pack.text !== null);
 const skillsOf = (k: SeatKnowledge): SeatPack[] => k.packs.filter((pack) => !isBox(pack) && pack.text !== null && pack.useWhen);
-const quelleOf = (pack: SeatPack): string => pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
+const quelleOf = (pack: { sources: readonly { readonly path: string; readonly anchor: string }[] }): string =>
+  pack.sources.map((source) => `${source.path} · ${source.anchor}`).join(" + ");
 // wo eine Quelle liegt: im Fleet-Baum, oder — ein eigener Pack — schon ein ganzer Pfad
 const quellPfad = (k: SeatKnowledge, path: string): string => path.startsWith("/") || path.startsWith("~") ? path : `${k.repoRoot}/${path}`;
 const groesse = (bytes: number): string => bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1).replace(".", ",")} kB`;
@@ -123,10 +124,20 @@ const headOf = (k: SeatKnowledge, withSkills = true): string => {
     skills.length ? `As skills, open one when its description fits your moment (Skill tool): ${skills.map((pack) => pack.id).join(", ")}.` : ""]
     .filter(Boolean).join(" ");
 };
-const boxBlock = (pack: SeatPack): string => {
+/** Ein Pack für `packBlock`: Kennung, Quellen, Text und wer ihn diesem Start gab. */
+export interface PackBlockPack {
+  readonly id: string;
+  readonly sources: readonly { readonly path: string; readonly anchor: string }[];
+  readonly text: string | null;
+  readonly autor?: string;
+}
+/** DER KOPF EINES PACKS, wie der Start ihn trägt: Kennung, Quelle und Autor im Kopf, dann der Text. Auch der Pack eines
+ *  Rollensteins aus dem Regal (server/setup-datei.ts#SetupPack) zeigt hier seinen Autor, wie ein mitgereister Pack. */
+export const packBlock = (pack: PackBlockPack): string => {
   const herkunft = [quelleOf(pack), pack.autor ? `author: ${pack.autor}` : ""].filter(Boolean).join(" · ");
   return `--- ${pack.id}${herkunft ? ` (${herkunft})` : ""} ---\n${pack.text}`;
 };
+const boxBlock = (pack: SeatPack): string => packBlock(pack);
 
 /** Der Block für den Start: Kopf, dann die Box-Packs wörtlich; leer, wenn nichts zu diesem Sitz passt.
  *  `withSkills` false = ein pi-Sitz: pi listet seine Skills selbst in seinem Systemprompt (Name und Beschreibung),

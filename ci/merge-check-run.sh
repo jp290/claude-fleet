@@ -152,7 +152,9 @@ run() {
 # job: dasselbe im Hintergrund
 job() { run "$@" & }
 : > "$RUN/jobs"
-job local 9 "bun e2e/pins.ts && $TSC && bun run build && $TESTS"
+# local fährt pins, tsc, build und alle Unit-Tests nacheinander: am Workhorse 784–894 s (30./31.10.) und am
+# 31.10. bei Last über 900 s (rc=124, ohne einen FAIL). Darum das Limit der großen Jobs, nicht JOB_TIMEOUT_S.
+job local 9 "bun e2e/pins.ts && $TSC && bun run build && $TESTS" "$BIG_JOB_TIMEOUT_S"
 job gate 9 "./e2e-claude-gate.sh"
 job review 9 "./e2e-clean-review.sh && ./e2e-security.sh"
 k=0

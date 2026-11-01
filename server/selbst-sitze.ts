@@ -18,6 +18,7 @@ import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { RECHTE_STANDARD, istRechtId, rechteAus, type RechtId, type Rechte } from "../session-rechte";
 import { liesShelf, packAusBibliothek, roleHash, roleStein, schreibShelf, type RoleStein, type SetupPack, type SetupRole } from "./setup-datei";
 import { gleicheOeffnerin, istOeffnerin, LINIE_RE, type Opener } from "./opener";
+import { RECHTE_NUR_DURCH_OWNER } from "./tuer-rechte";
 import type { SeatKnowledge } from "./sitz-wissen";
 
 /** Die Wurzel, unter der eine Session Sitze öffnet: FLEET_SELF_SEAT_ROOT, sonst das Home des Nutzers (siehe oben). */
@@ -190,6 +191,10 @@ export function rolleFormen(body: Record<string, unknown> | null, wirksame: Read
   if (nurJeSitz.length)
     return { ok: false, status: 409, missingRight: nurJeSitz[0],
       error: `the right \`${nurJeSitz[0]}\` is no part of a role bundle: ${nurJeSitz.join(", ")} change the setup as such, so the owner grants them per seat — a formed role never carries them` };
+  const nurOwner = rights.filter((x) => RECHTE_NUR_DURCH_OWNER.includes(x));
+  if (nurOwner.length)
+    return { ok: false, status: 409, missingRight: nurOwner[0],
+      error: `the right \`${nurOwner[0]}\` is given only by the owner, to one seat through his own door — a formed role never carries it` };
   const weiter = rights.filter((x) => !wirksame.has(x)).sort();
   if (weiter.length)
     return { ok: false, status: 409, missingRight: weiter[0],

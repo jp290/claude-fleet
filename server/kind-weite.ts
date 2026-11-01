@@ -5,7 +5,7 @@
 // Harness, mit ihren Schranken oder engeren; was der Body nicht nennt, erbt das Kind von ihr. Frei öffnet nur, wer keine
 // Schranke hat: Claude Code in bypassPermissions (die Orchestratorin) oder Codex mit danger-full-access und approval never.
 import { RECHTE_BEFEHLE, befehlAn, rechteAus, type Rechte } from "../session-rechte";
-import { wirksameRechte, type RechtRolle } from "./tuer-rechte";
+import { ohneOwnerRechte, RECHTE_NUR_DURCH_OWNER, wirksameRechte, type RechtRolle } from "./tuer-rechte";
 import type { ClaudePermissionMode } from "./session-start";
 import type { CodexPermissions } from "./types";
 
@@ -79,8 +79,13 @@ export function kindNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Antw
   const sp: Antwort = gefaltet.ok && gezaeunt ? { ok: true, body: { ...gefaltet.body, harness: gezaeunt } } : gefaltet;
   if (!sp.ok) return sp;
   const childBody = sp.body;
+  // ein Recht, das nur der Owner gibt (tuer-rechte.ts#RECHTE_NUR_DURCH_OWNER), bekommt ein Kind nie: nicht im Body, nicht geerbt (W3 Auftrag 14)
+  const genannt = childBody.rechte && typeof childBody.rechte === "object" ? (childBody.rechte as { recht?: unknown }).recht : undefined;
+  const nurOwner = Array.isArray(genannt) ? genannt.filter((x): x is string => typeof x === "string" && (RECHTE_NUR_DURCH_OWNER as readonly string[]).includes(x)) : [];
+  if (nurOwner.length) return nein(`rechte give ${nurOwner.join(", ")} — the owner gives it to one seat through his own door; a child never gets it`);
+  const erbbar = ohneOwnerRechte(o.rechte);
   // Server-Rechte: der Body, sonst die Zusagen der Öffnerin; ein buendel im Body ersetzt das Rollenbundel des Kindes.
-  const raw = childBody.rechte === undefined ? o.rechte : childBody.rechte;
+  const raw = childBody.rechte === undefined ? erbbar : childBody.rechte;
   const r = raw === null ? null : rechteAus(raw);
   // unlesbare Rechte gehen unverändert weiter: openBoardBranch lehnt sie mit seinem eigenen Satz ab
   if (raw !== null && r) {
@@ -90,10 +95,10 @@ export function kindNieWeiter(o: Oeffnerin, body: Record<string, unknown>): Antw
     if (weiter.length) return nein(`rechte give ${weiter.join(", ")} more than yours`);
   }
   // Ohne Angabe erbt das Kind die Zusagen der Öffnerin auf jedem Harness; ohne solche bleibt der Body wie er war.
-  if (body.rechte === undefined && o.rechte !== null) return { ok: true, body: { ...childBody, rechte: o.rechte } };
+  if (body.rechte === undefined && erbbar !== null) return { ok: true, body: { ...childBody, rechte: erbbar } };
   // Die vier Schalter bleiben Claude Codes, und eine Öffnerin ohne Schranke gibt ihre eigenen weiter wie bisher.
   if (ohneSchranke(o) || o.harness !== "claude") return sp;
-  if (body.rechte === undefined) return { ok: true, body: { ...childBody, rechte: o.rechte } };
+  if (body.rechte === undefined) return { ok: true, body: { ...childBody, rechte: erbbar } };
   const schalter = body.rechte === null ? null : r;
   const weiter = body.rechte === null || schalter ? RECHTE_BEFEHLE.filter((b) => freiheit(schalter, b.id) > freiheit(o.rechte, b.id)) : [];
   return weiter.length ? nein(`rechte give ${weiter.map((b) => b.id).join(", ")} more than yours`) : sp;

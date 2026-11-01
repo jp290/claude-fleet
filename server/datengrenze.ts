@@ -42,11 +42,14 @@
 //  15. Korrekturen des Owners         GET /api/self/konzepte/k-owner-korrekturen/leseansicht: UNMARKIERT GEWOLLT — die Korrekturen des
 //                                     Owners gelten jedem Sitz (Entscheid der Leitung 29.10.); keine Marke, kein Code, kein Test
 //  16. Übersicht für Agenten          GET /api/self/overview (server/lagebild.ts): TRÄGT KEINEN TEXT — keine Nachricht, kein Pane, kein
-//                                     Transkript, kein Pack, keine Übergabe; Post als Zahl, die Rückfrage als „da, seit“, Namen nur, wie die
-//                                     Konstellationstür sie demselben Aufrufer gibt; die eigenen Sitze des Owners außerhalb der Linie nur als
-//                                     Platz und Zustand (lagebild.ts#OWNER_SITZ_FELDER). Darum braucht sie kein istAnthropic: an keinen Sitz
-//                                     geht dort Persönliches, gleich welches Modell fragt
-//                                       server/lagebild-tuer.test.ts „… eine persönliche Nachricht zählt und geht nie mit“
+//                                     Transkript, kein Pack, keine Übergabe; Post als Zahl, die Rückfrage als „da, seit“. Namen, Zweck-Titel
+//                                     und Branch-Namen: ohne das Recht overview.fleet nur der eigenen Linie, wie die Konstellationstür sie
+//                                     demselben Aufrufer gibt; mit ihm (die Orchestratorin über ihr Bundel, sonst nur ein Sitz, dem der Owner
+//                                     es über seine Tür gibt — nie ein Kind, nie eine gebildete Rolle, W3 Auftrag 14) jedes Sitzes außer den
+//                                     eigenen des Owners, die außerhalb der Linie nur Platz und Zustand zeigen (lagebild.ts#OWNER_SITZ_FELDER).
+//                                     Kein istAnthropic: Labels und Zweck-Titel tragen keine Marke, markierter Text geht nie mit, und wer
+//                                     die ganze Flotte sieht, wählt der Owner je Sitz
+//                                       server/lagebild-tuer.test.ts „[Zitat entfernt]“
 // Nicht zugestellt wird an einen Sitz ohne diese Türen nichts: Notizbuch und Auto-Memory liest nur Claude Code (notizbuchFuerStart).
 //
 // Reine Antworten, sonst nichts: ob ein Sitz Anthropic ist, was die Ablehnung und die Fassungszeile sagen, und das Wissen, wie seine

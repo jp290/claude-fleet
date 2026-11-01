@@ -21,7 +21,18 @@ export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
   "setup.import": "import a setup file",
   "role.form": "form a role of its own",
   "branch.passt": "give „passt“ on the tip of a seat it opened, so that seat may land it",
+  "overview.fleet": "see every seat in the overview, as the Orchestratorin does",
 };
+
+// DIE RECHTE, DIE NUR DER OWNER GIBT (W3 Auftrag 14): über seine Tür (POST /api/slots/<n>/rechte { grant | revoke }) einem Sitz, sonst nie — kein Kind
+// bekommt es (kindNieWeiter weist es im Body ab und vererbt es nicht), keine gebildete Rolle trägt es (rolleFormen). Die Orchestratorin trägt
+// overview.fleet in ihrem Bundel nur für sich: ein Kind von ihr, vielleicht ein pi-Sitz, sähe sonst Namen und Zwecke jedes Sitzes, was der Owner nie wählte.
+export const RECHTE_NUR_DURCH_OWNER: readonly RechtId[] = ["overview.fleet"];
+/** Rechte ohne die, die nur der Owner gibt: was ein Kind von seiner Öffnerin erben kann. */
+export function ohneOwnerRechte(r: Rechte | null): Rechte | null {
+  if (!r?.recht?.some((x) => RECHTE_NUR_DURCH_OWNER.includes(x))) return r;
+  return { ...r, recht: r.recht.filter((x) => !RECHTE_NUR_DURCH_OWNER.includes(x)) };
+}
 
 // Die Rollen, die ein Sitz gleichzeitig tragen kann (Steward auf einer Lane, Lane als gebundene MAIN, …).
 // Die Reihenfolge ist die der Abweisung: Orchestratorin, Program-MAIN, Lane, Steward, sonst generic.
@@ -31,7 +42,7 @@ export const RECHT_ROLLEN: readonly RechtRolle[] = ["orchestrator", "program-mai
 // Jede Zelle stammt aus einer Prüfung, die heute schon an der Tür steht; die Matrix in
 // server/rechte-tueren.test.ts hält sie fest. Nichts, was eine Rolle heute tut, fehlt hier.
 export const ROLLEN_BUENDEL: Readonly<Record<RechtRolle, readonly RechtId[]>> = {
-  orchestrator: ["seat.open", "land.branch", "text.handover", "text.pack", "text.concept.annotation", "edge.grant"],
+  orchestrator: ["seat.open", "land.branch", "text.handover", "text.pack", "text.concept.annotation", "edge.grant", "overview.fleet"],
   "program-main": ["seat.open", "land.branch", "land.program", "text.handover", "text.pack",
     "text.concept.version", "text.concept.annotation", "text.program"],
   lane: ["land.branch", "text.handover", "text.pack", "text.concept.version", "text.concept.annotation"],

@@ -10,9 +10,10 @@
 // fügt sie nur zusammen.
 //
 // DIE REICHWEITE (Auftrag C1, Punkt 2): ein Sitz sieht seine Linie — die Öffnerin, die Sitze, die er öffnete, deren Geschwister —, die
-// Orchestratorin jeden Sitz, dieselbe Regel wie die Rückfrage (server.ts#rueckfrageRecht: die Öffnerin oder die Orchestratorin). Die
-// Einzelheiten des Öffners (still seit, Branch, Merge-Check) bekommt, wer das Recht des Öffners an der Rückfrage hat: die Öffnerin für
-// ihre Kinder, die Orchestratorin für jeden Sitz außer den eigenen des Owners.
+// Orchestratorin jeden Sitz, dieselbe Regel wie die Rückfrage (server.ts#rueckfrageRecht: die Öffnerin oder die Orchestratorin); ebenso jeden Sitz
+// sieht ein Sitz, dem der Owner das Recht overview.fleet gibt (W3 Auftrag 11, sein eigener Agent), mit den Einzelheiten des Öffners wie sie. Die
+// Einzelheiten des Öffners (still seit, Branch, Merge-Check) bekommt die Öffnerin für ihre Kinder, und wer die ganze Flotte sieht (die
+// Orchestratorin, ein Sitz mit overview.fleet) für jeden Sitz außer den eigenen des Owners.
 //
 // DIE DATENGRENZE (server/datengrenze.ts, Tür 16): die Übersicht trägt keinen Text einer Nachricht, eines Panes, eines Transkripts, eines
 // Packs oder einer Übergabe — nur Fleets eigene Felder, Zahlen und die Namen, die die Konstellationstür demselben Aufrufer schon gibt.
@@ -138,7 +139,7 @@ export interface Lagebild {
 const zeit = (at: number | null, now: number): string => at === null ? "not yet run since the server's start" : `last run ${new Date(at).toISOString()}, ${Math.max(0, Math.round((now - at) / 1000))} s before this answer`;
 export function lagebildQuellen(bootAt: number, gitAt: number | null = null, now = Date.now()): Record<string, string> {
   return {
-    seats: "your line as GET /api/self/constellation draws it (server/konstellation-sicht.ts): the seat that opened you, the seats you opened, their siblings and the seats holding a position of your own saved constellation, whoever opened them; the Orchestratorin every live seat (fleet.json slots); me.seat is your own row",
+    seats: "your line as GET /api/self/constellation draws it (server/konstellation-sicht.ts): the seat that opened you, the seats you opened, their siblings and the seats holding a position of your own saved constellation, whoever opened them; with the right overview.fleet (the Orchestratorin by her bundle, any other seat the owner grants it to) every live seat (fleet.json slots); me.seat is your own row",
     "name/role/purpose/harness/model/effort": "the seat record in fleet.json (Slot: label, rolleStein, agentMd.titel, harness, model, effort), as GET /api/self/constellation",
     state: "the seat record: live (Slot.cwd), asleep (Slot.sleeping), handing-over (Slot.successionRetirement: a succession handed over, its successor not yet in place); ended from the start history (start-historie.jsonl), not-started from the saved constellation",
     since: "live: Slot.openedAt; asleep: Slot.sleeping.at; handing-over: Slot.successionRetirement.at",
@@ -245,10 +246,13 @@ const ERSTE_RELATION: readonly Relation[] = ["opener", "child", "sibling", "posi
 const relationVon = (s: SichtSitz): Relation => ERSTE_RELATION.find((r) => s.relations.includes(r)) ?? "sibling";
 
 /** DIE ÜBERSICHT. `sicht`: die Konstellation des Aufrufers (konstellationSicht); `alle`: die Tatsachen jedes lebenden Sitzes; `orchestratorin`:
- *  der Aufrufer ist die eine Orchestratorin (deliveryRecipient({kind:"orchestrator"}), wie rueckfrageRecht); `zweige`: der Branch je Sitz, für
- *  die Sitze, deren Öffner-Recht der Aufrufer hält (naeherFuer). Rein. */
-export function lagebild(e: { ich: number; sicht: Sicht; alle: readonly LageFakten[]; orchestratorin: boolean; zweige: ReadonlyMap<number, ZweigFakt>;
+ *  der Aufrufer ist die eine Orchestratorin (deliveryRecipient({kind:"orchestrator"}), wie rueckfrageRecht); `flotte`: er hält das Recht
+ *  overview.fleet (die Orchestratorin über ihr Bundel, ein anderer Sitz, wenn der Owner es ihm gibt) und sieht jeden Sitz mit den Details der
+ *  Öffnerin (still seit, Branch, Check) — die des Owners streng (W3 Auftrag 11 und Entscheid dazu); ohne Angabe = `orchestratorin`. `zweige`: der Branch je Sitz,
+ *  für die Sitze, deren Öffner-Recht der Aufrufer hält (naeherFuer). Rein. */
+export function lagebild(e: { ich: number; sicht: Sicht; alle: readonly LageFakten[]; orchestratorin: boolean; flotte?: boolean; zweige: ReadonlyMap<number, ZweigFakt>;
   now: number; bootAt: number; gitAt?: number | null; takt: TickTakt }): Lagebild {
+  const flotte = e.flotte ?? e.orchestratorin;
   const je = new Map(e.alle.map((f) => [f.slot, f]));
   const ich = je.get(e.ich);
   const seats: LageZeile[] = [];
@@ -258,30 +262,31 @@ export function lagebild(e: { ich: number; sicht: Sicht; alle: readonly LageFakt
     const f = s.slot !== null && s.state === "live" ? je.get(s.slot) : undefined;
     if (!f) { seats.push(ohneLeben(s, relation)); continue; }
     gezeigt.add(f.slot);
-    seats.push(lebendeZeile(f, relation, { alle: e.alle, naeher: !!ich && naeherFuer(ich, f, e.orchestratorin), zweig: e.zweige.get(f.slot), now: e.now, takt: e.takt }));
+    seats.push(lebendeZeile(f, relation, { alle: e.alle, naeher: !!ich && naeherFuer(ich, f, flotte), zweig: e.zweige.get(f.slot), now: e.now, takt: e.takt }));
   }
-  if (e.orchestratorin)
+  if (flotte)
     for (const f of [...e.alle].sort((a, b) => a.slot - b.slot)) {
       if (gezeigt.has(f.slot)) continue;
       seats.push(istOwnerSitz(f) ? ownerZeile(f)
-        : lebendeZeile(f, "fleet", { alle: e.alle, naeher: true, zweig: e.zweige.get(f.slot), now: e.now, takt: e.takt }));
+        : lebendeZeile(f, "fleet", { alle: e.alle, naeher: !!ich && naeherFuer(ich, f, flotte), zweig: e.zweige.get(f.slot), now: e.now, takt: e.takt }));
     }
   // die eigene Zeile: was der Sitz über seine eigenen Türen ohnehin liest, mit seinem Branch (ctl.sh status zeigt sie mit *)
   const seat = ich ? lebendeZeile(ich, "self", { alle: e.alle, naeher: true, zweig: e.zweige.get(ich.slot), now: e.now, takt: e.takt }) : null;
   const linie = "the seat that opened you, the seats you opened, their siblings, and the seats holding a position of your own saved constellation (whoever opened them)";
   return { schema: LAGEBILD_SCHEMA, at: e.now,
-    me: { slot: e.ich, scope: e.orchestratorin ? "fleet" : "line",
+    me: { slot: e.ich, scope: flotte ? "fleet" : "line",
       scopeRule: e.orchestratorin ? `you are the Orchestratorin: your line in full (${linie}), every other seat in full except the owner's own, which show as ownerSeats.shows`
+        : flotte ? `you hold the right overview.fleet: your line in full (${linie}), every other seat in full except the owner's own, which show as ownerSeats.shows`
         : `your line: ${linie}`, seat },
     sources: lagebildQuellen(e.bootAt, e.gitAt ?? null, e.now),
     ownerSeats: { shows: OWNER_SITZ_FELDER, decision: "server/lagebild.ts#OWNER_SITZ_FELDER (the owner's word)" },
     seats };
 }
 
-/** HÄLT DER AUFRUFER DAS RECHT DES ÖFFNERS AN DIESEM SITZ? Wie rueckfrageRecht: er ist seine Öffnerin (nach der Linie), oder er ist die
- *  Orchestratorin und der Sitz keiner des Owners. Rein. */
-export function naeherFuer(ich: LageFakten, f: LageFakten, orchestratorin: boolean): boolean {
+/** BEKOMMT DER AUFRUFER DIE DETAILS DER ÖFFNERIN (still seit, Branch, Check) ZU DIESEM SITZ? Er ist seine Öffnerin (nach der Linie), oder er
+ *  sieht die ganze Flotte (`flotte`: die Orchestratorin, oder ein Sitz mit dem Recht overview.fleet) und der Sitz ist keiner des Owners. Rein. */
+export function naeherFuer(ich: LageFakten, f: LageFakten, flotte: boolean): boolean {
   if (f.slot === ich.slot) return false;
   if (istOeffnerin({ slot: ich.slot, cwd: ich.cwd, linie: ich.linie }, f.openedBy)) return true;
-  return orchestratorin && !istOwnerSitz(f);
+  return flotte && !istOwnerSitz(f);
 }

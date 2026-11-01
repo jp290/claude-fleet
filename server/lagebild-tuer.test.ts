@@ -269,3 +269,87 @@ describe("GET /api/self/overview, Runde 4", () => {
     } finally { await srv.stop(); }
   }, LIFE_DEADLINE_MS * 4);
 });
+
+// DAS RECHT overview.fleet (W3 Auftrag 11): der eigene Agent des Owners ist ein freier Sitz, den niemand öffnete und der niemanden öffnete — ohne das
+// Recht sieht er seine Linie, also niemanden. Der Owner gibt ihm das Recht am laufenden Sitz (POST /api/slots/<n>/rechte {grant}), ohne ihn neu zu
+// öffnen; danach sieht er jeden Sitz wie die Orchestratorin, mit still seit, Branch, Kopf und Check — die eigenen Sitze des Owners streng. Die
+// Orchestratorin behält, was sie hat.
+describe("GET /api/self/overview mit dem Recht overview.fleet", () => {
+  test("ein freier Sitz ohne das Recht sieht seine Linie (niemanden); mit dem Recht am laufenden Sitz jeden Sitz mit still seit und Branch, die des Owners streng", async () => {
+    const f = fixture();
+    const env = { FLEET_SELF_SEAT_ROOT: wurzel(f) };
+    const { bauer, pruefer } = await aufbau(f, env);
+    const eigen = tokenOf(f, 4);
+    const [ohne] = await life(f, [as(eigen, get(BILD))], env);
+    expect(ohne?.status).toBe(200);
+    expect((ohne?.body.me as { scope: string }).scope).toBe("line");
+    expect(zeilen(ohne)).toEqual([]);
+    // der Owner gibt das Recht dem laufenden Sitz: dieselbe Belegung, kein neues Öffnen
+    const vorher = (persisted(f).slots as Record<string, { openedAt: number }>)["4"]!.openedAt;
+    const [frei] = await life(f, [post("/api/slots/4/rechte", { grant: ["overview.fleet"] })], env);
+    expect(frei?.status).toBe(200);
+    expect((persisted(f).slots as Record<string, { openedAt: number }>)["4"]!.openedAt).toBe(vorher);
+    const [mit, orch] = await life(f, [as(eigen, get(BILD)), as(tokenOf(f, 5), get(BILD))], env);
+    expect((mit?.body.me as { scope: string }).scope).toBe("fleet");
+    expect(String((mit?.body.me as { scopeRule: string }).scopeRule)).toContain("overview.fleet");
+    // die Leiterin ist ein Sitz des Owners: nur Platz, Beziehung und Zustand
+    expect(zeile(mit, 1)).toEqual({ slot: 1, relation: "owner-seat", state: "live" });
+    // die Kinder der Leiterin und die Orchestratorin: ganze Zeilen mit dem, was liegen bleibt — still seit, Branch, Kopf und Check —, wie die
+    // Orchestratorin sie bekommt (Entscheid der Orchestratorin zu Auftrag 11)
+    for (const n of [bauer, pruefer, 5]) {
+      expect(zeile(mit, n)?.relation).toBe("fleet");
+      expect(zeile(mit, n)?.name).toBeTruthy();
+      expect({ n, idle: "idleMs" in zeile(mit, n)!, branch: "branch" in zeile(mit, n)! }).toEqual({ n, idle: true, branch: true });
+    }
+    // die Orchestratorin wie bisher: jeden Sitz, mit den Details der Öffnerin außer bei denen des Owners
+    expect((orch?.body.me as { scope: string }).scope).toBe("fleet");
+    expect("idleMs" in zeile(orch, bauer)!).toBe(true);
+    expect(zeile(orch, 4)).toEqual({ slot: 4, relation: "owner-seat", state: "live" });
+  }, LIFE_DEADLINE_MS * 8);
+  // W3 Auftrag 14: overview.fleet gibt nur der Owner, einem Sitz, über seine Tür — kein Kind bekommt es (nicht im Body, nicht geerbt), keine gebildete Rolle
+  // trägt es; die Orchestratorin behält es für sich
+  test("nur der Owner gibt overview.fleet: das Kind der Orchestratorin mit dem Recht 409, ohne bleibt es bei der Linie; ein Kind eines berechtigten Sitzes erbt es nicht; role.form weist es ab", async () => {
+    const f = fixture();
+    const env = { FLEET_SELF_SEAT_ROOT: wurzel(f) };
+    await aufbau(f, env);
+    const orch = tokenOf(f, 5);
+    const [mitRecht, ohneRecht] = await life(f, [as(orch, post(OPEN, { cwd: ordner(f, "h1"), goal: "Sieh zu.", label: "Kind H1", rechte: { recht: ["overview.fleet"] } })),
+      as(orch, post(OPEN, { cwd: ordner(f, "h2"), goal: "Sieh zu.", label: "Kind H2" }))], env);
+    expect(mitRecht?.status).toBe(409);
+    expect(String(mitRecht?.body.error)).toContain("overview.fleet");
+    expect(ohneRecht?.status).toBe(200);
+    // der eigene Agent des Owners hat das Recht; sein Kind ohne eigene rechte erbt es nicht
+    await life(f, [post("/api/slots/4/rechte", { grant: ["overview.fleet"] })], env);
+    const [enkel] = await life(f, [as(tokenOf(f, 4), post(OPEN, { cwd: ordner(f, "e1"), goal: "Hilf.", label: "Kind E1" }))], env);
+    expect(enkel?.status).toBe(200);
+    const [h2, e1, vier] = await life(f, [as(tokenOf(f, Number(ohneRecht?.body.slot)), get(BILD)), as(tokenOf(f, Number(enkel?.body.slot)), get(BILD)), as(tokenOf(f, 4), get(BILD))], env);
+    expect((h2?.body.me as { scope: string }).scope).toBe("line");
+    expect((e1?.body.me as { scope: string }).scope).toBe("line");
+    expect((vier?.body.me as { scope: string }).scope).toBe("fleet");
+    // eine gebildete Rolle trägt es nie, auch wenn die Bildnerin es hat
+    await life(f, [post("/api/slots/5/rechte", { grant: ["role.form"] })], env);
+    const [rolle] = await life(f, [as(orch, post("/api/self/roles", { name: "Beobachter", text: "Sieh jeden Sitz.", rights: ["overview.fleet"] }))], env);
+    expect(rolle?.status).toBe(409);
+    expect(rolle?.body.missingRight).toBe("overview.fleet");
+  }, LIFE_DEADLINE_MS * 10);
+
+  test("der Owner nimmt overview.fleet zurück: dieselbe Belegung sieht wieder ihre Linie, das Audit sagt rechte_revoke", async () => {
+    const f = fixture();
+    const env = { FLEET_SELF_SEAT_ROOT: wurzel(f) };
+    await aufbau(f, env);
+    const eigen = tokenOf(f, 4);
+    await life(f, [post("/api/slots/4/rechte", { grant: ["overview.fleet"] })], env);
+    const vorher = (persisted(f).slots as Record<string, { openedAt: number }>)["4"]!.openedAt;
+    const [mit] = await life(f, [as(eigen, get(BILD))], env);
+    expect((mit?.body.me as { scope: string }).scope).toBe("fleet");
+    const [zurueck] = await life(f, [post("/api/slots/4/rechte", { revoke: ["overview.fleet"] })], env);
+    expect(zurueck?.status).toBe(200);
+    expect(zurueck?.body.revoked).toEqual(["overview.fleet"]);
+    expect((persisted(f).slots as Record<string, { openedAt: number }>)["4"]!.openedAt).toBe(vorher);
+    const [ohne] = await life(f, [as(eigen, get(BILD))], env);
+    expect((ohne?.body.me as { scope: string }).scope).toBe("line");
+    expect(zeilen(ohne)).toEqual([]);
+    const audit = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { event: string; detail?: string });
+    expect(audit.filter((r) => r.event === "rechte_revoke").map((r) => String(r.detail).split(" ")[0])).toEqual(["revoke=overview.fleet"]);
+  }, LIFE_DEADLINE_MS * 8);
+});

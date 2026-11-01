@@ -33,7 +33,8 @@ export type RechtId =
   | "text.concept.annotation" | "text.program"
   | "setup.save" | "setup.export" | "setup.import"
   | "role.form"
-  | "branch.passt";
+  | "branch.passt"
+  | "overview.fleet";
 export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.program", "fleet.deploy", "edge.grant",
   "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program",
   // DIE SETUP-RECHTE (Richtung Schritt 4): kein Rollenbundel trägt sie — der Owner vergibt sie je Sitz,
@@ -44,7 +45,10 @@ export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.
   "role.form",
   // DAS „PASST“ EINES SITZES (W3b, Owner 31.10.): die Öffnerin gibt es auf die Spitze ihres Kindes, die Land-Tür liest es — kein Rollenbundel trägt das
   // Recht, der Owner vergibt es je Sitz oder bestätigt es an einer Position einer Vorlage.
-  "branch.passt"];
+  "branch.passt",
+  // DIE GANZE ÜBERSICHT (W3 Auftrag 11): jeden Sitz in GET /api/self/overview sehen wie die Orchestratorin — ihr Bundel trägt es, der Owner gibt es
+  // einem Sitz dazu (sein eigener Agent), am laufenden Sitz über POST /api/slots/<n>/rechte { grant }
+  "overview.fleet"];
 // Der eine benannte leere Bundel dieses Schnitts: der Owner öffnet damit eine Probe, deren Rolle nichts
 // hinzufügt. Er ist kein Produktions-Rollenbundel und nimmt einer Rolle nichts weg.
 export type RechteBuendel = "none";

@@ -9488,12 +9488,14 @@ async function selfLagebildTuer(s: Slot): Promise<Response> {
     historie: await liesHistorie(STATE_DIR, 5000), positionen: s.sitz ? liesPositionen(STATE_DIR, s.sitz.konst) : null });
   const alle = lebende.map(lageFaktenVon);
   const orchestratorin = deliveryRecipient({ kind: "orchestrator" }) === s;
+  // jeden Sitz sieht, wer das Recht overview.fleet hält (ihr Bundel trägt es; der Owner gibt es einem Sitz dazu) — die Orchestratorin immer, wie bisher
+  const flotte = orchestratorin || wirksameRechte(s.rechte, rechteRollen(s)).has("overview.fleet");
   const ich = alle.find((f) => f.slot === s.id)!;
   const imBild = new Set(sicht.seats.flatMap((x) => x.slot === null ? [] : [x.slot]));
-  const naeher = lebende.filter((x) => x === s || ((orchestratorin || imBild.has(x.id)) && naeherFuer(ich, alle.find((f) => f.slot === x.id)!, orchestratorin)));
+  const naeher = lebende.filter((x) => x === s || ((flotte || imBild.has(x.id)) && naeherFuer(ich, alle.find((f) => f.slot === x.id)!, flotte)));
   const now = Date.now();
   const zweige = new Map(await Promise.all(naeher.map(async (x) => [x.id, await lageZweig(x, now)] as const)));
-  return json(lagebild({ ich: s.id, sicht, alle, orchestratorin, zweige, now, bootAt: SERVER_BOOT_AT, gitAt: operationalGitObservedAt,
+  return json(lagebild({ ich: s.id, sicht, alle, orchestratorin, flotte, zweige, now, bootAt: SERVER_BOOT_AT, gitAt: operationalGitObservedAt,
     takt: { warteTickMs: WARTE_TICK_MS, ruhigMs: WARTE_RUHIG_MS } }));
 }
 // DIE TÜREN DES SITZES AUF SITZE UND ROLLEN, hinter verlangeRecht (seat.open, role.form, setup.export): Öffnen im Ordner, eine Rolle bilden, die gebildeten
@@ -58347,10 +58349,33 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s.cwd) return json({ error: "slot not active — grants belong to a live seat" }, 400);
       const body = await readJson(req);
       if (!body || typeof body !== "object" || Array.isArray(body))
-        return json({ error: "expected { grant: [right id] }" }, 400);
-      const extra = Object.keys(body).filter((k) => k !== "grant");
+        return json({ error: "expected { grant: [right id] } or { revoke: [right id] }" }, 400);
+      const extra = Object.keys(body).filter((k) => k !== "grant" && k !== "revoke");
       if (extra.length)
-        return json({ error: `this door reads only grant — [${extra.join(", ")}] is not read; it cannot change a seat's bundle or its switches` }, 400);
+        return json({ error: `this door reads only grant and revoke — [${extra.join(", ")}] is not read; it cannot change a seat's bundle or its switches` }, 400);
+      // DIE RÜCKNAHME (W3 Auftrag 14): der Owner nimmt einem Sitz eine Zusage, die er ihm gab, in derselben Belegung zurück; das Rollenbundel bleibt, wie es
+      // ist (die Tür kann einem Sitz nur nehmen, was sie ihm gab). Audit rechte_revoke.
+      if ((body as { revoke?: unknown }).revoke !== undefined) {
+        if ((body as { grant?: unknown }).grant !== undefined) return json({ error: "send grant and revoke in two calls — one change per call" }, 400);
+        const weg = (body as { revoke?: unknown }).revoke;
+        if (!Array.isArray(weg) || weg.length === 0)
+          return json({ error: `revoke must name at least one right from ${RECHT_IDS.join(", ")}`, rights: RECHT_IDS }, 400);
+        const fremdeIds = weg.filter((id) => !istRechtId(id));
+        if (fremdeIds.length)
+          return json({ error: `unknown right(s): ${fremdeIds.map(String).join(", ")} — valid right ids: ${RECHT_IDS.join(", ")}`, rights: RECHT_IDS }, 400);
+        const rollenR = rechteRollen(s);
+        const vorher = rechteFuerHarness(s.rechte, harnessOf(s.harness).id);
+        const nimm = new Set(weg as RechtId[]);
+        const genommen = (vorher?.recht ?? []).filter((x) => nimm.has(x));
+        if (vorher && genommen.length) {
+          const recht = vorher.recht!.filter((x) => !nimm.has(x));
+          s.rechte = { stufe: vorher.stufe, an: vorher.an, aus: vorher.aus, ...(recht.length ? { recht } : {}), ...(vorher.buendel ? { buendel: vorher.buendel } : {}) };
+          audit("rechte_revoke", s.id, `revoke=${genommen.join(",")} effective=${[...wirksameRechte(s.rechte, rollenR)].join(",")}`);
+          await saveStateNow();
+        }
+        return json({ ok: true, slot: s.id, revoked: genommen, ...(genommen.length < nimm.size ? { notGranted: [...nimm].filter((x) => !genommen.includes(x)) } : {}),
+          rechte: s.rechte, ...rechteAnsicht(s.rechte, rollenR, harnessOf(s.harness).id) });
+      }
       const asked = (body as { grant?: unknown }).grant;
       if (!Array.isArray(asked) || asked.length === 0)
         return json({ error: `grant must name at least one right from ${RECHT_IDS.join(", ")}`, rights: RECHT_IDS }, 400);

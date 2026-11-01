@@ -419,6 +419,43 @@
     "status": "active"
   },
   {
+    "id": "planning-with-the-owner",
+    "useWhen": "When the owner brings you his complaints about a system and wants a diagnosis or a plan, and you judge, not build.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start",  "seat-choice"],
+    "hardness": "guidance",
+    "sources": [
+      {"id": "planning-with-the-owner.text", "path": "docs/packs/planning-with-the-owner.md", "anchor": "# Planning with the owner", "sorte": "anleitung", "positions": {"lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe"}}
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude",  "pi",  "pi-zai",  "pi-deepseek",  "pi-zai-unfenced",  "pi-unfenced",  "container",  "codex"],
+    "modes": ["read-only",  "mutating"],
+    "estimatedBytes": 5381,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active",
+    "personal": true
+  },
+  {
+    "id": "operating-a-constellation",
+    "useWhen": "When a request comes in and you decide: do it yourself, give it to a running seat or open one, and judge what returns.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start",  "seat-choice"],
+    "hardness": "guidance",
+    "sources": [
+      {"id": "operating-a-constellation.text", "path": "docs/packs/operating-a-constellation.md", "anchor": "# Operating a constellation", "sorte": "anleitung", "positions": {"lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe"}}
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude",  "pi",  "pi-zai",  "pi-deepseek",  "pi-zai-unfenced",  "pi-unfenced",  "container",  "codex"],
+    "modes": ["read-only",  "mutating"],
+    "estimatedBytes": 7566,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "leiten",
     "useWhen": "When you lead a constellation: open builders and a checker, give checkable goals, judge reports.",
     "scope": "repo-contract",
@@ -463,6 +500,24 @@
     "status": "active"
   },
   {
+    "id": "finding-blind-spots",
+    "useWhen": "When you look for where agents act without information the system holds, and for the regressions that follow.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-choice"],
+    "hardness": "guidance",
+    "sources": [
+      {"id": "finding-blind-spots.text", "path": "docs/packs/finding-blind-spots.md", "anchor": "# Finding blind spots", "sorte": "anleitung", "positions": {"lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe"}}
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude",  "pi",  "pi-zai",  "pi-deepseek",  "pi-zai-unfenced",  "pi-unfenced",  "container",  "codex"],
+    "modes": ["read-only",  "mutating"],
+    "estimatedBytes": 4194,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "bauen",
     "useWhen": "When a lead opened you to build one goal and you report to it: scope, questions, the report.",
     "scope": "repo-contract",
@@ -502,6 +557,24 @@
       "mutating"
     ],
     "estimatedBytes": 2485,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "finishing-desktop-work",
+    "useWhen": "When work ends outside the repo, in a browser, mail, calendar, file or app: who does it, what done means there.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-choice"],
+    "hardness": "guidance",
+    "sources": [
+      {"id": "finishing-desktop-work.text", "path": "docs/packs/finishing-desktop-work.md", "anchor": "# Finishing desktop work", "sorte": "anleitung", "positions": {"lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe"}}
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude",  "pi",  "pi-zai",  "pi-deepseek",  "pi-zai-unfenced",  "pi-unfenced",  "container",  "codex"],
+    "modes": ["read-only",  "mutating"],
+    "estimatedBytes": 3450,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

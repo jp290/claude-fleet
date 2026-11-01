@@ -23,7 +23,7 @@ import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./serve
 import { fernpostAbgelehnt, istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { fassungAufgabeAusSitz, ordnerFehlt, ordnerSatz, ordnerVorschlag, sitzAnsicht, zielAusPosition, zielNachricht } from "./server/position-start";
-import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, modusAnDerTuer, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
+import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, MODUS_RANG, modusAnDerTuer, modusNichtWeiter, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -9119,9 +9119,9 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   if (!nb.ok) return json({ error: nb.error }, 400);
   const pm = permissionModeDerTuer(body.permissionMode);
   if (!pm.ok) return json({ error: pm.error }, 400);
-  // at the self door a session gives no wider mode than its own: the same, or one that asks more (manual, plan)
-  if (opener === "self" && by && pm.wahl && pm.wahl !== "manual" && pm.wahl !== "plan" && pm.wahl !== (by.permissionMode ?? oeffnerinOf(by).modus))
-    return json({ error: `permissionMode ${pm.wahl} is wider than the opener's own — at the self door only her mode, manual or plan` }, 409);
+  // at the self door a session gives no wider mode than its own: hers, manual, plan, or one below hers in MODUS_RANG (server/sitz-reise.ts#modusNichtWeiter)
+  if (opener === "self" && by && pm.wahl && !modusNichtWeiter(pm.wahl, by.permissionMode ?? oeffnerinOf(by).modus))
+    return json({ error: modusZuWeit(pm.wahl, by.permissionMode ?? oeffnerinOf(by).modus) }, 409);
   // EIN SITZ AUS EINER POSITION STARTET AN DER SELBST-TÜR NIE IN BYPASS, auch nicht mit einem Modus im Body (Orchestratorin, Auftrag 4, O-1): ein importiertes
   // Setup startet nur in bypass, wenn der Owner es an seiner Tür wählt
   if (opener === "self" && sd.sitz && pm.wahl === "bypassPermissions")
@@ -9534,6 +9534,9 @@ async function selfBranchRequest(s: Slot, body: Record<string, unknown> | null):
     return { ok: false, response: json({ error: "a session opens branches in its own repo only" }, 409) };
   return { ok: true, body: { ...body, repo: ro.repo } };
 }
+// the self door's answer to a mode wider than the opener's: hers, and the order it is read in
+const modusZuWeit = (wahl: PermissionModeWahl, eigen: string | null | undefined): string =>
+  `permissionMode ${wahl} is wider than the opener's own (${eigen ?? "none"}) — at the self door only her mode, manual, plan or one below hers in ${MODUS_RANG.join(" < ")}`;
 // what the opener has, read off her slot: the mode of her last claude spawn (or the one her position would get now)
 function oeffnerinOf(s: Slot): Oeffnerin {
   const harness = harnessOf(s.harness).id;
@@ -9805,9 +9808,9 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   if (!nb.ok) return json({ error: nb.error }, 400);
   const pm = permissionModeDerTuer(body.permissionMode);
   if (!pm.ok) return json({ error: pm.error }, 400);
-  // at the self door a session gives no wider mode than its own: the same, or one that asks more (manual, plan)
-  if (opener === "self" && by && pm.wahl && pm.wahl !== "manual" && pm.wahl !== "plan" && pm.wahl !== (by.permissionMode ?? oeffnerinOf(by).modus))
-    return json({ error: `permissionMode ${pm.wahl} is wider than the opener's own — at the self door only her mode, manual or plan` }, 409);
+  // at the self door a session gives no wider mode than its own: hers, manual, plan, or one below hers in MODUS_RANG (server/sitz-reise.ts#modusNichtWeiter)
+  if (opener === "self" && by && pm.wahl && !modusNichtWeiter(pm.wahl, by.permissionMode ?? oeffnerinOf(by).modus))
+    return json({ error: modusZuWeit(pm.wahl, by.permissionMode ?? oeffnerinOf(by).modus) }, 409);
   // EIN SITZ AUS EINER POSITION STARTET AN DER SELBST-TÜR NIE IN BYPASS, auch nicht mit einem Modus im Body (Orchestratorin, Auftrag 4, O-1): ein importiertes
   // Setup startet nur in bypass, wenn der Owner es an seiner Tür wählt
   if (opener === "self" && sd.sitz && pm.wahl === "bypassPermissions")

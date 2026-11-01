@@ -242,6 +242,16 @@ export function modusAnDerTuer(tuer: PermissionModeWahl | null, position: Permis
   return o === null || MODUS_RANG.indexOf(position) <= MODUS_RANG.indexOf(o) ? position : o;
 }
 
+// IST EIN MODUS AN DER SELBST-TÜR NICHT WEITER ALS DER DER ÖFFNERIN (Orchestratorin, Auftrag 20, Queue 96220964): nach MODUS_RANG, derselben Ordnung wie
+// modusAnDerTuer. Eine Leitung in bypass, die einen Sitz für fremde Eingaben öffnet, gibt ihm auto, acceptEdits oder dontAsk, statt ihm bypass geben zu
+// müssen. manual und plan fragen mehr und gehen wie bisher an jeder Öffnerin, ihr eigener Modus auch; sonst nur ein Modus unter ihrem. Eine Öffnerin ohne
+// vergleichbaren Modus (null: ein anderer Harness) gibt nur ihren eigenen, manual oder plan.
+export function modusNichtWeiter(kind: PermissionModeWahl, oeffnerin: string | null | undefined): boolean {
+  if (kind === "manual" || kind === "plan" || kind === oeffnerin) return true;
+  const o = MODUS_RANG.findIndex((m) => m === oeffnerin);
+  return o >= 0 && MODUS_RANG.indexOf(kind) < o;
+}
+
 // DIE ANDEREN SITZE DERSELBEN KONSTELLATION mit ihrem Auftrag: so nennt Fleet einem Sitz, wen er öffnen kann, und erkennt ein Ziel, das der
 // Brief eines anderen ist
 export async function geschwister(dir: string, konst: string, ohne: string): Promise<{ id: string; name: string; auftrag: string | null; ordner: string | null }[]> {

@@ -496,7 +496,7 @@ export function hintText(f: HintFacts): string {
   // DIE SESSION GIBT SELBST WEITER (Owner 07.08.: „[Zitat entfernt]“; 18.10.: die
   // Session ruft die Übergabe auf, nicht das System): Fleets neue Session ist nur der Rückfall
   if (f.choice === "succeed")
-    return `${head}Hand over yourself: write ${handover} now and keep it current; at the end of your current step, `
+    return `${head}Hand over yourself: write ${handover} now and keep it current; ${NATURAL_BREAK}, `
       + `when nothing is running, call POST /api/self/succeed (without a body it takes your standing handover). `
       + `Only if you do not, Fleet opens a new session itself ${f.threshold.capPct > f.fillPct ? `from ${f.threshold.capPct} %` : "now"} `
       + `or shortly before your cache goes cold, as soon as you are idle.`;
@@ -504,9 +504,48 @@ export function hintText(f: HintFacts): string {
   if (lane)
     return `${opening}: finish the current slice and commit, file a fleet-report with status \`handoff\` `
       + `and then hand over with POST /api/self/succeed (${token}) to a fresh session on this worktree.`;
-  return `${opening}. Write a standing handover (POST /api/self/handover, \`intent\` OR \`pointer\`) and keep it `
-    + "current: with it the owner can open a new session at any time without sending you a turn. "
-    + `At the end of a step you hand over yourself: POST /api/self/succeed. Both doors take the ${token}.`;
+  return `${opening}: hand over ${NATURAL_BREAK}, and do not run on to the cap. Write a standing handover `
+    + "(POST /api/self/handover, `intent` OR `pointer`) and keep it current: with it the owner can open a new session at any time "
+    + `without sending you a turn. Then call POST /api/self/succeed. Both doors take the ${token}.`;
+}
+// DER NATÜRLICHE PUNKT (Owner 01.11.: „[Zitat entfernt]“): früh und an einer Pause, nie durch Weiterlaufen bis zur Obergrenze.
+const NATURAL_BREAK = "at your next natural break (when your current order is reported, or at a finished, committed step inside the work)";
+
+// ZWISCHEN ZWEI AUFTRÄGEN (Owner 22.10.: „[Zitat entfernt]“, 01.11. wie oben): kommt eine Postfach-Nachricht zu einem Sitz, dessen Kontext an
+// oder über dieser Marke steht, nennt der Kopf der Zustellung eine Zeile dazu: Übergabe schreiben und weitergeben, bevor er die Nachricht
+// anfängt, damit eine frische Nachfolgerin sie nimmt. Nicht für eine Lane (sie gibt mit ihrem handoff-Report weiter), nicht für einen Sitz,
+// an dem keine Schwelle feuert (off: eigenes Setup, thresholdPct 0, Steward, Harness außerhalb des Bands …), nicht, wenn der Owner den
+// Hinweis für diese Session ausschaltete, und nicht ohne messbaren Füllstand. Kein Apostroph, kein Anführungszeichen: die Zeile wird getippt.
+export const ZWISCHEN_AUFTRAEGEN_PCT = 25;
+// NUR AUF FLEETS EIGENER BASIS EINES BAUERS (W3 Auftrag 17, W16-2; Entscheid der Orchestratorin 01.11.): die Marke gilt für einen Bauer
+// oder freien Sitz, dessen Basis Fleets Wert ist (Env oder Fleet), mit einer Wahl, die übergibt. Eine eigene Schwelle des Owners
+// (thresholdPct), seine Wahl Compact und eine Rolle mit höherer Basis (Orchestratorin 45, MAIN) behalten ihren Hinweis und ihre
+// Handlung wie bisher und bekommen keine der zwei Zeilen: sonst läse die Orchestratorin ab 25 % auf jeder Nachricht „hand over“,
+// 20 Punkte vor ihrer eigenen Karte.
+export function aufFleetsBauerBasis(t: Threshold, choice: ThresholdChoice): boolean {
+  return (t.kind === "bau" || t.kind === "session") && (t.from === "env" || t.from === "fleet") && t.basePct > 0 && choice !== "compact";
+}
+export function betweenOrdersLine(f: { fillPct: number | null; threshold: Threshold; choice: ThresholdChoice; off: ThresholdOff | null;
+  nudge: boolean }): string | null {
+  if (!aufFleetsBauerBasis(f.threshold, f.choice) || f.off !== null || !f.nudge || f.fillPct === null
+    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT) return null;
+  return `[fleet] Your context is at ${f.fillPct} %, at or above the between-orders mark of ${ZWISCHEN_AUFTRAEGEN_PCT} %. `
+    + "Before you start on this message, write your handover (POST /api/self/handover) naming this message, "
+    + "and call POST /api/self/succeed, so a fresh successor takes it.";
+}
+
+// RUHEND ÜBER DER MARKE, DER CACHE KÜHLT (W3 Auftrag 16, Punkt 5): Slot 1 wurde am 01.11. um 06:57 bei 349k Tokens im Ruhezustand
+// von Claude Code kompaktiert, unter seiner Basis, wo der Übergabe-Takt bis dahin gar nicht hinsah. Dieselbe Erkennung wie über der
+// Basis (cacheCooling, KURZ VOR KALT oben), nur ab der Marke zwischen zwei Aufträgen: der ruhende Sitz bekommt die Übergabe-Zeile, solange
+// eine Übergabe noch den warmen Cache liest. Nur die Zeile, nie eine Handlung: Fleets Compact oder neue Session bleiben an der Basis.
+// Nur auf Fleets eigener Basis eines Bauers (aufFleetsBauerBasis, W16-2): keine Lane, keine eigene Schwelle, nicht Compact, keine Rolle.
+export function restingHandoverLine(f: { fillPct: number; threshold: Threshold; cooling: boolean; choice: ThresholdChoice }): string | null {
+  if (!aufFleetsBauerBasis(f.threshold, f.choice) || !f.cooling
+    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT || f.fillPct >= f.threshold.basePct) return null;
+  return `[fleet] Your context is at ${f.fillPct} %, at or above the between-orders mark of ${ZWISCHEN_AUFTRAEGEN_PCT} %, `
+    + "you are resting, and your cache goes cold in a few minutes. Rather than let this conversation be compacted while idle, "
+    + "write your handover now (POST /api/self/handover) and call POST /api/self/succeed, so a fresh successor takes the next order. "
+    + "Both doors take the x-fleet-self-token from the environment variable FLEET_SELF_TOKEN.";
 }
 
 // DIE CONTEXT-ZEILE DER ORCHESTRATORIN (S3c; Bauleitung 14.10.: „[Zitat entfernt]“ auf 45/50

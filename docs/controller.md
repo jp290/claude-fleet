@@ -308,8 +308,8 @@ wird sie seit demselben Tag zum Kanal des Linien-Records, wenn der Body weder `i
 noch `carry` nennt (ein Body-Kanal gewinnt ganz), und der Brief nennt ihre Schreibzeit. Lane, Game-Maker
 und Steward antworten mit benanntem 409 (`reason`) und behalten ihre eigene Schiene. Die
 Schwellen-Hinweise der ungebundenen und der Standard-Program-Schiene nennen die stehende Übergabe als
-Alternative, wenn gerade Arbeit läuft; steht eine frische (der Transkript-Rest seit ihr erreicht eine
-Nachfolgerin noch ganz, `server.ts#standingHandoverFresh`), kommt kein weiterer Hinweis. Lese-Tür für
+Alternative, wenn gerade Arbeit läuft; eine stehende Übergabe hält den einen Hinweis je Gespräch nicht auf (W3 Auftrag 16:
+er kommt an der Basis, nur nicht in einen kalten Cache oder eine Pane, deren Nachfolge unterwegs ist). Lese-Tür für
 den Knopf: `GET /api/slots/:id/succeed` (`docs/self-api.md` §handover).
 
 **Harness-Wechsel geht NICHT über `succeed`** (`server.ts#handleSelfSucceed`: „that harness is not
@@ -371,7 +371,7 @@ MAIN that is already cold, there is the owner succession without a turn of the p
 gives the session no owner authority.
 
 This is measured knowledge and a recommendation for the existing succession. The server hint `tickMigrate` checks
-fill, threshold and deliverability and stays silent for a fresh standing handover (`server.ts#standingHandoverFresh`);
+fill, threshold and deliverability; a standing handover no longer silences it, a succession already in flight does;
 it implements no cache expiry and doesn't wait for running subagents. The cache expiry is handled per session by the
 owner switch keepCache (`server.ts#tickKeepCache`, `docs/self-api.md` §keepCache): before the measured hour runs
 out, an idle session above its threshold is succeeded without a turn of its own or, while work is foreseeable, kept

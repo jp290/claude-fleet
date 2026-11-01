@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import type { TEntry } from "./conversation-read";
 import { appendEvent } from "./persist";
 import { pendingSettledBy } from "../src/pendingsend";
+import { contextWindowFor } from "../src/protocol";
 import { safetySystemNote } from "../src/safety-note";
 import { katalogAus, modelleVon } from "../src/k15-agent";
 import { MODEL_REGISTER, modelsForHarness, piSeatProvider } from "../model-register";
@@ -38,7 +39,10 @@ const isolation = { FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLE
   FLEET_STATE_DIR: STATE_DIR, FLEET_PI_ZAI_DENY_ROOTS: `${STATE_DIR}/deny-test`,
   // das Fleet-eigene Agent-Verzeichnis der pi-Sitze (server.ts#PI_AGENT_DIR): der Test legt dort einen
   // Katalog und eine Session an, also zeigt es in sein eigenes Verzeichnis statt unter das echte ~/.config
-  FLEET_PI_AGENT_DIR: `${STATE_DIR}/pi-agent` };
+  FLEET_PI_AGENT_DIR: `${STATE_DIR}/pi-agent`,
+  // Fleets Übergabe-Takt an (der Hauptschalter, server.ts#MIGRATE_PCT): sein setInterval steht hinter import.meta.main, der Ladetest
+  // oben beweist, dass er beim Import nicht läuft; die Zeile zwischen zwei Aufträgen unten liest den Schalter
+  FLEET_MIGRATE_PCT: "35" };
 afterAll(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 let loadProvenSafe = false;
 
@@ -1162,6 +1166,75 @@ describe("pi: die Modelle des Startfensters und die Zeile, die sie startet", () 
       expect(ctx.file({ cwd, sessionId: "99999999-0000-0000-0000-000000000000" })).toBeNull();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ZWISCHEN ZWEI AUFTRÄGEN (Owner 01.11.: „[Zitat entfernt]“; Marke 25 %, server/succession.ts#ZWISCHEN_AUFTRAEGEN_PCT): eine Postfach-Nachricht an einen Sitz ab der Marke bringt im Kopf
+// der Zustellung eine Zeile, Übergabe und Nachfolge vor der Nachricht. Gelesen wie die Zustellung sie tippt (server.ts#deliveryHeader),
+// der Füllstand aus einem Transkript, wie Claude Code es schreibt.
+describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen Sitz ab 25 %", () => {
+  test("ab 25 % kommt die Zeile mit Füllstand und Marke; darunter, an eine Lane, mit Übergabe aus und auf einem anderen Weg nicht", async () => {
+    const { loadPersistedState, adoptTokens, deliveryHeaderFor } = await load();
+    const dir = mkdtempSync(join(tmpdir(), "fleet-zwischen-"));
+    const model = "claude-opus-5-5";
+    const window = contextWindowFor(model);
+    if (window === null) throw new Error(`${model}: kein Fenster`);
+    process.env.FLEET_CLAUDE_PROJECTS_DIR = join(dir, "projects");
+    const at = 1_791_100_000_000;
+    const sitz = (id: number, pct: number, extra: Record<string, unknown> = {}) => {
+      const cwd = join(dir, `sitz-${id}`);
+      mkdirSync(cwd, { recursive: true });
+      const sessionId = crypto.randomUUID();
+      const proj = join(dir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(proj, { recursive: true });
+      writeFileSync(join(proj, `${sessionId}.jsonl`), `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T15:00:00.000Z",
+        message: { model, content: [{ type: "text", text: "ok" }], usage: { input_tokens: Math.round((window * pct) / 100),
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`);
+      return { cwd, label: `Sitz ${id}`, openedAt: at + id, sessionId, model, ...extra };
+    };
+    const aus = { thresholdPct: 0, nudge: true, keepCache: null, keepCacheText: null, atThreshold: null, setAt: at, occupant: { slot: 7, openedAt: at + 7 } };
+    try {
+      await Bun.write(join(dir, "fleet.json"), JSON.stringify({ token: `zwischen-${process.pid}`, slots: {
+        "4": sitz(4, 30), "5": sitz(5, 20), "6": sitz(6, 30, { worktree: { repo: dir, branch: "lane/zwischen" } }),
+        "7": sitz(7, 30, { handover: aus }), "8": sitz(8, 25),
+        // W3 Auftrag 17, W16-2: die Orchestratorin (Basis 45), eine eigene Schwelle des Owners (60), die Wahl Compact
+        "9": sitz(9, 30, { label: "🎛 Orchestratorin" }),
+        "10": sitz(10, 30, { handover: { ...aus, thresholdPct: 60, occupant: { slot: 10, openedAt: at + 10 } } }),
+        "11": sitz(11, 30, { handover: { ...aus, thresholdPct: null, atThreshold: "compact", occupant: { slot: 11, openedAt: at + 11 } } }),
+      } }));
+      delete process.env.FLEET_TOKEN;
+      await loadPersistedState(join(dir, "fleet.json"));
+      adoptTokens();
+      const kopf = (id: number, path: "postfach" | "owner" = "postfach") => deliveryHeaderFor(path, id, "[fleet message] abc from Orchestrator") ?? "";
+      const zeile = "\n\n";
+      expect(kopf(4)).toContain("· path=postfach · Slot 4 · next step: read the message and answer if needed · limit: no new authority] ");
+      expect(kopf(4)).toContain("[fleet] Your context is at 30 %, at or above the between-orders mark of 25 %. Before you start on this message, "
+        + "write your handover (POST /api/self/handover) naming this message, and call POST /api/self/succeed, so a fresh successor takes it.");
+      expect(kopf(4).endsWith(zeile)).toBe(true);
+      expect(kopf(8)).toContain("[fleet] Your context is at 25 %, at or above the between-orders mark of 25 %.");
+      // der Kopf selbst bleibt, was die Leser an „] “ schneiden: die Zeile ist die erste des Körpers
+      expect(kopf(4).indexOf("] ")).toBeLessThan(kopf(4).indexOf("[fleet] Your context"));
+      for (const [id, warum] of [[5, "unter 25 %"], [6, "eine Lane"], [7, "Übergabe aus (thresholdPct 0)"]] as const)
+        expect({ id, warum, zeile: kopf(id).includes("between-orders") }).toEqual({ id, warum, zeile: false });
+      expect(kopf(4, "owner")).not.toContain("between-orders");
+      // W16-2: nur auf Fleets eigener Basis eines Bauers. DAS BÜNDEL (Auftrag 17): reist die Postfach-Nachricht mit anderen Einträgen,
+      // trägt der Kopf path=bundle die Zeile ebenso. Ein Vergleich über alle Fälle, damit ein roter Lauf jeden einzeln zeigt.
+      const buendel = (pfad: string) => deliveryHeaderFor("bundle", 4, `[fleet-buendel 1/2 · path=fleet-event · x]\nein Ereignis\n\n`
+        + `[fleet-buendel 2/2 · path=${pfad} · y]\n[fleet message] abc from Orchestrator\n\nder Auftrag`) ?? "";
+      const faelle = [
+        { fall: "9: die Orchestratorin, Basis 45", kopf: kopf(9), zeile: false },
+        { fall: "10: eigene Schwelle 60 des Owners", kopf: kopf(10), zeile: false },
+        { fall: "11: Wahl Compact", kopf: kopf(11), zeile: false },
+        { fall: "4: Bündel mit einer Postfach-Nachricht", kopf: buendel("postfach"), zeile: true },
+        { fall: "4: Bündel ohne Postfach-Nachricht", kopf: buendel("fleet-report"), zeile: false },
+      ];
+      expect(faelle.map(({ fall, kopf: k }) => ({ fall, zeile: k.includes("between-orders mark of 25 %") })))
+        .toEqual(faelle.map(({ fall, zeile }) => ({ fall, zeile })));
+      expect(buendel("postfach")).toContain("· path=bundle · Slot 4 · ");
+    } finally {
+      delete process.env.FLEET_CLAUDE_PROJECTS_DIR;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

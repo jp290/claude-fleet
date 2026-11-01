@@ -1859,8 +1859,8 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 // --- THE OWNER DOOR ON THE PROGRAM RAIL, AND THE NUDGE THAT STOPS (second cut, 2026-10-07) -------
 // The first cut refused a Program-MAIN by name (409 `program-main`), and that is where the fullest
 // contexts sit. Now the owner door hands a resting, exactly bound Standard Program-MAIN over through
-// server.ts#succeedProgramMain — the self door's own rail — and tickMigrate leaves a session alone
-// whose standing handover is fresh (server.ts#standingHandoverFresh). Claims, each with the mutation
+// server.ts#succeedProgramMain — the self door's own rail — and a standing handover no longer silences
+// tickMigrate's hint (W3 Auftrag 16, owner 01.11.: hand over early, at a natural break). Claims, each with the mutation
 // that turns it red:
 //   rail     — the preview names `program`, and the successor is a new occupation of the SAME slot
 //              that the SAME Program is now bound to (route the program rail back to a 409, or to
@@ -1872,16 +1872,15 @@ async function ownerSuccessionDoor(laneSlot: number, laneTok: string): Promise<v
 //              the appendix, or the `since` cut, or read the slot's other file).
 //   game-maker — still refused by name at the owner door and at /api/self/handover (drop that refusal).
 //   fresh    — two sessions at 46 %, above the armed 44 and below its cap 49, both with a standing handover:
-//              the one whose rest since the handover reaches a successor whole gets NO nudge, the one whose
-//              rest overflows FRESH_TAIL_MAX gets exactly one (drop standingHandoverFresh → the fresh one
-//              is nudged; make it "any handover" → the stale one is not). Below the cap only: at the cap
-//              a fresh handover silences nothing (K9 S3b, e2e/watch.ts, the main's hint).
+//              the one whose rest since the handover reaches a successor whole and the one whose rest
+//              overflows FRESH_TAIL_MAX each get exactly one nudge (silence a fresh handover again, as
+//              before W3 Auftrag 16 → the fresh one gets none; the predecessor in slot 1 got its only hint
+//              at the cap that way, mid-order).
 // the checks after ownerProgramSuccession's setup row, by name: each prints this string when it ran and
 // `NOT MEASURED — the setup row died: <it>` when the setup above it did not hold
 const LATER = {
   ctx: "owner program succession setup: both handover subjects wrote a standing handover and measure 46 %, below the cap 49",
-  staleOnce: "tickMigrate: a standing handover whose rest still reaches a successor whole ends the nudge — the stale one beside it is nudged once",
-  grownOnce: "tickMigrate: a fresh handover whose transcript then grows past the cap — with the pane silent — is nudged once",
+  staleOnce: "tickMigrate: a standing handover does not end the nudge below the cap — the fresh one and the stale one beside it are each nudged once",
   gameMaker: "owner succession door: a game-maker Program-MAIN is still refused 409 `game-maker` at the owner door AND at /api/self/handover",
   resting: "owner program succession setup: the bound MAIN wrote its standing handover, rests, and the preview names the Program rail",
   sameSlot: "owner succession door: a resting Program-MAIN is succeeded on the SAME slot and cwd, and its Program is bound to the new occupation",
@@ -2091,36 +2090,18 @@ async function ownerProgramSuccession(keptLaneSlot: number): Promise<void> {
     atF > 0 && atT > 0 && ctxRows.find((x) => x.id === F.slot)?.ctx?.pct === 46
       && ctxRows.find((x) => x.id === T.slot)?.ctx?.pct === 46,
     JSON.stringify({ atF, atT, ctx: ctxRows.filter((x) => [F.slot, T.slot].includes(x.id)) }));
-  let staleNudges = await migratePrompts(T);
-  for (let i = 0; i < 100 && staleNudges.length === 0; i++) {
+  let staleNudges = await migratePrompts(T), freshNudges = await migratePrompts(F);
+  for (let i = 0; i < 100 && (staleNudges.length === 0 || freshNudges.length === 0); i++) {
     await Bun.sleep(100);
     staleNudges = await migratePrompts(T);
+    freshNudges = await migratePrompts(F);
   }
-  // negative proof, so it is a window: the fresh subject sat in every due scan the stale one was nudged in, plus four
+  // one per conversation (MAX_NUDGES): a window of four more due scans brings neither a second
   const tickMs = Number(process.env.FLEET_MIGRATE_TICK_MS ?? 60_000) | 0;
   await Bun.sleep(tickMs * 4 + 500);
   check(LATER.staleOnce,
-    staleNudges.length === 1 && (await migratePrompts(F)).length === 0 && (await migratePrompts(T)).length === 1,
+    staleNudges.length === 1 && freshNudges.length === 1 && (await migratePrompts(F)).length === 1 && (await migratePrompts(T)).length === 1,
     `fresh=${(await migratePrompts(F)).length} stale=${(await migratePrompts(T)).length}`);
-  // …and FRESH IS RE-ASKED WHEN THE CONVERSATION GROWS, not when the pane paints (MAIN review): the
-  // fresh subject's transcript now grows past FRESH_TAIL_MAX while its pane prints nothing at all, so
-  // its lastOutput stays put. Mutation: key the memo on lastOutput instead of the file → the memoised
-  // "fresh" is never asked again and this stays 0.
-  const fFile = fileOf(repoF, 1);
-  const fSilentBefore = (await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput;
-  const fBody = readFileSync(fFile, "utf8");
-  writeFileSync(fFile, fBody.slice(0, fBody.length - usage.length) + Array.from({ length: 20 }, (_, k) =>
-    line(repoF, k % 2 ? "assistant" : "user", atF + 10 + k, k % 2 ? [{ type: "text", text: `GREW-${k} ${"x".repeat(1490)}` }]
-      : `GREW-${k} ${"y".repeat(1490)}`)).join("") + usage);
-  const fLastOutput = (await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput;
-  let grownNudges = await migratePrompts(F);
-  for (let i = 0; i < 100 && grownNudges.length === 0; i++) {
-    await Bun.sleep(100);
-    grownNudges = await migratePrompts(F);
-  }
-  check(LATER.grownOnce,
-    grownNudges.length === 1 && fLastOutput !== undefined && fLastOutput === fSilentBefore,
-    `nudges=${grownNudges.length} lastOutput before=${fSilentBefore}/${fLastOutput} after=${(await sessions()).slots.find((x) => x.id === F.slot)?.lastOutput}`);
 
   // GAME-MAKER stays on its own rail at both doors
   const gDoor = await post(`/api/slots/${G.slot}/succeed`, {});

@@ -58,5 +58,7 @@ when a message or the person asks about your land.
 
 - Your context is finite, and what is only in it is lost with it. Keep a standing handover current:
   `POST /api/self/handover {"intent": "what is done, what is missing, what blocks"}`.
-- Before your context runs out, `POST /api/self/succeed {}`: Fleet starts your successor in this worktree with your
-  handover. Name in it what was running and where its results are; your own background jobs end with you.
+- Hand over early and at a natural break, never by running long: when an order is reported, or at a finished,
+  committed step, `POST /api/self/succeed {}`. Fleet starts your successor in this worktree with your handover, and a
+  mailbox message that reaches you above Fleet's between-orders mark says so in its first line. Name in your handover
+  what was running and where its results are; your own background jobs end with you.

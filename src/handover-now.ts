@@ -101,13 +101,12 @@ export function flowSteps(sc: BriefSuccession, f: FlowFacts): Step[] {
     const nudged = nudgedText(sc, f.now);
     const left = fill === null ? null : base - fill;
     const cold = cache?.state === "kalt";
-    // below the cap a fresh standing handover holds the nudge back (server.ts#tickMigrate, standingHandoverFresh); a cold
-    // cache holds it back for good (server/succession.ts#HintLedger.due)
+    // a standing handover no longer holds the nudge back (W3 Auftrag 16, server.ts#tickMigrate): it comes at the base all the same; a
+    // cold cache holds it back for good (server/succession.ts#HintLedger.due)
     const written = f.handoverAt !== undefined ? `handover written ${clockText(f.handoverAt, f.now)}` : null;
     steps.push({ id: "nudge", when: pctText(base),
       what: sc.nudgeOn ? "Fleet nudges the session once to succeed." : "Fleet doesn't nudge: turned off for this session.", grey: !sc.nudgeOn,
-      status: nudged ?? (fill !== null && fill >= base && fill < cap && written ? written
-        : left !== null && left <= 0 && cold && sc.nudgeOn ? "not into a cold cache"
+      status: nudged ?? (left !== null && left <= 0 && cold && sc.nudgeOn ? "not into a cold cache"
         : left === null ? undefined : left > 0 ? `${Math.ceil(left)} % to go` : "due"),
       tip: "Fleet types one message into the session, once: write the handover and start the successor itself. "
         + "It picks its own moment, and Fleet doesn't nudge again. Never into a cold cache: that would read the whole context again."

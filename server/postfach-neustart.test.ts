@@ -76,6 +76,8 @@ function welt(weg: "direkt" | "gebuendelt", opts: { geparkt?: boolean; sessionId
   const ledger = opts.ledger ?? [];
   let failure: Error | null = null;
   let repeat = false;
+  // die Annahme des nächsten Pastes, der ohne Wurf zurückkommt (W16-4: getippt, aber nicht beobachtet)
+  let acceptance: "observed" | "not-observed" | "unobservable" = "observed";
   const deps = {
     slots: [slot], messages: { entries: rows },
     backlogSessionKey: (s: Occupant) => s.sessionId ?? `unbound:${s.selfToken ?? ""}`,
@@ -90,7 +92,9 @@ function welt(weg: "direkt" | "gebuendelt", opts: { geparkt?: boolean; sessionId
         if (!repeat) failure = null;
         throw e;
       }
-      return { acceptance: "observed" as const };
+      const a = acceptance;
+      acceptance = "observed";
+      return { acceptance: a };
     },
     SendRefused, SendNotAccepted, SendComposerOccupied, DeliveryCancelled,
     sendFailureDelivery: (e: unknown) => e instanceof SendRefused ? "SendRefused"
@@ -99,9 +103,9 @@ function welt(weg: "direkt" | "gebuendelt", opts: { geparkt?: boolean; sessionId
     parkedSends: [] as { fleet?: { key: string } }[],
     logError: () => {},
     logPrompt: () => {},
-    stampMessageRead: (m: Message) => {
+    stampMessageRead: (m: Message, o: { id: number; openedAt: number; sessionId: string | null }) => {
       if (m.readBy !== null) return false;
-      m.readBy = { slot: 29, openedAt, sessionId };
+      m.readBy = { slot: o.id, openedAt: o.openedAt, sessionId: o.sessionId };
       return true;
     },
     saveStateNow: async () => {}, saveHistory: () => {}, MAX_HISTORY: 100,
@@ -127,6 +131,7 @@ function welt(weg: "direkt" | "gebuendelt", opts: { geparkt?: boolean; sessionId
   return {
     slot, rows, sends, ledger, api,
     failNext: (e: Error) => { failure = e; repeat = false; },
+    acceptNext: (a: "not-observed" | "unobservable") => { acceptance = a; },
     failAlways: (e: Error) => { failure = e; repeat = true; },
     tick: async () => { await api.tickPostfachZustellung(); await Bun.sleep(1); },
     tickParked: async () => { await api.tickParkedSends?.(); await Bun.sleep(1); },
@@ -209,12 +214,15 @@ describe("Postfach nach einem Neustart", () => {
     expect(nachher.sends).toHaveLength(0);
   });
 
+  // W3 Auftrag 16, Punkt 4 (umgedreht): was in die Pane der Vorgängerin getippt wurde, bekommt die
+  // Nachfolgerin nicht noch einmal; der Eintrag gilt als gelesen von der Besetzung, die ihn bekam.
   for (const neu of [{ sessionId: "session-b", openedAt: 100 },
     { sessionId: "session-a", openedAt: 101 }] as const) {
-    test(`ein neuer Besatzer erbt die gemerkten Versuche nicht (session=${neu.sessionId}, openedAt=${neu.openedAt})`, async () => {
+    test(`nach einem Neustart: was der alten Besetzung getippt wurde, gilt als ihr gelesen (session=${neu.sessionId}, openedAt=${neu.openedAt})`, async () => {
       const alte = welt("direkt");
-      alte.failNext(new SendNotAccepted("prompt not submitted — the composer still held part of the payload"));
+      alte.acceptNext("unobservable");
       await alte.tick();
+      expect(alte.rows[0]!.readBy).toBeNull();
       expect(alte.ledger).toHaveLength(1);
 
       // Dieselbe Slot-Nummer, aber eine neue Besetzung: andere Session ODER anderes openedAt.
@@ -222,9 +230,98 @@ describe("Postfach nach einem Neustart", () => {
       await neustart(neue);
       expect(neue.api.postfachAttempted.size).toBe(0);
       await neue.tick();
-      expect(neue.sends).toHaveLength(1);
+      expect(neue.sends).toHaveLength(0);
+      expect(neue.rows[0]!.readBy).toEqual({ slot: 29, openedAt: 100, sessionId: "session-a" });
     });
   }
+
+  test("Nachfolge im laufenden Prozess: Getipptes bleibt bei der Vorgängerin, Neues und nie Getipptes kommt an", async () => {
+    const w = welt("direkt");
+    w.acceptNext("not-observed");
+    await w.tick();
+    expect(w.sends).toHaveLength(1);
+    expect(w.rows[0]!.readBy).toBeNull();
+    expect(w.api.postfachAttempted.get(29)?.ids.has("m1")).toBe(true);
+    // m0 an die Vorgängerin erreicht ihre Pane nie: die Nachfolge kommt vor dem nächsten Takt
+    w.rows.push({ ...structuredClone(w.rows[0]!), id: "m0", at: Date.now() });
+
+    // die Nachfolge: dieselbe Slot-Nummer, neue Besetzung, und eine neue Nachricht an sie
+    w.slot.openedAt = 200;
+    w.slot.sessionId = "session-b";
+    w.rows.push({ ...structuredClone(w.rows[0]!), id: "m2", at: Date.now(), to: { kind: "session", slot: 29, openedAt: 200 } });
+    advance();
+    await w.tick();
+    expect(w.sends).toHaveLength(2);
+    const [m1, m0, m2] = w.rows;
+    expect(m1!.readBy).toEqual({ slot: 29, openedAt: 100, sessionId: "session-a" });
+    expect(m0!.readBy).toEqual({ slot: 29, openedAt: 200, sessionId: "session-b" });
+    expect(m2!.readBy).toEqual({ slot: 29, openedAt: 200, sessionId: "session-b" });
+    await w.tick();
+    expect(w.sends).toHaveLength(2);
+  });
+
+  // W3 Auftrag 17, W16-4: als gelesen gilt nur, was in der Pane STAND. Ein zurückgerollter Paste („cleared“) und ein Wurf vor
+  // dem Tippen sind nur ein Vielleicht: dieselbe Besetzung bekommt sie nicht noch einmal, ihre Nachfolgerin schon.
+  for (const [wie, fehler] of [
+    ["ein zurückgerollter Paste", new SendNotAccepted("prompt not submitted — Fleet's own paste was cleared")],
+    ["ein Wurf", new Error("tmux: can't find pane: %41")],
+  ] as const) {
+    test(`Nachfolge nach ${wie}: die Nachfolgerin bekommt die Nachricht, im Prozess und nach einem Neustart`, async () => {
+      const w = welt("direkt");
+      w.failNext(fehler);
+      await w.tick();
+      expect(w.sends).toHaveLength(1);
+      expect(w.rows[0]!.readBy).toBeNull();
+      advance();
+      await w.tick();
+      expect(w.sends).toHaveLength(1); // dieselbe Besetzung: kein zweites Tippen
+      expect(w.ledger).toHaveLength(1);
+
+      const neu = welt("direkt", { ledger: w.ledger, sessionId: "session-b", openedAt: 200 });
+      await neustart(neu);
+      await neu.tick();
+      expect(neu.sends).toHaveLength(1);
+      expect(neu.rows[0]!.readBy).toEqual({ slot: 29, openedAt: 200, sessionId: "session-b" });
+
+      w.slot.openedAt = 200;
+      w.slot.sessionId = "session-b";
+      advance();
+      await w.tick();
+      expect(w.sends).toHaveLength(2);
+      expect(w.rows[0]!.readBy).toEqual({ slot: 29, openedAt: 200, sessionId: "session-b" });
+    });
+  }
+
+  // S5 der Prüfung: dieselbe Besetzung lernt ihre Session-Id erst nach dem Tippen. Sie ist nicht beendet: was stand, gilt als ihr gelesen
+  // (wie bisher), und ein Vielleicht wird ihr nicht noch einmal getippt.
+  for (const [wie, vorher] of [["getippt", "acceptNext"], ["ein Vielleicht", "failNext"]] as const) {
+    test(`S5: die Session-Id kommt nach dem Tippen (${wie}): kein zweites Tippen in dieselbe Pane`, async () => {
+      const w = welt("direkt", { sessionId: null });
+      w.slot.selfToken = "tok-a";
+      if (vorher === "acceptNext") w.acceptNext("unobservable");
+      else w.failNext(new SendNotAccepted("prompt not submitted — Fleet's own paste was cleared"));
+      await w.tick();
+      expect(w.sends).toHaveLength(1);
+      w.slot.sessionId = "session-a";
+      advance();
+      await w.tick();
+      expect(w.sends).toHaveLength(1);
+      expect(w.rows[0]!.readBy).toEqual(vorher === "acceptNext" ? { slot: 29, openedAt: 100, sessionId: null } : null);
+    });
+  }
+
+  test("S5 über einen Neustart: ein Vielleicht derselben Pane, die inzwischen ihre Session-Id kennt, wird ihr nicht noch einmal getippt", async () => {
+    const vorher = welt("direkt", { sessionId: null });
+    vorher.slot.selfToken = "tok-a";
+    vorher.failNext(new SendNotAccepted("prompt not submitted — Fleet's own paste was cleared"));
+    await vorher.tick();
+    expect(vorher.ledger).toHaveLength(1);
+    const nachher = welt("direkt", { sessionId: "session-a", ledger: vorher.ledger });
+    nachher.slot.selfToken = "tok-a";
+    await neustart(nachher);
+    await nachher.tick();
+    expect({ sends: nachher.sends.length, readBy: nachher.rows[0]!.readBy }).toEqual({ sends: 0, readBy: null });
+  });
 
   test("die Merkliste ist je Besetzung begrenzt", () => {
     const rows = Array.from({ length: POSTFACH_VERSUCH_MAX_IDS + 7 }, (_, i) =>

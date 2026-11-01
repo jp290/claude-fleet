@@ -940,19 +940,14 @@ neu bezahlt; ↻ restart setzt dieselbe Unterhaltung fort. Zwei Türen schließe
   ist also kein 2-s-Poll; dafür trägt die Zeile in `GET /api/sessions` `standingHandover: {at}` (fehlt,
   wenn keine steht) neben dem vorhandenen `lastOutput` und `now`.
 
-**Frische stehende Übergabe stoppt den Schwellen-Hinweis** (`server.ts#standingHandoverFresh`, im
-`tickMigrate`): steht eine stehende Übergabe der aktuellen Belegung und erreicht der Transkript-Rest seit
-ihrem `at` eine Nachfolgerin noch GANZ (gelesen, nichts ausgelassen unter 24 000 Zeichen), bekommt die
-Session keinen Hinweis — jeder Hinweis wäre ein Turn über den vollen Kontext, und die Owner-Tür kann
-schon ohne einen übergeben. Frisch ist also kein Uhr-Alter, sondern „[Zitat entfernt]“: eine
-drei Stunden alte Übergabe über einer seitdem ruhenden Pane ist frisch, eine zehn Minuten alte vor
-30 000 Zeichen Arbeit nicht. Ein unlesbarer Rest ist nie frisch. Der Hinweis der Standard-Program-
-MAIN nennt die stehende Übergabe jetzt ebenfalls als Alternative.
-**Nur unterhalb der Obergrenze** (K9 S3b; Bauleitung 14.10. für den Owner nach Mangel 65: „[Zitat entfernt]“): Unterhalb kommt
-der Hinweis erneut, sobald der Füllstand seit dem letzten um 5 Punkte gestiegen ist. Weil der erste
-frühestens an der Basis kommt und die Obergrenze 5 darüber liegt, ist das die Obergrenze selbst. Dort kommt
-der Hinweis trotz frischer Übergabe, und nach ihm die gewählte Handlung, die neue Session über dieselbe
-Owner-Tür, die die stehende Übergabe liest.
+**Eine stehende Übergabe hält den Schwellen-Hinweis nicht auf** (W3 Auftrag 16, Owner 01.11.: früh und zwischen zwei Aufträgen
+übergeben, „[Zitat entfernt]“). Bis dahin schwieg `tickMigrate` unter der Obergrenze, solange eine „frische“ stehende
+Übergabe stand; frisch zählte nur getippten Text, und ein Bauer blieb so nach jeder Übergabe frisch, bis zur Obergrenze. Jetzt kommt
+der eine Hinweis je Gespräch an der Basis, mit oder ohne stehende Übergabe, nur nicht in einen kalten Cache und nicht in eine Pane,
+deren Nachfolge schon unterwegs ist. Der Hinweis der Standard-Program-MAIN nennt die stehende Übergabe als Alternative.
+**An der Obergrenze handelt Fleet** (K9 S3b; Bauleitung 14.10. für den Owner nach Mangel 65: „[Zitat entfernt]“): Einen zweiten Hinweis gibt es nicht
+(`server/succession.ts#MAX_NUDGES`, ein Hinweis je Gespräch seit K16 Runde C); an der Obergrenze kommt die gewählte Handlung, die neue
+Session über dieselbe Owner-Tür, die die stehende Übergabe liest.
 
 Gemessen 2026-10-07 an einem echten Claude-Transkript (dieser Lane, 628 Zeilen, 1,79 MB jsonl) auf einer
 Scratch-Instanz: Übergabe 8 min alt, Rest 9 Einträge / 1227 Zeichen, Brief **2242 Bytes**; ohne

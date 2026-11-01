@@ -4,7 +4,7 @@
 import { join } from "node:path";
 const stateDir = process.env.FLEET_STATE_DIR;
 if (!stateDir || !process.env.FLEET_PORT || !process.env.FLEET_TOKEN) throw new Error("FLEET_STATE_DIR, FLEET_PORT und FLEET_TOKEN fehlen");
-const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, tickPostfachZustellung, slotFrom, meldeNachbarProbleme, abnahmeTick, tickGit, GIT_TICK_MS } = await import("../server");
+const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, tickPostfachZustellung, slotFrom, meldeNachbarProbleme, abnahmeTick, tickGit, GIT_TICK_MS, tickMigrate, tickParkedSends, pollStreams } = await import("../server");
 await loadStateAndReap(join(stateDir, "fleet.json"));
 await settleBranchBook();
 adoptTokens();
@@ -34,4 +34,14 @@ setInterval(gitTakt, GIT_TICK_MS);
 // der Takt der Abnahme-Instanzen (server/abnahme-instanz.ts), wenn ein Test ihn verlangt
 if (process.env.FLEET_ABNAHME_TICK_MS)
   setInterval(() => { void abnahmeTick().catch((e) => console.error("abnahme-takt:", e instanceof Error ? e.message : e)); }, Number(process.env.FLEET_ABNAHME_TICK_MS));
+// der Übergabe-Takt (server.ts#tickMigrate), wenn ein Test ihn verlangt; FLEET_MIGRATE_PCT schaltet ihn wie im echten Start erst scharf
+if (process.env.FLEET_TEST_MIGRATE_TICK_MS)
+  setInterval(() => { void tickMigrate().catch((e) => console.error("uebergabe-takt:", e instanceof Error ? e.message : e)); }, Number(process.env.FLEET_TEST_MIGRATE_TICK_MS));
+// der Lese-Takt der Pane-Ströme (server.ts#poll, im echten Start alle 100 ms), wenn ein Test ihn verlangt: erst mit ihm sieht Fleet, dass
+// eine Pane malt (lastOutput, die Malmarke, nach der server/live-state.ts den Rahmen neu liest), statt ihren Rahmen bis zu 5 s alt zu halten
+if (process.env.FLEET_TEST_STREAM_POLL_MS && typeof pollStreams === "function")
+  setInterval(() => { void pollStreams().catch((e) => console.error("strom-takt:", e instanceof Error ? e.message : e)); }, Number(process.env.FLEET_TEST_STREAM_POLL_MS));
+// der Takt der geparkten Fleet-Sendungen (server.ts#tickParkedSends), wenn ein Test ihn verlangt: er tippt, sobald ein Feld frei wird
+if (process.env.FLEET_TEST_PARKED_TICK_MS)
+  setInterval(() => { void tickParkedSends().catch((e) => console.error("park-takt:", e instanceof Error ? e.message : e)); }, Number(process.env.FLEET_TEST_PARKED_TICK_MS));
 process.stdout.write(`${JSON.stringify({ bereit: server.port })}\n`);

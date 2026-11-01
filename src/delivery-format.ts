@@ -74,6 +74,14 @@ function eventParts(text: string, outer: string | null): DeliveryPart[] | null {
   return [...events.map((e) => ({ owner: false, mark: outer ? `${outer} · ${e.mark}` : e.mark, text: e.text })),
     { owner: false, mark: outer, text: BUNDLE_END.slice(1) }];
 }
+// Does a delivery bundle carry a part on `path`? server.ts#deliveryHeader asks it for path=postfach (the between-orders line,
+// W3 Auftrag 17), so the question is read with the same grammar the writer above writes and the chat view below reads.
+export function bundleHoldsPath(text: string, path: string): boolean {
+  return (splitMarked(text, "fleet-buendel") ?? []).some(({ mark }) => {
+    const rest = mark.replace(/^fleet-buendel \d+\/\d+ · /, "");
+    return rest === `path=${path}` || rest.startsWith(`path=${path} · `);
+  });
+}
 const OWNER_MARK = /^fleet-buendel \d+\/\d+ · path=owner(?: · |$)/;
 // The body of one transcript turn (after its delivery head, src/pendingsend.ts#splitDeliveryHeader)
 // split into its parts, or null when the turn is no bundle. An event bundle may ride inside a

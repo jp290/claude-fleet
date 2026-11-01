@@ -39,7 +39,7 @@ import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } 
 import type { CcAnatomie } from "./src/k15-anatomie";
 import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
 import type { SubscriptionUsage } from "./src/protocol";
-import { DELIVERY_HEADER_PREFIX, deliveryBundleText, deliveryHeaderPrefixOf, fleetEventBundleText } from "./src/delivery-format";
+import { DELIVERY_HEADER_PREFIX, bundleHoldsPath, deliveryBundleText, deliveryHeaderPrefixOf, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
@@ -244,8 +244,8 @@ import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
 import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
   postfachNichtsGetippt, postfachVersuchSignatur,
   type PostfachFehlerwort, type PostfachWeg } from "./server/postfach-fehler";
-import { postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
-  restorePostfachVersuche } from "./server/postfach-versuche";
+import { beendeteVersuche, postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
+  restorePostfachVersuche, vergangeneVersuche, type BeendeterVersuch, type PostfachVersuchMapRow } from "./server/postfach-versuche";
 import { dieselbeSperre, loescheSperre, postfachHindernis,
   type PostfachGate, type PostfachHindernis } from "./server/postfach-befund";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
@@ -263,7 +263,7 @@ import { landedIn, tickRounds, type RoundDeps } from "./server/runde";
 import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-blick";
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, onHandoverBand, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput,
-  type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
+  betweenOrdersLine, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
 import { briefRoom, freshSuccessionAppendix, FRESH_TAIL_MAX, type FreshTail } from "./server/brief-platz";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -12711,7 +12711,23 @@ function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot): st
   // sendText's residue check, src/pendingsend.ts and the pins). Its DELIVERY_MEANING sentence now
   // lives only in a bundle mark, where an owner send shares a paste with waiting deliveries.
   if (path === "owner") return `${DELIVERY_HEADER_PREFIX}${source} · Slot ${slot}] `;
-  return `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
+  const head = `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
+  // between two orders (server/succession.ts#betweenOrdersLine): a mailbox message to a seat at or above the mark brings one line after the
+  // head, so the head itself stays what src/pendingsend.ts#splitDeliveryHeader cuts at "] "
+  // ...und ebenso, wenn die Postfach-Nachricht in einem Bündel reist (W3 Auftrag 17): ein Sitz mit gebündelter Zustellung, oder ein
+  // sofortiger Paste, der wartende Einträge mitnimmt (flushDeliveryBundle), trägt den Kopf path=bundle und darin die Marke des Teils
+  const between = path === "postfach" || (path === "bundle" && bundleHoldsPath(text, "postfach")) ? betweenOrdersLineFor(s) : null;
+  return between ? `${head}${between}\n\n` : head;
+}
+// the head a delivery on `path` to slot `id` would carry now (server/load.test.ts reads the between-orders line through it)
+const deliveryHeaderFor = (path: SendPath, id: number, text: string): string | null => {
+  const s = slots.find((x) => x.id === id);
+  return s ? deliveryHeader(path, id, text, s) : null;
+};
+function betweenOrdersLineFor(s: Slot): string | null {
+  const t = thresholdFor(s);
+  return betweenOrdersLine({ fillPct: contextFill(s)?.pct ?? null, threshold: t, choice: thresholdChoiceOf(s, t.kind),
+    off: successionThresholdOff(s, t), nudge: handoverNudgeOn(s) });
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
@@ -19156,7 +19172,7 @@ function messageRetentionUnknown(): string[] {
 // THE ONE RECEIPT, shared by POST /api/self/messages/:id/read and the read-on-GET form, so the two
 // doors cannot drift: the occupant triplet, the time, and the audit line are written in one place.
 // Returns whether THIS call wrote the receipt — the first reader is the fact, a second writes nothing.
-function stampMessageRead(entry: Message, s: Slot): boolean {
+function stampMessageRead(entry: Message, s: Pick<Slot, "id" | "openedAt" | "sessionId">): boolean {
   if (entry.readBy !== null) return false;
   entry.readBy = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
   entry.readAt = Date.now();
@@ -29347,7 +29363,7 @@ async function tickMessageNudge(): Promise<void> {
 // receipt. It is NOT the bundle: DELIVERY_BUNDLE_SEC keeps its fifteen minutes for events, reports and
 // Program-inbox hints. The window here is about a minute, so several messages that arrive together are
 // typed together. An occupied composer parks the paste (parkFleetSend) instead of dropping it.
-const postfachAttempted = new Map<number, { session: string; ids: Set<string> }>();
+const postfachAttempted = new Map<number, PostfachVersuchMapRow>();
 // MESSAGES THAT WAIT IN THE BUNDLE ARE OFFERED NO MORE. They are not typed yet, so they are not an
 // "attempt" either: this row is released when the send lands, is refused for good, or is parked;
 // until then the next tick must not queue the same text a second time.
@@ -29425,13 +29441,33 @@ function vergissPostfachHindernisse(ids: readonly string[]): boolean {
 // in the record (no receipt without observation), but a second paste of the same text would be noise.
 // A cancelled send never reaches this, so a message that did not land is still retried. The same
 // fact goes to the attempt ledger BEFORE the next tick can see it; the boot reads it back.
-const rememberPostfachAttempt = (s: Slot, ids: readonly string[]): void => {
+// `stand`: der Paste kam ohne Wurf zurück und steht in der Pane (W16-4); nur das gibt eine beendete Besetzung als gelesen weiter
+const rememberPostfachAttempt = (s: Slot, ids: readonly string[], stand = false): void => {
   const session = backlogSessionKey(s);
-  const row = postfachVersuchRow(s.id, s.openedAt, session, ids, Date.now());
+  const row = postfachVersuchRow(s.id, s.openedAt, session, ids, Date.now(), stand);
   if (!row) return;
-  rememberPostfachVersuch(postfachAttempted, row);
+  const verdraengt = rememberPostfachVersuch(postfachAttempted, row);
+  if (verdraengt && erledigeGetipptes([verdraengt])) void saveStateNow().catch((e) => logError("postfachVorgaengerin", e));
   void appendEvent(POSTFACH_VERSUCH_FILE, row as unknown as Record<string, unknown>);
 };
+// WAS IN DIE PANE EINER BEENDETEN BESETZUNG GETIPPT WURDE, IST ERLEDIGT (W3 Auftrag 16, Punkt 4). Ohne
+// beobachtete Annahme blieb so eine Nachricht ungelesen, und weil die Merkliste je Besetzung gilt, tippte
+// der Takt sie jeder Nachfolgerin der Linie noch einmal: Slot 1 bekam am 01.11. direkt hinter seinem
+// Nachfolge-Brief sechs Aufträge, die zwei Runden früher erledigt waren, und die Orchestratorin las
+// „24 unread“ für Nachrichten, die längst in Panes standen. Die Quittung trägt die Besetzung, deren Pane
+// den Text bekam, nicht die Nachfolgerin. NUR WAS IN DER PANE STAND (W3 Auftrag 17, W16-4): ein Paste, der ohne Wurf
+// zurückkam (postfachHandlers#delivered). Ein Wurf, ein zurückgerollter Paste („cleared“) oder ein gescheiterter
+// geparkter Resend ist nur ein Vielleicht und erreicht die Nachfolgerin, auch nach einem Deploy (alte Ledger-Zeilen
+// tragen das Feld `stand` nicht).
+function erledigeGetipptes(beendet: readonly BeendeterVersuch[]): boolean {
+  let stamped = 0;
+  for (const b of beendet) for (const id of b.ids) {
+    const entry = messages.entries.find((m) => m.id === id && m.readBy === null);
+    if (entry && stampMessageRead(entry, { id: b.slot, openedAt: b.openedAt, sessionId: b.sessionId })) stamped++;
+  }
+  if (stamped) console.log(`postfach: ${stamped} Nachrichten, die in die Pane einer beendeten Besetzung getippt waren, gelten als von ihr gelesen`);
+  return stamped > 0;
+}
 function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
   let stamped = false;
   for (const id of postfachReceiptIds(entries, acceptance)) {
@@ -29493,7 +29529,7 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
     postfachFehlerbremse.vergessen(current.id);
     postfachVersuche.vergessen(current.id);
     forgetPostfachQueued(current, ids);
-    rememberPostfachAttempt(current, ids);
+    rememberPostfachAttempt(current, ids, true);
     const receipted = acknowledgePostfach(current, plan.entries, acceptance);
     const cleared = vergissPostfachHindernisse(ids);
     current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
@@ -29592,6 +29628,12 @@ async function tickPostfachZustellung(): Promise<void> {
   postfachBusy = true;
   try {
     const now = Date.now();
+    // zuerst die beendeten Besetzungen: was ihnen getippt wurde, bietet dieser Takt keiner Nachfolgerin an
+    const beendet = beendeteVersuche(postfachAttempted, (slot) => {
+      const s = slots.find((x) => x.id === slot);
+      return s?.cwd ? { openedAt: s.openedAt, session: backlogSessionKey(s) } : null;
+    });
+    if (erledigeGetipptes(beendet)) await saveStateNow();
     for (const s of slots) {
       if (!s.cwd || s.lastOutput === 0 || pendingPostfach.has(s.id)
         || parkedSends.some((p) => p.fleet?.key.startsWith(`postfach:${s.id}:`))) continue;
@@ -29641,7 +29683,7 @@ async function ladePostfachVersuche(): Promise<void> {
     logError("postfachVersuchLoad", e);
     return;
   }
-  const besetzungen = slots.map((s) => ({
+  const besetzungen = slots.filter((s) => s.cwd).map((s) => ({
     slot: s.id,
     openedAt: s.openedAt,
     session: backlogSessionKey(s),
@@ -29650,6 +29692,8 @@ async function ladePostfachVersuche(): Promise<void> {
   }));
   postfachAttempted.clear();
   for (const [slot, row] of restorePostfachVersuche(rows, besetzungen)) postfachAttempted.set(slot, row);
+  // eine Besetzung, die vor dem Neustart endete: was ihr getippt wurde, bekommt ihre Nachfolgerin nicht noch einmal
+  if (erledigeGetipptes(vergangeneVersuche(rows, besetzungen))) await saveStateNow();
   if (postfachAttempted.size)
     console.log(`postfach: ${postfachAttempted.size} gemerkte Versuche aus ${POSTFACH_VERSUCH_FILE} übernommen`);
 }
@@ -30310,47 +30354,11 @@ async function pastTranscript(s: Slot, n: number, after: number) {
     ...transcriptJournal.pastMissingOf(past.who.sessionId, start?.harness ?? null, past.startedAt) };
 }
 
-// A FRESH STANDING HANDOVER ENDS THE NUDGE (owner 2026-10-06: every nudge is a turn that re-reads the
-// whole context). The nudge exists to make a full session leave a handover; once one stands, the owner
-// door (handleOwnerSucceed) can hand over without a turn, and another nudge buys only a second turn.
-// BELOW THE CAP ONLY since K9 S3b (tickMigrate): at the cap the hint comes all the same.
-// FRESH IS NOT A CLOCK AGE: it is "nothing the successor needs is lost" — the transcript rest since the
-// handover's `at` still reaches the successor WHOLE (freshTranscriptTail: read, nothing omitted under
-// FRESH_TAIL_MAX). A handover written three hours ago over a pane that has rested since is fresh; one
-// written ten minutes ago before 30 000 characters of work is not, and the nudge then asks for a new
-// one. An unreadable rest is never fresh (cannot tell is not "nothing lost"). Memoised per occupant on
-// (handover, conversation file, its size and mtime): the answer cannot change while the conversation
-// file did not, so a slot that sits past its cooldown does not re-read it every tick. KEYED ON THE
-// FILE, NOT ON `lastOutput` (MAIN review of this cut): lastOutput is a pane-activity proxy whose
-// refresh a quiet window (our own paste echo, a resize repaint) and title-only bytes suppress on
-// purpose, so a transcript could grow past the cap behind an unchanged lastOutput and a memoised
-// "fresh" would never be asked again. The file is Claude's transcript or the harness's own
-// conversation file (pi's session jsonl) — the same file freshTranscriptTail reads through.
-const migrateFreshMemo = new Map<number, { key: string; fresh: boolean }>();
-// THE FILE WHOSE SIZE SAYS WHETHER THE CONVERSATION GREW after a standing handover: Claude's transcript,
-// or the harness's own conversation file (pi's session jsonl, resolved by identity exactly as the
-// context reader resolves it). null = this agent keeps no file Fleet reads.
-function conversationFile(s: Slot): string | null {
-  const transcript = transcriptFile(s);
-  if (transcript) return transcript;
-  const conv = harnessOf(s.harness).conversation;
-  return conv && s.cwd && s.sessionId ? conv.file({ cwd: s.cwd, sessionId: s.sessionId }) : null;
-}
-async function standingHandoverFresh(s: Slot): Promise<boolean> {
-  const standing = liveStandingHandover(s);
-  if (!standing) return false;
-  const file = conversationFile(s);
-  if (!file) return false;
-  let stat: { size: number; mtimeMs: number };
-  try { stat = statSync(file); } catch { return false; }
-  const key = `${s.openedAt}:${s.sessionId}:${standing.at}:${file}:${stat.size}:${stat.mtimeMs}`;
-  const memo = migrateFreshMemo.get(s.id);
-  if (memo?.key === key) return memo.fresh;
-  const tail = await freshTranscriptTail(s, standing.at);
-  const fresh = tail.state === "read" && tail.omitted === 0;
-  migrateFreshMemo.set(s.id, { key, fresh });
-  return fresh;
-}
+// A STANDING HANDOVER NO LONGER SILENCES THE HINT (W3 Auftrag 16, owner 01.11.: „[Zitat entfernt]“). Until then a
+// fresh one ended the nudge below the cap (owner 2026-10-06: every nudge is a turn). Fresh counted typed text only, so a builder
+// whose tokens grow through tool output stayed fresh after every handover it wrote, and its one hint came at the cap, mid-order
+// (measured on slot 1, 01.11.: 35 % at 13:14Z, handovers 13:20/13:29/13:32, the only hint 13:41Z at 40.2 %). The hint now comes at
+// the base and asks for the next natural break; it is still one per conversation (MAX_NUDGES).
 
 // THE HINT AT THE THRESHOLD (K9 S3, docs/neuaufbau/befunde/07-nachfolge.md §2 S3, §4). The decision is
 // server/succession.ts — the row of the table (thresholdFor), the step (thresholdStep), the budget
@@ -30362,7 +30370,7 @@ async function standingHandoverFresh(s: Slot): Promise<boolean> {
 let migrateTickBusy = false;
 async function tickMigrate(): Promise<void> {
   const now = Date.now();
-  const due: { s: Slot; sessionId: string; lane: boolean; facts: HintFacts }[] = [];
+  const due: { s: Slot; sessionId: string; lane: boolean; facts: HintFacts; ruhend?: string }[] = [];
   const acts: { s: Slot; sessionId: string; facts: HintFacts }[] = [];
   for (const s of slots) {
     if (!s.cwd || s.label === STEWARD_LABEL || s.awaiting === "owner" || !s.sessionId) continue;
@@ -30372,10 +30380,26 @@ async function tickMigrate(): Promise<void> {
     // the container because it has no readable usage file. Another agent is "not this tick's business",
     // never "0%" — so it is skipped before the fill is read, not after.
     if (!onHandoverBand(harnessOf(s.harness).id)) continue;
+    // EINE NACHFOLGE IST UNTERWEGS (W3 Auftrag 17, W16-3a): die Pane, die gerade geht, kann nicht mehr handeln (eine zweite Nachfolge
+    // bekäme 409 in-flight), ein Hinweis wäre ein verlorener Paste. Dieselbe Frage wie ownerSucceedRailRefusal.
+    if (nachfolgeUnterwegs(s)) continue;
     // `awaiting === "owner"` above covers the clarify lane: it was told to stop and wait
     const threshold = thresholdFor(s);
     const fill = contextFill(s);
-    if (fill === null || threshold.basePct <= 0 || fill.pct < threshold.basePct) continue; // cannot tell is never 0
+    if (fill === null || threshold.basePct <= 0) continue; // cannot tell is never 0
+    if (fill.pct < threshold.basePct) {
+      // UNTER DER BASIS nur die ruhende Übergabe-Zeile (W3 Auftrag 16, Punkt 5, server/succession.ts#restingHandoverLine); der Cache
+      // wird erst ab der Marke gelesen, und sie zählt im selben einen Hinweis je Gespräch
+      if (threshold.kind === "lane" || fill.pct < ZWISCHEN_AUFTRAEGEN_PCT || !handoverNudgeOn(s)) continue;
+      const cache = cacheStateOf(s, now);
+      const choice = thresholdChoiceOf(s, threshold.kind);
+      const ruhend = restingHandoverLine({ fillPct: fill.pct, threshold, choice,
+        cooling: !keepCacheOn(s) && cacheCooling(cache, now) });
+      if (ruhend && hintLedger.due(s.id, s.sessionId, "due", now, cache.state))
+        due.push({ s, sessionId: s.sessionId, lane: false, ruhend, facts: { fillPct: fill.pct, usedTokens: fill.usedTokens,
+          windowTokens: fill.windowTokens, threshold, step: "due", cache: cache.state, choice } });
+      continue;
+    }
     const cache = cacheStateOf(s, now);
     // „kurz vor kalt“ only where nothing keeps the cache warm: with its keepCache switch on, the warm turn
     // comes first (Owner 13.10.: „[Zitat entfernt]“)
@@ -30396,7 +30420,7 @@ async function tickMigrate(): Promise<void> {
   if (migrateTickBusy) return;
   migrateTickBusy = true;
   try {
-    for (const { s, sessionId, lane, facts } of due) {
+    for (const { s, sessionId, lane, facts, ruhend } of due) {
       const pendingKey = `${s.id}:${sessionId}`;
       if (fleetSendParked(`migrate:${pendingKey}`)) continue;
       // no idle gate (above); quiet hours and a live pane still hold
@@ -30406,22 +30430,21 @@ async function tickMigrate(): Promise<void> {
       // rail's exit.
       if (!verdict.ok || s.sessionId !== sessionId || !s.cwd || (s.worktree !== null) !== lane
         || !onHandoverBand(harnessOf(s.harness).id)) continue;
-      // asked after the delivery gate, so the transcript is read only for a hint that would go out.
-      // NOT FOR A LANE: its standing handover is the stand its MAIN reads (handleSelfHandover), no
-      // door hands a lane over on it, so it must not silence the lane's own hint.
-      // ONLY BELOW THE CAP (Bauleitung 14.10. for the owner, after Mangel 65: „[Zitat entfernt]“): below it the hint returns
-      // once the fill rose 5 points since the last one — the first comes at the base at the earliest and the
-      // cap lies CAP_GAP_PCT = 5 above it, so that point IS the cap. There the hint comes, and the chosen act after it.
-      if (!lane && facts.fillPct < facts.threshold.capPct && await standingHandoverFresh(s)) continue;
       if (s.sessionId !== sessionId || !s.cwd) continue;
+      // die ruhende Zeile nur an einen Sitz, der wirklich ruht: kühlt sein Cache unter einem langen Werkzeuglauf, wartet sie
+      if (ruhend && !(await ruhtZwischenAuftraegen(s))) continue;
       // ASKED AFTER THE AWAITS, in one step with the reservation: a hint that landed or is still on its
       // way meanwhile (the previous tick's send) is not typed a second time
       const claim = hintLedger.claim(s.id, sessionId, facts.step, Date.now(), facts.cache);
       if (!claim) continue;
-      const text = hintText(facts);
+      const text = ruhend ?? hintText(facts);
       const beforeSend = async (current: Slot): Promise<void> => {
         if (current !== s || s.sessionId !== sessionId)
           throw new DeliveryCancelled(`migration target ${pendingKey} changed before paste`);
+        if (nachfolgeUnterwegs(current)) throw new DeliveryCancelled(`succession of ${pendingKey} in flight — no hint into the leaving pane`);
+        // DIE RUHENDE ZEILE NIE IN EINEN SITZ, DER ARBEITET (W16-5): gefragt direkt vor dem Paste, wie compactAtThreshold es tut
+        if (ruhend && (!(await ruhtZwischenAuftraegen(current)) || keepCacheOn(current) || !cacheCooling(cacheStateOf(current, Date.now()), Date.now())))
+          throw new DeliveryCancelled(`resting line for ${pendingKey}: the seat works again or its cache is no longer cooling`);
       };
       // a delivered hint, typed at once or out of the parked list: counted, kept, logged
       const migrateDelivered = (current: Slot, acceptance: Acceptance): void => {
@@ -30441,6 +30464,9 @@ async function tickMigrate(): Promise<void> {
           // THE HELD FIELD MUST NOT EAT THE MIGRATION (systemlast-befund 2026-10-11: under memory
           // pressure "composer occupied — nothing typed" dropped this nudge exactly when it was
           // needed, and the cooldown kept it away). It waits as a parked Fleet send instead.
+          // ...nur nicht die ruhende Zeile (W16-5): ein besetztes Feld heißt, jemand schreibt gerade den nächsten Auftrag hinein, und eine
+          // geparkte Zeile käme später mitten in diesen Auftrag. Sie fällt weg, ungezählt; ruht der Sitz wieder, fragt der nächste Takt neu.
+          if (e instanceof SendComposerOccupied && ruhend) return;
           if (e instanceof SendComposerOccupied && parkFleetSend(s, e, text, { key: `migrate:${pendingKey}`,
             send: (current) => sendText(current, text, true, { path: "migrate-nudge", rollbackOwnPayload: true,
               requireAgent: true, beforeSend }),
@@ -30491,6 +30517,15 @@ async function tickMigrate(): Promise<void> {
 // counts only from the window's end. Core run 1014083939, fixture R: the act came 59–294 ms after the hint,
 // inside the boot's attach window and the hint's own paste window, and a pane printing every 200 ms read
 // as resting.
+// RUHT ZWISCHEN ZWEI AUFTRÄGEN (W3 Auftrag 17, W16-5): er ruht, und in seinem Feld steht nichts. Text im Feld heißt, jemand schreibt gerade
+// den nächsten Auftrag hinein, und gleich arbeitet der Sitz: gemessen schickte der Paste-Weg die Zeile 177 ms nach dem Abschicken eines
+// solchen Auftrags hinterher, weil der Rahmen der Ruheprobe noch den alten Stand zeigte und erst die Feldprobe frisch las.
+async function ruhtZwischenAuftraegen(s: Slot): Promise<boolean> {
+  if (!(await thresholdResting(s))) return false;
+  return !(await liveReader.read(s.id)).composer;
+}
+// eine Nachfolge dieser Besetzung ist begonnen oder unterwegs (dieselbe Frage wie ownerSucceedRailRefusal)
+const nachfolgeUnterwegs = (s: Slot): boolean => successionStarted.get(s.id) === s.selfToken || successionInflight.has(s.selfToken);
 async function thresholdResting(s: Slot): Promise<boolean> {
   if (s.lastOutput === 0) return false;
   if (Date.now() - Math.max(s.lastOutput, s.quietUntil) < MERGE_IDLE_MS) return false;
@@ -59049,7 +59084,7 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
+export { paneApiError, deliveryHeaderFor, tickMigrate, poll as pollStreams, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals, abnahmeTick, tickGit, GIT_TICK_MS };

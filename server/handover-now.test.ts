@@ -50,8 +50,10 @@ describe("what happens next, and when", () => {
     expect(nudgedText(bau({ nudges: 1, nudgedAt: NOW - 3 * MIN, nudgedPct: null }), NOW)).toBe("nudged 13:57");
     expect(nudgedText(bau(), NOW)).toBeNull();
   });
-  test("a handover written above the threshold and under the cap holds the nudge back, and the line says so", () => {
-    expect(step(bau({ fill: fill(42) }), "nudge", NOW - 2 * MIN)?.status).toBe("handover written 13:58");
+  // W3 Auftrag 16/17 (Owner 01.11.: früh übergeben, „[Zitat entfernt]“): eine stehende Übergabe hält den Hinweis nicht mehr auf
+  test("a handover written above the threshold and under the cap no longer holds the nudge back: the line says it is due", () => {
+    expect(step(bau({ fill: fill(42) }), "nudge", NOW - 2 * MIN)?.status).toBe("due");
+    expect(step(bau({ fill: fill(42) }), "nudge", NOW - 2 * MIN)?.tip).toContain("The session wrote its handover at 13:58");
     expect(step(bau({ fill: fill(42) }), "nudge")?.status).toBe("due");
   });
   test("Runde C: above the threshold with a cold cache nothing is typed and Fleet's act waits for the cap — the offer is the owner's", () => {

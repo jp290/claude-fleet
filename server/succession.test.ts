@@ -8,7 +8,7 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
+import { actDecision, agoText, betweenOrdersLine, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
   onHandoverBand, orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
   thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
   type ThresholdChoice, type WarmFacts } from "./succession";
@@ -366,6 +366,53 @@ describe("der Hinweis", () => {
     expect(succeed.indexOf("POST /api/self/succeed")).toBeLessThan(succeed.indexOf("Fleet opens a new session"));
     expect(hintText(facts("session", 49, "warm", "succeed"))).toContain("Fleet opens a new session itself now or shortly before");
     expect(hintText(facts("lane", 46, "warm", "compact"))).toContain("Commit your state first.");
+  });
+  // Owner 01.11.: „[Zitat entfernt]“: der Hinweis nennt den nächsten natürlichen Punkt und nicht die Obergrenze als Ziel
+  test("er bittet um die Übergabe am nächsten natürlichen Punkt, nicht um ein Weiterlaufen bis zur Obergrenze; die Lane behält ihren Weg", () => {
+    const punkt = "at your next natural break (when your current order is reported, or at a finished, committed step inside the work)";
+    const t = hintText(facts("session", 46));
+    expect(t).toContain(`you choose the point: hand over ${punkt}, and do not run on to the cap.`);
+    expect(t.indexOf("POST /api/self/handover")).toBeLessThan(t.indexOf("POST /api/self/succeed"));
+    expect(hintText(facts("session", 46, "warm", "succeed"))).toContain(`keep it current; ${punkt}, when nothing is running, call POST /api/self/succeed`);
+    expect(hintText(facts("lane", 46))).not.toContain(punkt);
+    expect(hintText(facts("session", 46, "warm", "compact"))).not.toContain(punkt);
+  });
+  test("die Zeile zwischen zwei Aufträgen: ab der Marke, nie für eine Lane, nie ohne Schwelle, nie mit ausgeschaltetem Hinweis, nie ohne Füllstand", () => {
+    const an = { fillPct: ZWISCHEN_AUFTRAEGEN_PCT, threshold: thresholdOf("bau", 35, null), choice: "hint" as const, off: null, nudge: true };
+    expect(ZWISCHEN_AUFTRAEGEN_PCT).toBe(25);
+    expect(betweenOrdersLine(an)).toContain("Your context is at 25 %, at or above the between-orders mark of 25 %.");
+    expect(betweenOrdersLine({ ...an, threshold: thresholdOf("session", null, null) })).not.toBeNull(); // ein freier Sitz auf Fleets Basis
+    expect(betweenOrdersLine({ ...an, choice: "succeed" })).not.toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: 24.9 })).toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: null })).toBeNull();
+    expect(betweenOrdersLine({ ...an, threshold: thresholdOf("lane", 35, null) })).toBeNull();
+    expect(betweenOrdersLine({ ...an, off: "setup" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, off: "session" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, nudge: false })).toBeNull();
+    // W16-2: nur auf Fleets eigener Basis eines Bauers; eine eigene Schwelle, Compact und eine Rolle mit höherer Basis behalten ihren Hinweis
+    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("bau", 35, 60) })).toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: 30, choice: "compact" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("orchestrator", 35, null) })).toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("program-main", 35, null) })).toBeNull();
+    expect(betweenOrdersLine(an)).not.toMatch(/['"]/);
+  });
+  test("die ruhende Übergabe-Zeile (Auftrag 16, Punkt 5): ab der Marke bis unter die Basis, nur bei kühlendem Cache, nie für eine Lane, nie bei Compact, nie ohne Schwelle", () => {
+    const an = { fillPct: 30, threshold: thresholdOf("bau", 35, null), cooling: true, choice: "succeed" as const };
+    expect(restingHandoverLine(an)).toContain("Your context is at 30 %, at or above the between-orders mark of 25 %, you are resting");
+    expect(restingHandoverLine({ ...an, choice: "hint" })).not.toBeNull();
+    expect(restingHandoverLine({ ...an, fillPct: ZWISCHEN_AUFTRAEGEN_PCT })).not.toBeNull();
+    expect(restingHandoverLine({ ...an, fillPct: 24.9 })).toBeNull();
+    expect(restingHandoverLine({ ...an, fillPct: 35 })).toBeNull(); // ab der Basis spricht der Hinweis, mit seiner Handlung
+    expect(restingHandoverLine({ ...an, cooling: false })).toBeNull();
+    expect(restingHandoverLine({ ...an, choice: "compact" })).toBeNull();
+    expect(restingHandoverLine({ ...an, threshold: thresholdOf("lane", 35, null) })).toBeNull();
+    expect(restingHandoverLine({ ...an, threshold: thresholdOf("bau", 0, null) })).toBeNull();
+    expect(restingHandoverLine({ ...an, threshold: thresholdOf("bau", null, null, true) })).toBeNull();
+    // W16-2: die eigene Schwelle des Owners (auch dieselbe Zahl) und eine Rolle mit höherer Basis bekommen sie nicht
+    expect(restingHandoverLine({ ...an, threshold: thresholdOf("bau", 35, 35) })).toBeNull();
+    expect(restingHandoverLine({ ...an, fillPct: 40, threshold: thresholdOf("orchestrator", 35, null) })).toBeNull();
+    expect(restingHandoverLine({ ...an, threshold: thresholdOf("program-main", 35, null) })).toBeNull();
+    expect(restingHandoverLine(an)).not.toMatch(/['"]/);
   });
   test("kurz vor kalt sagt er es", () => {
     expect(hintText(facts("session", 46, "warm", "succeed", true))).toContain("Your cache will be cold soon.");

@@ -494,7 +494,21 @@ describe("Route-Handler ohne Port, mit Owner-Token", () => {
     if (!res) throw new Error("/api/sessions: der Handler gab keine Antwort");
     expect(res.status).toBe(200);
     const body = await res.json() as { slots?: { id: number }[] };
-    expect(body.slots?.map((s) => s.id)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
+    // die Zahl, die server/types.ts beim ERSTEN Import in diesem Prozess las (Queue 6dc4bd7d): hat eine Testdatei davor es geladen, als die
+    // .env des Checkouts noch galt, zählt MAX_SLOTS deren FLEET_MAX_SESSIONS mit, und load() leert die Umgebung zu spät für den Modul-Cache
+    const { MAX_SLOTS } = await import("./types");
+    expect(body.slots?.map((s) => s.id)).toEqual(Array.from({ length: MAX_SLOTS }, (_, i) => i + 1));
+  });
+  test("ohne FLEET_MAX_SESSIONS und FLEET_SEPARATE_LANE_SLOTS sind es 16 Slots", async () => {
+    // in einem eigenen Prozess ohne FLEET_-Variable und ohne .env, also unabhängig davon, was dieser Prozess schon importierte
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env))
+      if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
+    const proc = Bun.spawn([process.execPath, "--no-env-file", "-e",
+      `const t = await import(${JSON.stringify(join(import.meta.dir, "types.ts"))}); console.log(JSON.stringify([t.MAX_SLOTS, t.BAND_SLOTS]));`],
+    { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+    const [exitCode, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+    expect({ exitCode, out: out.trim() }).toEqual({ exitCode: 0, out: "[16,16]" });
   });
 
   // Owner 2026-10-26, Stufe 2: der Katalog ist die eine Quelle, aus der das Brett die Harness waehlt.
@@ -1175,7 +1189,7 @@ describe("pi: die Modelle des Startfensters und die Zeile, die sie startet", () 
 // der Füllstand aus einem Transkript, wie Claude Code es schreibt.
 describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen Sitz ab 25 %", () => {
   test("ab 25 % kommt die Zeile mit Füllstand und Marke; darunter, an eine Lane, mit Übergabe aus und auf einem anderen Weg nicht", async () => {
-    const { loadPersistedState, adoptTokens, deliveryHeaderFor } = await load();
+    const { loadPersistedState, adoptTokens, deliveryHeaderFor, typedDeliveryFor } = await load();
     const dir = mkdtempSync(join(tmpdir(), "fleet-zwischen-"));
     const model = "claude-opus-5-5";
     const window = contextWindowFor(model);
@@ -1232,6 +1246,13 @@ describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen S
       expect(faelle.map(({ fall, kopf: k }) => ({ fall, zeile: k.includes("between-orders mark of 25 %") })))
         .toEqual(faelle.map(({ fall, zeile }) => ({ fall, zeile })));
       expect(buendel("postfach")).toContain("· path=bundle · Slot 4 · ");
+      // Queue f0bde8c4 (Prüfer R2-1 zu Auftrag 17): über 32 KiB tippt Fleet statt des Bündels die eine Zeile, die auf seine Datei zeigt.
+      // Der Kopf fragt das Bündel, nicht diese Zeile: mit einem Postfach-Teil kommt die Zeile, ohne keiner.
+      const gross = (pfad: string) => typedDeliveryFor("bundle", 4, `[fleet-buendel 1/2 · path=fleet-event · x]\n${"ä".repeat(10_000)}\n\n`
+        + `[fleet-buendel 2/2 · path=${pfad} · y]\n[fleet message] abc from Orchestrator\n\n${"ö".repeat(10_000)}`);
+      expect([gross("postfach"), gross("fleet-report")].map((t) => ({ alsDatei: t?.text.startsWith("[fleet] message ") ?? false,
+        zeile: t?.header?.includes("between-orders mark of 25 %") ?? false })))
+        .toEqual([{ alsDatei: true, zeile: true }, { alsDatei: true, zeile: false }]);
     } finally {
       delete process.env.FLEET_CLAUDE_PROJECTS_DIR;
       rmSync(dir, { recursive: true, force: true });

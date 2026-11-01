@@ -12701,7 +12701,9 @@ const headsDelivery = (): boolean => !DECLARED_HARNESS;
 // not taken for the owner's draft. (Not measured here, from the Workhorse lead's reading: without the head a delivery that
 // starts with "!" runs as a shell command in pi.)
 // An undeclared stand-in (`true`) takes it too, which is what lets the suites see the form.
-function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot): string | null {
+// `text` is what is typed after the head; `given` is the caller's text, which differs from it only over PASTE_MAX_BYTES, where the
+// pane-inbox line stands for it (server.ts#typedDelivery). What the delivery CARRIES is read from `given`, what the composer gets from `text`.
+function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot, given = text): string | null {
   const source = DELIVERY_SOURCE[path];
   if (!source || unheadedPath(path) || !headsDelivery()
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
@@ -12716,13 +12718,18 @@ function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot): st
   // head, so the head itself stays what src/pendingsend.ts#splitDeliveryHeader cuts at "] "
   // ...und ebenso, wenn die Postfach-Nachricht in einem Bündel reist (W3 Auftrag 17): ein Sitz mit gebündelter Zustellung, oder ein
   // sofortiger Paste, der wartende Einträge mitnimmt (flushDeliveryBundle), trägt den Kopf path=bundle und darin die Marke des Teils
-  const between = path === "postfach" || (path === "bundle" && bundleHoldsPath(text, "postfach")) ? betweenOrdersLineFor(s) : null;
+  const between = path === "postfach" || (path === "bundle" && bundleHoldsPath(given, "postfach")) ? betweenOrdersLineFor(s) : null;
   return between ? `${head}${between}\n\n` : head;
 }
 // the head a delivery on `path` to slot `id` would carry now (server/load.test.ts reads the between-orders line through it)
 const deliveryHeaderFor = (path: SendPath, id: number, text: string): string | null => {
   const s = slots.find((x) => x.id === id);
   return s ? deliveryHeader(path, id, text, s) : null;
+};
+// what sendText types for `given` on `path` to slot `id`: the head and the text after it (server/load.test.ts, queue f0bde8c4)
+const typedDeliveryFor = (path: SendPath, id: number, given: string): { header: string | null; text: string } | null => {
+  const s = slots.find((x) => x.id === id);
+  return s ? typedDelivery(s, given, path) : null;
 };
 function betweenOrdersLineFor(s: Slot): string | null {
   const t = thresholdFor(s);
@@ -13564,6 +13571,13 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
   for (const rider of riding) rider.bundle.inflight = flight;
   return flight;
 }
+// What a send types: over PASTE_MAX_BYTES the one pane-inbox line that stands for the stored text, else the text itself, and the head
+// in front of it. The head reads what the delivery carries from `given`: a large bundle with a mailbox part still brings the
+// between-orders line, although its typed text is the pane-inbox line (queue f0bde8c4, checker R2-1 on W3 Auftrag 17).
+function typedDelivery(s: Slot, given: string, path: SendPath, notice?: string): { text: string; header: string | null } {
+  const text = Buffer.byteLength(given, "utf8") > PASTE_MAX_BYTES ? storePaneInboxText(s, given, path, notice) : given;
+  return { text, header: deliveryHeader(path, s.id, text, s, given) };
+}
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
   if (SNAPSHOT_MIRROR) throw new DeliveryCancelled("snapshot-mirrored-read-only: Pane-Zustellung in einer Spiegel-Instanz");
   if (!options.senders) {
@@ -13622,9 +13636,8 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   });
   }
   }
-  // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it
-  const text = Buffer.byteLength(given, "utf8") > PASTE_MAX_BYTES
-    ? storePaneInboxText(s, given, options.path, options.paneInboxNotice) : given;
+  // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it, behind its head
+  const { text, header } = typedDelivery(s, given, options.path, options.paneInboxNotice);
   const occupant = slotStreamOccupant(s);
   if (!occupant || slotTeardownInflight.has(s.id)) throw new SendRefused("slot unavailable for send — nothing typed");
   const harnessName = s.harness ?? "default";
@@ -13632,7 +13645,6 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   // what the composer holds once this send has typed: the delivery header, then the pasted body
-  const header = deliveryHeader(options.path, occupant.slot, text, s);
   const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`
@@ -59084,7 +59096,7 @@ if (process.stdout.isTTY) {
 
 // What tests import (server/load.test.ts). A list here, never `export` in front of a declaration:
 // e2e lifts find functions by `^(?:async )?function name`.
-export { paneApiError, deliveryHeaderFor, tickMigrate, poll as pollStreams, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
+export { paneApiError, deliveryHeaderFor, typedDeliveryFor, tickMigrate, poll as pollStreams, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
   appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals, abnahmeTick, tickGit, GIT_TICK_MS };

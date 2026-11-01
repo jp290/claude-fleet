@@ -10,6 +10,7 @@ import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
 import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
 import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek, type StartAspects } from "./server/session-start";
+import { bunInstall, installStand, starteInstall } from "./server/branch-install";
 import { faellig, liesAbnahme, mitAbnahme, ohneAbnahme, schreibAbnahme, vonLebt, vonSitz } from "./server/abnahme-instanz";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
@@ -8847,7 +8848,7 @@ async function branchesOfRepo(repo: string): Promise<BranchesRepoView> {
       lands: record.lands.map((l) => ({ sha: l.sha, at: l.at, subject: l.subject, points: l.points, passt: l.passt, zusage: l.zusage === true,
         ...(l.passtVon ? { passtVon: l.passtVon } : {}), checked: l.checked, form: l.form ?? "squash" })),
       landForm: record.landForm ?? "squash", chargeBase: cb, chargeCommits: checked ? checked.length : charge?.code === 0 ? Number(charge.out) : null,
-      check: await chargeCheckView(repo, record, ref.head, cb) };
+      check: await chargeCheckView(repo, record, ref.head, cb), ...(path && installStand(path) ? { install: installStand(path)! } : {}) };
   }));
   return { repo, integration, branches, others: v.others, othersTotal: v.othersTotal, reasons,
     checkCommand: repoCheckView(repoChecks, repo, ownMergeCheck(repo)), zusage: zusageView(landZusagen, repo) };
@@ -9556,6 +9557,8 @@ const roleLabelOf = (name: string): boolean => isOrchestratorLabel(name) || name
 // NEUAUFBAU K5 · open a branch on the board (POST /api/branches, and its self door POST /api/self/branches): a NEW one (no
 // `branch`: a name derived from `name`; or a free `branch` name), or an EXISTING one — checked out into a worktree if it has
 // none. A name another branch of the repo carries is refused with that branch, before anything is created.
+// wie lange das Install eines frischen Branch-Worktrees laufen darf (server/branch-install.ts), so lang wie das einer Runde
+const BRANCH_INSTALL_MS = 240_000;
 async function createBoardBranch(body: Record<string, unknown> | null): Promise<Response> {
   const points = body?.points;
   if (!body || typeof body.name !== "string" || (body.branch !== undefined && typeof body.branch !== "string")
@@ -9592,6 +9595,7 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
     return json({ error: `${branch} is the repo's own line, not a branch to work on` }, 400);
   if (existed && base) return json({ error: `branch ${branch} exists — base is set only for a new branch` }, 400);
   let path = (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null;
+  const hatteBaum = path !== null;
   try {
     if (!existed) path = (await createWorktree(repo, branch, fo.form, base ?? undefined, undefined, h)).path;
     else if (!path) path = await checkoutBranchWorktree(repo, branch, h);
@@ -9607,8 +9611,13 @@ async function createBoardBranch(body: Record<string, unknown> | null): Promise<
   await saveStateNow();
   workplacesCache = null;
   void tickGit().catch(() => {});
+  // der Baum, den diese Tür eben anlegte, bekommt seine node_modules im Hintergrund (server/branch-install.ts); die Antwort wartet nicht darauf
+  const install = path && !hatteBaum ? starteInstall(path, bunInstall(BRANCH_INSTALL_MS), (st) => {
+    audit("branch_install", undefined, `${repo} ${branch} ${path}: ${st.state}${st.error ? ` — ${st.error}` : ""}`);
+    if (st.state === "failed") logError("branch_install", new Error(`${path}: ${st.error}`));
+  }) : null;
   return json({ ok: true, repo, branch, path, created: !existed, name: done.record.name, text: done.record.text,
-    rev: done.record.rev }, existed ? 200 : 201);
+    rev: done.record.rev, ...(install ? { install: install.state } : {}) }, existed ? 200 : 201);
 }
 // WAS DIE LÄUFE VOM SERVER BRAUCHEN (server/laeufe.ts#LaufServer): die Route des Fensters und die Self-Tür, die einen Sitz an den Lauf seiner Öffnerin bindet
 const laufServer: LaufServer = {
@@ -10154,11 +10163,7 @@ const rundeDeps: RoundDeps = {
   landed: (repo, branch, head) => landedIn(branchBook, repo, branch, head),
   held: (wt) => heldBy(endHolds(), wt),
   scaffold: BRANCH_END_SCAFFOLD,
-  install: async (wt) => {
-    const child = Bun.spawn(["bun", "install", "--frozen-lockfile"], { cwd: wt, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const timer = setTimeout(() => child.kill(), ROUND_TI_MS);
-    try { return { code: await child.exited, out: "" }; } finally { clearTimeout(timer); }
-  },
+  install: async (wt) => ({ code: (await bunInstall(ROUND_TI_MS)(wt)).code, out: "" }),
   parked: async (repo, branch) => {
     const at = (await listWorktrees(repo)).find((w) => w.branch === branch);
     return !!at && shelved[at.path] !== undefined;
@@ -54263,7 +54268,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!b) return json({ error: `${own.branch} is no board branch` }, 404);
       return json({ repo: own.repo, integration: view.integration, checkCommand: view.checkCommand, zusage: view.zusage,
         branch: b.branch, name: b.name, head: b.head,
-        seen: b.seen, check: b.check, chargeCommits: b.chargeCommits, landForm: b.landForm, lands: b.lands });
+        seen: b.seen, check: b.check, chargeCommits: b.chargeCommits, landForm: b.landForm, lands: b.lands, install: b.install ?? null });
     }
 
     // the lane's own drift view — read-only by construction (laneDrift never touches a working tree)
@@ -59022,4 +59027,4 @@ if (process.stdout.isTTY) {
 export { paneApiError, CLAUDE_HARNESS, CODEX_HARNESS, PI_HARNESS, PI_UNFENCED_HARNESS, PI_ZAI_HARNESS, PI_DEEPSEEK_HARNESS, PI_ZAI_UNFENCED_HARNESS, serveOptions, adoptTokens, loadPersistedState, settleBranchBook, endLandedBranchesNow, saveStateNow, viewEntry, crossSessionEntry,
   fassungFuerSlot, fassungFleetStart, fassungDerOeffnung, fassungTestHaken, fleetCheckoutForSpawn, fassungImFleetCheckout, healAlleSlots, fassungGezeigtPruefung, freierSlotFuerVorschau, startVonAdresse, halteStart, foundingPlanAnswer, fassungFuerNeuenPlan, nativeLoaderBytes, slotCmd, buildOrchestratorSuccessionBrief, buildOrchestratorSpawnBrief, orchestratorStartDatei, fassungProjektregelnAus, fleetBaumVon, buildLaneSuccessionBrief,
   buildSuccessionBrief, buildProgramMainBrief, readOrchestratorStartParts, orchestratorRoleCard, MAIN_ROLE_CARD, LANE_ROLE_CARD, ORCHESTRATOR_ROLE_CARD,
-  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals, abnahmeTick };
+  appendOrchestratorStartReceipt, tickWarteHinweis, tickPostfachZustellung, tickParkedSends, slotFrom, seatStartFor, loadStateAndReap, meldeNachbarProbleme, settleQueuedFromSeals, abnahmeTick, tickGit, GIT_TICK_MS };

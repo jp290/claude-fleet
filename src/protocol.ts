@@ -995,6 +995,8 @@ export interface BranchView {
   path: string | null; session: { slot: number; openedAt: number } | null;
   distance: WorktreeDistance | null;
   lands: BranchLandView[]; landForm: "squash" | "commits"; chargeBase: string | null; chargeCommits: number | null; check: BranchCheckView | null;
+  /** the `bun install --frozen-lockfile` Fleet ran in the worktree a branch door created (server/branch-install.ts); absent = none ran */
+  install?: { state: "running" | "ok" | "failed"; at: number; error?: string };
 }
 export interface BranchOtherView { branch: string; head: string; at: number; path: string | null }
 // The owner's standing word for a repo (server/land-zusage.ts, Owner 28.10.: „[Zitat entfernt]“):

@@ -189,6 +189,8 @@ type AuditEvent =
   | "branch_passt"
   // a test instance a seat brought up for acceptance (POST /api/self/testinstanz) ended with a „passt“ on its branch or its seat's end (server/abnahme-instanz.ts)
   | "abnahme_instanz_ended"
+  // the `bun install --frozen-lockfile` Fleet ran in a fresh branch worktree (server/branch-install.ts): ok, or failed with bun's reason
+  | "branch_install"
   // a land in a repo that has no remote under FLEET_HUB_REMOTE's name (5857e934): the variable is
   // fleetwide, the remote is per repo, and such a repo lands locally with no hub. Written at the
   // same choke point as land_actor, beside the `hubSkipped` field on the note that says the same.

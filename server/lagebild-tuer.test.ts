@@ -160,8 +160,10 @@ describe("GET /api/self/overview, Runde 3", () => {
     const HALT = join(dirname(f.repo), "HALT");
     const echt = Bun.which("git", { PATH: (process.env.PATH ?? "").split(":").filter((d) => d !== BIN).join(":") });
     if (!echt) throw new Error("kein echtes git");
-    // nur `git status` hält an: das ist der Aufruf des Git-Ticks (tickGit), jeder andere git-Aufruf läuft weiter
-    writeFileSync(join(BIN, "git"), `#!/bin/sh\nif [ "$1" = status ]; then while [ -e "${HALT}" ]; do sleep 0.1; done; fi\nexec "${echt}" "$@"\n`, { mode: 0o755 });
+    // nur `git status` hält an: das ist der Aufruf des Git-Ticks (tickGit: `git -C <dir> status …`, das Wort steht also nicht an erster Stelle), jeder
+    // andere git-Aufruf läuft weiter. Bis W3 Auftrag 13 hielt der Ersatz nur bei `$1 = status` an, also nie — der Test bestand, weil der Testserver gar
+    // nicht tickte; seit nachbar.drive.ts den Tick fährt, hält er ihn wirklich an
+    writeFileSync(join(BIN, "git"), `#!/bin/sh\nfor a in "$@"; do if [ "$a" = status ]; then while [ -e "${HALT}" ]; do sleep 0.1; done; fi; done\nexec "${echt}" "$@"\n`, { mode: 0o755 });
     mkdirSync(join(f.repo, "ci"));
     writeFileSync(join(f.repo, "ci", "merge-check.ts"), "// probe\n");
     sh(f.repo, "add", "ci/merge-check.ts");

@@ -115,6 +115,34 @@ describe("W3b · das „passt“ der Öffnerin auf die Spitze ihres Kindes", () 
     expect(auditZeilen(f, "charge_land").at(-1)?.passt).toBe("zusage");
   }, LIFE_DEADLINE_MS * 12);
 
+  // W3 Auftrag 7 · die Öffnerin ist eine Linie (server/opener.ts#istOeffnerin): die Nachfolgerin der Leitung gibt das „passt“ auf ihr Kind weiter;
+  // eine fremde Session, die der Owner danach im selben Platz und Ordner öffnet, nicht
+  test("nach der Nachfolge der Leitung gibt ihre Nachfolgerin das „passt“; eine fremde Session im selben Platz und Ordner bekommt 409", async () => {
+    const f = fixture();
+    const quick = { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" };
+    const [made] = await life(f, [post("/api/branches", { repo: f.repo, name: "Kind" }), post("/api/slots/2/open", { cwd: f.repo })]);
+    const branch = String(made?.body.branch), path = String(made?.body.path);
+    await life(f, [post("/api/slots/2/rechte", { grant: ["branch.passt", "text.handover"] })]);
+    const [kindAuf] = await life(f, [als(tokenOf(f, 2), post("/api/self/branches/open", { branch, goal: "Build." }))]);
+    const kind = slotOf(kindAuf);
+    commitIn(path, "a.txt", "erste Arbeit");
+    const vorher = (persisted(f).slots as Record<string, { openedAt: number }>)["2"]!.openedAt;
+    const [nachfolge] = await life(f, [als(tokenOf(f, 2), post("/api/self/succeed", {}))], quick);
+    expect(nachfolge?.status).toBeLessThan(600);
+    expect((persisted(f).slots as Record<string, { openedAt: number }>)["2"]!.openedAt).not.toBe(vorher);
+    const [erbin] = await life(f, [als(tokenOf(f, 2), post(`/api/self/seats/${kind}/passt`, { head: sh(f.repo, "rev-parse", branch) }))]);
+    expect(erbin?.status).toBe(200);
+    expect((erbin?.body.passtVon as { slot: number }).slot).toBe(2);
+    // der Owner beendet die Linie im Platz 2 und öffnet dort neu, im selben Ordner, mit demselben Recht: sie hat das Kind nie geöffnet
+    await life(f, [post("/api/slots/2/kill", {})]);
+    await life(f, [post("/api/slots/2/open", { cwd: f.repo })]);
+    await life(f, [post("/api/slots/2/rechte", { grant: ["branch.passt"] })]);
+    commitIn(path, "b.txt", "noch etwas");
+    const [fremd] = await life(f, [als(tokenOf(f, 2), post(`/api/self/seats/${kind}/passt`, { head: sh(f.repo, "rev-parse", branch) }))]);
+    expect(fremd?.status).toBe(409);
+    expect(String(fremd?.body.error)).toContain("did not open");
+  }, LIFE_DEADLINE_MS * 10);
+
   test("die Vorlage „lead with builders“ erbittet branch.passt für die Leitung in derselben einen Freigabe wie ihre vier Rechte; nach ihr trägt die Leitung es, ein Bauer nicht", async () => {
     const f = fixture();
     const [vorschau, imp] = await life(f, [post("/api/setups/import", { vorlage: LEAD_WITH_BUILDERS }), post("/api/setups/import", { vorlage: LEAD_WITH_BUILDERS, schreiben: true })]);

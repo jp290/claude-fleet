@@ -9,7 +9,8 @@ export const ABNAHME_DATEI = "abnahme-instanzen.json";
 /** Eine Instanz, die ein Sitz zur Abnahme hochfuhr: der Worktree, aus dem sie gebaut ist, sein Repo und Branch, der Sitz und wann. */
 export interface AbnahmeInstanz {
   readonly path: string; readonly repo: string; readonly branch: string | null;
-  /** der Sitz, der sie hochfuhr; `linie` (lineageId) hält ihn über seine Nachfolgen, ohne sie zählt die Belegung (openedAt) */
+  /** der Sitz, der sie hochfuhr; `linie` (Slot.linie, server/opener.ts) hält ihn über seine Nachfolgen, ohne sie (ein Eintrag von vor der Linie) zählt
+   *  die Belegung (openedAt) */
   readonly von: { readonly slot: number; readonly openedAt: number; readonly linie?: string };
   readonly at: number;
   /** welche Instanz es war: ihr Start (`started` in testinstanz.state), damit der Takt nie eine andere im selben Worktree beendet (Prüfung W3b, W3-3);
@@ -36,11 +37,19 @@ export function schreibAbnahme(dir: string, liste: readonly AbnahmeInstanz[]): v
   writeFileSync(tmp, JSON.stringify(liste, null, 2));
   renameSync(tmp, ziel);
 }
+/** WER SIE HOCHFUHR, wie die Tür es einträgt: Platz, Belegung und seine Linie (Slot.linie, die jede Öffnung bekommt und jede Nachfolge weiterträgt). Die
+ *  lineageId taugt dafür nicht: eine frische Öffnung hat keine, also hing die Instanz an der Belegung und endete mit der ersten Nachfolge (W3-4). */
+export const vonSitz = (s: { readonly id: number; readonly openedAt: number; readonly linie?: string | null }): AbnahmeInstanz["von"] =>
+  ({ slot: s.id, openedAt: s.openedAt, ...(s.linie ? { linie: s.linie } : {}) });
+/** LEBT DER SITZ NOCH, DER SIE HOCHFUHR? Mit Linie: solange irgendein Sitz sie trägt oder eine Nachfolge sie gerade weitergibt (`lebendeLinien`); ohne
+ *  Linie: dieselbe Belegung im Platz. */
+export const vonLebt = (von: AbnahmeInstanz["von"], lebendeLinien: ReadonlySet<string>, belegung: (slot: number) => number | null): boolean =>
+  von.linie ? lebendeLinien.has(von.linie) : belegung(von.slot) === von.openedAt;
 /** Eine Instanz je Worktree: eine neue ersetzt eine alte desselben Pfades. */
 export const mitAbnahme = (liste: readonly AbnahmeInstanz[], neu: AbnahmeInstanz): AbnahmeInstanz[] => [...liste.filter((x) => x.path !== neu.path), neu];
 export const ohneAbnahme = (liste: readonly AbnahmeInstanz[], path: string): AbnahmeInstanz[] => liste.filter((x) => x.path !== path);
 
-/** WELCHE INSTANZEN JETZT ENDEN: ihr Sitz lebt nicht mehr (dieselbe Belegung: Slot und openedAt), oder ihr Branch bekam nach dem Hochfahren ein „passt“
+/** WELCHE INSTANZEN JETZT ENDEN: ihr Sitz lebt nicht mehr (seine Linie endete, `vonLebt`), oder ihr Branch bekam nach dem Hochfahren ein „passt“
  *  (`passtSeit` = wann das jüngste „passt“ auf diesen Branch gegeben wurde, des Owners oder eines Sitzes; null = keins). */
 export function faellig(liste: readonly AbnahmeInstanz[], d: { lebt(von: AbnahmeInstanz["von"]): boolean; passtSeit(repo: string, branch: string): number | null;
   /** der Start der Instanz, die jetzt im Worktree läuft; null = keine */

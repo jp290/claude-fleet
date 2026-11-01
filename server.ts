@@ -10,7 +10,7 @@ import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
 import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
 import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek, type StartAspects } from "./server/session-start";
-import { faellig, liesAbnahme, mitAbnahme, ohneAbnahme, schreibAbnahme } from "./server/abnahme-instanz";
+import { faellig, liesAbnahme, mitAbnahme, ohneAbnahme, schreibAbnahme, vonLebt, vonSitz } from "./server/abnahme-instanz";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
 import { rechteDerTuer, rechteGeladen, rechteSatz, rechteSettings } from "./server/rechte";
 import { halteFassung, halteVorgaengerin, holeFassung, holeVorgaengerin, vergissFassung } from "./server/start-fassung";
@@ -9184,9 +9184,13 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
     e instanceof TmuxNewSessionUnavailable ? 503 : e instanceof GameMakerTreeConflict ? 409 : 400);
   }
   void tickGit().catch(() => {}); // refresh the badge now, not on the next 10s tick
-  // a generic line whose in-place respawn failed on THIS slot and cwd is taken up here
-  const adopted = adoptSuccessionDebt(s);
+  // a generic line whose in-place respawn failed on THIS slot and cwd is taken up here — by the owner's open, a seat the Orchestratorin opens, or one
+  // the debt's own opener (by line) opens; any other self open is a plain new seat with its own line (W7-1)
+  const gestempelt = s.openedBy;
+  const adopted = adoptSuccessionDebt(s, opener === "owner" ? "owner" : by);
   if (adopted) await saveStateNow();
+  // the open stamped an opener the adopted line does not hang under: its start row says so too (merkeNachfolge writes only an opener it has)
+  if (adopted && gestempelt && !s.openedBy) await merkeNachtrag(s.id, s.openedAt, { openedBy: null }, STATE_DIR).catch((e) => logError("merkeNachtrag", e));
   // the adopter's start row names the opener and the goal its predecessor's named, as a finished succession's does
   if (adopted) await merkeNachfolge(s.id, adopted.predecessorOpenedAt, s.openedAt, s.openedBy, STATE_DIR).catch((e) => logError("merkeNachfolge", e));
   if (adopted?.draft) await rearmLineObligations(s, s.openedAt);
@@ -9306,7 +9310,7 @@ async function endSeatFromSelf(s: Slot, req: Request, slot: number): Promise<Res
   return await handleSelfRetire(ziel!);
 }
 // DAS „PASST“ EINES SITZES AUF DIE SPITZE SEINES KINDES (W3b, POST /api/self/seats/<n>/passt, Recht branch.passt): nur auf den Branch eines Sitzes, den er
-// selbst geöffnet hat (Slot und Ordner seiner Öffnung, wie kindBeenden), an der Spitze, die der Branch jetzt hat; `head` im Body muss genau sie sein. Es steht neben
+// selbst geöffnet hat (seine Linie, server/opener.ts#istOeffnerin: auch eine seiner Vorgängerinnen), an der Spitze, die der Branch jetzt hat; `head` im Body muss genau sie sein. Es steht neben
 // dem „passt“ des Owners (BranchRecord.seen), ersetzt es nie und wird durch einen späteren Commit alt; die Land-Tür der Session liest es (server/branch-land.ts).
 async function passtFromSelf(s: Slot, req: Request, slot: number): Promise<Response> {
   const body = await readJson(req) ?? {};
@@ -9316,7 +9320,8 @@ async function passtFromSelf(s: Slot, req: Request, slot: number): Promise<Respo
   // einen Commit, den sie nie sah (Prüfung W3b, W3-2)
   if (typeof body.head !== "string") return json({ error: "expected { head, openedAt? } — head is the tip you looked at; „passt“ binds exactly that commit" }, 400);
   const ziel = slots[slot - 1];
-  if (!ziel?.cwd || ziel.openedBy?.slot !== s.id || ziel.openedBy.cwd !== s.cwd)
+  // die Öffnerin ist eine Linie (server/opener.ts#istOeffnerin): ihre Nachfolgerin gibt das „passt“ weiter, eine fremde Session im selben Platz und Ordner nicht
+  if (!ziel?.cwd || !istOeffnerin({ slot: s.id, cwd: s.cwd, linie: s.linie }, ziel.openedBy))
     return json({ error: `you did not open slot ${slot} — a seat gives „passt“ only on the branch of a seat it opened itself` }, 409);
   if (body.openedAt !== undefined && body.openedAt !== ziel.openedAt)
     return json({ error: `slot ${slot} holds another seat now (openedAt ${ziel.openedAt}) — nothing was marked` }, 409);
@@ -9348,8 +9353,8 @@ async function abnahmeInstanzFromSelf(s: Slot, req: Request): Promise<Response> 
   if (body.action !== "up" && body.action !== "down") return json({ error: 'expected { action: "up" | "down", slot?, ttlMin?, mode? }' }, 400);
   const n = body.slot === undefined ? s.id : Number(body.slot);
   const ziel = Number.isInteger(n) ? slots[n - 1] : undefined;
-  const offen = (a: Slot["openedBy"], slot: number, cwd: string | null) => !!a && a.slot === slot && a.cwd === cwd;
-  if (!ziel?.cwd || !(ziel === s || offen(ziel.openedBy, s.id, s.cwd) || (!!s.openedBy && offen(ziel.openedBy, s.openedBy.slot, s.openedBy.cwd))))
+  // nach Linie (server/opener.ts): ein Kind ihrer Linie, auch eines, das eine Vorgängerin öffnete; ein Geschwister unter derselben Öffnerin-Linie
+  if (!ziel?.cwd || !(ziel === s || istOeffnerin({ slot: s.id, cwd: s.cwd, linie: s.linie }, ziel.openedBy) || gleicheOeffnerin(ziel.openedBy, s.openedBy)))
     return json({ error: `slot ${String(body.slot)} is neither you, a seat you opened nor a sibling — a test instance for acceptance comes from your own tree` }, 409);
   const top = await gitRead(ziel.cwd, "rev-parse", "--show-toplevel");
   const ro = top.code === 0 && top.out ? await branchRepoOf(top.out) : null;
@@ -9363,7 +9368,7 @@ async function abnahmeInstanzFromSelf(s: Slot, req: Request): Promise<Response> 
     const liste = liesAbnahme(STATE_DIR);
     schreibAbnahme(STATE_DIR, body.action === "up"
       ? mitAbnahme(liste, { path: top.out, repo: ro.repo, branch: own.ok ? own.branch : null,
-        von: { slot: s.id, openedAt: s.openedAt, ...(s.lineageId ? { linie: s.lineageId } : {}) }, at: Date.now(), start })
+        von: vonSitz(s), at: Date.now(), start })
       : ohneAbnahme(liste, top.out));
   }
   return res;
@@ -9376,14 +9381,13 @@ function abnahmeStart(path: string): string | null {
   try { return /^started=(.+)$/m.exec(readFileSync(`${dir}/testinstanz.state`, "utf8"))?.[1]?.trim() || null; } catch { return null; }
 }
 // DER TAKT DER ABNAHME-INSTANZEN: eine endet mit dem „passt“ auf ihren Branch (des Owners oder eines Sitzes, nach dem Hochfahren) oder mit dem Ende ihres Sitzes
-// (seine Linie lebt in keinem Slot mehr). Wer schaut, hält sie (stopTestinstanz sagt es); ein Worktree ohne testinstanz.sh hat keine mehr.
+// (seine Linie lebt in keinem Slot mehr und wird gerade nicht weitergegeben; eine Nachfolge hält sie). Wer schaut, hält sie (stopTestinstanz sagt es); ein Worktree ohne testinstanz.sh hat keine mehr.
 async function abnahmeTick(): Promise<void> {
   const liste = liesAbnahme(STATE_DIR);
   if (!liste.length) return;
-  const lebt = (von: { slot: number; openedAt: number; linie?: string }): boolean => {
-    const x = slots[von.slot - 1];
-    return !!x?.cwd && (von.linie ? x.lineageId === von.linie : x.openedAt === von.openedAt);
-  };
+  const linien = lebendeLinien();
+  const lebt = (von: { slot: number; openedAt: number; linie?: string }): boolean =>
+    vonLebt(von, linien, (n) => slots[n - 1]?.cwd ? slots[n - 1]!.openedAt : null);
   const passtSeit = (repo: string, branch: string): number | null => {
     const r = findBranch(branchBook, repo, branch);
     const t = [r?.seen?.at, r?.passtVon?.at].filter((x): x is number => typeof x === "number");
@@ -14803,11 +14807,37 @@ function recordSuccessionDebt(s: Slot, rail: string, predecessor: SuccessionPred
 const SUCCESSION_DEBT_ADOPT_MS = Math.max(0, Number(process.env.FLEET_SUCCESSION_DEBT_ADOPT_MS ?? 30 * 60_000) | 0);
 const debtAdoptable = (d: SuccessionDebt, now: number): boolean =>
   d.successorOpenedAt === null && d.rail === "generic" && now - d.at <= SUCCESSION_DEBT_ADOPT_MS;
-function adoptSuccessionDebt(s: Slot): SuccessionDebt | null {
+// WHO MAY TAKE UP A DEBT (W3 Auftrag 8, Befund W7-1; Auftrag 12): the self door gives the lowest free slot, which can be the failed seat's — so a slot,
+// cwd and label match alone would hand any seat that opens there the failed seat's line, and with it the passt and test-instance doors of its children.
+// (a) The owner's open (the board) takes up any debt. (c) A seat the debt's own opener opens (by line, istOeffnerin against debt.openedBy) takes up its
+// child's debt — the self door already checked that seat's width against exactly that opener. (b) A seat the Orchestratorin opens takes up only a debt
+// WITHOUT an opener (a seat that hung under nobody, such as one the owner opened); a child's debt belongs to its opener, so her open of it stays a plain
+// new seat under her and the debt waits — checking her seat against the child's opener instead missed omitted fields, the Claude mode and an opener
+// line no seat carries any more (Prüfung Runde 4, H1-a-2, H1-a-3). Any other self open is a plain new seat with its own line.
+function debtAdopter(by: "owner" | Slot | null, d: SuccessionDebt): { wer: string } | { nein: string } {
+  if (by === "owner") return { wer: "the owner open" };
+  if (!by?.cwd) return { nein: "a self open without an opener" };
+  if (istOeffnerin({ slot: by.id, cwd: by.cwd, linie: by.linie }, d.openedBy)) return { wer: `an open of its opener (slot ${by.id})` };
+  const orch = rechteRollen(by).includes("orchestrator");
+  if (orch && !d.openedBy) return { wer: `the Orchestratorin's open (slot ${by.id})` };
+  return { nein: d.openedBy
+    ? `the debt belongs to its opener (slot ${d.openedBy.slot}${d.openedBy.linie ? `, line ${d.openedBy.linie}` : ""}) — only she or the owner takes it up`
+    : "only the owner or the Orchestratorin takes up a debt without an opener" };
+}
+function adoptSuccessionDebt(s: Slot, by: "owner" | Slot | null): SuccessionDebt | null {
   const now = Date.now();
-  const debt = successionDebts.findLast((d) => d.slot === s.id && debtAdoptable(d, now)
-    && d.cwd === s.cwd && d.label === s.label);
-  if (!debt || !s.cwd) return null;
+  const passend = (d: SuccessionDebt) => d.slot === s.id && debtAdoptable(d, now) && d.cwd === s.cwd && d.label === s.label;
+  if (!s.cwd) return null;
+  const debt = successionDebts.findLast((d) => passend(d) && "wer" in debtAdopter(by, d));
+  if (!debt) {
+    // a self open that matched a debt it may not take: the open stands as a plain new seat, the debt waits — the audit says why
+    const da = by !== "owner" && by?.cwd ? successionDebts.findLast(passend) : undefined;
+    const nein = da ? debtAdopter(by, da) : null;
+    if (da && nein && "nein" in nein)
+      audit("succession_debt", s.id, `${da.id} not adopted by the open of slot ${(by as Slot).id}: ${nein.nein}; it stays a plain new seat under whoever opened it, the debt waits`);
+    return null;
+  }
+  const wer = (debtAdopter(by, debt) as { wer: string }).wer;
   if (debt.draft) {
     writeLineageHandover(debt.draft, s, Date.now());
     // the generic draft is written under the predecessor's line (succeedGeneric): the adopter is that line — unless another seat carries it
@@ -14815,11 +14845,13 @@ function adoptSuccessionDebt(s: Slot): SuccessionDebt | null {
     const l = debt.draft.lineageId;
     if (s.linie === l || !slots.some((x) => x !== s && x.cwd && x.linie === l) && !linienInUebergabe.has(l)) { s.linie = l; linieLebtWieder(l); }
   }
-  // ...and hangs where the predecessor hung (Prüfung L1): the board's open stamps no opener, the debt carries it
-  if (debt.openedBy && !s.openedBy) s.openedBy = debt.openedBy;
+  // ...and hangs where the predecessor hung (Prüfung L1): the board's open stamps no opener, the debt carries it — and it wins over the adopter's own
+  // (H1, W3 Auftrag 9): a child the Orchestratorin adopts stays its lead's child (passt, test instance, end); a predecessor that hung under nobody
+  // leaves its successor under nobody (H1-b, Auftrag 10); the audit line names who adopted
+  s.openedBy = debt.openedBy ?? null;
   const adopted: SuccessionDebt = { ...debt, successorOpenedAt: s.openedAt };
   successionDebts = successionDebts.map((d) => d.id === debt.id ? adopted : d);
-  audit("succession_debt", s.id, `${debt.id} adopted by the owner open (openedAt ${s.openedAt})${debt.draft ? `, line ${debt.draft.lineageId} record written` : ""}`);
+  audit("succession_debt", s.id, `${debt.id} adopted by ${wer} (openedAt ${s.openedAt})${debt.draft ? `, line ${debt.draft.lineageId} record written` : ""}`);
   return adopted;
 }
 

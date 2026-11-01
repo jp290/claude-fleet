@@ -5,7 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ABNAHME_DATEI, type AbnahmeInstanz, faellig, liesAbnahme, mitAbnahme } from "./abnahme-instanz";
+import { ABNAHME_DATEI, type AbnahmeInstanz, faellig, liesAbnahme, mitAbnahme, vonLebt, vonSitz } from "./abnahme-instanz";
 import { branchTestkit, type Fixture, LIFE_DEADLINE_MS, persisted, post, sh } from "./branches-testkit";
 
 const I = (path: string, branch: string | null, slot: number, at: number, start: string | null = "s1"): AbnahmeInstanz =>
@@ -23,6 +23,17 @@ describe("welche Abnahme-Instanz fällig ist", () => {
     const laeuft: Record<string, string> = { "/b": "s9", "/c": "s1" };
     const due = faellig(liste, { lebt: (von) => von.slot === 2, passtSeit: () => 1500, laeuft: (p) => laeuft[p] ?? null });
     expect(due.map((d) => [d.instanz.path, d.grund])).toEqual([["/a", "weg"], ["/b", "weg"], ["/c", "weg"]]);
+  });
+  test("W3-4 · die Tür trägt die Linie des Sitzes ein, nicht die lineageId; mit Linie lebt der Sitz, solange die Linie lebt, ohne Linie nach Belegung", () => {
+    const L = "a".repeat(24);
+    // eine frische Öffnung: Linie ja, lineageId noch keine
+    expect(vonSitz({ id: 2, openedAt: 100, linie: L, lineageId: null } as { id: number; openedAt: number; linie: string })).toEqual({ slot: 2, openedAt: 100, linie: L });
+    expect(vonSitz({ id: 2, openedAt: 100, linie: null })).toEqual({ slot: 2, openedAt: 100 });
+    const belegt = (n: number) => (n === 2 ? 200 : null);
+    expect(vonLebt({ slot: 2, openedAt: 100, linie: L }, new Set([L]), belegt)).toBe(true);    // die Nachfolgerin trägt sie (andere Belegung)
+    expect(vonLebt({ slot: 2, openedAt: 100, linie: L }, new Set(), belegt)).toBe(false);      // die Linie endete
+    expect(vonLebt({ slot: 2, openedAt: 100 }, new Set(), belegt)).toBe(false);                // alter Eintrag: andere Belegung
+    expect(vonLebt({ slot: 2, openedAt: 200 }, new Set(), belegt)).toBe(true);
   });
   test("eine neue Instanz desselben Worktrees ersetzt die alte", () => {
     expect(mitAbnahme([I("/a", "b1", 2, 1)], I("/a", "b1", 3, 2)).map((x) => x.von.slot)).toEqual([3]);
@@ -76,6 +87,40 @@ describe("der Takt beendet Abnahme-Instanzen, die Selbst-Tür nimmt nur den eige
       const ende = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>)
         .filter((r) => r.event === "abnahme_instanz_ended").map((r) => r.grund);
       expect(ende).toEqual(["sitz-ende", "passt"]);
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 8);
+
+  // W3-4 (W3 Auftrag 7): die Instanz eines Prüfers hängt an seiner Linie (Slot.linie), nicht an seiner Belegung — sie lebt, solange er lebt, überlebt seine
+  // Nachfolge und endet, wenn seine Linie endet
+  test("die Instanz eines Prüfers lebt mit ihm, über seine Nachfolge weiter, und endet, wenn seine Linie endet", async () => {
+    const f = fixture();
+    await life(f, [post("/api/slots/2/open", { cwd: f.repo })]);
+    await life(f, [post("/api/slots/2/rechte", { grant: ["text.handover"] })]);
+    const sitz = () => (persisted(f).slots as Record<string, { openedAt: number; linie?: string }>)["2"]!;
+    const vorher = sitz();
+    expect(vorher.linie).toMatch(/^[0-9a-f]{24}$/);
+    // die Instanz, wie die Tür sie beim Hochfahren einträgt (server/abnahme-instanz.ts#vonSitz), läuft
+    const ti = mkdtempSync(join(tmpdir(), "fleet-ti-")), wt = join(f.state, "pruef-wt");
+    mkdirSync(wt, { recursive: true });
+    mkdirSync(join(ti, "fleet-testinstanz-1"));
+    writeFileSync(join(ti, "fleet-testinstanz-1", "testinstanz.state"), `src=${wt}\npid=${process.pid}\nstarted=777\n`);
+    writeFileSync(join(f.state, ABNAHME_DATEI), JSON.stringify([
+      { path: wt, repo: f.repo, branch: null, von: { slot: 2, openedAt: vorher.openedAt, linie: vorher.linie }, at: Date.now(), start: "777" }]));
+    const srv = await serve(f, { FLEET_ABNAHME_TICK_MS: "200", FLEET_TI_ROOT: ti, FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" });
+    try {
+      await Bun.sleep(1200);
+      expect(liesAbnahme(f.state).map((x) => x.path)).toEqual([wt]);
+      // seine Nachfolge: neue Belegung, dieselbe Linie — die Instanz bleibt
+      expect((await srv.call("/api/self/succeed", { body: {}, self: tokenOf(f, 2) })).status).toBeLessThan(600);
+      expect(await until(() => sitz().openedAt !== vorher.openedAt && sitz().linie === vorher.linie, 20_000)).toBe(true);
+      await Bun.sleep(1200);
+      expect(liesAbnahme(f.state).map((x) => x.path)).toEqual([wt]);
+      // der Owner beendet den Platz: die Linie endet, die Instanz mit ihr
+      expect((await srv.call("/api/slots/2/kill", { body: {} })).status).toBe(200);
+      expect(await until(() => liesAbnahme(f.state).length === 0, 5000)).toBe(true);
+      const ende = readFileSync(join(f.state, "audit.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((r) => r.event === "abnahme_instanz_ended").map((r) => r.grund);
+      expect(ende).toEqual(["sitz-ende"]);
     } finally { await srv.stop(); }
   }, LIFE_DEADLINE_MS * 8);
 });

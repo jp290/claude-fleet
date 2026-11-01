@@ -36,7 +36,7 @@ export function merkeStart(s: Belegung, dir: string, jetzt = Date.now()): Promis
     ...(s.agent ? { agent: { id: s.agent.id, name: s.agent.name, hash: s.agent.hash } } : {}) }));
 }
 // was eine Tür erst nach dem Öffnen weiß: wer sie geöffnet hat, der Branch einer Branch-Session mit ihrem Ziel und ihrer Aufgabe
-export type Nachtrag = { openedBy: Opener } | { branch: string; repo: string; goal?: string; aufgabe?: Aufgabe } | { goal: string; aufgabe?: Aufgabe }
+export type Nachtrag = { openedBy: Opener | null } | { branch: string; repo: string; goal?: string; aufgabe?: Aufgabe } | { goal: string; aufgabe?: Aufgabe }
   | { lauf: LaufNachtrag };
 export interface LaufNachtrag { id: string; pos: string; posName: string; konst: string; name: string; version: number | null; hash: string }
 export function merkeNachtrag(slot: number, openedAt: number, n: Nachtrag, dir: string): Promise<void> {

@@ -228,6 +228,16 @@ describe("Schwelle und Warmhalten nach dem Start", () => {
     const nach = fuehreNach(alt, "arbeitet", [schwelleAbschnitt(SCHWELLE)]);
     expect(nach.fassung).toBe(alt);
   });
+  test("ein Abschnitt, der nicht mehr gilt, geht: das Vertrauen eines laufenden Sitzes, dessen Eintrag weg ist", () => {
+    const mit = baueFassung({ slot: 1, anlass: "laufend", wer: [], aufgabe: [], liest: [], arbeitet: [],
+      darf: [textAbschnitt("darf", "x", "rechte"), textAbschnitt("vertrauen", "y", "Fleet trusts the whole repository /r for Claude Code")] });
+    const nach = fuehreNach(mit, "darf", [], ["vertrauen"]);
+    expect(nach.geaendert).toEqual(["vertrauen"]);
+    expect(nach.fassung.teile.find((t) => t.id === "darf")!.abschnitte.map((a) => a.id)).toEqual(["darf"]);
+    expect(nach.fassung.hash).not.toBe(mit.hash);
+    // ein Start ohne den Abschnitt bleibt, wie er ist
+    expect(fuehreNach(nach.fassung, "darf", [], ["vertrauen"]).fassung).toBe(nach.fassung);
+  });
 });
 
 // DAS EIGENE SETUP IM BOARD (server/eigenes-setup.ts): der Modus in Worten zuerst, darunter je Zeile, was Fleet dazulegt, mit dem Grund im Tooltip

@@ -36,7 +36,10 @@ test("ein Server aus einer Kopie des Checkouts OHNE e2e/ startet und antwortet (
   const port = probe.port!;
   probe.stop(true);
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("FLEET_")) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("FLEET_") && k !== "CLAUDE_CONFIG_DIR") env[k] = v;
+  // a HOME of its own: a server under the caller's HOME writes the trust of the folders it opens into the caller's ~/.claude.json (ci/claude-json-unberuehrt.ts)
+  env.HOME = join(base, "home");
+  mkdirSync(env.HOME, { recursive: true });
   writeFileSync(join(state, "fleet.json"), JSON.stringify({ sock: `siegelfix${process.pid % 1000}`, token: "fixture-token", slots: {}, tasks: [], events: [] }));
   const server = Bun.spawn([process.execPath, "server.ts"], { cwd: kopie, stdout: "pipe", stderr: "pipe",
     env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_STATE_DIR: state, FLEET_TOKEN: "fixture-token", FLEET_CMD: "true",

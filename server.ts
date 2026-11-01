@@ -275,6 +275,7 @@ import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
+import { claudeJsonPfad, vertraueOrdner, vertraueOrdnerPi, vertrauenJetzt, vertrauenJetztPi, vertrauenMerkenIn, vertrauenText, vertrauenTextPi, vertrauenUmDenStart } from "./server/claude-vertrauen";
 import { eigenerModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
@@ -6294,6 +6295,15 @@ const projDir = (cwd: string) => `${process.env.FLEET_CLAUDE_PROJECTS_DIR ?? `${
 // WO CLAUDE CODE SEINE EIGENEN DATEIEN LIEST (~/.claude/CLAUDE.md, Regeln, Einstellungen, Hooks, Plugins): unter dem HOME des Servers, auf
 // einer Testinstanz mit echten Sitzen unter dem HOME, unter dem ihr claude läuft (testinstanz-agent.sh#ti_real_env: FLEET_CLAUDE_HOME)
 const CLAUDE_HOME = process.env.FLEET_CLAUDE_HOME || null;
+// OPENING A FOLDER MEANS TRUSTING IT (server/claude-vertrauen.ts): the config file Claude Code keeps its folder trust in, under the HOME it runs in
+const claudeJsonDatei = (): string => claudeJsonPfad(CLAUDE_HOME ?? HOME);
+// what Fleet set is remembered in its own state: a preview and the start that holds it read the same answer across a restart
+vertrauenMerkenIn(`${STATE_DIR}/vertrauen-gesetzt.json`);
+// ...and pi's: the plain pi seats (`pi`, `pi-unfenced`) with a GLM model run in Fleet's own agent home (PI_AGENT_DIR, no trust.json there, Mangel 176),
+// which Fleet may write into. A plain pi without a provider model — and a DeepSeek one — runs in the owner's own ~/.pi/agent: Fleet does not touch it
+// (the way is vertraueOrdnerPi(cwd, agentDir); the owner's word on that home is open). The fenced pi-zai/pi-deepseek start with --no-approve.
+const piVertrauensHome = (harness: string | null | undefined, model: string | null | undefined): string | null =>
+  (harness === "pi" || harness === "pi-unfenced") && model && Object.hasOwn(PI_SEAT_MODELS, model) && PI_SEAT_MODELS[model].catalog ? PI_AGENT_DIR : null;
 const claudeConfigDir = (): string => CLAUDE_HOME ? `${CLAUDE_HOME}/.claude` : dirname(dirname(projDir("x")));
 // DIE EIGENEN REGELN DES OWNERS BLEIBEN DRAUSSEN (Owner 23.10.: „[Zitat entfernt]“): ein Sitz in Fleets Repo startet nur mit dem
 // Wissen, das das Repo zeigt. Was er davon brauchte, steht in AGENTS.md und der Bindung. claudeMdExcludes nimmt jede Datei außer der
@@ -11417,7 +11427,25 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // A SEAT IN ITS OWN SETUP gets its user's login environment (server/login-umgebung.ts, Mangel 136): a file the pane reads and deletes
       const paneEnv = eigen && PANE_LOGIN_ENV ? await paneEnvFile(s.id, occupant.openedAt, occupant.cwd) : null;
       if (!current()) { if (paneEnv) removeEnvFile(paneEnv.file); return; }
-      const created = await tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
+      // CLAUDE CODE'S TRUST QUESTION is answered before the pane starts, not on the screen afterwards: the folder is open here because the
+      // person opened it. The entry is written under Claude Code's own lock (server/claude-vertrauen.ts); whatever stops it, the seat starts
+      // as before and the dialog watch (CLAUDE_TRUST_DIALOG) stays the fallback.
+      const claudeTrust = h.id === "claude" ? { datei: claudeJsonDatei(), home: CLAUDE_HOME ?? HOME } : null;
+      let claudeTrustSchluessel: string | null = null; // set or found: the looks around the start read only this key
+      if (claudeTrust) {
+        const v = await vertraueOrdner(occupant.cwd, claudeTrust.datei, claudeTrust.home);
+        if (v.art === "fehler" || v.art === "nicht-lesbar" || v.art === "gesperrt") logError("ensureSlot:claude-trust", new Error(`${v.art}: ${v.grund ?? ""}`));
+        if (v.art === "gesetzt" || v.art === "schon") claudeTrustSchluessel = v.schluessel;
+        if (!current()) return;
+      }
+      const piHome = piVertrauensHome(h.id, occupant.model);
+      if (piHome) {
+        const v = await vertraueOrdnerPi(occupant.cwd, piHome);
+        if (v.art === "fehler" || v.art === "nicht-lesbar" || v.art === "gesperrt") logError("ensureSlot:pi-trust", new Error(`${v.art}: ${v.grund ?? ""}`));
+        if (!current()) return;
+      }
+      const startBesetzer = occupant; // narrowed here; the closure below would lose it
+      const starte = ((occupant: typeof startBesetzer) => () => tmuxNewSession("-d", "-P", "-F", "#{pane_id}\t#{window_id}",
         "-s", name, "-x", "200", "-y", "50", "-c", occupant.cwd,
       // `cwd: occupant.cwd` is the SAME value tmux is given with `-c` two arguments up, and passing the
       // one variable to both is the point: Pi's write fence is anchored at it, so a fence built
@@ -11438,7 +11466,15 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
             ? remoteControlName(occupant.label, occupant.cwd, occupant.slot) : null,
           handoverOn, rechte: h.id === "claude" ? occupant.rechte : null, agentMd: h.id === "claude" ? zweckStart : null, notizbuch,
           seat: seat ? { ...seat, text: "" } : null, bau, startDatei, fleetRepo, permissionMode: occupant.permissionMode,
-          weglassen: occupant.weglassen, autoModeEnvironment: occupant.autoModeEnvironment, tools: occupant.tools }))}`);
+          weglassen: occupant.weglassen, autoModeEnvironment: occupant.autoModeEnvironment, tools: occupant.tools }))}`))(startBesetzer);
+      // A SESSION THAT EXITS writes ~/.claude.json without the lock and can drop the entry just set (server/claude-vertrauen.ts): Fleet looks
+      // again right before the pane starts and once shortly after, and sets it again when it is gone
+      const created = claudeTrust && claudeTrustSchluessel
+        ? (await vertrauenUmDenStart(occupant.cwd, claudeTrust.datei, claudeTrust.home, claudeTrustSchluessel, starte, { melde: (wann, v) => {
+            if (v.art === "gesetzt") logError(`ensureSlot:claude-trust-${wann}`, new Error(`set again: an exit write had dropped ${v.schluessel}`));
+            else if (v.art !== "schon") logError(`ensureSlot:claude-trust-${wann}`, new Error(`${v.art}: ${v.grund ?? ""}`));
+          } })).ergebnis
+        : await starte();
       if (paneEnv && (created.code !== 0 || created.timedOut)) removeEnvFile(paneEnv.file);
       // openSlot and killSlot wait on this barrier before changing occupant identity. The equality
       // remains defence in depth for other same-process mutations; a mismatch authorizes neither a
@@ -23158,6 +23194,29 @@ async function weglassenDateienDesStarts(s: Slot): Promise<{ ok: true; wahl: Weg
   }
   return { ok: true, wahl: { ...w, dateien } };
 }
+async function vertrauenAbschnitt(cwd: string, harness: string, model: string | null): Promise<FassungAbschnittEingang[]> {
+  const piHome = piVertrauensHome(harness, model);
+  if (piHome) {
+    const text = await vertrauenTextPi(cwd, piHome).catch(() => null);
+    return text ? [textAbschnitt("vertrauen", VERTRAUEN_QUELLE_PI, text, false)] : [];
+  }
+  if (harnessFamilie(harness) !== "claude") return [];
+  const text = await vertrauenText(cwd, claudeJsonDatei(), CLAUDE_HOME ?? HOME).catch(() => null);
+  return text ? [textAbschnitt("vertrauen", VERTRAUEN_QUELLE, text, false)] : [];
+}
+/** THE FOLDER TRUST OF A RUNNING SEAT, as it stands now (anlass=laufend): a held start that carries the line keeps it only while the entry is in
+ *  the file (server/claude-vertrauen.ts#vertrauenJetzt), word for word as the start had it (it names no opener); a start without the line stays without. */
+async function vertrauenNachgefuehrt(s: Slot, f: Fassung): Promise<{ fassung: Fassung; geaendert: string[] }> {
+  if (!s.cwd || !f.teile.find((t) => t.id === "darf")?.abschnitte.some((a) => a.id === "vertrauen")) return { fassung: f, geaendert: [] };
+  const { spawnPick } = await startLageVon(s);
+  const piHome = piVertrauensHome(spawnPick.harness, spawnPick.model ?? null);
+  const text = await (piHome ? vertrauenJetztPi(s.cwd, piHome) : vertrauenJetzt(s.cwd, claudeJsonDatei(), CLAUDE_HOME ?? HOME)).catch(() => null);
+  return text
+    ? fuehreNach(f, "darf", [textAbschnitt("vertrauen", piHome ? VERTRAUEN_QUELLE_PI : VERTRAUEN_QUELLE, text, false)])
+    : fuehreNach(f, "darf", [], ["vertrauen"]);
+}
+const VERTRAUEN_QUELLE = "server/claude-vertrauen.ts#vertraueOrdner (projects[…].hasTrustDialogAccepted in ~/.claude.json)";
+const VERTRAUEN_QUELLE_PI = "server/claude-vertrauen.ts#vertraueOrdnerPi (trust.json in Fleet's pi agent home)";
 async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
   const nachfolge = anlass === "nachfolge";
   const { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau } = await startLageVon(s);
@@ -23243,7 +23302,9 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     // jedes wirksamen Rechts mit seiner Bedeutung, darunter wo Fleet keinen Zaun setzt. Auf JEDEM Harness,
     // denn Server-Rechte sind keine Claude-Regeln; die vier Schalter bleiben daneben Claude Codes.
     darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
-        rechteZeilen(s.rechte, rechteRollen(s), harnessOf(spawnPick.harness).id).join("\n"), true), ...fleet.darf, ...umfeld.darf],
+        rechteZeilen(s.rechte, rechteRollen(s), harnessOf(spawnPick.harness).id).join("\n"), true), ...fleet.darf, ...umfeld.darf,
+      // WHAT FLEET SETS BEFORE CLAUDE CODE STARTS (plan W2): the folder's trust, named here so the start brief shows it as a + line
+      ...(s.cwd ? await vertrauenAbschnitt(s.cwd, spawnPick.harness, spawnPick.model ?? null) : [])],
     arbeitet: [...await fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s, eigen), ...umfeld.arbeitet],
     claudeCode, agent: s.agent ? { ...s.agent, satz: agentHerkunftSatz(s.agent) } : null,
     // DER START NENNT SEINEN SETUP-HASH (Richtung Schritt 4): den des gespeicherten Agenten, aus dem er öffnete, oder den der
@@ -55918,8 +55979,12 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const gehalten = holeFassung(STATE_DIR, s.id, s.openedAt);
         // Schwelle und Warmhalten gehören dem Slot und dürfen sich nach dem Start ändern: sie stehen, wie sie jetzt gelten, und
         // `nachgefuehrt` nennt, was sich seit dem Start bewegt hat (dann ist der Hash ein anderer als der des Starts)
-        const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", [...fassungLaufwerteFuer(s),
+        const nachLauf = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", [...fassungLaufwerteFuer(s),
           ...(isSeat(s) ? [await fassungArbeitetFrei(s, selfPosition(s).receiver)] : [])]) : null;
+        // ...and so does the folder trust Fleet set as it started: it stands only while the entry is in the file, and names who opened the
+        // seat as Fleet knows it now (the door stamps its opener after the start was held)
+        const nachVertrauen = nachLauf ? await vertrauenNachgefuehrt(s, nachLauf.fassung) : null;
+        const nach = nachLauf && nachVertrauen ? { fassung: nachVertrauen.fassung, geaendert: [...nachLauf.geaendert, ...nachVertrauen.geaendert] } : null;
         if (gehalten && nach) return json({ ...nach.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am,
           ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) }, wahlen, ...selbstTeil });
       }

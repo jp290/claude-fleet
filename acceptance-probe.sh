@@ -24,11 +24,14 @@ SOCK="fleetacptest$$"
 PORT=$((23400 + $$ % 2000))
 rm -rf "$DIR"
 mkdir -p "$DIR"
+# its seats run the real claude (FLEET_CMD=claude below), which needs the owner's own Claude config (e2e-stage.sh, step 5)
+STAGE_REAL_CLAUDE=1
 . "$SRC/e2e-stage.sh"
 STAGE_EXTRA=src
 stage_instance "$SRC" "$DIR" server.ts acceptance-probe.ts || exit 1
 
-trap 'tmux -L "$SOCK" kill-server 2>/dev/null' EXIT
+# its seats open in $SRC (acceptance-probe.ts), which is trusted already; should one ever open under $DIR, its trust goes with the probe
+trap 'tmux -L "$SOCK" kill-server 2>/dev/null; bun "$SRC/tools/vertrauen-vergessen.ts" "$DIR" >/dev/null 2>&1' EXIT
 tmux -L "$SOCK" kill-server 2>/dev/null
 
 TOKEN=acceptance-probe-token

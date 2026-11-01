@@ -1,3 +1,3 @@
 [test]
-# the run leaves no new file in the worktree (ci/worktree-clean.ts)
-preload = ["./ci/worktree-clean.ts"]
+# the run leaves no new file in the worktree (ci/worktree-clean.ts) and no trust entry of a test in the caller's ~/.claude.json (ci/claude-json-unberuehrt.ts)
+preload = ["./ci/worktree-clean.ts", "./ci/claude-json-unberuehrt.ts"]

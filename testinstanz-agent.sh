@@ -50,6 +50,15 @@ ti_end_seats() {
   echo "real seats ended: $TI_EN ($(echo $TI_EP | wc -w | tr -d ' ') processes with what they started)"
 }
 
+# TAKE BACK THE TRUST FLEET SET for the folders of the instance in $1: with real seats the fixture folders are opened under the OWNER's HOME,
+# so the folder trust Fleet sets before a claude starts (server/claude-vertrauen.ts) sits in the owner's ~/.claude.json. Only keys at or below $1.
+ti_forget_trust() {
+  [ -d "$1" ] || return 0
+  TI_FD=$(cd "$1" && pwd -P) || return 0
+  case "$TI_FD" in */fleet-testinstanz-?*) : ;; *) return 0 ;; esac
+  ( cd "${SRC:-.}" 2>/dev/null && bun tools/vertrauen-vergessen.ts "$TI_FD" >/dev/null 2>&1 ) || true
+}
+
 # WHAT THE INSTANCE SERVER GETS WITH REAL SEATS, one NAME=value per line (ti_serve passes them, env-names records the
 # names): no role in bypass and the deny rules (server/session-start.ts), a default model that is not the 1M Opus
 # (FLEET_TI_MODEL chooses another; `up` records it as realModel= in the state, so `refresh` and every restart without

@@ -36,6 +36,8 @@ export interface Startbrief { anweisungen: Block[]; ersteNachricht: Block[]; war
 export interface Dazu { repo: string; gitNormal: string | null; gitJetzt: string | null; aufgabe: string | null; hooksAus: boolean; ccTokens: number | null;
   /** the harness this start runs; absent = the Fassung's own `wer.harness`, else Claude Code */
   harness?: string | null;
+  /** the comparison is a predecessor's start, not plain `claude`: what Fleet sets before the start is then no difference from it (gegenVorgaengerin) */
+  vorgaengerin?: boolean;
   pack?: (id: string) => { titel: string; wann: string | null } | null }
 
 const abschnitte = (f: Fassung | null, teil: string, id: string): Abschnitt[] =>
@@ -234,6 +236,11 @@ export function startbrief(jetzt: Fassung, normal: Fassung, x: Dazu): Startbrief
     .flatMap(([w, t, id]) => { const v = text1(f, t, id); return v === null ? [] : zeilen(v).flatMap((z) => w === "--settings" ? jeSchluessel(z) : [z]).map((z, i) => `${i ? " ".repeat(16) : w.padEnd(16)}${z}`); }).join("\n");
   einstellungen.push(vergleiche({ key: "line", herkunft: "cc", pfad: "Model and permissions", wer: H, satz: `how Fleet starts ${harnessId}: flags and settings, no text`,
     bausteine: ["model", "permissions", "plan", "skills", "connectors", "rules", "hooks", "memory", "rights"] }, linie(jetzt), linie(normal)));
+  // what Fleet sets BEFORE the start so Claude Code doesn't stop at its own question (plan W2): plain `claude` has none of it, so it is always
+  // + against normal — the Fassung of "normal" is computed by the same code and would carry the line too
+  const vertrauen = text1(jetzt, "darf", "vertrauen");
+  if (vertrauen) einstellungen.push(vergleiche({ key: "trust", herkunft: "fleet", pfad: "Folder trust", wer: "Fleet",
+    satz: `so ${H} doesn't stop at its trust question`, bausteine: ["workplace"] }, vertrauen, x.vorgaengerin ? text1(normal, "darf", "vertrauen") : null));
   // „(keine Hooks)“: the Fassung's word for none (server/fassung-umfeld.ts)
   const hooks = text1(jetzt, "darf", "hooks-eigene");
   if (hooks && !/^\(keine/.test(hooks)) einstellungen.push(vergleiche({ key: "along", herkunft: "du", pfad: "Hooks", wer: "Yours", satz: x.hooksAus ? "your hooks are off for this session" : "your scripts, around each step", bausteine: ["hooks"] }, x.hooksAus ? null : hooks, hooks));
@@ -248,6 +255,6 @@ export const geaendert = (b: Startbrief): number => [...b.anweisungen, ...b.erst
 // window's, with the predecessor's start in the place of normal, every part that differs, a group's parts one by one. The first message
 // and the git status are the window's own inputs and stay out: a succession's first message is its handover, never a stone.
 export function gegenVorgaengerin(jetzt: Fassung, vorher: Fassung, repo: string): Block[] {
-  const b = startbrief(jetzt, vorher, { repo, gitNormal: null, gitJetzt: null, aufgabe: null, hooksAus: false, ccTokens: null });
+  const b = startbrief(jetzt, vorher, { repo, gitNormal: null, gitJetzt: null, aufgabe: null, hooksAus: false, ccTokens: null, vorgaengerin: true });
   return [...b.anweisungen, ...b.ersteNachricht, ...b.wartend, ...b.einstellungen].flatMap((x) => x.kinder ?? [x]).filter((x) => x.zeichen !== null);
 }

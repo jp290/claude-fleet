@@ -290,6 +290,7 @@ ti_retire() {
     TI_NOLSOF=" (no lsof on this host — identity unprovable)"
   fi
   TI_ENDED=$(ti_end_seats "$TI_RD")
+  ti_forget_trust "$TI_RD"
   if [ "$TI_HOLDS" = 1 ]; then
     kill "$TI_RPID" 2>/dev/null || true
     TI_WHY="pid $TI_RPID killed (held port $TI_RPORT)"
@@ -356,6 +357,10 @@ ti_serve() {
   # the harness start lines write their trust entries under $HOME (codex: $HOME/.codex/config.toml)
   # and die on a missing directory — before they ever reach the stand-in
   mkdir -p "$DIR/home/.codex" "$DIR/home/.pi"
+  # ...and Claude Code's config, as a Claude user's HOME has one: Fleet sets a folder's trust there before a claude seat starts
+  # (server/claude-vertrauen.ts) and the start brief shows it as a + line. Without the file Fleet writes nothing. (Real seats use the
+  # owner's file instead, FLEET_CLAUDE_HOME, and down/reap take their entries back.)
+  [ -f "$DIR/home/.claude.json" ] || printf '{"projects":{}}\n' > "$DIR/home/.claude.json"
   ti_agent_setup
   # THE ENV PROOF, WRITTEN BEFORE THE START: the NAMES — never values — of every FLEET_* variable
   # the instance server will receive. The launch below is an `env -i` whitelist, so the calling
@@ -908,6 +913,7 @@ down)
   # inside the directory — a seat's tool commands and its TTL watchdog — the sweep ti_retire does for the reap
   TI_DOWN_REAL=$(sed -n 's/^realSeats=//p' "$STATE" 2>/dev/null | head -1)
   TI_ENDED=$(ti_end_seats "$DIR")
+  ti_forget_trust "$DIR"
   ti_alive && kill "$(cat "$PIDF")" 2>/dev/null || true
   # By SOCKET NAME, never a name pattern: `pkill -f` on this machine reaches the live server and
   # the post-land audit (AGENTS.md §Verify).

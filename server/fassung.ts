@@ -184,16 +184,18 @@ export function baueFassung(e: FassungEingang): Fassung {
  * gerechnet; `geaendert` nennt die ids, deren Inhalt sich bewegt hat. Bewegt sich nur lebende Anzeige (`hashText`), steht sie neu da,
  * und Hash und `geaendert` bleiben.
  */
-export function fuehreNach(f: Fassung, teilId: FassungTeil["id"], neu: readonly FassungAbschnittEingang[]): { fassung: Fassung; geaendert: string[] } {
+/** `weg`: sections of this part that no longer hold and leave it (the folder trust of a running seat whose entry is gone, server.ts). */
+export function fuehreNach(f: Fassung, teilId: FassungTeil["id"], neu: readonly FassungAbschnittEingang[], weg: readonly string[] = []): { fassung: Fassung; geaendert: string[] } {
   const ersatz = new Map(neu.map((a) => [a.id, normalisiere(a)]));
   const geaendert: string[] = [];
   let angezeigt = false;
-  const teile = f.teile.map((t) => t.id !== teilId ? t : { ...t, abschnitte: t.abschnitte.map((a) => {
+  const teile = f.teile.map((t) => t.id !== teilId ? t : { ...t, abschnitte: t.abschnitte.flatMap((a) => {
+    if (weg.includes(a.id)) { geaendert.push(a.id); return []; }
     const n = ersatz.get(a.id);
-    if (!n) return a;
+    if (!n) return [a];
     if (JSON.stringify(kanon(hashInhalt(n))) !== JSON.stringify(kanon(hashInhalt(a)))) geaendert.push(a.id);
     else if (JSON.stringify(kanon(n)) !== JSON.stringify(kanon(a))) angezeigt = true;
-    return n;
+    return [n];
   }) });
   return geaendert.length ? { fassung: { ...f, teile, hash: fassungsHash(teile) }, geaendert }
     : angezeigt ? { fassung: { ...f, teile }, geaendert } : { fassung: f, geaendert };

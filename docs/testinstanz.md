@@ -267,20 +267,12 @@ unter ihrem eigenen HOME ist `claude` nirgends angemeldet. Mit dem Schalter:
 - **Postfach.** Nachrichten an eine Session oder an die Orchestratorin kommen wie live nach dem
   Postfach-Fenster von 60 s in die Pane (`server/zustellung.ts`, „direkt“). Gemessen am 22.10.: 69 s,
   die echte Orchestratorin antwortete darauf.
-- **Offen: ein Sitz in einem Git-Repo.** Im Verzeichnis der Instanz startet ein Sitz ohne Rückfrage,
-  denn `/private/tmp` ist in `~/.claude.json` des Owners vertraut. Ein Sitz in einem eigenen Repo der
-  Instanz (`fixture-repo/`) bleibt dagegen an Claudes Vertrauensfrage stehen, mit „[Zitat entfernt]“ vorgewählt.
-  Claude fragt je Repo-Wurzel, und Fleet beantwortet die Frage nie (`server.ts#CLAUDE_TRUST_DIALOG`).
-  Ohne Repo hat ein Sitz keine Projektbindung, die Orchestratorin bekommt dann ihre Owner-Korrekturen
-  nicht („[Zitat entfernt]“). Gemessen am 22.10. mit claude
-  2.1.308, ohne Anfrage ans Modell:
-  - Ein `git worktree` eines vertrauten Haupt-Repos startet ohne Rückfrage, auch unter `/private/tmp`.
-    So starten die Lanes des Live-Fleet: Ihre Worktrees haben keinen eigenen Eintrag, nur
-    `~/claude-fleet`. Ein Repo, das die Instanz als Worktree eines einmal vertrauten Haupt-Repos
-    anlegt, braucht also keine Rückfrage, und zwar für jede Instanz.
-  - Ein eigener Config-Ordner je Instanz (`CLAUDE_CONFIG_DIR`) ist nirgends angemeldet. Er trägt nur
-    mit kopierten Zugangsdaten (deren Refresh-Token sich beim Erneuern ändern kann, dann wäre live
-    abgemeldet) oder mit einem eigenen Login. Und er verlöre Einstellungen und Plugins des Owners.
+- **Ein Sitz in einem Git-Repo.** Fleet vertraut dem Ordner, den es für Claude öffnet (31.10., Paket W2): vor dem Start schreibt der Server
+  `projects[<Git-Wurzel>].hasTrustDialogAccepted` in `~/.claude.json` des Owners, unter Claudes eigener Sperre (`server/claude-vertrauen.ts`,
+  Messung `docs/messungen/2026-10-31-claude-json-vertrauen.md`). Ein Sitz in einem frischen Repo, auch über die Branch-Tür im Worktree,
+  startet also ohne Rückfrage; der Startbrief nennt es als + Zeile („Folder trust“). Die Einträge für die Ordner der Instanz nimmt
+  `down` (und `reap`) wieder aus der Datei des Owners (`tools/vertrauen-vergessen.ts`). Bleibt die Datei gesperrt oder fehlt sie, gilt der
+  alte Weg: Claudes Frage mit „[Zitat entfernt]“ vorgewählt, und Fleet beantwortet sie nie (`server.ts#CLAUDE_TRUST_DIALOG`, Hinweiszeile).
 
 ## Die Ableitung — eine Instanz je Worktree
 

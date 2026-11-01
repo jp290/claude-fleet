@@ -647,5 +647,15 @@ stage_instance() {
     cp -R "$_st_s/$_st_x" "$_st_d/" || return 1
   done
   [ -e "$_st_d/node_modules" ] || ln -s "$_st_s/node_modules" "$_st_d/node_modules" || return 1
+  # (5) A CLAUDE CODE CONFIG OF ITS OWN. Fleet writes a folder's trust into Claude Code's config before a seat starts
+  # (server/claude-vertrauen.ts: $CLAUDE_CONFIG_DIR/.claude.json, else $HOME/.claude.json), and every seat an instance opens sits in a
+  # per-run temp folder: under the caller's HOME those entries piled up in the owner's real file, like the codex ones before
+  # (e2e-isolated.sh, CODEX_HOME). EXPORTED, so the server, every restarted server and every pane see it; the panes of these
+  # instances run stand-ins, never a logged-in claude. A wrapper whose panes run the REAL claude sets STAGE_REAL_CLAUDE=1 first.
+  if [ "${STAGE_REAL_CLAUDE:-0}" != 1 ]; then
+    mkdir -p "$_st_d/claude-config" || return 1
+    [ -f "$_st_d/claude-config/.claude.json" ] || printf '{"projects":{}}\n' > "$_st_d/claude-config/.claude.json" || return 1
+    CLAUDE_CONFIG_DIR="$_st_d/claude-config"; export CLAUDE_CONFIG_DIR
+  fi
   return 0
 }

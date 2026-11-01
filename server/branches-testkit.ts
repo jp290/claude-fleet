@@ -77,6 +77,12 @@ export function branchTestkit() {
   // Session-Id fest (server.ts#IS_CLAUDE, pinsSession), die „Fortsetzen“ braucht. Transkripte liegen
   // im Temp-Ordner, tmux-Sockets in einem kurzen eigenen (ein Unix-Socket-Pfad hat höchstens 104 Zeichen).
   const PROJECTS = join(TMP, "claude-projects");
+  // A HOME OF ITS OWN for every server this kit starts: Fleet writes a folder's trust into $HOME/.claude.json before a seat starts
+  // (server/claude-vertrauen.ts), and under the caller's HOME every fixture seat left its entry in the owner's real file (pruefung.md, point 4).
+  // The file is there, so the trust path runs as it does live; the guard ci/claude-json-unberuehrt.ts turns a run red that writes the caller's.
+  const KIT_HOME = join(TMP, "home");
+  mkdirSync(KIT_HOME);
+  writeFileSync(join(KIT_HOME, ".claude.json"), JSON.stringify({ projects: {} }, null, 2), { mode: 0o600 });
   const BIN = join(TMP, "bin");
   mkdirSync(BIN);
   writeFileSync(join(BIN, "claude"), "#!/bin/sh\nexec sleep 600\n", { mode: 0o755 });
@@ -107,9 +113,9 @@ export function branchTestkit() {
   async function life(f: Fixture, steps: unknown[], extra: Record<string, string> = {}): Promise<Answer[]> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env))
-      if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
+      if (value !== undefined && !key.startsWith("FLEET_") && key !== "CLAUDE_CONFIG_DIR") env[key] = value;
     const proc = Bun.spawn([process.execPath, DRIVE, JSON.stringify(steps)], { cwd: f.state, stdout: "pipe", stderr: "pipe",
-      env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude",
+      env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(freePort()), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude", HOME: KIT_HOME,
         PATH: PANE_PATH, FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo,
         FLEET_SUITE_LOCK: f.suiteLock,
         GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", ...extra } });
@@ -127,10 +133,10 @@ export function branchTestkit() {
     call: (path: string, init?: { method?: string; body?: unknown; owner?: boolean; self?: string; headers?: Record<string, string> }) => Promise<Answer> }> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env))
-      if (value !== undefined && !key.startsWith("FLEET_")) env[key] = value;
+      if (value !== undefined && !key.startsWith("FLEET_") && key !== "CLAUDE_CONFIG_DIR") env[key] = value;
     const port = freePort();
     const proc = Bun.spawn([process.execPath, SERVE], { cwd: f.state, stdout: "pipe", stderr: "pipe",
-      env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude",
+      env: { ...env, FLEET_HOST: "127.0.0.1", FLEET_PORT: String(port), FLEET_SOCK: f.sock, TMUX_TMPDIR: SOCKETS, FLEET_CMD: "claude", HOME: KIT_HOME,
         PATH: PANE_PATH, FLEET_CLAUDE_PROJECTS_DIR: PROJECTS, FLEET_STATE_DIR: f.state, FLEET_TOKEN: f.token, FLEET_DISPATCH_REPO: f.repo,
         FLEET_SUITE_LOCK: f.suiteLock, FLEET_BINDUNG_DIR: join(f.state, "bindung"), FLEET_POSTFACH_FENSTER_SEC: "0",
         FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500",
@@ -166,5 +172,5 @@ export function branchTestkit() {
     rmSync(TMP, { recursive: true, force: true });
     rmSync(SOCKETS, { recursive: true, force: true });
   }
-  return { TMP, PROJECTS, BIN, SOCKETS, fixture, life, serve, cleanup };
+  return { TMP, PROJECTS, BIN, SOCKETS, KIT_HOME, fixture, life, serve, cleanup };
 }

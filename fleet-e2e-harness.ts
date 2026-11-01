@@ -1425,6 +1425,12 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const tmuxNewSession = async (...args) => {commands.push(args.at(-1)); return {code:0,out:"%1\\t@1",timedOut:false};};
       // the login environment of a claude seat in its own setup (server/login-umgebung.ts): never read for this codex seat, so the line stays as is
       const withPaneEnv=(env,cmd)=>env ? env.line + cmd : cmd;
+      // the folder trust ensureSlot sets before the pane (server/claude-vertrauen.ts) is claude's and pi's: a codex seat has no trust home. The
+      // claude and pi names are stubbed too, so a claude or pi fixture cut from the same source finds them: the folder counts as trusted
+      // already, and the looks around the start hand the start through unchanged
+      const piVertrauensHome=()=>null,CLAUDE_HOME=null,HOME="/fixture-home",claudeJsonDatei=()=>"/fixture-home/.claude.json",logError=()=>{};
+      const vertraueOrdner=async(cwd)=>({art:"schon",schluessel:cwd}),vertraueOrdnerPi=async(cwd)=>({art:"schon",schluessel:cwd});
+      const vertrauenUmDenStart=async(cwd,datei,home,schluessel,starte)=>({ergebnis:await starte(),nachschau:Promise.resolve(null)});
       const parseTmuxTarget = () => ({paneId:"%1",windowId:"@1"}),codexRolloutForId=async()=>"/rollout";
       const CODEX_UUID_RE=/^[0-9a-f-]{36}$/, RULEBOOK_AB_RENDERS=null;
       const saveState=()=>publications.push(JSON.stringify(s.permissions)),audit=()=>{},noteSessionIdLearned=()=>{},backfillProgramMainSessionId=()=>{};

@@ -166,6 +166,21 @@ describe("what a successor has that its predecessor didn't", () => {
   test("the same start twice has nothing new", () => {
     expect(gegenVorgaengerin(fassung({}), fassung({}), dazu.repo)).toEqual([]);
   });
+
+  test("the trust Fleet sets before the start is a + line against plain claude, and no difference against a predecessor", () => {
+    const mit = (fassung({}).teile.map((t) => t.id === "darf" ? { ...t, abschnitte: [...t.abschnitte, { id: "vertrauen", text: "Fleet trusted the whole repository /Users/o/example-app for Claude Code, every folder and worktree of it, because this seat was opened in it; the entry stays in ~/.claude.json after this seat and holds for Claude Code outside Fleet too\nprojects[\"/Users/o/example-app\"].hasTrustDialogAccepted = true in ~/.claude.json" }] } : t));
+    const jetzt: Fassung = { teile: mit };
+    // the Fassung of "normal" is computed by the same code, so it carries the line too — the window still counts it as added
+    const b = startbrief(jetzt, jetzt, dazu);
+    const z = b.einstellungen.find((x) => x.key === "trust")!;
+    expect(z.zeichen).toBe("+");
+    expect(z.diff![0]).toEqual({ z: "+", t: "Fleet trusted the whole repository /Users/o/example-app for Claude Code, every folder and worktree of it, because this seat was opened in it; the entry stays in ~/.claude.json after this seat and holds for Claude Code outside Fleet too" });
+    expect(z.wer).toBe("Fleet");
+    // a start without the entry (already trusted before Fleet came) shows nothing
+    expect(startbrief(fassung({}), fassung({}), dazu).einstellungen.find((x) => x.key === "trust")).toBeUndefined();
+    // a successor that got the same trust has no difference from the seat before it
+    expect(gegenVorgaengerin(jetzt, jetzt, "/Users/o/example-app").find((x) => x.key === "trust")).toBeUndefined();
+  });
 });
 
 // the owner's corrections a seat without a role in Fleet's repo carries (server/korrektur-stein.ts): with every request, as yours,

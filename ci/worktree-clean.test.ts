@@ -5,9 +5,9 @@
 // ci/worktree-clean.ts macht einen Unit-Lauf rot, der eine Datei in sein cwd schreibt, aber nicht
 // einen, der ins Temp-Verzeichnis schreibt. Beides läuft in einem eigenen Temp-Baum.
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const REPO = resolve(import.meta.dir, "..");
 const dirs: string[] = [];
@@ -18,8 +18,20 @@ afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true 
 function unitRun(target: "cwd" | "tmp"): { code: number; out: string; dir: string } {
   const dir = scratch("worktree-clean");
   mkdirSync(join(dir, "ci"));
-  cpSync(join(REPO, "ci", "worktree-clean.ts"), join(dir, "ci", "worktree-clean.ts"));
-  cpSync(join(REPO, "bunfig.toml"), join(dir, "bunfig.toml"));
+  // the bunfig as in the repo, with every preload it names and the repo modules those import: a preload or import it can't find stops the
+  // run before any test
+  const bunfig = readFileSync(join(REPO, "bunfig.toml"), "utf8");
+  const kopiere = (rel: string): void => {
+    if (existsSync(join(dir, rel))) return;
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    cpSync(join(REPO, rel), join(dir, rel));
+    for (const [, imp] of readFileSync(join(REPO, rel), "utf8").matchAll(/from "(\.{1,2}\/[^"]+)"/g)) {
+      const ziel = relative(REPO, resolve(REPO, dirname(rel), imp));
+      kopiere(existsSync(join(REPO, ziel)) ? ziel : `${ziel}.ts`);
+    }
+  };
+  for (const p of bunfig.match(/^preload\s*=\s*\[([^\]]*)\]/m)?.[1].match(/"[^"]+"/g) ?? []) kopiere(relative(REPO, resolve(REPO, p.slice(1, -1))));
+  writeFileSync(join(dir, "bunfig.toml"), bunfig);
   writeFileSync(join(dir, ".gitignore"), "fleet.json\n");
   writeFileSync(join(dir, "ci", "writer.test.ts"), `import { test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";

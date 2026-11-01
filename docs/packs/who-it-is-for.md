@@ -33,3 +33,5 @@ you the work before you build.
 
 A builder builds what the brief names, whatever else it reads. So the brief says who meets the change, in which
 moment, and what they can do afterwards. If that sentence comes out thin, the piece isn't ready to be given.
+
+When the work is a screen, `made-with-love` leads from here: it holds the design, the words and the check that ends it.

@@ -149,7 +149,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 6678,
+    "estimatedBytes": 4572,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -252,7 +252,7 @@
     "useWhen": "Before you choose, order or build work that someone will use: who meets it, and how work misses its people.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["orchestrator-start", "seat-start-any-repo"],
+    "triggers": ["orchestrator-start", "seat-start-any-repo", "visible-surface"],
     "hardness": "guidance",
     "sources": [
       { "id": "who-it-is-for.text", "path": "docs/packs/who-it-is-for.md", "anchor": "# Who it is for", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "box" } }
@@ -260,7 +260,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 2213,
+    "estimatedBytes": 2334,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -691,18 +691,18 @@
   },
   {
     "id": "made-with-love",
-    "useWhen": "While you build something visible, and before you show it: the critical look at the whole, as the owner wants it.",
+    "useWhen": "While you build something visible (layout, words, calm), and before you show it: the one pack for visible work.",
     "scope": "repo-contract",
     "audience": "agent",
-    "triggers": ["seat-start"],
+    "triggers": ["seat-start", "visible-surface"],
     "hardness": "guidance",
     "sources": [
-      { "id": "made-with-love.text", "path": "docs/packs/made-with-love.md", "anchor": "# Made with love", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+      { "id": "made-with-love.text", "path": "docs/packs/made-with-love.md", "anchor": "# Made with love", "sorte": "anleitung", "positions": { "lane": "box", "main": "ausleihe", "orchestratorin": "ausleihe" } }
     ],
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 4455,
+    "estimatedBytes": 7124,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

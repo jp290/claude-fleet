@@ -31,6 +31,15 @@ owner's word.
   before you call it done. The same fix-run-fail loop five times means the problem is structural: stop and rethink.
   Before you hand-roll a utility or an integration, look for one in the repo and the package registry, and confirm
   an API's behaviour in the vendor's own docs.
+- A fresh branch worktree has no `node_modules`: run `bun install --frozen-lockfile` in it before `bunx tsc -p .` or a test.
+- About twenty test files cut functions out of `server.ts` as text and run them with stubs (list them with
+  `rg -l 'new Function\(' e2e server ci fleet-e2e-harness.ts`). When a `server.ts` function you change calls a new
+  name, find that function in those files, add the stub, and run them before you report; the merge check runs them all.
+- A new self route also needs its entry in `e2e/security.ts` PRE_AUTH_ROUTES; that check runs only in the full suite on
+  the helper, so a branch looks green without it.
+- Test servers (`*.drive.ts` from `server/branches-testkit.ts`) import `server.ts` as a module, and the periodic git tick
+  sits inside `if (import.meta.main)`: they never tick on their own. A test that reads git facts triggers a tick first.
+- A test instance's seat root is its own `home/` folder (`FLEET_SELF_SEAT_ROOT`): a folder a seat there opens lies under it.
 - Remove before you add: look for the layer that can go. New parts are loadable modules outside `server.ts`.
 - Write docs only where a decision hangs on them. A measurement note is evidence, not a result.
 - A rule, check or step that stifles initiative without protecting anything is built wrong. Such a case, and any

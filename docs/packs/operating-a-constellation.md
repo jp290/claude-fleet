@@ -10,7 +10,8 @@ this pack is the judgment between them.
 Ask in this order and take the first that fits.
 
 1. **Is it the owner's?** Money they haven't set aside, anything public, anything that can't be undone, a right only
-   they grant, taste. It goes back to them as one question, because no seat can decide it for them.
+   they grant, taste. It goes back to them as one question (or, if the owner doesn't talk to you, to the seat that opened you), because no seat
+   can decide it for them.
 2. **Is it unclear what is meant?** Which branch, which result, done by when. Ask one question before anyone works on a
    guess.
 3. **Can you answer it in a few calls from where you stand?** What runs, a short lookup, why something is red. Do it:
@@ -75,7 +76,7 @@ it does and on which model, so they can change it before it costs much.
   them one question and pass their words down; otherwise send it to the seat that opened you, which filters and asks.
 - **A child at its context limit hands over,** and no brief forbids it. Its successor reads the brief file again.
 - **At your cap** (`FLEET_SELF_SEAT_CAP`), the open door answers 409. End a seat whose work is done, or tell the owner
-  what waits.
+  (or the seat that opened you) what waits.
 
 ## What comes back
 

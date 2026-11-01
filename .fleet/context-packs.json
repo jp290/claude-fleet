@@ -204,7 +204,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 2345,
+    "estimatedBytes": 1885,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active",
@@ -278,7 +278,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 13565,
+    "estimatedBytes": 14821,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -369,7 +369,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 9222,
+    "estimatedBytes": 9291,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -413,7 +413,7 @@
       "read-only",
       "mutating"
     ],
-    "estimatedBytes": 4969,
+    "estimatedBytes": 5177,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -450,7 +450,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude",  "pi",  "pi-zai",  "pi-deepseek",  "pi-zai-unfenced",  "pi-unfenced",  "container",  "codex"],
     "modes": ["read-only",  "mutating"],
-    "estimatedBytes": 7566,
+    "estimatedBytes": 7667,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -628,7 +628,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 8234,
+    "estimatedBytes": 9251,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -647,7 +647,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 19603,
+    "estimatedBytes": 19864,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -666,7 +666,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 10539,
+    "estimatedBytes": 10540,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -684,7 +684,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 3325,
+    "estimatedBytes": 3530,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -720,7 +720,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 31544,
+    "estimatedBytes": 31737,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

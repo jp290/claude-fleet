@@ -59,6 +59,9 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   in a scope of its own. A new slot map or a new `carried*` variable they use belongs in that scope too, and the
   closure must not contain `"),\n"` before its end, because the cut stops there. `./e2e-claude-gate.sh` runs these
   fixtures, and the merge check runs it as its job `gate`; on a red there, read that job's log for the fixture.
+  The same cut happens in about twenty more files (`rg -l 'new Function\(' e2e server ci`; `e2e/history.ts`
+  and `e2e/context-plan.ts` among them), which the check runs in its other jobs: a new name called
+  inside a cut function needs its stub there as well.
 - **Land under a quiet host.** Lands die at the verify budget once the load average climbs past about 30 and pass
   below 20; the owner set the line at a 5-minute load under 25. Before you land into a busy host, find orphaned
   suite leftovers first (a parent wrapper that is gone, a tmux server nobody uses) and end them by PID or socket,

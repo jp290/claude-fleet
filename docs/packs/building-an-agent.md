@@ -74,8 +74,8 @@ fact about this repository in the repository's rules.
    - Then write your handover (`POST /api/self/handover`) and start the succession (`POST /api/self/succeed`). The
      handover says what changed and what the person should watch for.
 
-   Only text goes through this door: a purpose and context packs. Rights, model, hooks and MCP servers are never yours to
-   give yourself; when the agent needs one of them, the person sets it in the start window. Only a seat without a
+   Only text goes through this door: a purpose and context packs. Rights, hooks and MCP servers are never yours to
+   give yourself (model and effort you choose at `POST /api/self/succeed`, which takes both); when the agent needs one of them, the person sets it in the start window. Only a seat without a
    standing role uses this door, on any harness. A restart keeps your start; only the succession brings the new one.
    Claude Code reads the stones in its system prompt addition; a harness without one reads them in its succession
    brief, each as one + line that names its author.

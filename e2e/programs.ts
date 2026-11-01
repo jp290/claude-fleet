@@ -7240,7 +7240,8 @@ export async function run(ctx: Ctx): Promise<void> {
   writeFileSync(gmIdentityHook, [
     "#!/bin/sh",
     `: > ${shellQuote(gmIdentityReady)}`,
-    `while [ ! -e ${shellQuote(gmIdentityRelease)} ]; do sleep 0.02; done`,
+    // bounded (~60 s): a hook git starts after the release is gone, or a test that throws before writing it, must not outlive the run (Mangel 181)
+    `n=0; while [ ! -e ${shellQuote(gmIdentityRelease)} ] && [ "$n" -lt 3000 ]; do sleep 0.02; n=$((n + 1)); done`,
     "exit 1",
     "",
   ].join("\n"), { mode: 0o700 });
@@ -7264,7 +7265,8 @@ export async function run(ctx: Ctx): Promise<void> {
   const gmIdentityResponse = await gmIdentityPending;
   const gmIdentityText = await gmIdentityResponse.text();
   spawnSync("git", ["-C", gameWt, "config", "--unset", "core.fsmonitor"]);
-  for (const path of [gmIdentityHook, gmIdentityReady, gmIdentityRelease])
+  // the release stays: a git that read core.fsmonitor before the unset may still start the hook, and it must find the release
+  for (const path of [gmIdentityHook, gmIdentityReady])
     if (existsSync(path)) unlinkSync(path);
   const gmIdentityOccupiedAfter = await occupiedIds();
   const gmIdentityReplacement = readState().slots?.[String(gmIdentityRaceSlot)];

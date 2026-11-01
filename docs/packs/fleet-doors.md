@@ -134,7 +134,7 @@ Bodies as the doors read them. Keys the door does not know are ignored today, so
   "idempotencyKey": "<any string, new per message>"}`. `to` is `{kind:"session", slot}` or `{kind:"role", role}`; from
   a terminal `./ctl.sh send --seat <slot> <textfile>` does the same. The door names what is missing itself: 400 states
   the cap and the form, 409 states the rules and the seats you may write now. Read the error body; `curl -o /dev/null`
-  hides it. A longer report goes as numbered parts `[1/3] …`.
+  hides it. A report fits in one message (at most 10 000 characters).
 - `GET /api/self/context/<id>`: the text of one library pack at HEAD, for example `setting-up-agents` when your start
   did not carry it.
 - `POST /api/self/retire`: ends your own seat. A seat you opened ends itself the same way when its work is done, so
@@ -236,8 +236,9 @@ A door that answers 202 has accepted work, not finished it. Read the state it na
 
 ## Handing over
 
-Text is the only thing you can add to your successor's start: a purpose and context packs. Rights, model, hooks and
-MCP servers are the person's. Claude Code and every pi adapter read the purpose and packs in their appended system
+Text is the only thing you can add to your successor's start: a purpose and context packs. Rights, hooks and MCP
+servers are the person's. Model and effort are yours to choose at the succession itself: `POST /api/self/succeed`
+takes `model` and `effort` and validates them as an open does; without them the successor inherits yours. Claude Code and every pi adapter read the purpose and packs in their appended system
 prompt (a pi seat reads them from the file Fleet passes with `--append-system-prompt`); on a harness without one they
 arrive in the succession brief. Either way each stone is one `+` line that names its author and is followed by its
 text. A restart keeps your own start; only the succession brings the new one.

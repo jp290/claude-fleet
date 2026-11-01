@@ -3708,6 +3708,10 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
 - **Orchestratorin → Session:** Als Antwort mit `replyTo` auf die Nachricht genau dieser Session,
   und frei an jeden Claude-Sitz ohne stehende Rolle (nächster Punkt). Andere Absender oder eine
   andere Session-Adresse: 409.
+- **Der Slot der Orchestratorin (`server.ts#orchestratorSlotFallback`, W1):** Eine Session-Adresse an den Slot, in dem die
+  Orchestratorin sitzt, bleibt eine Session-Adresse, wo eine Regel sie durchlässt (sie hat den Sitz geöffnet, eine Kante, ein Paar).
+  Wo das Postfach sie ablehnen würde, wird sie ihre Rollenadresse `{kind:"role",role:"orchestrator"}`. So erreicht
+  `ctl.sh send --seat <slot>` sie von jedem Sitz, und die Zeile „slot N: the Orchestrator“ unter „Arbeitet mit“ stimmt.
 - **Anthropic-Sitze (`server.ts#anthropicSitzPaar`, Owner 30.10.: „[Zitat entfernt]“):** Zwei Sitze ohne stehende Rolle (keine Lane, keine MAIN, nicht die Orchestratorin, nicht
   der Steward), die beide Anthropic sind (`server/datengrenze.ts#istAnthropic`), schreiben sich über
   `{kind:"session",slot}` ohne Kante und ohne Ablauf; die Orchestratorin schreibt jedem solchen Sitz
@@ -3740,7 +3744,7 @@ curl -s -X POST -H "x-fleet-self-token: $FLEET_SELF_TOKEN" \
   Land- oder Deploy-Berechtigung reist mit ihr, und keine Route liest sie als Anweisung.
 
 **Antwort GET:** `{addresses, unread, droppedFleetWide, entries: [{id, from, to, at, payload,
-idempotencyKey, replyTo, readBy, readAt, delivery?}], unknown: []}`, **neueste zuerst**. `delivery`
+idempotencyKey, replyTo, readBy, readAt, delivery?}], unknown: [], history: []}`, **neueste zuerst**. `delivery`
 steht nur am Eintrag, solange er nicht zugestellt ist (siehe unten); fehlt der Schlüssel, ist kein
 Hindernis bekannt — eine Ankunft behauptet nur `readBy`. `addresses` sind die
 Adressen, die diese Session gerade hält — eine Session kann unter mehreren lesen. Die eigene steht
@@ -3755,7 +3759,10 @@ Session-/Lane-Adresse; eine neu gebundene Program-MAIN liest weiterhin ihre Prog
 Neuigkeit, und sie mitzuzählen ließe eine untätige MAIN aussehen, als schulde sie ihrer eigenen
 Frage eine Antwort. `droppedFleetWide`
 heißt so, wie es heißt: der Deckel liegt auf dem GANZEN Record, die Zahl ist also nicht „so viele
-DEINER Nachrichten fielen ab"; ist sie > 0, steht daneben eine `unknown`-Zeile, die genau das sagt.
+DEINER Nachrichten fielen ab"; ist sie > 0, sagt eine `history`-Zeile, dass die Liste nicht die ganze Geschichte ist.
+`unknown` trägt eine Zeile nur, wenn die Zahl `unread` Post verfehlen kann: wenn eine Zeile UNGELESEN den Ring verließ, während
+ihr Empfänger noch lebte (`messagesDroppedUnread`, neben dem Record gespeichert, damit ein älterer Server den Record weiter liest).
+Fielen nur gelesene Zeilen oder Post an Empfänger, die es nicht mehr gibt, ist `unread` eine echte Zahl.
 
 **Filter `?unread=1` (seit 2026-10-10, `server.ts#messageViewFor`):** `GET /api/self/messages?unread=1`
 liefert in `entries` nur den **ungelesenen Eingang** — genau die Zeilen, deren Ids
@@ -3957,7 +3964,7 @@ noch `readAt`. Optional filtert `unread=true` auf unquittierte, `unread=false` a
 Einträge; `to=program:<24-hex>` oder `to=role:orchestrator|controller` filtert die
 Zieladresse. Beide Filter sind kombinierbar. Ungültige Filter antworten **400**.
 
-Die Antwort enthält `{entries, unread, droppedFleetWide, unknown}`; `unread` zählt fleetweit vor
+Die Antwort enthält `{entries, unread, droppedFleetWide, unknown, history}`; `unread` zählt fleetweit vor
 Filterung. Jeder Eintrag trägt zusätzlich `resolution`, bei jeder Abfrage neu berechnet:
 `{ok:true, holder:{slot,openedAt}|null, note, escalatedTo:null|"orchestrator"|"owner"}` oder
 `{ok:false,error}` bei einer nicht mehr auflösbaren Adresse. Record-Verlust und Deckel bleiben

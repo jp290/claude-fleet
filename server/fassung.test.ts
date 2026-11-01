@@ -7,7 +7,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { anatomieAusTranskript } from "./claude-code-anatomie";
-import { baueFassung, LIEST_REIHENFOLGE, textAbschnitt, unknownAbschnitt, type FassungEingang } from "./fassung";
+import { baueFassung, fuehreNach, LIEST_REIHENFOLGE, textAbschnitt, unknownAbschnitt, type FassungEingang } from "./fassung";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -33,6 +33,23 @@ const liestTexte = (f: ReturnType<typeof baueFassung>) =>
   f.teile.find((teil) => teil.id === "liest")!.abschnitte.map((a) => [a.id, a.text, a.grund ?? null]);
 
 describe("fassungsHash", () => {
+  // W1: die Paare unter „Arbeitet mit“ hängen an der Flotte, nicht am Setup. Zeigt ein Abschnitt sie, zählt der Hash seine feste Form
+  // (hashText): ein Sitz neben anderen trägt den Hash seiner Vorschau, und der laufende Sitz zeigt neue Paare, ohne dass sein Hash wandert.
+  test("lebende Anzeige zählt nicht: ein Abschnitt mit hashText hasht wie seine feste Form, und fuehreNach zeigt neue Paare ohne neuen Hash", () => {
+    const fest = "Empfänger: unbekannt\nMailbox, template streng: the seats you may write appear here once the seat runs.";
+    const vorschau = baueFassung(eingang({ arbeitet: [textAbschnitt("arbeitet", "vorschau", fest)] }));
+    const mitPaar = (paar: string) => ({ ...textAbschnitt("arbeitet", "start", `Mailbox, template streng: you may write these seats now:\n${paar}`), hashText: fest });
+    const start = baueFassung(eingang({ arbeitet: [mitPaar("- slot 2: opened you — your counterpart")] }));
+    expect(start.hash).toBe(vorschau.hash);
+    expect(start.teile.find((t) => t.id === "arbeitet")!.abschnitte[0]!.text).toContain("slot 2");
+    const nach = fuehreNach(start, "arbeitet", [mitPaar("- slot 5: a sibling: the same seat opened you both")]);
+    expect(nach.geaendert).toEqual([]);
+    expect(nach.fassung.hash).toBe(vorschau.hash);
+    expect(nach.fassung.teile.find((t) => t.id === "arbeitet")!.abschnitte[0]!.text).toContain("slot 5");
+    // die feste Form selbst zählt weiter: eine andere Regel ist ein anderes Setup
+    expect(baueFassung(eingang({ arbeitet: [{ ...mitPaar("- slot 2: x"), hashText: `${fest} Other rule.` }] })).hash).not.toBe(vorschau.hash);
+  });
+
   test("gleicher Inhalt ergibt denselben Hash, auch bei anderer Feldreihenfolge", () => {
     const a = baueFassung(eingang());
     const b = baueFassung({ ...eingang(), darf: [...eingang().darf] });

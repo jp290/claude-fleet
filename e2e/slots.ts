@@ -3654,15 +3654,14 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("export escapes a real metachar in the label (title/h1)", exp3Body.includes(`&lt;b&gt;"pwn'd&lt;/b&gt;`)
     && !exp3Body.includes(`<b>"pwn`));
   await post("/api/slots/3/kill", {});
-  // ...and a foreign harness keeps the paste byte for byte: no measurement says what pi's TUI makes
-  // of a typed prefix, so the header is claude's alone (VERBOTEN on 4b085fd9: codex/pi unchanged).
-  // BREAKS IF: deliveryHeader stops asking for the default adapter and heads every harness.
+  // ...and a foreign harness gets the head too (W1, owner: „[Zitat entfernt]“): the head is typed text in front of the
+  // body, and the body is never changed. BREAKS IF: deliveryHeader goes back to heading only the default adapter.
   const o3pi = await post("/api/slots/3/open", { cwd: "~", harness: "pi" });
   const piSend = o3pi.ok ? await post("/send", { slot: 3, text: "pi-paste-without-header", submit: false }) : null;
   await Bun.sleep(400);
   const cap3pi = await tmuxOut("capture-pane", "-t", "s3", "-p", "-J");
-  check("delivery header: a /send into a pi slot pastes the body alone, no provenance line",
-    !!piSend?.ok && cap3pi.out.includes("pi-paste-without-header") && !cap3pi.out.includes("[fleet-delivery"),
+  check("delivery header: a /send into a pi slot pastes the body under the same provenance line",
+    !!piSend?.ok && cap3pi.out.includes("pi-paste-without-header") && cap3pi.out.includes("[fleet-delivery"),
     JSON.stringify({ open: o3pi.status, send: piSend?.status ?? null,
       line: cap3pi.out.split("\n").filter((l) => l.includes("pi-paste")).join(" / ").slice(-200) }));
   await post("/api/slots/3/kill", {});
@@ -5559,11 +5558,14 @@ async function runPlannedStartProbe(repo: string, git: (...args: string[]) => Re
     const piBody = await piStart.json() as Started;
     if (piBody.slot) opened.push(piBody.slot);
     const piQuittung = typeof piBody.plan === "object" ? piBody.plan : null;
-    check("planned start: a planned pi lane starts — the delivery header is a Claude row, left out with its reason",
+    // W1 (owner: [Zitat entfernt]): deliveryHeader heads pi as it heads Claude, so the plan says so and the quittung
+    // delivers the row. BREAKS IF: the plan goes back to calling the head a Claude row while the delivery still heads pi.
+    check("planned start: a planned pi lane starts — the delivery header is on as for a Claude lane, and the quittung delivers it",
       claudeLane.plan?.bausteine.find((row) => row.id === "delivery-header")?.zustand === "an"
-        && pi.start?.startbar === true && pi.plan?.bausteine.find((row) => row.id === "delivery-header")?.zustand === "aus"
+        && pi.start?.startbar === true && pi.plan?.bausteine.find((row) => row.id === "delivery-header")?.zustand === "an"
         && piStart.status === 200 && !!piQuittung && piQuittung.hash === pi.plan.planHash
-        && piQuittung.ausgelassen.some((row) => row.id === "delivery-header" && row.grund.startsWith("Plan: aus") && row.grund.includes("Claude-Weg"))
+        && piQuittung.geliefert.some((row) => row.id === "delivery-header")
+        && !piQuittung.ausgelassen.some((row) => row.id === "delivery-header")
         && fileOf(piBody.cwd) === pi.sessionAgents?.text,
       `${piStart.status} start=${JSON.stringify(pi.start)} ${JSON.stringify(piBody).slice(0, 300)}`);
     for (const slot of opened.splice(0)) await post(`/api/slots/${slot}/kill`, {});

@@ -62,3 +62,17 @@ describe("agent-message: die eigenen Worte des Owners bleiben seine", () => {
     expect(agentMessage("Another Claude session sent a message:\n<agent-message from=\"x\">")).toBeNull();
   });
 });
+
+// Claude Code 2.1.316 schreibt drei Vorsätze (aus seinem Binary); „while you were working" steht als meta-Zeile in einem
+// echten Transkript dieses Macs. Jeder ist fremde Rede, vor beiden Hüllen — nie die Blase des Owners (Mangel 80).
+describe("jeder Vorsatz einer anderen Session ist fremde Rede im Chat", () => {
+  const vorsaetze = ["Another Claude session sent a message:", "Another Claude session sent a message while you were working:",
+    "A peer session sent a message while you were working:"];
+  test("Bericht und Session-Nachricht hinter jedem Vorsatz", () => {
+    for (const v of vorsaetze) {
+      expect(otherSender(`${v}\n${midTurn}`)).toEqual({ who: "agent", text: report, note: "3 lines" });
+      expect(otherSender(`${v}\n<cross-session-message from-name="w1">\nhallo\n</cross-session-message>`)).toEqual({ who: "w1", text: "hallo" });
+      expect(otherSender(`${v}\nbitte prüf das`)).toBeNull();
+    }
+  });
+});

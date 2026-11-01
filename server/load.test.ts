@@ -685,6 +685,87 @@ describe("loadPersistedState: eine gepflanzte fleet.json kommt nach dem Laden ü
   });
 });
 
+// PRÜFUNG W1, Befunde 4a und 4b, über den echten Weg des Servers: ein gepflanzter voller Ring (200 ungelesene an die Orchestratorin,
+// eine Rollenadresse, die nie als tot gilt), eine Antwort des Owners als 201. Zeile, saveStateNow schreibt fleet.json. main 491bcd016
+// muss den Record darin ganz lesen — sonst bootet ein Rückweg mit leerem Postfach und überschreibt die Post —, und dieser Stand liest
+// den Zähler daneben wieder. Die Ansicht sagt, dass die Liste nicht die ganze Geschichte ist, auch wenn nur Gelesenes fiel.
+describe("Postfach über den Speicherweg: ein Rückweg liest den Record, und die Ansicht sagt, was fehlt", () => {
+  const token = `w1-${process.pid}-${Date.now()}`;
+  const zeile = (i: number, extra: Record<string, unknown> = {}) => ({ id: i.toString(16).padStart(24, "0"),
+    from: { kind: "role", role: "orchestrator" }, to: { kind: "role", role: "orchestrator" }, at: 1_790_000_000_000 + i,
+    payload: { kind: "text", text: `n${i}` }, idempotencyKey: `k${i}`, replyTo: null, readBy: null, readAt: null, ...extra });
+  async function call(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+    const { serveOptions } = await load();
+    const fetch = serveOptions.fetch;
+    if (!fetch) throw new Error("serveOptions hat keinen fetch-Handler");
+    const server = { requestIP: () => null } as unknown as Parameters<typeof fetch>[1];
+    const req = new Request(`http://127.0.0.1:${isolation.FLEET_PORT}${path}`, { method,
+      headers: { host: `127.0.0.1:${isolation.FLEET_PORT}`, authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const res = await fetch.call(server, req, server);
+    if (!res) throw new Error(`${path}: keine Antwort`);
+    return { status: res.status, body: await res.json() as Record<string, unknown> };
+  }
+  async function plant(state: Record<string, unknown>): Promise<void> {
+    const { loadPersistedState, adoptTokens } = await load();
+    const dir = mkdtempSync(join(tmpdir(), "fleet-w1-"));
+    try {
+      await Bun.write(join(dir, "fleet.json"), JSON.stringify({ token, ...state }));
+      delete process.env.FLEET_TOKEN;
+      await loadPersistedState(join(dir, "fleet.json"));
+      adoptTokens();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  test("200 ungelesene plus eine: main liest die gespeicherte fleet.json ganz, und der Zähler kommt beim nächsten Boot zurück", async () => {
+    const { saveStateNow } = await load();
+    const { mainLoadMessages } = await import("./main-lader.fixtures");
+    const main = await mainLoadMessages();
+    try {
+      await plant({ messages: { v: 1, entries: Array.from({ length: 200 }, (_, i) => zeile(i)), dropped: 0 } });
+      const reply = await call("POST", `/api/messages/${zeile(0).id}/reply`, { payload: { kind: "text", text: "noch eine" }, idempotencyKey: "w1-201" });
+      expect(reply.status).toBe(200);
+      await saveStateNow();
+      const saved = JSON.parse(readFileSync(join(STATE_DIR, "fleet.json"), "utf8")) as Record<string, unknown>;
+      const alt = main.load(saved.messages);
+      expect(alt.error).toBeUndefined();
+      expect(alt.messages?.entries.length).toBe(200);
+      expect(alt.messages?.dropped).toBe(1);
+      expect(saved.messagesDroppedUnread).toBe(1);
+      // derselbe Stand bootet wieder: die verlorene ungelesene Zeile macht die Zahl „unbekannt“, und die Geschichte nennt sie
+      await plant(saved);
+      const view = await call("GET", "/api/messages");
+      expect((view.body.unknown as string[]).join(" ")).toContain("1 unread messages to a receiver that still lived");
+      expect((view.body.history as string[])[0]).toContain("1 of them left unread");
+    } finally { main.cleanup(); }
+  });
+
+  // Prüfung W1, Runde 2: ein unlesbarer ZÄHLER ist kein verlorenes Postfach — die Post ist ganz, und das Audit sagt es mit eigenem Namen
+  test("ein unlesbarer Zähler wird als messages_counter_unreadable auditiert, die Post bleibt da", async () => {
+    const auditFile = join(STATE_DIR, "audit.jsonl");
+    const before = existsSync(auditFile) ? readFileSync(auditFile, "utf8").length : 0;
+    await plant({ messages: { v: 1, entries: [zeile(1)], dropped: 2 }, messagesDroppedUnread: "x" });
+    const view = await call("GET", "/api/messages");
+    expect(view.body.unread).toBe(1);
+    let rows: { event: string; detail?: string }[] = [];
+    for (let i = 0; i < 50 && !rows.some((r) => r.detail?.includes("messagesDroppedUnread")); i++) {
+      await Bun.sleep(20);
+      rows = existsSync(auditFile) ? readFileSync(auditFile, "utf8").slice(before).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    }
+    expect(rows.filter((r) => r.detail?.includes("messagesDroppedUnread")).map((r) => r.event)).toEqual(["messages_counter_unreadable"]);
+  });
+
+  test("nur gelesene Zeilen verdrängt: die Zahl der ungelesenen bleibt echt, und die Ansicht sagt, dass die Liste unvollständig ist", async () => {
+    await plant({ messages: { v: 1, entries: [zeile(1)], dropped: 4 } });
+    const view = await call("GET", "/api/messages");
+    expect(view.status).toBe(200);
+    expect(view.body.unknown).toEqual([]);
+    expect(view.body.unread).toBe(1);
+    expect((view.body.history as string[])[0]).toContain("4 messages have fallen off");
+    expect((view.body.history as string[])[0]).toContain("not the whole history");
+  });
+});
+
 // Mangel 53 S-c (befunde/12 §7): Claude Code schreibt einen ausgeführten Befehl in zwei Formen, und der Chat bekommt
 // beide als denselben user-Text-Eintrag (src/slashcommand.ts macht daraus eine Zeile). Die Zeilen sind die der
 // Owner-Pane: Form (b) aus fa9e6a3c (14.10., Zeilen 51–53), Form (a) wie im Beweis „[Zitat entfernt]“ vom 13.10.
@@ -741,6 +822,17 @@ describe("crossSessionEntry: die Nachricht einer anderen Session in Ruhe", () =>
     expect(crossSessionEntry(line(said, { isMeta: false }), 7, false)).toBeNull();
     expect(crossSessionEntry(line([{ type: "text", text: said }]), 7, false)).toBeNull();
     expect(crossSessionEntry({ type: "assistant", isMeta: true, message: { content: said } }, 7, false)).toBeNull();
+  });
+  // Mangel 80: die beiden Vorsätze „mitten im Zug“, die Claude Code 2.1.316 laut Binary schreibt; der erste steht als
+  // meta-Zeile vor <agent-message from=…> in einem echten Transkript dieses Macs
+  test("auch hinter „… while you were working:“ und „A peer session …“ kommt sie als meta, nie als Zug des Owners", async () => {
+    const { viewEntry, crossSessionEntry } = await load();
+    for (const lead of ["Another Claude session sent a message while you were working:", "A peer session sent a message while you were working:"])
+      for (const tag of ['<cross-session-message from-name="w1">\nhallo\n</cross-session-message>', '<agent-message from="a0000000000000001">\nbericht\n</agent-message>']) {
+        const text = `${lead}\n${tag}`;
+        expect(crossSessionEntry(line(text), 7, false)).toEqual({ n: 7, role: "user", ts, blocks: [{ t: "text", text }], meta: true });
+        expect(viewEntry(line(text), 7)).toBeNull();
+      }
   });
 });
 

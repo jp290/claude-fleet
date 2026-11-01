@@ -29,6 +29,13 @@ import { FLEET_EVENT_TERMINAL } from "../server/types";
 import { sendFailureMessage, sendFailureToastMs, VERTRAUEN_SEND } from "../src/pendingsend";
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, fleetSeatDir, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 import { holdCeiling } from "./hold-ceiling";
+import { DELIVERY_HEADER_PREFIX } from "../src/delivery-format";
+
+// THE HEAD FLEET TYPES IN FRONT OF A DELIVERY (server.ts#deliveryHeader, quoted from DELIVERY_SOURCE and DELIVERY_MEANING as
+// e2e/delivery-class.ts quotes them): since W1 every adapter carries it, the pi stand-in too, so its composer holds the head, then the body.
+const fleetEventHead = (slot: number): string => `${DELIVERY_HEADER_PREFIX}Fleet event (watch, report, land) · path=fleet-event · Slot ${slot}`
+  + " · next step: read the event and act within your role · limit: no new authority] ";
+const ownerHead = (slot: number): string => `${DELIVERY_HEADER_PREFIX}owner credential · Slot ${slot}] `;
 
 const composerByteDetail = (text: string, expected: string) => {
   const got = Buffer.from(text);
@@ -1258,7 +1265,7 @@ export async function run(): Promise<void> {
       });
       const body = await response.json() as { watch?: { id: string } };
       const event = body.watch?.id ? await waitAuditEvent(body.watch.id) : undefined;
-      const expected = event ? auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event) : "";
+      const expected = event ? fleetEventHead(uId) + auditWatchMessage(event.subjectRepo, event.subjectMainAfter, event) : "";
       return { event, expected, watchStatus: response.status };
     };
 
@@ -1398,7 +1405,7 @@ export async function run(): Promise<void> {
         if (prefixEvent?.status !== "delivered") await Bun.sleep(100);
       }
       const prefixExpected = prefixEvent
-        ? auditWatchMessage(prefixEvent.subjectRepo, prefixEvent.subjectMainAfter, prefixEvent) : "";
+        ? fleetEventHead(uId) + auditWatchMessage(prefixEvent.subjectRepo, prefixEvent.subjectMainAfter, prefixEvent) : "";
       const prefixTurns = turnsSince(turnsOffset);
       const prefixResidue = stateBuffer();
       const prefixFrame = (await tmuxOut("capture-pane", "-p", "-e", "-t", `s${uId}`)).out;
@@ -2074,8 +2081,9 @@ export async function run(): Promise<void> {
     await Bun.sleep(Number(process.env.FLEET_ACCEPT_WAIT_MS ?? 800) + 200);
     const successorDraft = "owner successor draft survives slot reuse";
     const successorSend = await post("/send", { slot: uId, text: successorDraft, submit: false });
+    const successorComposed = ownerHead(uId) + successorDraft;
     let successorState = stateBuffer();
-    for (let i = 0; i < 80 && successorState.text !== successorDraft; i++) {
+    for (let i = 0; i < 80 && successorState.text !== successorComposed; i++) {
       await Bun.sleep(50);
       successorState = stateBuffer();
     }
@@ -2083,7 +2091,7 @@ export async function run(): Promise<void> {
       check("rollback live falsifier: recycled slot identity leaves the successor owner's draft byte-for-byte",
         identityWatchRes.ok && heldIdentity.text.includes(identityEvent?.id ?? "not-an-event")
         && successorOpen.ok && successorAgent === "alive" && successorOpenedAt !== oldOpenedAt
-        && successorSend.ok && successorState.text === successorDraft,
+        && successorSend.ok && successorState.text === successorComposed,
         JSON.stringify({ watch: identityWatchRes.status, heldBytes: heldIdentity.text.length,
           open: successorOpen.status, agent: successorAgent, identityChanged: successorOpenedAt !== oldOpenedAt,
           send: successorSend.status, draftBytes: successorState.text.length }));

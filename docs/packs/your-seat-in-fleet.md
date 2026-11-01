@@ -46,18 +46,13 @@ when a message or the person asks about your land.
 
 ## Mailbox
 
-- A message from another session is typed into your pane with `[fleet message] <id> von <sender>` after the header.
-  The person reads your pane: answer them there, not through the mailbox.
+- A message from another session is typed into your pane under the delivery header, as `[fleet message] <id> from
+  <sender>`. The person reads your pane: answer them there, not through the mailbox.
 - To answer a session, read your mail with `GET /api/self/messages?unread=1&read=1` (`read=1` marks exactly these as
   read), then `POST /api/self/messages {"to": <its from>, "replyTo": "<id>", "payload": {"kind": "text", "text": "…"},
-  "idempotencyKey": "<id>-1"}`, at most 10 000 characters, in one piece.
-- You may write to the session that opened your branch, to a session on a branch you opened, and to the Orchestrator.
-  A Claude seat without a standing role writes every other Claude seat without one directly, with no edge: `{"kind":
-  "session","slot": <n>}`. A text marked `personal` never reaches a seat that is not Anthropic.
-- To write a session that is not such a seat (a lane, a MAIN, a pi or Codex seat) directly, ask the Orchestrator in the
-  mailbox for an edge: its slot, the reason and how long. Once she grants it, you both get one sentence with its end, and until then you write each other at
-  `{"kind": "session", "slot": <n>}`; she reads every message. After the end the door answers 409 "your edge to slot
-  <n> ended at …": ask her again rather than going around it. `GET /api/self/kanten` shows your edges.
+  "idempotencyKey": "<id>-1"}`. Who you may write is in your start brief under „Works with“, read from the rules the
+  door checks. A refused send answers 409 with those rules and the seats you may write now; the cap on a text is in the
+  400. To write a seat the rules do not name, ask the Orchestrator in the mailbox for an edge (`GET /api/self/kanten`).
 
 ## Handover
 

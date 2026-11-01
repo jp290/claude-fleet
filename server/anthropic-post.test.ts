@@ -52,6 +52,31 @@ describe("zwei Claude-Sitze schreiben sich ohne Kante", () => {
     expect(texte(piPost)).toEqual([]);
   }, LIFE_DEADLINE_MS * 4);
 
+  // Prüfung W1, Lücke 2a: „Arbeitet mit“ nennt „slot 1: the Orchestrator“, und `ctl.sh send --seat 1` schreibt {kind:"session",slot:1}.
+  // Diese eine Adressform muss sie erreichen — von einem Claude-Sitz wie von einem pi-Sitz, wie es ihre Rolle-Adresse tut.
+  test("die Adresse aus „Arbeitet mit“ erreicht die Orchestratorin: {kind:session, slot:<ihr Slot>} ist 200 und landet bei ihr", async () => {
+    const ORCH = 1, A = 2, P = 3;
+    const f = fixture();
+    for (const d of ["a", "p"]) mkdirSync(join(f.repo, d));
+    await life(f, [post(`/api/slots/${ORCH}/open`, { cwd: f.repo, label: "🎛 Orchestratorin" }),
+      post(`/api/slots/${A}/open`, { cwd: join(f.repo, "a"), label: "Claude A" }),
+      post(`/api/slots/${P}/open`, { cwd: join(f.repo, "p"), label: "pi P", harness: "pi" }), "save"]);
+    const [vonA, vonP, post1] = await life(f, [schreib(f, A, ORCH, "s1", "Von A an Slot 1."), schreib(f, P, ORCH, "s2", "Vom pi-Sitz an Slot 1."),
+      as(f, ORCH, get("/api/self/messages?unread=1"))]);
+    for (const a of [vonA, vonP]) expect([a?.status, (a?.body.holder as { slot: number } | null)?.slot]).toEqual([200, ORCH]);
+    expect(texte(post1)).toEqual(expect.arrayContaining(["Von A an Slot 1.", "Vom pi-Sitz an Slot 1."]));
+  }, LIFE_DEADLINE_MS * 2);
+
+  // Prüfung W1, Runde 2: die Orchestratorin selbst an ihren eigenen Slot bleibt die 409 von vorher, keine Nachricht an sich selbst
+  test("die Orchestratorin an ihren eigenen Slot: 409, und in ihrem Postfach liegt nichts", async () => {
+    const ORCH = 1;
+    const f = fixture();
+    await life(f, [post(`/api/slots/${ORCH}/open`, { cwd: f.repo, label: "🎛 Orchestratorin" }), "save"]);
+    const [selbst, post1] = await life(f, [schreib(f, ORCH, ORCH, "self", "An mich selbst."), as(f, ORCH, get("/api/self/messages?unread=1"))]);
+    expect(selbst?.status).toBe(409);
+    expect(texte(post1)).toEqual([]);
+  }, LIFE_DEADLINE_MS * 2);
+
   test("eine persönliche Nachricht an einen pi-Sitz bleibt 409, auch wo eine Kante die beiden verbindet", async () => {
     const ORCH = 1, A = 2, P = 3;
     const f = fixture();

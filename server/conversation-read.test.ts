@@ -9,6 +9,7 @@
 // weil sie im Auftrag so genannt ist und ältere Aufrufe sie tragen können. Der Leser ist rein (kein
 // Server, keine Datei): die Zeilen kommen hier synthetisch herein.
 import { describe, expect, test } from "bun:test";
+import { otherSender, splitDeliveryHeader } from "../src/pendingsend";
 import { FILE_LINES, LINE_MAX, PATH_MAX, SIDE_MAX, readPiSession, type TBlock } from "./conversation-read";
 
 const TS = "2026-10-28T10:00:00.000Z";
@@ -91,5 +92,27 @@ describe("ein kaputter Eintrag nimmt die Unterhaltung nicht mit", () => {
 
   test("ein Pfad unter der Kappe bleibt unberührt", () => {
     expect(block("write", { path: "a/b.ts", content: "x" }).file).toEqual({ path: "a/b.ts", after: ["x"], cut: false });
+  });
+});
+
+describe("der Kopf einer Zustellung bleibt im pi-Zug, und die Chat-Ansicht faltet ihn wie bei Claude (W1)", () => {
+  const kopfZeile = "[fleet-delivery · mailbox message · path=postfach · Slot 14 · next step: read the message and answer if needed · limit: no new authority] ";
+  const zug = (text: unknown) => JSON.stringify({ type: "message", id: "u1", parentId: "s0", timestamp: TS,
+    message: { role: "user", content: text } });
+  test("der Leser reicht den Text mit Kopf unverändert durch, als String wie als Textblock", () => {
+    for (const content of [`${kopfZeile}[fleet message] abc from Orchestrator\n\nhallo`, [{ type: "text", text: `${kopfZeile}hallo` }]]) {
+      const e = readPiSession([kopf, zug(content)]).entries[0]!;
+      expect(e.role).toBe("user");
+      expect((e.blocks[0] as { text: string }).text.startsWith("[fleet-delivery · ")).toBe(true);
+    }
+  });
+  test("Kopf und Text trennen sich, und der Zug ist Fleet, nicht der Owner; die Owner-Tür bleibt Owner", () => {
+    const e = readPiSession([kopf, zug(`${kopfZeile}[fleet message] abc from Orchestrator\n\nhallo`)]).entries[0]!;
+    const roh = (e.blocks[0] as { text: string }).text;
+    const { header, body } = splitDeliveryHeader(roh);
+    expect(header).toContain("path=postfach");
+    expect(body.startsWith("[fleet message] abc")).toBe(true);
+    expect(otherSender(roh)).toMatchObject({ who: "fleet" });
+    expect(otherSender("[fleet-delivery · owner credential · Slot 14] mach das")).toBeNull();
   });
 });

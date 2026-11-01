@@ -60,6 +60,9 @@ ctl.sh — the controller's mechanical moves. One decision per call, made by you
                                    address the Orchestrator through /api/self/messages with the self token
   send --lane <slot> <textfile> [--json]
                                    read the lane occupant now, then /send with its openedAt pin
+  send --seat <slot> <textfile> [--json]
+                                   write another seat through the mailbox (/api/self/messages, self token): it arrives once,
+                                   shows as read, and never lands as the owner's input; the door names the rules if it refuses
   reply <messageId> <textfile|-> [--log <file>] [--line <text>] [--program <id>] [--json]
                                    answer a message in one call: to its sender, replyTo set, marked read,
                                    one line appended to --log (self token; ≤10000 characters)
@@ -1482,7 +1485,7 @@ send)
 # re-occupied inside that window answers 409 naming its new occupant (server.ts, route POST /send).
 #
 # A bare `send <slot>` is refused on purpose: it is exactly the hand move this verb replaces.
-  mode=""; program=""; textfile=""; lane=""
+  mode=""; program=""; textfile=""; lane=""; seat=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) CTL_JSON=1 ;;
@@ -1490,9 +1493,10 @@ send)
       --main) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=main; shift; program=$1 ;;
       --orchestrator) [ -z "$mode" ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=orchestrator ;;
       --lane) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=lane; shift; lane=$1 ;;
+      --seat) [ -z "$mode" ] && [ $# -ge 2 ] || { printf 'send: choose exactly one target\n' >&2; exit 2; }; mode=seat; shift; seat=$1 ;;
       --*) printf 'send: unknown flag %s\n' "$1" >&2; exit 2 ;;
       *) [ -z "$textfile" ] || {
-           if [ -z "$mode" ]; then printf 'send: use send --main <programId> <textfile>, send --lane <slot> <textfile> or send --orchestrator <textfile>\n' >&2
+           if [ -z "$mode" ]; then printf 'send: use send --main <programId> <textfile>, send --lane <slot> <textfile>, send --seat <slot> <textfile> or send --orchestrator <textfile>\n' >&2
            else printf 'send: too many arguments\n' >&2; fi
            exit 2;
          }; textfile=$1 ;;
@@ -1512,8 +1516,8 @@ let text;
 try { text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8"); } catch {
   console.error("send --lane: cannot read text file — nothing sent"); process.exit(2);
 }
-if (!text.trim() || text.length > 1000000) {
-  console.error("send --lane: text must be 1–1000000 chars — nothing sent"); process.exit(2);
+if (!text.trim() || text.length > 10000) {
+  console.error("send --lane: text must be 1–10000 chars — nothing sent"); process.exit(2);
 }
 const execution = await api("/api/self/program-execution", { headers: selfH() });
 const view = execution.body;
@@ -1565,6 +1569,28 @@ if (error) console.error(`send --lane: ${r.status} ${error}`);
 out({ ok: r.ok && pinned, sent: r.ok, slot: target.id, openedAt: row.openedAt, status: r.status, receipt, error },
   [`send --lane ${slotWord(target)}: ${r.status} ${error ?? `receipt ${receipt.sendId} acceptance=${receipt.acceptance}`}`]);
 process.exit(r.ok && pinned ? 0 : 1);
+EOF
+    js_run
+    exit $?
+  fi
+  if [ "$mode" = "seat" ]; then
+    # ONE ADDRESS FORM {"kind":"session","slot":N} and ONE CAP (MAX_MESSAGE_TEXT, 10 000 characters, server/types.ts): the door answers both
+    [ -n "$textfile" ] && [ -s "$textfile" ] || { printf 'send --seat: give a nonempty text file\n' >&2; exit 2; }
+    printf '%s' "$seat" | grep -Eq '^[0-9]+$' || { printf 'send --seat: give the slot number\n' >&2; exit 2; }
+    need_self send
+    export CTL_SLOT="$seat" CTL_TEXTFILE="$textfile"
+    js_head
+    cat >> "$CTL_TMP" <<'EOF'
+const slot = Number(process.env.CTL_SLOT);
+const text = fs.readFileSync(process.env.CTL_TEXTFILE, "utf8");
+const key = "ctl-seat-" + require("node:crypto").randomBytes(12).toString("hex");
+const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
+  body: JSON.stringify({ to: { kind: "session", slot }, payload: { kind: "text", text }, idempotencyKey: key }) });
+const error = r.ok ? null : selfError(r, "send --seat");
+out({ ok: r.ok, sent: r.ok, slot, status: r.status, message: r.body?.message ?? null, holder: r.body?.holder ?? null,
+  delivery: r.body?.delivery ?? null, error },
+  [`send --seat slot ${slot}: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}${r.body?.delivery ? ` — stored, not typed yet: ${r.body.delivery.reason ?? "see delivery"}` : ""}` : error}`]);
+process.exit(r.ok ? 0 : 1);
 EOF
     js_run
     exit $?
@@ -1950,9 +1976,10 @@ status)
 # WHERE THINGS STAND, IN ONE CALL. Measured 22.–23.10.: 12 % of the Orchestratorin's context went to looking it up —
 # GET /api/sessions piped through python, `audits`, `merges`, the helper's jobs, the merge-check ledger, a ps for running
 # checks — each a call of its own. This verb reads the same sources in parallel and prints one short line per fact.
-# THE CREDENTIAL FOLLOWS THE SOURCE, as in `get`: unread messages and lands come through the self doors
-# (/api/self/messages, /api/self/merges); seats, audits, helpers and the branch view have no self door and are owner
-# routes (owner_token: FLEET_CTL_TOKEN, FLEET_TOKEN, else fleet.json). A source that cannot be read is printed as
+# THE CREDENTIAL FOLLOWS THE SOURCE, as in `get`: unread messages, lands and — in a pane — the seats come through the self
+# doors (/api/self/messages, /api/self/merges, /api/self/overview: the seats of this pane's line, every seat for the
+# Orchestratorin, server/lagebild.ts); audits, helpers and the branch view have no self door and are owner routes
+# (owner_token: FLEET_CTL_TOKEN, FLEET_TOKEN, else fleet.json), and so are the seats in a shell without a self token. A source that cannot be read is printed as
 # UNKNOWN with its route and status, never left out, and makes the exit 1.
 # TOKEN HYGIENE: running merge checks are found in the process table; of each process only its elapsed time and the
 # branch argument after ci/merge-check.ts (git ref characters only) are kept — no command line is ever printed.
@@ -1983,7 +2010,8 @@ const read = (path, headers, shape) => api(path, { headers }).then((r) => r.ok &
   ? { status: r.status, ok: false, body: { error: "unexpected shape" } } : r)
   .catch((e) => ({ status: 0, ok: false, body: { error: `no answer (${e?.code ?? e?.message ?? e})` } }));
 const arr = (...keys) => (b) => keys.every((k) => Array.isArray(b?.[k]));
-const [ses, jobs, br, msgs, mer, trail] = await Promise.all([
+const [ov, ses, jobs, br, msgs, mer, trail] = await Promise.all([
+  self ? read("/api/self/overview", selfH(), arr("seats")) : null,
   owner ? read("/api/sessions", ownerH(), arr("slots")) : null,
   owner ? read("/api/helper/jobs", ownerH(), arr("jobs")) : null,
   owner ? read("/api/branches", ownerH(), arr("repos")) : null,
@@ -1995,9 +2023,29 @@ const [ses, jobs, br, msgs, mer, trail] = await Promise.all([
 const lines = [];
 const result = {};
 
-// --- seats
+// --- seats: in a pane from the overview door (its line; the Orchestratorin every seat), else from the owner's /api/sessions
 const slots = ses?.ok ? (ses.body.slots ?? []).filter((s) => s.cwd) : null;
-if (slots) {
+const waitText = (w) => w.kind === "permission" ? `permission ${ago(w.since)}` : w.kind === "trust" ? "trust"
+  : w.kind === "mail" ? `mail ${w.count}` : w.step === "hinted" ? `handover hinted ${w.nudges}x ${ago(w.lastAt)} ago` : `handover ${ago(w.since)}`;
+if (self) {
+  if (ov?.ok) {
+    const scope = ov.body.me?.scope === "fleet" ? "every seat" : "your line";
+    // the own row (me.seat) first and marked *, as the owner route's list had it, then the seats by slot
+    const rows = [...(ov.body.me?.seat ? [ov.body.me.seat] : []), ...ov.body.seats.filter((s) => s.slot !== null)].sort((a, b) => a.slot - b.slot);
+    result.seats = rows.map((s) => ({ slot: s.slot, relation: s.relation, name: s.name ?? null, state: s.state,
+      ctxPct: s.ctxPct ?? null, idleMs: s.idleMs ?? null, branch: s.branch?.name ?? null, agent: s.agent ?? null, waits: s.waits ?? [], unknown: s.unknown ?? {} }));
+    lines.push(`seats (${result.seats.length}, ${scope}, GET /api/self/overview):`);
+    for (const s of result.seats) {
+      const self_ = s.relation === "self";
+      const name = s.relation === "owner-seat" ? "(a seat of the owner)" : cut(self_ ? (s.name ?? "") : `${s.name ?? ""} · ${s.relation}`, 30);
+      const how = s.state !== "live" ? s.state : typeof s.idleMs !== "number" ? "live" : s.idleMs < 60000 ? "active" : `quiet ${ago(now - s.idleMs)}`;
+      const ctx = s.relation === "owner-seat" ? "" : s.ctxPct === null ? "ctx ?" : `${Math.round(s.ctxPct)}%`;
+      lines.push(`  ${String(s.slot).padStart(2)}${self_ ? "*" : " "} ${name.padEnd(30)}  ${ctx.padStart(5)}  ${how.padEnd(10)}  ${s.branch ?? "-"}`
+        + (s.agent && s.agent !== "alive" && s.agent !== "unprobed" ? `  agent=${s.agent}` : "")
+        + (s.waits.length ? `  waits: ${s.waits.map(waitText).join(", ")}` : ""));
+    }
+  } else lines.push(why("seats", "GET /api/self/overview", ov, "self"));
+} else if (slots) {
   result.seats = slots.map((s) => ({ slot: s.id, name: s.name ?? null, label: s.label ?? null, ctxPct: s.ctx?.pct ?? null,
     lastOutput: s.lastOutput ?? null, branch: s.worktree?.branch ?? s.git?.branch ?? null, agent: s.agent ?? null }));
   lines.push(`seats (${slots.length}):`);

@@ -1067,7 +1067,7 @@ await import(pathToFileURL(process.argv[2]).href);
   const orchH = { "x-fleet-self-token": orchTok };
   const orchEnv = { FLEET_SELF_TOKEN: orchTok, FLEET_SELF_SLOT: String(orchSlot) };
   interface MessageView { addresses: { kind: string; role?: string }[]; unread: number; droppedFleetWide: number;
-    entries: { id: string; to: { kind: string; role?: string }; readBy: unknown }[]; unknown: string[] }
+    entries: { id: string; to: { kind: string; role?: string }; readBy: unknown }[]; unknown: string[]; history: string[] }
   const orchRole = orchTok ? ((await (await fetch(`${BASE}/api/self`, { headers: orchH })).json()) as
     { position?: { role?: string } }).position?.role : undefined;
   const firstView = orchTok ? ((await (await fetch(`${BASE}/api/self/messages`, { headers: orchH })).json()) as MessageView) : null;
@@ -1089,12 +1089,13 @@ await import(pathToFileURL(process.argv[2]).href);
       && !unreadView.entries.some((e) => e.id === receipted) && allView.entries.some((e) => e.id === receipted)
       && unreadView.unread === allView.unread && unreadView.unread === wantUnread.length
       && JSON.stringify(Object.keys(unreadView)) === JSON.stringify(Object.keys(allView))
-      && JSON.stringify([unreadView.addresses, unreadView.droppedFleetWide, unreadView.unknown])
-        === JSON.stringify([allView.addresses, allView.droppedFleetWide, allView.unknown]),
+      && JSON.stringify([unreadView.addresses, unreadView.droppedFleetWide, unreadView.unknown, unreadView.history])
+        === JSON.stringify([allView.addresses, allView.droppedFleetWide, allView.unknown, allView.history]),
     `receipt=${orchReceipt?.status} all=${allView?.entries.length} unread=${unreadView?.entries.length} want=${wantUnread.length}`);
+  // `history` (W1) closes the projection: it says the list is incomplete once any row fell out, while `unknown` names only lost unread mail
   check("GET /api/self/messages without the filter: the bytes are the pre-filter projection, key for key in its order",
     !!allView && allText === JSON.stringify({ addresses: allView.addresses, unread: allView.unread,
-      droppedFleetWide: allView.droppedFleetWide, entries: allView.entries, unknown: allView.unknown }),
+      droppedFleetWide: allView.droppedFleetWide, entries: allView.entries, unknown: allView.unknown, history: allView.history }),
     `${Buffer.byteLength(allText)} B keys=${allView ? Object.keys(allView).join() : "unparsed"}`);
   const badFilter = orchTok ? await fetch(`${BASE}/api/self/messages?unread=0`, { headers: orchH }) : null;
   check("GET /api/self/messages?unread=0: any value but 1 is a named 400",

@@ -82,9 +82,8 @@ things decide whether that work is excellent:
   agents to sharpen each other's orders; a vague order costs a round.
 
 The mechanics: open the checker through `POST /api/self/seats/open` with the model and effort you chose, in a role you
-formed (`POST /api/self/roles`) when it needs rights or a start text of its own; write through the mailbox, at most
-2000 characters a message, a longer report as numbered parts (a message may be a short probe before the report: answer
-it, then report); when its work is done, tell it to end its seat (`POST /api/self/retire`) so your cap of live seats
+formed (`POST /api/self/roles`) when it needs rights or a start text of its own; write through the mailbox (the door names
+its cap and its rules itself; a message may be a short probe before the report: answer it, then report); when its work is done, tell it to end its seat (`POST /api/self/retire`) so your cap of live seats
 stays free. Everything you give a seat shows in the owner's start brief as a + line with you as its author. The bodies
 of these doors are in `fleet-doors`.
 
@@ -101,15 +100,13 @@ that you found none and what you covered. You look again after every fix until y
 - **A free session in its own folder:** `POST /api/slots/<n>/open` with cwd, label, model and effort. Its purpose and its
   packs go in at the door; they show as + lines in its start brief.
 - **A branch session with a task:** `POST /api/branches/open`, or `POST /api/self/branches/open` from a session.
-  The opener and the branch session form a pair that may message each other. Open it with your own self token,
-  never with the owner credential: a branch session opened the other way has no mailbox back to you, and you none
-  to it. If the worktree holds an earlier conversation, the open resumes it; pass `"fresh": true` for a new start.
+  Open it with your own self token, never with the owner credential: a branch session opened the other way has no
+  mailbox back to you, and you none to it (the door's 409 names the rules). If the worktree holds an earlier conversation, the open resumes it; pass `"fresh": true` for a new start.
 - **A model from another provider:** pi, inside the bwrap fence, in rounds. One round is one run with the task and
   the last verdict, and report and verdict are stored as files. The cost of a round is the sum of `cost.total` over
   the `message_end` lines of its `pi.jsonl`; report it per run. A pi call with tools started from a Claude session's
   shell is blocked by the classifier. The owner starts it or sets a rule; you don't work around it.
-- **Reporting back:** `./ctl.sh send --orchestrator <file>`, at most 10 000 characters (characters, not bytes), so a report
-  goes in one piece, not in numbered parts. A lane gets a 409 there; its result arrives as a fleet-report.
+- **Reporting back:** `./ctl.sh send --orchestrator <file>`, so a report goes in one piece (the door names the cap). A lane gets a 409 there; its result arrives as a fleet-report.
   Session-to-session traffic goes through this mailbox, never through Claude Code's own cross-session messages,
   which type into the pane and show the whole coordination in the owner's chat.
 - A mailbox message reaches the session's pane after about a minute, with sender and full text; a session with its

@@ -251,3 +251,37 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
     expect([frage(r[6], S.slot), frage(r[6], F.slot)]).toEqual([null, "Bash command · Do you want to proceed?"]);
   }, LIFE_DEADLINE_MS * 3);
 });
+
+// DIE LINIE (server/opener.ts, Mangel 103): der Hinweis geht an die Linie der Öffnerin — an ihre Nachfolgerin, nicht an eine fremde Session,
+// die danach im selben Platz und Ordner öffnet. Die hat den Sitz nie geöffnet und darf seine Frage nicht beantworten.
+describe("Warte-Hinweis: die Linie der Öffnerin", () => {
+  test("nach der Nachfolge der Öffnerin erfährt es ihre Nachfolgerin; eine fremde Session im selben Platz und Ordner erfährt es nicht", async () => {
+    const f = fixture();
+    const QUICK = { FLEET_FOUNDING_BOOT_GRACE_MS: "250", FLEET_READY_WAIT_MS: "500" };
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }), post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = opened(lead), leadCwd = String(lead?.body.cwd);
+    const [, seat] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sitz" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/sitz" }), self: tokenOf(f, L.slot) }]);
+    const S = opened(seat);
+    await life(f, [post(`/api/slots/${L.slot}/rechte`, { grant: ["text.handover"] })]);
+    const [nachfolge] = await life(f, [{ ...post("/api/self/succeed", {}), token: null, self: tokenOf(f, L.slot) }], QUICK);
+    expect(nachfolge?.status).toBeLessThan(600);
+    const erbin = (persisted(f).slots as Record<string, { openedAt: number }>)[String(L.slot)]!.openedAt;
+    expect(erbin).not.toBe(L.openedAt);
+
+    const eins = await life(f, [zeige(S.frame, BASH_FRAGE), { warte: 0 }, { warte: W }]);
+    expect(geschrieben(eins[2]).length).toBe(1);
+    expect(hinweise(f).map((m) => m.to)).toEqual([{ kind: "session", slot: L.slot, openedAt: erbin }]);
+
+    // die Linie endet, eine fremde Session öffnet im selben Platz und Ordner; dann steht eine neue Frage
+    const [aus, neu] = await life(f, [post(`/api/slots/${L.slot}/kill`, {}), post(`/api/slots/${L.slot}/open`, { cwd: leadCwd })]);
+    expect([aus?.status, neu?.status]).toEqual([200, 200]);
+    const fremd = (persisted(f).slots as Record<string, { openedAt: number; cwd: string }>)[String(L.slot)]!;
+    expect(fremd.cwd).toBe(leadCwd);
+    const zwei = await life(f, [zeige(S.frame, LEERLAUF), { warte: 0 }, zeige(S.frame, BASH_FRAGE), { warte: 1000 }, { warte: W + 1000 }]);
+    expect(geschrieben(zwei[4]).length).toBe(1);
+    const danach = hinweise(f).slice(1);
+    expect(danach.map((m) => m.to)).toEqual([{ kind: "role", role: "orchestrator" }]);
+    expect(danach.some((m) => m.to.kind === "session" && m.to.slot === L.slot)).toBe(false);
+  }, LIFE_DEADLINE_MS * 5);
+});

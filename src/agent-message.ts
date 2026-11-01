@@ -15,7 +15,15 @@
 // follows the closing tag is frame (measured: the permission-laundering paragraph) and goes. The closing
 // tag may be missing: the chat view's entries are cut at 20,000 characters (server.ts#trim), and a long
 // report loses its end there — it is still a report, never the owner's words
-const AGENT_MESSAGE = /^(?:Another Claude session sent a message:\n)?<agent-message((?: [a-z-]+="[^"]*")*)>\n?([\s\S]*?)\n?(?:<\/agent-message>[\s\S]*)?$/;
+// THE LEAD Claude Code writes before a message another session sent, in each of its three wordings (2.1.316, read from its
+// binary): "Another Claude session sent a message:", the same "… while you were working:" mid-turn (measured 31.10. as a meta
+// user line before <agent-message from=…> in a real transcript on this Mac), and "A peer session sent a message while you
+// were working:". The one source for every reader that tells another session's words from the owner's (Mangel 80):
+// otherSender and agentMessage here, server.ts#crossSessionEntry, server/postfach-vertrag.ts#istFremdeSessionHuelle.
+// A regex SOURCE, followed by the tag in each reader; on its own it never makes a text foreign.
+export const OTHER_SESSION_LEAD = "(?:Another Claude|A peer) session sent a message(?: while you were working)?:\\s*";
+
+const AGENT_MESSAGE = new RegExp(`^(?:${OTHER_SESSION_LEAD})?<agent-message((?: [a-z-]+="[^"]*")*)>\\n?([\\s\\S]*?)\\n?(?:<\\/agent-message>[\\s\\S]*)?$`);
 // the frame's hand-back paragraph, from its mark to the sentence that ends it (measured wording)
 const HAND_BACK = /^\[Subagent hand-back\][\s\S]*?The report follows:\s*\n/;
 

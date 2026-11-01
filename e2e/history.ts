@@ -7,6 +7,7 @@ import { BASE, check, get, post, plogPath, plogRead, ROOT, REPO, restartSrv, sto
 import { WORKER_CONTRACTS } from "../src/protocol";
 import { entityMatches, mdInto, type MdEntityKind } from "../src/md";
 import { ASK_MAX, askTerminal, transcriptBinding, type NativeTranscript, type ReadSeat } from "../server/conversation-read";
+import { istFremdeSessionHuelle } from "../server/postfach-vertrag";
 
 // Runs under the claude-gate harness, not run() below: the main history suite deliberately uses
 // FLEET_CMD=true and therefore has no pinned session identity. Keeping the probe in this family
@@ -92,7 +93,9 @@ export async function runHistoryProvenance(root = ROOT, clientRoot = dirname(rea
     for (const text of ["owner input", "[fleet-delivery · test] routed text"]) {
       const entry = make({ text, t: text, p: { text }, body: { text }, debt: { brief: text }, a: { text },
         brief: text, line: text, message: text, prompt: text, deliveredBrief: text, delivered: text,
-        rendered: { text }, ts: 1, sentAt: 1, at: 1, now: 1, deliveredAt: 1, Date: { now: () => 1 } });
+        rendered: { text }, ts: 1, sentAt: 1, at: 1, now: 1, deliveredAt: 1, Date: { now: () => 1 },
+        // the real reader (W1): an append that sorts another session's envelope as Fleet's calls it by this name
+        istFremdeSessionHuelle });
       const ownerInput = /text: (t|p\.text|body\.text),/.test(write[2]);
       const expected = ownerInput && !text.startsWith("[fleet") ? "owner" : "fleet";
       if (entry.source !== expected) errors.push(`write ${index + 1}: ${entry.source ?? "missing"} != ${expected}`);

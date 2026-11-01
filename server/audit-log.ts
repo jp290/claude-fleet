@@ -431,6 +431,8 @@ type AuditEvent =
   | "message_append"
   | "message_read"
   | "messages_unreadable"
+  // the counter BESIDE the rail (messagesDroppedUnread, W1) was unreadable: the post is whole, only the count of lost unread mail fell to its worst case
+  | "messages_counter_unreadable"
   // an edge the Orchestratorin granted or closed early (server/kanten.ts): the two slots, the end, the edge id — never the reason
   | "kante_grant"
   // FERNPOST (server/nachbar-tuer.ts): what the neighbour door took or turned away — fleet name, slots, message id; never a badge

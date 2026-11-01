@@ -384,6 +384,10 @@ const PRE_AUTH_ROUTES = [
   // F6: GET /api/self/constellation — what a seat may see of the constellation it stands in (the seats it may write to and the positions of its saved constellation), never
   // its own stones; slot-bound, read-only, no right; a seat outside gets an empty list.
   '= /api/self/constellation',
+  // C1: GET /api/self/overview — the overview for agents (server/lagebild.ts): the seats of the caller's line (the Orchestratorin every seat, the
+  // owner's own outside her line as slot and state only), each with its state, opener, what it waits for, context fill and cache, every field with its
+  // source; no text of a message, pane, transcript or pack. Slot-bound, read-only, no right, no pane read.
+  '= /api/self/overview',
   // W3a: GET /api/self/harnesses — the harness catalogue GET /api/harnesses gives the owner's picker (server.ts#harnessKatalog), for a seat that picks harness and
   // model of the seats it opens; slot-bound, read-only, no right, 401 without a live seat's self token.
   '= /api/self/harnesses',

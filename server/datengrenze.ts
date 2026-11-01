@@ -41,6 +41,12 @@
 //                                       server/datengrenze-nachfolge.test.ts
 //  15. Korrekturen des Owners         GET /api/self/konzepte/k-owner-korrekturen/leseansicht: UNMARKIERT GEWOLLT — die Korrekturen des
 //                                     Owners gelten jedem Sitz (Entscheid der Leitung 29.10.); keine Marke, kein Code, kein Test
+//  16. Übersicht für Agenten          GET /api/self/overview (server/lagebild.ts): TRÄGT KEINEN TEXT — keine Nachricht, kein Pane, kein
+//                                     Transkript, kein Pack, keine Übergabe; Post als Zahl, die Rückfrage als „da, seit“, Namen nur, wie die
+//                                     Konstellationstür sie demselben Aufrufer gibt; die eigenen Sitze des Owners außerhalb der Linie nur als
+//                                     Platz und Zustand (lagebild.ts#OWNER_SITZ_FELDER). Darum braucht sie kein istAnthropic: an keinen Sitz
+//                                     geht dort Persönliches, gleich welches Modell fragt
+//                                       server/lagebild-tuer.test.ts „… eine persönliche Nachricht zählt und geht nie mit“
 // Nicht zugestellt wird an einen Sitz ohne diese Türen nichts: Notizbuch und Auto-Memory liest nur Claude Code (notizbuchFuerStart).
 //
 // Reine Antworten, sonst nichts: ob ein Sitz Anthropic ist, was die Ablehnung und die Fassungszeile sagen, und das Wissen, wie seine

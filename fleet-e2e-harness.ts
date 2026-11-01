@@ -621,6 +621,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedSitz: null,
           // ...and its delivery choice (server/zustellung.ts); these slots carry none
           carriedZustellung: null,
+          // ...and its line with its opener (server/opener.ts#getrageneLinie); a fixture slot has none, the open starts one
+          carriedLinie: null,
           // ...and its choice of Fleet's library (server.ts#seatLibraryOn), claude only — a codex fixture carries none
           carriedBibliothek: null,
           // ...and the door's choices of the own setup (server/eigenes-setup.ts, server/weglassen.ts), claude only — a codex fixture carries none

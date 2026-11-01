@@ -167,10 +167,9 @@ reads as his.
 - **A lane that waits hours on its MAIN may wait on an unsent line.** Read the MAIN's input line, the `❯` between
   the two rules at the bottom. A pasted delivery that was never sent goes out with one Enter. An occupied composer
   blocks every delivery, your own included: `grep -c 'composer occupied' server.log`, and check your own line.
-- **Write to a seat through the mailbox, as its counterpart.** To a branch session you opened, write freely; the
-  opener is matched by slot and folder, so your successor on the same slot keeps the pair. To a Claude seat without a standing role
-  you write freely, with or without `replyTo`. To any other session (a lane, a MAIN, a pi or Codex seat) the
-  orchestrator writes only a reply, with `replyTo` on a message from its current occupant; anything else is a 409.
+- **Write to a seat through the mailbox, as its counterpart.** Who you may write is in your start brief under „Works with“;
+  a refused send answers 409 with the rules and the seats you may write now. The orchestrator writes a seat the rules do not
+  name only as a reply, with `replyTo` on a message from its current occupant.
   After the target seat hands over, the door decides. As its branch counterpart, address the new `openedAt` or
   leave it out (that names the session in the slot now); the old one answers a 409 about unbound sessions, which
   points the wrong way. As the orchestrator replying with `replyTo`, keep the `openedAt` the parent came from: the

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { agentMdText } from "./agentmd";
-import type { Opener } from "./opener";
+import { istOeffnerin, type Opener } from "./opener";
 import { neuesterInhaber, sitzGegenseite } from "./selbst-sitze";
 import { roleStein } from "./setup-datei";
 import { ordnerHinweis } from "./konstellation-aus-sitzen";
@@ -14,7 +14,7 @@ import type { StartEintrag } from "./start-historie";
 
 /** Was die Sicht von einem lebenden Sitz braucht. */
 export interface SichtSlot {
-  slot: number; openedAt: number; cwd: string | null; openedBy: Opener | null; rolleStein: { id: string; name: string } | null;
+  slot: number; openedAt: number; cwd: string | null; linie?: string | null; openedBy: Opener | null; rolleStein: { id: string; name: string } | null;
   label: string | null; harness: string | null; model: string | null; effort: string | null; agentTitel: string | null;
   sitz: { konst: string; pos: string } | null;
 }
@@ -34,7 +34,8 @@ export interface Sicht {
 }
 
 const MAX_BEENDET = 10;
-const echtVon = (a: Opener | null, b: { slot: number; cwd: string | null }): boolean => !!a && a.slot === b.slot && a.cwd === b.cwd;
+// hat der Datensatz `a` den Sitz `b` als Öffnerin? Nach ihrer Linie (server/opener.ts#istOeffnerin), ein alter Datensatz nach Platz und Ordner
+const echtVon = (a: Opener | null, b: { slot: number; cwd: string | null; linie?: string | null }): boolean => istOeffnerin(b, a);
 
 /** Der Ordner: der Pfad nur, wenn er unter der Wurzel des Aufrufers liegt, sonst nur der Name des Ordners; der Hinweis ist der Pfad relativ zur Wurzel. */
 export function ordnerSicht(cwd: string | null, root: string): { path: string | null; hint: string | null } {

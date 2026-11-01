@@ -14,7 +14,7 @@ import { rechteGedeckelt } from "../src/sitz";
 import type { Rechte } from "../session-rechte";
 import { alsPack, mitSetupHash, persoenlicherTextInDatei, privateTexteAusWissen, pruefeSetupDatei, roleStein, schreibeMehrSitz, type SetupDatei, type SetupEdge,
   type SetupKnowledgeRef, type SetupPack, type SetupRole, type SetupSeat } from "./setup-datei";
-import type { Opener } from "./opener";
+import { gleicheOeffnerin, type Opener } from "./opener";
 import { rolleAusName } from "./selbst-sitze";
 import type { SeatKnowledge } from "./sitz-wissen";
 import type { StartEintrag } from "./start-historie";
@@ -47,7 +47,7 @@ export function zielVon(historie: readonly StartEintrag[], sitz: SitzBild): stri
   const genau = eigene.find((e) => e.openedAt === sitz.openedAt);
   if (genau) return genau.goal;
   const von = sitz.openedBy;
-  const linie = von ? eigene.filter((e) => e.openedBy?.slot === von.slot && e.openedBy.cwd === von.cwd).sort((a, b) => b.openedAt - a.openedAt)[0] : undefined;
+  const linie = von ? eigene.filter((e) => gleicheOeffnerin(e.openedBy, von)).sort((a, b) => b.openedAt - a.openedAt)[0] : undefined;
   return linie?.goal ?? null;
 }
 

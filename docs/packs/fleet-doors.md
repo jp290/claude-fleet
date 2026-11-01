@@ -50,8 +50,7 @@ rights your seat itself holds and drops the rest, each named by its id). Only th
 change of the agent (`PUT /api/agenten/<id>`, his door) takes the mark away.
 
 Opening a seat in any folder (`POST /api/self/seats/open`) and forming a role of your own (`POST /api/self/roles`) are the
-last two doors that used to stop an agent: it can now set up a constellation itself, without the owner's key. The
-opener and the child are each other's mailbox counterpart, and so are two seats of the same opener. A role is a saved
+last two doors that used to stop an agent: it can now set up a constellation itself, without the owner's key. A role is a saved
 object on the shelf (`SetupRole`, the same format a setup carries); a seat opened with `role: "<id>"` gets its bundle as
 grants (additive, like every role, and still capped by yours) and its start text, shows both in its start brief, and
 reads mail sent to `{kind:"role", role:"<id>"}` when it is the newest live holder. A purpose you give through this door
@@ -87,6 +86,7 @@ the reason, never a silent drop.
 | `POST /api/self/succeed` | Start your successor in your place with your handover. | right `text.handover` (generic, lane, bound MAIN, Orchestratorin — not the steward); self token; a lane uses its own baton rail |
 | `POST /api/self/retire` | End your own session. | self token; not the steward |
 | `GET /api/self/constellation` | See the constellation you stand in — the seats you may write to (the one that opened you, the ones you opened, their siblings) and the other positions of your saved constellation: per seat slot, name, folder (a path only under your seat root, else a hint), role, purpose title, harness, model, effort, live / ended / not started, and the address you write to. Never your own start, packs, rights or hash. | self token; no right; a seat outside any constellation gets an empty list |
+| `GET /api/self/overview` | See what runs around you, without the owner's key: per seat of your line (the Orchestratorin: every seat) its name, harness, model, effort, state and since when, who opened it (by the line), what it waits for (a permission or trust question, unread mail as a count, a handover), context fill and whether its cache is warm; whether an agent runs behind its pane; for a seat you opened (the Orchestratorin: every seat but the owner's own) also how long it has been idle, its branch and head as the git tick last read them and that branch's last merge check. Your own row is `me.seat`. The seats holding a position of your own saved constellation count as your line. `sources` names where Fleet reads each field and how old the git tick's reading is; a field Fleet doesn't know is `null` with its reason under `unknown`. The owner's own seats outside your line show only slot and state; a seat in one of Fleet's roles (MAIN, steward, lane, Orchestratorin) is never one of them. No message, pane or transcript text. | self token; no right; read-only |
 | `GET /api/self/harnesses` | What this machine runs now: per harness its models, effort levels, whether it is available and started here, and the default model. The same catalogue the owner's picker reads; choose harness and model for a seat you open from it. | self token; no right |
 | `GET /api/self/messages` · `POST /api/self/messages` · `POST /api/self/messages/<id>/read` | Read your addressed mail, send a message, mark one read. | self token; the sender comes from your binding, and a body never names a principal |
 | `GET /api/self/events/<id>` · `POST /api/self/events/<id>/ack` | Read the event addressed to you, or acknowledge it. | self token, this occupant's events only |
@@ -125,18 +125,16 @@ Bodies as the doors read them. Keys the door does not know are ignored today, so
 - `POST /api/self/seats/open`: `{"cwd": "~/arbeit/projekt", "goal": "…", "model": "claude-sonnet-5-5", "effort":
   "high", "role": "prufer"}`. `cwd` is required. Optional: `harness`, `model`, `effort`, `purpose`, `bibliothek`,
   `goal` or `aufgabe` (the first message), `rechte`, `permissionMode`, `label`, `role`. Pass `model` and `effort`
-  every time: a child without them runs a default you did not choose. Answer 200 `{slot, openedAt, cwd}`; the child
-  and you are each other's counterpart in the mailbox.
+  every time: a child without them runs a default you did not choose. Answer 200 `{slot, openedAt, cwd}`.
 - `POST /api/self/roles`: `{"name": "Prüfer", "text": "<its start text: purpose and rules in your words>", "rights":
   ["text.pack"], "packs": ["fleet-doors"]}`. `name` and `text` are required. The id is made from the name (`prufer`)
   and is the role's address `{"kind":"role","role":"prufer"}`. Answer 201 `{ok, role: {id, name, rights, packs,
   address, hash}}`; a right wider than yours is 409 with `missingRight`.
 - `POST /api/self/messages`: `{"to": {"kind":"session","slot": 15}, "payload": {"kind":"text","text": "…"},
-  "idempotencyKey": "<any string, new per message>"}`. `to` is `{kind:"session", slot}` or `{kind:"role", role}`. The
-  text is at most 2000 characters (characters, not bytes); a longer report goes as numbered parts `[1/3] …`. 400 when
-  longer, 409 when the address is not your counterpart: the one that opened you, the ones you opened, their
-  siblings, and a role one of them holds. Read the error body; `curl -o /dev/null` hides it. A message may be a
-  short probe ("are you there?") before the report: answer it, then send the report.
+  "idempotencyKey": "<any string, new per message>"}`. `to` is `{kind:"session", slot}` or `{kind:"role", role}`; from
+  a terminal `./ctl.sh send --seat <slot> <textfile>` does the same. The door names what is missing itself: 400 states
+  the cap and the form, 409 states the rules and the seats you may write now. Read the error body; `curl -o /dev/null`
+  hides it. A longer report goes as numbered parts `[1/3] …`.
 - `GET /api/self/context/<id>`: the text of one library pack at HEAD, for example `setting-up-agents` when your start
   did not carry it.
 - `POST /api/self/retire`: ends your own seat. A seat you opened ends itself the same way when its work is done, so
@@ -174,14 +172,15 @@ the packs you gave yourself (`Slot.selbst`) as text, shown in its start and in I
 standing role, so it can hand over, succeed, retire, read and write its own branch, and borrow packs. A seat you open
 counts against your cap until it retires: tell it to when its work is done.
 
-How the two talk: the opener and the seat it opened are each other's Postfach counterpart, and so are two seats of the
-same opener, so no edge is needed. Read `GET /api/self/messages?unread=1&read=1`, then send
-`POST /api/self/messages` as in "What you send". A reply adds `"replyTo": "<message id>"`. No `openedAt` is needed; a
-slot recycled into another folder stops being the counterpart, and the door then answers `409`.
+How the two talk: through the mailbox, as in "What you send". Read `GET /api/self/messages?unread=1&read=1`; a reply
+adds `"replyTo": "<message id>"`. No `openedAt` is needed. Who may write whom is in the start brief under „Works with“.
 
 A seat that wants to know who else is in its constellation reads `GET /api/self/constellation` instead of keeping slot numbers from door answers: the list
 follows the line, so after your succession or a child's you read the same seats, and a child that ended stays in it as ended, without an address. Write to the
 `address` it gives (`{kind:"session", slot}`, or `roleAddress` for a formed role); a position that nobody has started yet has none — open it with `"sitz": "<id>"`.
+
+To know what those seats are doing — waiting on a question, holding unread mail, near their handover, idle, on which branch head — read `GET /api/self/overview`
+rather than `./ctl.sh get /api/sessions`: it needs no borrowed key, and `./ctl.sh status` in your pane reads its seat lines from it.
 
 ## Doors of Fleet's own roles
 

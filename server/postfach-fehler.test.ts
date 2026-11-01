@@ -80,13 +80,14 @@ function welt(weg: "direkt" | "gebuendelt", geparkt = false) {
   const printedErrors = new Set<string>();
   let failure: Error | null = null;
   let repeat = false;
+  let gate: { ok: false; gate: string } | null = null;
   const deps = {
     slots: [slot], messages: { entries: rows },
     backlogSessionKey: (s: Occupant) => s.sessionId ?? `unbound:${s.selfToken ?? ""}`,
     messageInboundFor: () => true,
     POSTFACH_WINDOW_MS: 0, POSTFACH_MAX_CHARS: 8_000, POSTFACH_TICK_MS: 10_000,
     REPORT_DECISION_IDLE_MS: 3_000,
-    canDeliver: async () => ({ ok: true as const }),
+    canDeliver: async () => gate ?? ({ ok: true as const }),
     sendText: async (_s: Occupant, _text: string, _submit: boolean, options: Send) => {
       sends.push(options);
       if (failure) {
@@ -138,6 +139,7 @@ function welt(weg: "direkt" | "gebuendelt", geparkt = false) {
   return {
     slot, rows, sends, errors, prompts, api,
     errorCalls: () => errorCalls,
+    sperre: (g: string | null) => { gate = g ? { ok: false, gate: g } : null; },
     failNext: (e: Error) => { failure = e; repeat = false; },
     failAlways: (e: Error) => { failure = e; repeat = true; },
     tick: async () => { await api.tickPostfachZustellung(); await Bun.sleep(1); },
@@ -159,6 +161,19 @@ afterEach(() => setSystemTime());
 const echterWurf = (weg: "direkt" | "gebuendelt"): Error => weg === "direkt"
   ? new SendRefused("slot pane unavailable or changed before send — nothing typed")
   : new DeliveryGateDropped("gate=no-agent — nothing typed");
+
+describe("Mangel 155: auch der gebündelte Weg nennt das Tor, das die Nachricht aufhält", () => {
+  for (const weg of ["direkt", "gebuendelt"] as const) {
+    test(`${weg}: ein Slot, dessen Tor zu ist, trägt am Eintrag das benannte Tor, und die Nachricht bleibt ungelesen`, async () => {
+      const w = welt(weg);
+      w.sperre("not-alive");
+      w.failAlways(echterWurf(weg)); // das Bündel öffnet sich nicht: nichts wird getippt, also bleibt die Sperre am Eintrag stehen
+      await w.tick();
+      const row = w.rows[0] as unknown as { delivery?: { gate: string; tor: string }; readBy: unknown };
+      expect([row.delivery?.gate, row.delivery?.tor, row.readBy]).toEqual(["not-alive", "alive", null]);
+    });
+  }
+});
 
 describe("Postfach-Takt: was nach einem Fehlversuch offen bleibt", () => {
   for (const weg of ["direkt", "gebuendelt"] as const) {

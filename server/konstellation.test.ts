@@ -96,6 +96,19 @@ describe("constellation", () => {
     expect(ids(t).sort((a, b) => a - b)).toEqual([4, 6, 8, 9]);
   });
 
+  // DIE LINIE (src/linie.ts, Prüfung L2): eine fremde Session im Platz und Ordner der Öffnerin ist nicht ihre Öffnerin — das Kind steht in
+  // seiner Gruppe; die Nachfolgerin (dieselbe Linie) und eine Orchestratorin, die die Linie in einem anderen Platz fortsetzt, tragen es
+  test("a session hangs under the seat of its opener's line, not under a stranger in the same slot and folder", () => {
+    const L1 = "a".repeat(24), L2 = "b".repeat(24);
+    const von = { openedBy: { slot: 2, openedAt: 1, cwd: "/w", linie: L1 } };
+    const fremd = constellation([slot(2, { cwd: "/w", linie: L2 }), slot(5, von)], null, []);
+    expect(where(fremd)).toEqual({ sessions: [2, 5] });
+    const erbin = constellation([slot(2, { cwd: "/w", linie: L1 }), slot(5, von)], null, []);
+    expect(erbin.groups[0]!.nodes.map((n) => [n.slot.id, n.children.map((c) => c.slot.id)])).toEqual([[2, [5]]]);
+    const anderswo = constellation([slot(7, { cwd: "/o", linie: L1 }), slot(5, von)], null, []);
+    expect(anderswo.groups[0]!.nodes.map((n) => [n.slot.id, n.children.map((c) => c.slot.id)])).toEqual([[7, [5]]]);
+  });
+
   test("an opener that is gone, or a session that would hang under itself or its own child, stands in its group", () => {
     const by = (s: number) => ({ openedBy: { slot: s, openedAt: 1, cwd: `/w/${s}` } });
     const t = constellation([slot(1, by(1)), slot(2, by(7)), slot(3, by(4)), slot(4, by(3)), free(7)], null, []);

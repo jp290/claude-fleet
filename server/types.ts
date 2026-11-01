@@ -22,6 +22,7 @@ import type { TaskCardBody } from "../card-extract";
 import type { ProgramContextPack } from "../context-plan";
 import type { ContextPackMcpServer } from "../context-packs";
 import type { CodexFirstTurn } from "./conversation-read";
+import { openerGeladen, type Opener } from "./opener";
 import { HELPER_REPOS_MAX, HELPER_REPO_REMOTES_MAX, HELPER_REPO_REFS_MAX, HELPER_REPO_COMMITS_MAX, HELPER_REPOS_BYTES_MAX,
   HELPER_REPO_NAME_RE, helperGitLabel, type HelperReposReading, type HelperRepoReason } from "../src/protocol";
 import { POSTFACH_GATES, POSTFACH_REASON_MAX, POSTFACH_TORE,
@@ -2215,6 +2216,12 @@ interface Slot {
   // succession of a line, inherited by every successor, null for every session that never took part
   // in one — and for a Program-MAIN, whose line is its Program id. Reset by openSlot/killSlot.
   lineageId: string | null;
+  // THE LINE OF THIS SEAT (server/opener.ts): minted by openSlot for every occupant, stamped back onto the successor by every
+  // succession on the slot, named in the opener record of every seat it opens (Opener.linie). A generic succession writes its
+  // first handover under it, so lineageId, once set, is the same id — except after adoptSuccessionDebt left the line to another seat
+  // that carries it already: the adopter takes up the handover record (lineageId), not the line. A run value: never part of a hashed
+  // start. Null when empty.
+  linie: string | null;
   // THE OWNER'S HANDOVER SETTING for this occupant (HandoverSetting), null where the owner set none —
   // the session then runs on the rail's env threshold with the hint on. Reset with the occupant by
   // openSlot and the teardown; every succession on the slot carries it unchanged to the successor
@@ -3452,6 +3459,8 @@ interface SuccessionDebt {
   // the successor's label as the rail would have opened it: adoption asks for it (server.ts#adoptSuccessionDebt)
   label: string | null;
   eventId: string | null;
+  // who opened the predecessor (server/opener.ts): adoption hangs the adopter there again. Absent on a debt written before the field
+  openedBy?: Opener;
 }
 const SUCCESSION_DEBTS_MAX = 20;
 const SUCCESSION_DEBT_REASON_MAX = 400;
@@ -3462,7 +3471,10 @@ const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const r = value as Record<string, unknown>;
   const pos = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
-  if (Object.keys(r).sort().join(",") !== [...SUCCESSION_DEBT_KEYS].sort().join(",") || r.v !== 1
+  // `openedBy` is the one optional key: a debt from before it loads as it was
+  const openedBy = r.openedBy === undefined ? null : openerGeladen(r.openedBy);
+  if (r.openedBy !== undefined && !openedBy) return null;
+  if (Object.keys(r).filter((k) => k !== "openedBy").sort().join(",") !== [...SUCCESSION_DEBT_KEYS].sort().join(",") || r.v !== 1
     || typeof r.id !== "string" || !/^[0-9a-f]{24}$/.test(r.id) || !pos(r.at)
     || typeof r.rail !== "string" || !r.rail || r.rail.length > 200
     || !Number.isInteger(r.slot) || (r.slot as number) < 1 || (r.slot as number) > MAX_SLOTS
@@ -3482,7 +3494,7 @@ const loadSuccessionDebt = (value: unknown): SuccessionDebt | null => {
   return { v: 1, id: r.id, at: r.at as number, rail: r.rail, slot: r.slot as number, cwd: r.cwd as string,
     predecessorOpenedAt: r.predecessorOpenedAt as number, successorOpenedAt: r.successorOpenedAt as number | null,
     reason: r.reason, brief: r.brief, path: r.path, draft, label: r.label as string | null,
-    eventId: r.eventId as string | null };
+    eventId: r.eventId as string | null, ...(openedBy ? { openedBy } : {}) };
 };
 
 // --- THE RECORD LOSS SCAR -----------------------------------------------------------------------

@@ -3,6 +3,7 @@ import type { Workplaces, WorkplaceRepo, WorkplaceRow, WorkplaceChecks, Worktree
 import { renderSessionAgents, contextPartId, contextPackGroup, laneExitLiveBauAct, type SessionAgents, type SessionAgentsInput, type SessionAgentsPart, SESSION_AGENTS_LIMIT } from "./session-agents";
 import { resolveSessionPlan, harnessFamilie, ROLLE_WORT, SESSION_BLOCKS, CLAUDE_CODE_MESSUNG, CLAUDE_CODE_ZEILEN, FLEET_BYTES_JE_TOKEN, type ClaudeCodeRolle, type PlanOrt, type PlanBytes, type PlanPackInstanz, type SessionPlan, type SessionPlanBaustein, type SessionRole } from "./session-blocks";
 import { modelLabel } from "./src/modelname";
+import { OTHER_SESSION_LEAD } from "./src/agent-message";
 import { sectionAt } from "./context-sections";
 import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
@@ -25,9 +26,12 @@ import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
-import { openerGeladen, openerVon } from "./server/opener";
+import { endeteLinienGeladen, fortgesetzteLinie, getrageneLinie, type GetrageneLinie, gleicheOeffnerin, istOeffnerin, LINIE_RE, linieEndet, linieFuerAltenOeffner, opener as openerAus, openerGeladen, openerVon,
+  type EndeteLinie, type Opener } from "./server/opener";
 import { andererSlot, beendeteKante, type Kante, kanteAbgelaufen, kanteBeruehrt, kanteGeben, kanteGeschlossen, kanteGilt, kanteLebt,
   kanteMerkt, kanteSchliessen, kantenGeladen, kantenGestutzt, kantenWunsch, lebendeKante, uhrzeit } from "./server/kanten";
+import { VORLAGEN, VORLAGE_STANDARD, erlaubtDurch, regelnSatz, gegenseiten, gegenseitenZeilen, istFremdeSessionHuelle, ringAnhaengen, ringFuerPlatte,
+  droppedUnreadVonPlatte, geschichteLuecke, MESSAGES_DROPPED_UNREAD_KEY, type RegelArt, type Zeugen } from "./server/postfach-vertrag";
 import { istRechtId, rechteFuerHarness, RECHT_IDS, RECHTE_STANDARD, type RechtId, type Rechte } from "./session-rechte";
 import { RECHT_WAS, rechteAnsicht, rechteZeilen, wirksameRechte, type RechtRolle } from "./server/tuer-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
@@ -246,7 +250,7 @@ import { dieselbeSperre, loescheSperre, postfachHindernis,
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
 import { lineTail, switchCommand, watchSwitch, type ModelSwitch, type SwitchField } from "./server/model-switch";
 import { adoptNotes, BRANCH_TEXT_MAX, type BranchBook, type BranchPlace, type BranchRecord, type BranchRef, chargeBase,
-  checkVerdictOf,
+  checkVerdictOf, checkAusLedger,
   dropBranch, findBranch, isLandForm, markPasstVonSitz, markSeen, openBranch, openedBy, pruneBook, repoBranches, restoreBook,
   setLandForm as setBranchLandForm, setOpener, usableCheck, writeText } from "./server/branches";
 import { CHARGE_REWRITTEN, chargeRewritten as chargeRewrittenBy, landCharge, type LandDeps } from "./server/branch-land";
@@ -266,7 +270,7 @@ import { piCacheFact, piLastUsage, type PiUsage } from "./server/pi-cache";
 import { k15Freigabe, k15Speicher } from "./server/k15-speicher";
 import { konstFassungen } from "./server/konst-fassungen";
 import { bindePosition, k15Laeufe, liesLaeufe, laufGeladen, laufNachfolge, laufZu, merkeLaufNachricht, type LaufServer } from "./server/laeufe";
-import { HISTORIE_MAX, liesHistorie, merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
+import { HISTORIE_MAX, liesHistorie, merkeNachfolge, merkeNachtrag, merkeStart, startHistorie } from "./server/start-historie";
 import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR_CONTEXT_LINE_CODEX,
   ORCHESTRATOR_ROLE_CARD } from "./server/rollenkarten";
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
@@ -288,6 +292,7 @@ import { RICHTUNG_PLATZ, SETUP_ROUTE, hashText, liesKonzept, liesShelf, roleStei
 import { selfAgentenTuer, selfSetupTuer } from "./server/setup-tueren";
 import { konstellationDerTuer, type SitzBild } from "./server/konstellation-aus-sitzen";
 import { konstellationSicht, liesPositionen, type SichtSlot } from "./server/konstellation-sicht";
+import { lagebild, lageZweigAus, naeherFuer, tickFrisch, type LageFakten, type ZweigFakt } from "./server/lagebild";
 import { geoeffneteKinder, gebildeteAntworten, gebildeteAufRegal, mitRolleRechten, neuesterInhaber, ordnerDerTuer, rolleAnDerOwnerTuer, rolleDerPosition, SITZ_SCHLUESSEL, geoeffnetVonZeile, kindBeenden, unbekannteSchluessel, rolleFormen, rolleImBrief, rolleSteinDerTuer, zweckOhneRollentext, rolleSteinGeladen, seatCap, seatRoot, sitzGegenseite, type RolleBezug, type SitzTatsache } from "./server/selbst-sitze";
 import { WEGGELASSEN_NICHTS, weglassenDerTuer, weglassenStart, weglassenZeilen, type Weglassen } from "./server/weglassen";
 import { geforderteUnits, baumVon, deckung, geprueftAm, leseSiegel, holeSiegel, tabelleStimmt, maschinenName, planFuer, plattformHier, pushSiegel, schreibeSiegel, type Deckung, type SiegelQuelle } from "./server/pruef-siegel";
@@ -3159,6 +3164,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   laneSuccessions: 0,
   laneSeats: [],
   lineageId: null,
+  linie: null,
   handover: null,
   selfToken: randomBytes(16).toString("hex"),
   offset: 0,
@@ -3310,10 +3316,17 @@ const sameAddress = (a: MessageAddress, b: MessageAddress): boolean =>
 const samePayload = (a: MessagePayload, b: MessagePayload): boolean =>
   a.kind === "text" && b.kind === "text" && a.text === b.text;
 
+// DER EMPFÄNGER IST WEG: eine ungelesene Nachricht an eine Session oder Lane, die kein lebender Platz mehr hält (resolveMessageAddress sagt
+// dann „no longer live … will not be re-addressed“). Programm-, Rollen- und Fernadressen bleiben: ihr nächster Inhaber liest sie.
+function messageReceiverGone(m: Message): boolean {
+  if (m.readBy !== null || (m.to.kind !== "session" && m.to.kind !== "lane")) return false;
+  const live = slotFrom(m.to.slot);
+  return !(live && messageAddressesFor(live).some((a) => sameAddress(a, m.to)));
+}
 // THE ONE WRITER, on appendProgramInbox's terms and pinned the same way: a second assignment to
 // `messages` is how a capped record starts disagreeing with its own `dropped`. Capped identically —
-// past MESSAGES_MAX the oldest READ entries go first and only then the oldest unread, so a full rail
-// loses what somebody already saw before it loses what nobody has.
+// past MESSAGES_MAX mail to a receiver that no longer exists goes first, then the oldest READ entry, and only then the oldest unread,
+// so a full rail loses what nobody can read before it loses what somebody already saw before it loses what a live seat still owes an answer to.
 //
 // THE CALLER SAVES (saveStateNow), the same property and the same reason as appendProgramInbox.
 //
@@ -3327,14 +3340,12 @@ function appendMessage(from: MessageAddress, to: MessageAddress, payload: Messag
   idempotencyKey: string, replyTo: string | null, personal = false): Message {
   const entry: Message = { id: randomBytes(12).toString("hex"), from, to, at: Date.now(),
     payload, idempotencyKey, replyTo, readBy: null, readAt: null, ...(personal ? { personal: true as const } : {}) };
-  let entries = [...messages.entries, entry];
-  let dropped = messages.dropped;
-  while (entries.length > MESSAGES_MAX) {
-    const readIdx = entries.findIndex((e) => e.readBy !== null);
-    entries = readIdx >= 0 ? entries.filter((_, i) => i !== readIdx) : entries.slice(1);
-    dropped++;
-  }
-  messages = { v: 1, entries, dropped };
+  // WHAT LEAVES FIRST (W1, server/postfach-vertrag.ts#ringKuerzen): mail to a receiver that no longer exists, then what somebody already read, and
+  // only then the oldest unread row — the one loss the counter names (`messagesDroppedUnread`), because it is the only one that can have cost a live seat its mail.
+  // The counter lives BESIDE the record, never in it (server/postfach-vertrag.ts#ringFuerPlatte): an older server refuses any extra key in `messages`.
+  const next = ringAnhaengen(messages, messagesDroppedUnread, entry, MESSAGES_MAX, messageReceiverGone);
+  messages = next.ring;
+  messagesDroppedUnread = next.droppedUnread;
   audit("message_append", undefined, `${addressLabel(from)} -> ${addressLabel(to)} ${entry.id}`);
   return entry;
 }
@@ -3522,6 +3533,34 @@ let lineageHandovers: LineageHandover[] = [];
 let lineageHandoverLosses: LineageHandoverLoss[] = [];
 // what an in-place succession still owes after its predecessor ended (server.ts#recordSuccessionDebt)
 let successionDebts: SuccessionDebt[] = [];
+// THE LINES THAT ENDED (server/opener.ts#EndeteLinie): an owner open of the Orchestratorin, or one that resumes an ended occupant's
+// conversation, continues that line; persisted in fleet.json
+let endeteLinien: EndeteLinie[] = [];
+// A LINE BEING HANDED ON (an in-place succession, a lane restart) is alive through its window: the predecessor is gone, the successor not
+// yet open, and no owner open may take it meanwhile (Prüfung Runde 2, N1 b). Counted, so a nested handover cannot free it early. Persisted
+// in fleet.json (R3-1 b): a server that stops in the window finds it on load and ends it there unless the successor's slot carries it.
+const linienInUebergabe = new Map<string, { n: number; ende: EndeteLinie }>();
+const lebendeLinien = (): Set<string> => new Set([...slots.flatMap((x) => x.cwd && x.linie ? [x.linie] : []), ...linienInUebergabe.keys()]);
+const endeDerLinie = (s: Slot): EndeteLinie | null => s.linie && s.cwd
+  ? { linie: s.linie, slot: s.id, cwd: s.cwd, sessionId: s.sessionId, orchestrator: isOrchestratorLabel(s.label), at: Date.now() } : null;
+/** A line that lives again stands no longer as ended. */
+const linieLebtWieder = (linie: string): void => { endeteLinien = endeteLinien.filter((x) => x.linie !== linie); };
+/** THE HANDOVER OF A LINE: while `run` ends the occupant and opens its successor, the line is reserved; the ending writes no row for it. Only
+ *  if afterwards no seat carries it (the successor never opened) is it ended — then the Orchestratorin the owner opens, or an open that resumes
+ *  this conversation, continues it, and a debt's adoption asks first (N1 a). */
+async function gibLinieWeiter<T>(s: Slot, run: () => Promise<T>): Promise<T> {
+  const ende = endeDerLinie(s);
+  if (!ende) return run();
+  linienInUebergabe.set(ende.linie, { n: (linienInUebergabe.get(ende.linie)?.n ?? 0) + 1, ende });
+  saveState();
+  try {
+    return await run();
+  } finally {
+    const n = (linienInUebergabe.get(ende.linie)?.n ?? 1) - 1;
+    if (n > 0) linienInUebergabe.set(ende.linie, { n, ende }); else { linienInUebergabe.delete(ende.linie); saveState(); }
+    if (n <= 0 && !lebendeLinien().has(ende.linie)) { endeteLinien = linieEndet(endeteLinien, { ...ende, at: Date.now() }); saveState(); }
+  }
+}
 const MAX_PROGRAMS = 100;
 // K2: A PROGRAM AN OPEN ROW NAMES IS NOT SPARE CAPACITY — the same bargain capTasks struck for a
 // held source, read in the other direction. A COMPLETE Program is prunable because nothing is owed
@@ -5044,6 +5083,9 @@ let stallSensor: StallSensorState = { detected: 0, msTotal: 0, repos: {} };
 // type is named for the Program records that needed it first; one shape for one question is why it
 // is reused here instead of grown a third time.
 let messages: Messages = { v: 1, entries: [], dropped: 0 };
+// how many of `messages.dropped` left the ring UNREAD while their receiver still lived (W1): saved beside the record under its own key,
+// so the record keeps the shape every older server reads (server/postfach-vertrag.ts#ringFuerPlatte)
+let messagesDroppedUnread = 0;
 let messagesLost: ProgramRecordLoss | undefined;
 let tasks: Task[] = [];
 // Delivery is an EVENT keyed by the audit row's `at`, not a per-session nudge. Keep its marker in
@@ -6403,13 +6445,13 @@ function stateSnapshot(): string {
     harness: string | null; effort: string | null;
     container: string | null; containerContext: string | null;
     taskId: string | null; originId: string | null; programId: string | null;
-    releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; selfToken: string;
+    releasedBy: "owner" | "machine" | null; laneSuccessions: number; laneSeats?: LaneSeat[]; lineageId: string | null; linie?: string; selfToken: string;
     handover?: HandoverSetting; zustellung?: Zustellung; bibliothek?: BibliothekWahl;
     browser?: true; webSearch?: true; context?: SlotContext; permissions?: SlotPermissions; sleeping?: SlotSleep; standingHandover?: StandingHandover; compaction?: SlotCompaction; spawn?: SlotSpawn; laneStandNudged?: LaneStandNudged; plan?: SlotPlan }> = {};
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, ...(s.boardBranch ? { boardBranch: s.boardBranch } : {}), model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.rolleStein ? { rolleStein: s.rolleStein } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, ...(s.boardBranch ? { boardBranch: s.boardBranch } : {}), model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.rolleStein ? { rolleStein: s.rolleStein } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, ...(s.linie ? { linie: s.linie } : {}), selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -6427,7 +6469,8 @@ function stateSnapshot(): string {
     laneSuiteJobs: [...laneSuiteJobs.values()],
     commandJobs: [...commandJobs.values()],
     modelScan: modelScanState,
-    slots: active, recents, pins, ...(rolePresets ? { rolePresets } : {}), shares, autos, watches,
+    slots: active, ...(endeteLinien.length ? { endeteLinien } : {}),
+    ...(linienInUebergabe.size ? { linienInUebergabe: [...linienInUebergabe.values()].map((x) => x.ende) } : {}), recents, pins, ...(rolePresets ? { rolePresets } : {}), shares, autos, watches,
     events: fleetEvents, clarifications, fleetReports, attentionRequests, tasks,
     // a bootstrap's pre-delivery binding is memory-only (bootstrapProgramMainReserved): beside its
     // marker the disk keeps the unbound fallback that boot recovery and the loader expect
@@ -6436,7 +6479,7 @@ function stateSnapshot(): string {
       const { main: _preDelivery, ...persisted } = p;
       return persisted;
     }),
-    messages, ...(messagesLost ? { messagesLost } : {}),
+    ...ringFuerPlatte(messages, messagesDroppedUnread), ...(messagesLost ? { messagesLost } : {}),
     lineageHandovers, lineageHandoverLosses,
     ...(successionDebts.length ? { successionDebts } : {}),
     ...(laneSucceedCounts.size ? { laneSucceedCounts: Object.fromEntries(laneSucceedCounts) } : {}),
@@ -7259,6 +7302,12 @@ const gitInfo = new Map<number, GitInfo | null>(); // null = cwd is not a git re
 // for the client's same-repo ownership check; cached on this tick so the 2 s owner poll never
 // spawns git. null is a measured non-repo/unknown answer, not the cwd in disguise.
 const repoInfo = new Map<number, string | null>();
+// the head commit the same `git status --porcelain=v2 --branch` names (`# branch.oid`), kept beside gitInfo and NOT in it: gitInfo
+// rides the 2 s owner poll, this one only GET /api/self/overview (server/lagebild.ts) — no git of its own per call
+const gitHeadInfo = new Map<number, string | null>();
+// which occupant the git tick's last `git status` of a slot belonged to (slot → openedAt), so a null gitInfo („no git checkout“) is known
+// to be about THIS occupant (GET /api/self/overview, C1-9); operationalGitOccupants takes only seats with a reading
+const gitGelesen = new Map<number, number>();
 // per-slot claude-liveness, refreshed on the same slow tick as gitInfo. This cache exists
 // ONLY to give the steward's READ routes a cheap `alive` field — never call the ps/pgrep
 // spawns inline on the 100ms sessions poll. The delivery/dispatch GATES (claudeAlive at the
@@ -7659,10 +7708,11 @@ async function tickGit(): Promise<void> {
       const hunks = anchorSha ? await gitRead(s.cwd, ...laneHunkDiffArgs(anchorSha)) : null;
       if (hunks?.code === 0) laneHunkInfo.set(s.id, laneHunkRanges(hunks.out)); else laneHunkInfo.delete(s.id);
       const st = await gitRead(s.cwd, "status", "--porcelain=v2", "--branch");
-      if (st.code !== 0) { gitInfo.set(s.id, null); continue; }
-      let branch = "", ahead = 0, behind = 0, dirty = 0;
+      if (st.code !== 0) { gitInfo.set(s.id, null); gitHeadInfo.delete(s.id); gitGelesen.set(s.id, turnOccupant.openedAt); continue; }
+      let branch = "", ahead = 0, behind = 0, dirty = 0, head: string | null = null;
       for (const line of st.out.split("\n")) {
         if (line.startsWith("# branch.head ")) branch = line.slice(14);
+        else if (line.startsWith("# branch.oid ")) head = /^[0-9a-f]{40,64}$/.test(line.slice(13)) ? line.slice(13) : null; // „(initial)“ = no commit yet
         else if (line.startsWith("# branch.ab ")) {
           const m = /\+(\d+) -(\d+)/.exec(line);
           if (m) { ahead = Number(m[1]); behind = Number(m[2]); }
@@ -7681,6 +7731,9 @@ async function tickGit(): Promise<void> {
         }
       }
       gitInfo.set(s.id, { branch, dirty, ahead, behind });
+      gitHeadInfo.set(s.id, head);
+      // the occupant this turn STARTED with (turnOccupant), not s.openedAt after the awaits: a slot reoccupied mid-tick keeps the reading off the new one
+      gitGelesen.set(s.id, turnOccupant.openedAt);
     }
     // the two deploy facts ride this tick rather than the 2 s poll — see refreshDeployFacts
     await refreshDeployFacts();
@@ -8856,17 +8909,9 @@ async function startBranchCheck(repo: string, branch: string, repair = false): P
 }
 async function chargeCheckView(repo: string, r: BranchRecord, tip: string, base: string | null): Promise<BranchCheckView | null> {
   if (!hasMergeCheck(repo)) return null;
-  if (branchCheckRuns.get(`${repo}\n${r.branch}`)?.tip === tip) return { state: "running", at: null, why: null };
-  const rows = (await mergeCheckRows(repo)).filter((x): x is Record<string, unknown> => !!x && typeof x === "object"
-    && (x as Record<string, unknown>).branch === r.branch);
-  const last = rows.at(-1);
-  if (!last) return { state: "none", at: null, why: null };
-  const at = typeof last.at === "number" ? last.at : null, why = typeof last.why === "string" ? last.why : null;
-  const state = checkVerdictOf(last);
-  // ein Lauf, der vor dem Urteil abbrach, sagt es für DIESEN Tip — auch wenn er die Spitze nie auflöste (kein tip in der Zeile)
-  if (state === "uncheckable" && (last.tip === undefined || last.tip === tip)) return { state, at, why };
-  if (last.tip !== tip || last.base !== base) return { state: "stale", at, why: `geprüft war ${String(last.tip).slice(0, 8)} gegen ${String(last.base)}` };
-  return { state, at, why };
+  // die Regel teilt die Übersicht für Agenten (server/branches.ts#checkAusLedger); gelesen wird das Ledger nur, wenn kein Check für diesen Tip läuft
+  const laeuft = branchCheckRuns.get(`${repo}\n${r.branch}`)?.tip === tip;
+  return checkAusLedger(laeuft ? [] : await mergeCheckRows(repo), r.branch, tip, base, laeuft);
 }
 const chargeRewritten = (repo: string, r: BranchRecord, tip: string): Promise<boolean> => chargeRewrittenBy(gitRead, repo, r, tip);
 // THE COMMITS OF A CHARGE: reachable from the tip, not from the charge's base and not from main, merge
@@ -9108,8 +9153,13 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
     if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
       || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
     modelSupport = opened.modelSupport;
+    // THE ORCHESTRATORIN THE OWNER OPENS continues the line of the last one that ended (server/opener.ts): her children stay hers
+    if (opener === "owner" && isOrchestratorLabel(s.label)) {
+      const fort = fortgesetzteLinie(endeteLinien, { orchestrator: true }, lebendeLinien());
+      if (fort) { s.linie = fort; linieLebtWieder(fort); saveState(); }
+    }
     if (acc) s.plan = acc.request;
-    s.openedBy = opener === "self" && by && by.cwd && by !== s ? { slot: by.id, openedAt: by.openedAt, cwd: by.cwd } : openerOf(req, s);
+    s.openedBy = opener === "self" && by && by.cwd && by !== s ? openerAus({ ...by, cwd: by.cwd }) : openerOf(req, s);
     if (s.openedBy) { saveState(); await merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
     if (zi.ziel && !sitzAuftrag) await merkeNachtrag(s.id, s.openedAt, { goal: zi.ziel, ...(zi.aufgabe ? { aufgabe: zi.aufgabe } : {}) }, STATE_DIR);
   } catch (e) {
@@ -9127,6 +9177,8 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   // a generic line whose in-place respawn failed on THIS slot and cwd is taken up here
   const adopted = adoptSuccessionDebt(s);
   if (adopted) await saveStateNow();
+  // the adopter's start row names the opener and the goal its predecessor's named, as a finished succession's does
+  if (adopted) await merkeNachfolge(s.id, adopted.predecessorOpenedAt, s.openedAt, s.openedBy, STATE_DIR).catch((e) => logError("merkeNachfolge", e));
   if (adopted?.draft) await rearmLineObligations(s, s.openedAt);
   // …and for exactly one label, the role card (deliverOrchestratorSpawnCard). Every other
   // open returns the same bytes it always did.
@@ -9199,7 +9251,7 @@ async function openSeatFromSelf(s: Slot, req: Request): Promise<Response> {
   const pendingKey = `${s.id} ${s.cwd}`;
   const pending = selfOpenPending.get(pendingKey) ?? new Set<{ slot: number | null }>();
   const cap = seatCap();
-  const schonDa = geoeffneteKinder(slots.map(sitzTatsache), { slot: s.id, cwd: s.cwd! }).filter((k) => ![...pending].some((p) => p.slot === k.slot)).length;
+  const schonDa = geoeffneteKinder(slots.map(sitzTatsache), { slot: s.id, cwd: s.cwd!, linie: s.linie }).filter((k) => ![...pending].some((p) => p.slot === k.slot)).length;
   if (schonDa + pending.size >= cap)
     return json({ error: `you have ${cap} live seats you opened already — the cap is FLEET_SELF_SEAT_CAP (${cap}); end one first` }, 409);
   const meine = { slot: null as number | null };
@@ -9341,17 +9393,93 @@ async function abnahmeTick(): Promise<void> {
 }
 // DIE KONSTELLATION, DIE EIN SITZ FÜHRT, WIRD GESPEICHERT (POST /api/self/konstellationen, Recht setup.save; server/konstellation-aus-sitzen.ts): der eigene Sitz und
 // die lebenden Sitze, die er geöffnet hat, als gespeicherte Konstellation — dieselbe, die GET /api/self/setups/<id>/datei danach als eine Datei ausgibt
-const sichtSlot = (x: Slot): SichtSlot => ({ slot: x.id, openedAt: x.openedAt, cwd: x.cwd, openedBy: x.openedBy, rolleStein: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name } : null,
+const sichtSlot = (x: Slot): SichtSlot => ({ slot: x.id, openedAt: x.openedAt, cwd: x.cwd, linie: x.linie, openedBy: x.openedBy, rolleStein: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name } : null,
   label: x.label, harness: x.harness, model: x.model, effort: x.effort, agentTitel: x.agentMd?.titel ?? null, sitz: x.sitz ? { konst: x.sitz.konst, pos: x.sitz.pos } : null });
 const sitzBild = (x: Slot): SitzBild => ({ slot: x.id, openedAt: x.openedAt, cwd: x.cwd!, label: x.label, harness: x.harness, model: x.model, effort: x.effort,
   permissionMode: x.permissionMode, rechte: x.rechte, agentMd: x.agentMd ? { titel: x.agentMd.titel, text: x.agentMd.text } : null, bibliothek: x.bibliothek,
   rolleStein: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name, hash: x.rolleStein.hash } : null, openedBy: x.openedBy });
 async function selfKonstellationTuer(s: Slot, req: Request): Promise<Response> {
-  const kinder = geoeffneteKinder(slots.map(sitzTatsache), { slot: s.id, cwd: s.cwd! }).map((k) => slots[k.slot - 1]!);
+  const kinder = geoeffneteKinder(slots.map(sitzTatsache), { slot: s.id, cwd: s.cwd!, linie: s.linie }).map((k) => slots[k.slot - 1]!);
   const r = await konstellationDerTuer(await readJson(req), { oeffnerin: sitzBild(s), kinder: kinder.map(sitzBild), root: seatRoot(), dir: STATE_DIR,
     behalten: wirksameRechte(s.rechte, rechteRollen(s)),
     wissen: async () => (await seatKnowledgeFor(BIBLIOTHEK?.root ?? REPO_DIR, "claude")).knowledge, historie: () => liesHistorie(STATE_DIR, 5000) });
   return json(r.body, r.status);
+}
+// DIE ÜBERSICHT FÜR AGENTEN (C1, GET /api/self/overview, server/lagebild.ts): was Fleet von einem lebenden Sitz schon hält — der Datensatz, der
+// Blick des Warte-Ticks, das Postfach, der Übergabe-Hinweis, die Lesung des Transkript-Endes fürs Board — als eine Tatsache je Sitz; kein Pane,
+// kein Transkript wird dafür neu gelesen, kein Text geht mit
+function lageFaktenVon(x: Slot): LageFakten {
+  const ep = warteEpisoden.get(x.id), look = warteGesehen.get(x.id) ?? null, vertrauen = vertrauenGesehen.get(x.id);
+  const mine = messageAddressesFor(x);
+  const unread = mine.length ? messages.entries.filter((m) => m.readBy === null && messageInboundFor(x, m, mine)) : null;
+  const hint = x.sessionId ? hintLedger.of(x.id, x.sessionId) : null;
+  const cache = deliveryCacheState(x);
+  const rolle = positionRole(x);
+  return { slot: x.id, openedAt: x.openedAt, cwd: x.cwd!, linie: x.linie, openedBy: x.openedBy, lane: !!x.worktree,
+    fleetRolle: rolle !== "generic" ? rolle : x.label === STEWARD_LABEL ? "steward" : null, agent: agentInfo.get(x.id) ?? null,
+    name: x.label ?? x.rolleStein?.name ?? `Seat ${x.id}`, role: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name } : null,
+    purpose: x.agentMd?.titel ?? null, harness: x.harness, model: x.model, effort: x.effort,
+    sleepingAt: x.sleeping?.at ?? null, retiringAt: x.successionRetirement?.at ?? null, lastOutput: x.lastOutput,
+    warte: { claude: harnessOf(x.harness) === CLAUDE_HARNESS, look, frageSeit: ep && ep.openedAt === x.openedAt ? ep.seit : null,
+      vertrauenAt: vertrauen && vertrauen.openedAt === x.openedAt ? vertrauen.at : null },
+    mail: unread ? { count: unread.length, oldestAt: unread.length ? Math.min(...unread.map((m) => m.at)) : null, missing: messageRetentionUnknown() } : null,
+    hint: !x.sessionId ? "no-session" : hint ? { nudges: hint.nudges, lastAt: hint.lastAt, gaveUp: hint.gaveUp } : null,
+    ctxPct: contextFill(x)?.pct ?? null, cache: { at: cache.at, warm: cache.cache === "warm" } };
+}
+// der Branch je Sitz, nur für den eigenen Sitz und die, deren Öffner-Recht der Aufrufer hält: NIE git je Aufruf (Prüfung C1-3: zehn Aufrufe der
+// Orchestratorin machten hundert). Name und Kopf aus dem Git-Tick (gitInfo, gitHeadInfo), nur wenn der Tick diese Belegung las
+// (operationalGitOccupants, wie die Program-Sicht); der Check aus dem Merge-Check-Ledger des Repos, je Repo höchstens einmal je Tick gelesen.
+const lageLedger = new Map<string, { at: number; rows: Promise<unknown[]> }>();
+function lageLedgerRows(repo: string, now: number): Promise<unknown[]> {
+  const hit = lageLedger.get(repo);
+  if (hit && now - hit.at < GIT_TICK_MS) return hit.rows;
+  const rows = mergeCheckRows(repo);
+  lageLedger.set(repo, { at: now, rows });
+  return rows;
+}
+// der Integrationszweig eines Repos, wie die Branch-Sicht ihn nimmt (integrationBranch: repoBases, sonst der Branch des primären Checkouts),
+// je Repo höchstens einmal je Tick gelesen (C1-12): sonst nennte die Übersicht für einen frischen Branch ohne Land und ohne eigene Basis keine
+const lageIntegration = new Map<string, { at: number; branch: Promise<string | null> }>();
+function lageIntegrationOf(repo: string, now: number): Promise<string | null> {
+  const hit = lageIntegration.get(repo);
+  if (hit && now - hit.at < GIT_TICK_MS) return hit.branch;
+  const branch = integrationBranch(repo).catch(() => null);
+  lageIntegration.set(repo, { at: now, branch });
+  return branch;
+}
+async function lageZweig(x: Slot, now: number): Promise<ZweigFakt> {
+  // C1-9: der Tick las diese Belegung und fand kein Repo — vor der Frage nach operationalGitOccupants, das nur Sitze mit einer Lesung nimmt
+  if (gitGelesen.get(x.id) === x.openedAt && gitInfo.get(x.id) === null)
+    return { unknown: "the seat works in no git checkout (the git tick's git status failed in its folder)" };
+  if (operationalGitOccupants.get(x.id)?.openedAt !== x.openedAt)
+    return { unknown: "the git tick has not read this occupant yet (it reads every 10 s; a seat in a merge or rebase is skipped)" };
+  const g = gitInfo.get(x.id);
+  if (!g) return { unknown: "the seat works in no git checkout (the git tick's git status failed in its folder)" };
+  if (!g.branch || g.branch === "(detached)") return { unknown: "the seat's checkout is on no branch (detached HEAD)" };
+  const top = x.worktree?.repo ?? repoInfo.get(x.id) ?? null;
+  const primary = top ? repoCanon(x.worktree?.repo ?? primaryCheckoutOf(top)) : null;
+  const record = primary ? findBranch(branchBook, primary, g.branch) : undefined;
+  return lageZweigAus({ branch: g.branch, head: gitHeadInfo.get(x.id) ?? null, gitAt: operationalGitObservedAt, tickMs: GIT_TICK_MS, now,
+    repo: top, mergeCheck: !!top && hasMergeCheck(top), laeuft: !!primary && branchCheckRuns.get(`${primary}\n${g.branch}`)?.tip === gitHeadInfo.get(x.id),
+    // die Basis wie die Branch-Sicht (chargeBase), die Integration nur aus repoBases: sie sonst zu nennen bräuchte git
+    base: record && primary ? chargeBase(record, record.lands.length || record.base
+      || !tickFrisch(operationalGitObservedAt, GIT_TICK_MS, now) ? null : await lageIntegrationOf(primary, now)) : null, imBuch: !!record,
+    // das Ledger nur, wenn der Tick frisch ist: sonst zeigt die Zeile ohnehin keinen Check, und sein git (rev-parse) bliebe aus
+    rows: top && hasMergeCheck(top) && tickFrisch(operationalGitObservedAt, GIT_TICK_MS, now) ? await lageLedgerRows(top, now) : [] });
+}
+async function selfLagebildTuer(s: Slot): Promise<Response> {
+  const lebende = slots.filter((x) => x.cwd);
+  const sicht = konstellationSicht({ ich: sichtSlot(s), lebende: lebende.map(sichtSlot), root: seatRoot(),
+    historie: await liesHistorie(STATE_DIR, 5000), positionen: s.sitz ? liesPositionen(STATE_DIR, s.sitz.konst) : null });
+  const alle = lebende.map(lageFaktenVon);
+  const orchestratorin = deliveryRecipient({ kind: "orchestrator" }) === s;
+  const ich = alle.find((f) => f.slot === s.id)!;
+  const imBild = new Set(sicht.seats.flatMap((x) => x.slot === null ? [] : [x.slot]));
+  const naeher = lebende.filter((x) => x === s || ((orchestratorin || imBild.has(x.id)) && naeherFuer(ich, alle.find((f) => f.slot === x.id)!, orchestratorin)));
+  const now = Date.now();
+  const zweige = new Map(await Promise.all(naeher.map(async (x) => [x.id, await lageZweig(x, now)] as const)));
+  return json(lagebild({ ich: s.id, sicht, alle, orchestratorin, zweige, now, bootAt: SERVER_BOOT_AT, gitAt: operationalGitObservedAt,
+    takt: { warteTickMs: WARTE_TICK_MS, ruhigMs: WARTE_RUHIG_MS } }));
 }
 // DIE TÜREN DES SITZES AUF SITZE UND ROLLEN, hinter verlangeRecht (seat.open, role.form, setup.export): Öffnen im Ordner, eine Rolle bilden, die gebildeten
 // Rollen lesen, eine als Setup-Datei exportieren (dieselbe Datei, die setupAusAgent schreibt: setupAusRolle)
@@ -9369,7 +9497,7 @@ async function selfRollenTuer(s: Slot, openedAt: number, req: Request, rolleId: 
   const body = await readJson(req);
   if (s.openedAt !== openedAt) return json({ error: "this slot has another occupant now" }, 409);
   const bibliothek = (await seatKnowledgeFor(BIBLIOTHEK?.root ?? REPO_DIR, "claude")).knowledge;
-  const gebildet = rolleFormen(body, wirksameRechte(s.rechte, rechteRollen(s)), STATE_DIR, roleLabelOf, { text: `the session in slot ${s.id}`, slot: s.id, cwd: s.cwd! }, bibliothek);
+  const gebildet = rolleFormen(body, wirksameRechte(s.rechte, rechteRollen(s)), STATE_DIR, roleLabelOf, { text: `the session in slot ${s.id}`, slot: s.id, cwd: s.cwd!, linie: s.linie }, bibliothek);
   return gebildet.ok ? json({ ok: true, role: gebildet.rolle }, 201)
     : json({ error: gebildet.error, ...(gebildet.missingRight ? { missingRight: gebildet.missingRight, door: `POST ${pfad}` } : {}) }, gebildet.status);
 }
@@ -9699,12 +9827,17 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
         { repo: ro.repo, branch: body.branch }, rolleDerPosition(sd.sitz?.rolle, STATE_DIR));
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
+      // AN OWNER OPEN THAT RESUMES AN ENDED OCCUPANT'S CONVERSATION continues its line (server/opener.ts): what it opened is its own again
+      if (!by && resumeId !== null && free.sessionId === resumeId) {
+        const fort = fortgesetzteLinie(endeteLinien, { sessionId: resumeId }, lebendeLinien());
+        if (fort) { free.linie = fort; linieLebtWieder(fort); saveState(); }
+      }
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
       // door — is recorded, and the two may write each other in the postfach. Set before the first await below, so a
       // kill and reopen of this slot during a history write cannot stamp the opener on the next occupant.
-      const oeffner = by?.cwd && by !== free ? { slot: by.id, openedAt: by.openedAt, cwd: by.cwd } : null;
+      const oeffner = by?.cwd && by !== free ? openerAus({ ...by, cwd: by.cwd }) : null;
       if (oeffner) {
-        branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: oeffner.slot, cwd: oeffner.cwd, at: Date.now() }).book;
+        branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: oeffner.slot, cwd: oeffner.cwd, ...(oeffner.linie ? { linie: oeffner.linie } : {}), at: Date.now() }).book;
         free.openedBy = oeffner;
       }
       // eine Branch-Session hat keinen Lane-Worktree: ihr Branch steht in der Historie, damit „Erneut starten“ ihn fortsetzt
@@ -11467,7 +11600,10 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // a fence may write exactly this ref, so it is never read back from the worktree's HEAD
   boardBranch: { repo: string; branch: string } | null = null,
   // DIE GEBILDETE ROLLE, IN DER DIE TÜR ÖFFNETE (door field `rolle`, server/selbst-sitze.ts); null = keine
-  rolleStein: RolleBezug | null = null): Promise<SlotOpenResult> {
+  rolleStein: RolleBezug | null = null,
+  // THE LINE A SUCCESSION CARRIES (server/opener.ts#getrageneLinie): the predecessor's line, and its opener when the successor opens on the
+  // same folder. Set here, before the first save, so a server that stops before the open returns finds them (R3-1); null = a new line
+  getragen: GetrageneLinie | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -11606,7 +11742,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.agent = agent; // ...nor the agent it was opened from
   s.rolleStein = rolleStein; // ...nor the formed role it was opened in (its rights came as grants, additive like every role)
   s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
-  s.openedBy = null; // ...nor its opener: the door that opened THIS one stamps it right after
+  s.openedBy = getragen && getragen.cwd === cwd ? getragen.openedBy : null; // ...nor its opener: the door that opened THIS one stamps it right after
   s.lauf = null; // ...nor its run: the window binds THIS one after the start (server/laeufe.ts)
   // ...nor a pane the previous occupant's MCP servers: only THIS founding's plan names them, claude only
   s.packMcp = h.id === "claude" ? [...(packMcp ?? (foundingPlan ? acceptedPlanMcp(foundingPlan) : []))] : [];
@@ -11622,6 +11758,9 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   // session's outcome row. The dispatcher stamps it back immediately after this call for the one
   // case that has an answer; every other open (hand-opened lane, plain checkout) genuinely has none
   s.lineageId = null; // a recycled slot is not the role line; the succession rails stamp it back
+  // THE LINE OF THIS SEAT (server/opener.ts): every open starts one; a succession on this slot carries the predecessor's (`getragen`:
+  // respawnInPlace's two rails, restartLaneSession; adoptSuccessionDebt takes it afterwards), so whoever this seat opens stays the line's child
+  s.linie = getragen?.linie ?? randomBytes(12).toString("hex");
   // ...nor the owner's handover setting: a new occupant starts on the fleet's values, or on the threshold its door was given
   s.handover = h.id === "claude" && schwelle !== null ? schwelleAmStart(s.id, s.openedAt, schwelle) : null;
   s.laneSuccessions = 0; // ...and a recycled slot starts a NEW lane's count at zero. succeedLane is
@@ -11846,6 +11985,10 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
     typeof laufBelegung.transkript === "string" ? await Bun.file(laufBelegung.transkript).text().then(modellVerlauf, () => null) : laufBelegung.transkript))() : null;
   // ...and its library skills go with it (seatSkillsDir: one folder per occupancy)
   seatSkillsRemove(seatSkillsDir(SEAT_SKILLS_ROOT, s.id, s.openedAt));
+  // ...and its line is kept as ended: the Orchestratorin the owner opens next, or an owner open that resumes this conversation, continues it
+  // (a line a succession is handing on is not ended: gibLinieWeiter ends it only if no successor carries it)
+  const ende = endeDerLinie(s);
+  if (ende && !linienInUebergabe.has(ende.linie)) endeteLinien = linieEndet(endeteLinien, ende);
   s.label = null;
   s.openedAt = 0;
   s.successionRetirement = null;
@@ -11874,6 +12017,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.webSearch = false;
   s.remote = false;
   s.openedBy = null;
+  s.linie = null;
   s.lauf = null;
   s.rechte = null;
   s.agentMd = null;
@@ -12501,15 +12645,18 @@ function deliveryMeaning(path: Exclude<SendPath, UnheadedPath>, s: Slot): string
   return (role ? DELIVERY_MEANING_BY_ROLE[path]?.[role] : undefined) ?? DELIVERY_MEANING[path];
 }
 // the one condition under which Fleet types its own words beside a body: the header, and the
-// sentence in a bundle mark (a mark is a body line, so a codex/pi receiver keeps it unchanged)
-const headsDelivery = (form: Harness): boolean => form === CLAUDE_HARNESS && !DECLARED_HARNESS;
-// Only the default adapter gets it, and not when the operator declared a foreign FLEET_CMD for it:
-// codex, pi and every declared harness keep the paste byte for byte (no measurement says what their
-// TUI does with a typed prefix). An undeclared stand-in (`true`) takes it, which is what lets the
-// suites see the form.
-function deliveryHeader(form: Harness, path: SendPath, slot: number, text: string, s: Slot): string | null {
+// sentence in a bundle mark (a mark is a body line; every harness reads it the same)
+const headsDelivery = (): boolean => !DECLARED_HARNESS;
+// EVERY adapter gets it (W1, owner: [Zitat entfernt]), and not when the operator declared a foreign FLEET_CMD: that
+// command keeps the paste byte for byte. MEASURED 2026-10-31 on pi 1.0.2 in `--tui-mode regular` (a real pi in a test-instance pane,
+// no model needed): a send with the head lands in the composer between the two rules and wraps there; the next send finds the rest
+// by the head's prefix, submits it once (audit send_residue, taken=yes) and is then accepted (acceptance observed) — the rest is
+// not taken for the owner's draft. (Not measured here, from the Workhorse lead's reading: without the head a delivery that
+// starts with "!" runs as a shell command in pi.)
+// An undeclared stand-in (`true`) takes it too, which is what lets the suites see the form.
+function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot): string | null {
   const source = DELIVERY_SOURCE[path];
-  if (!source || unheadedPath(path) || !headsDelivery(form)
+  if (!source || unheadedPath(path) || !headsDelivery()
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
   // owner is the ONE source with no position sentence and no path: `ctl.sh send`, the Orchestratorin
   // and the MAINs ride the same route with the same credential, so the head names the credential and
@@ -13101,7 +13248,7 @@ function heldBundlesFor(s: Slot): { key: string; bundle: DeliveryBundle; held: Q
 // The marks themselves are written by src/delivery-format.ts, which the chat view reads them back with.
 function bundleText(entries: QueuedDelivery[], s: Slot): string {
   if (entries.length === 1) return entries[0]!.text;
-  const headed = headsDelivery(harnessOf(s.harness));
+  const headed = headsDelivery();
   return deliveryBundleText(entries.map((entry) => {
     const path = entry.options.path;
     return { path, meaning: headed && !unheadedPath(path) ? deliveryMeaning(path, s) : null, text: entry.text };
@@ -13422,7 +13569,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   const composer = form.composer ?? null;
   const comms = commsFor(s);
   // what the composer holds once this send has typed: the delivery header, then the pasted body
-  const header = deliveryHeader(form, options.path, occupant.slot, text, s);
+  const header = deliveryHeader(options.path, occupant.slot, text, s);
   const composed = header ? header + text : text;
   const bootSettleMs = form.bootSettleMs ?? DEFAULT_BOOT_SETTLE_MS;
   // THE LEDGER'S TWO NUMBERS, taken here and set below rather than at the call sites: `payloadBytes`
@@ -14408,7 +14555,7 @@ type InPlaceRespawn = { ok: true; modelSupport?: CodexModelSupport } | { ok: fal
 // what a failed respawn leaves behind as a debt instead of losing it: the brief as built, and the
 // role-lineage record the rail would have written (null where the rail has none — Program-MAIN)
 interface SuccessionStranded { brief: string; path: "succession" | "founding"; draft: LineageHandover | null;
-  label: string | null }
+  label: string | null; openedBy?: Opener | null }
 async function respawnInPlace(s: Slot, predecessor: SuccessionPredecessorIdentity, rail: string,
   stranded: SuccessionStranded, target: { cwd: string; model: string | null; harness: string | null },
   open: (support: CodexModelSupport | null, onCandidate: (occupant: SlotStreamOccupant) => void) => Promise<SlotOpenResult>,
@@ -14609,7 +14756,7 @@ function recordSuccessionDebt(s: Slot, rail: string, predecessor: SuccessionPred
   const debt: SuccessionDebt = { v: 1, id, at, rail: railName, slot: s.id, cwd: predecessor.cwd,
     predecessorOpenedAt: predecessor.openedAt, successorOpenedAt, reason: why,
     brief: stranded.brief.slice(0, SUCCESSION_DEBT_BRIEF_MAX), path: stranded.path, draft: stranded.draft,
-    label: stranded.label, eventId };
+    label: stranded.label, eventId, ...(stranded.openedBy ? { openedBy: stranded.openedBy } : {}) };
   successionDebts = [...successionDebts, debt].slice(-SUCCESSION_DEBTS_MAX);
   audit("succession_debt", s.id, `${id} ${railName} ${successorOpenedAt === null ? "no successor opened" : `successor openedAt ${successorOpenedAt} stands without its brief`}`
     + ` — brief held (${debt.brief.length} chars)${stranded.draft ? `, line ${stranded.draft.lineageId} record held` : ""}`
@@ -14625,7 +14772,15 @@ function adoptSuccessionDebt(s: Slot): SuccessionDebt | null {
   const debt = successionDebts.findLast((d) => d.slot === s.id && debtAdoptable(d, now)
     && d.cwd === s.cwd && d.label === s.label);
   if (!debt || !s.cwd) return null;
-  if (debt.draft) writeLineageHandover(debt.draft, s, Date.now());
+  if (debt.draft) {
+    writeLineageHandover(debt.draft, s, Date.now());
+    // the generic draft is written under the predecessor's line (succeedGeneric): the adopter is that line — unless another seat carries it
+    // by now (an Orchestratorin the owner opened elsewhere continued it): a line lives once, the brief is still taken up (Prüfung Runde 2, N1 a)
+    const l = debt.draft.lineageId;
+    if (s.linie === l || !slots.some((x) => x !== s && x.cwd && x.linie === l) && !linienInUebergabe.has(l)) { s.linie = l; linieLebtWieder(l); }
+  }
+  // ...and hangs where the predecessor hung (Prüfung L1): the board's open stamps no opener, the debt carries it
+  if (debt.openedBy && !s.openedBy) s.openedBy = debt.openedBy;
   const adopted: SuccessionDebt = { ...debt, successorOpenedAt: s.openedAt };
   successionDebts = successionDebts.map((d) => d.id === debt.id ? adopted : d);
   audit("succession_debt", s.id, `${debt.id} adopted by the owner open (openedAt ${s.openedAt})${debt.draft ? `, line ${debt.draft.lineageId} record written` : ""}`);
@@ -15306,7 +15461,11 @@ interface LaneRestart {
   // the founding plan across this restart (carrySlotPlan); null = the slot was started without one
   planned: PlanCarry | null;
 }
-async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
+// a lane's restart hands its line on, it does not end it (gibLinieWeiter)
+function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
+  return gibLinieWeiter(s, () => restartLaneSessionSelbst(s, r));
+}
+async function restartLaneSessionSelbst(s: Slot, r: LaneRestart): Promise<Response> {
   const { cwd, ref, hold, brief } = r;
   const kept = r.planned && "kept" in r.planned ? r.planned.kept : null;
   // carried across openSlot, which clears all four by design (no occupant inherits the previous
@@ -15321,6 +15480,8 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
   // ...and the Zustellung is the setup's: openSlot clears it, this restamp keeps the lane's choice
   // (no choice = null, and the successor then follows the role default again)
   const lineZustellung = s.zustellung;
+  // ...and the line: a seat the lane opened stays the lane's (server/opener.ts), carried through the open
+  const lineLinie = getrageneLinie(s, false);
   // WHICH CONVERSATION LEAVES, read before openSlot clears sessionId — never guessed afterwards
   const seats: LaneSeat[] = [...s.laneSeats,
     { openedAt: priorOpenedAt, handedAt: Date.now(), sessionId: seatSessionId(s.sessionId), cwd }].slice(-LANE_SEATS_MAX);
@@ -15331,7 +15492,9 @@ async function restartLaneSession(s: Slot, r: LaneRestart): Promise<Response> {
     try {
       // a kept plan writes the plan's file and MCP selection (ensureSlot → plannedLaneAgents), never the re-planned one
       const opened = await openSlot(s, cwd, ref, r.model, r.label, r.harness, r.effort, r.box, null, r.browser, null, r.remote, r.permissions, r.webSearch,
-        null, undefined, kept ? undefined : r.context?.sessionAgents, kept ?? undefined, kept ? undefined : r.context?.packMcp);
+        null, undefined, kept ? undefined : r.context?.sessionAgents, kept ?? undefined, kept ? undefined : r.context?.packMcp,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, lineLinie);
       if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
         || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during lane restart");
     } catch (e) {
@@ -15730,7 +15893,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // loader BEFORE a slot opens; the record is written only once the founding brief was delivered
   // `from` names the leaving conversation too (LineageSeat), read here while the occupant is
   // still the one the preflight just re-proved — it is what makes the band's past session readable
-  const draft = lineageDraft("generic", s.lineageId ?? randomBytes(12).toString("hex"),
+  const draft = lineageDraft("generic", s.lineageId ?? s.linie ?? randomBytes(12).toString("hex"),
     { slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt,
       sessionId: seatSessionId(s.sessionId), cwd: predecessorIdentity.cwd },
     captureLineageObligations({ slot: predecessorIdentity.slot, openedAt: predecessorIdentity.openedAt }), channel);
@@ -15790,6 +15953,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const carriedAgent = harnessOf(harness).id === harnessOf(s.harness).id && spawn.model === s.model && spawn.effort === s.effort ? s.agent : null;
   // ...and how its Postfach arrives, on every harness: the setting is no agent rule
   const carriedZustellung = s.zustellung;
+  // ...and its line with its opener, which the open puts on the successor before its first save (server/opener.ts#getrageneLinie)
+  const carriedLinie = getrageneLinie(s, true);
   // ...and the role it was opened in, read BEFORE the kill empties the slot (the open below runs after it), on every harness
   const carriedRolle = s.rolleStein ?? null;
   // ...and the board branch it stands on (a fence may write exactly this ref), likewise read before the kill resets it
@@ -15802,17 +15967,20 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
   const transit = holdSuccessionPaths([predecessor.cwd]); // ...and so is its worktree: no landed branch ends under it
   try {
-    const respawned = await respawnInPlace(s, predecessorIdentity, "generic",
-      { brief, path: "succession", draft, label },
+    // the line is handed on, not ended (gibLinieWeiter): no owner open takes it in the window
+    const respawned = await gibLinieWeiter(s, () => respawnInPlace(s, predecessorIdentity, "generic",
+      { brief, path: "succession", draft, label, openedBy: s.openedBy },
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, carriedBoardBranch, carriedRolle),
-      async () => {});
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, carriedBoardBranch, carriedRolle, carriedLinie),
+      async () => {}));
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
     // would leave the successor's GET /api/self without its handover on every delivery failure.
     const openedAt = s.openedAt;
+    // ...and the successor's start row names its opener and its goal, as the predecessor's did (server/start-historie.ts#merkeNachfolge)
+    await merkeNachfolge(s.id, predecessorIdentity.openedAt, openedAt, s.openedBy, STATE_DIR).catch((e) => logError("merkeNachfolge", e));
     // ...and so does the predecessor's start, the comparison of Info → Setup — whether or not the brief arrives
     if (vorher && s.selbst) {
       try { halteVorgaengerin(STATE_DIR, s.id, openedAt, vorher); } catch (e) { logError("halteVorgaengerin", e); }
@@ -18825,7 +18993,7 @@ type AddressResolution =
   | { ok: false; error: string };
 // DIE GEBILDETE ROLLE ALS ADRESSE (server/selbst-sitze.ts): was ein Slot dafür an Tatsachen trägt, und ob eine Rolle
 // hier existiert — gehalten von einem lebenden Sitz oder als Stein auf dem Regal.
-const sitzTatsache = (s: Slot): SitzTatsache => ({ slot: s.id, openedAt: s.openedAt, cwd: s.cwd, openedBy: s.openedBy, rolleStein: s.rolleStein ?? null });
+const sitzTatsache = (s: Slot): SitzTatsache => ({ slot: s.id, openedAt: s.openedAt, cwd: s.cwd, linie: s.linie, openedBy: s.openedBy, rolleStein: s.rolleStein ?? null });
 const ROLLE_GEBILDET = (role: string): boolean =>
   slots.some((s) => s.cwd && s.rolleStein?.id === role) || gebildeteAufRegal(STATE_DIR).some((g) => g.role.id === role);
 function escalateMessage(note: string): AddressResolution {
@@ -18905,8 +19073,8 @@ function messageRetentionUnknown(): string[] {
   // anything". The scar is persisted, so this line survives the save that erases the broken bytes.
   if (messagesLost)
     unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone, so the entries below are what was written AFTER that and never the whole history.`);
-  if (messages.dropped > 0)
-    unknown.push(`${messages.dropped} messages have fallen off the fleet-wide cap of ${MESSAGES_MAX} since this record began; an unknown share of them was addressed here.`);
+  if (messagesDroppedUnread)
+    unknown.push(`${messagesDroppedUnread} unread messages to a receiver that still lived have fallen off the fleet-wide cap of ${MESSAGES_MAX}; an unknown share of them was addressed here.`);
   return unknown;
 }
 
@@ -18963,8 +19131,9 @@ async function messageViewFor(s: Slot, unreadParam: string | null = null, readPa
     for (const m of unread) stampMessageRead(m, s);
     await saveStateNow();
   }
+  // `history` says the list is partial once any row left the ring; `unknown` says the unread COUNT may miss mail — only then is it unknown
   return json({ addresses: mine, unread: unreadCount,
-    droppedFleetWide: messages.dropped, entries: shown, unknown });
+    droppedFleetWide: messages.dropped, entries: shown, unknown, history: geschichteLuecke(messages.dropped, messagesDroppedUnread, MESSAGES_MAX) });
 }
 
 // K13 · {kind:"session", slot} WITHOUT openedAt names whoever sits in that slot now: a branch session
@@ -18979,13 +19148,13 @@ function messageTargetOf(value: unknown): MessageAddress | string {
 // K13 · THE BRANCH PAIR: the session that opened a branch through the door (its seat, slot and folder,
 // so a succession stays the opener) and the session sitting in that branch's worktree now. A slot
 // recycled into another folder is neither, so it drops out of the pair instead of reading its mail.
-async function branchPeers(a: Slot, to: MessageAddress): Promise<boolean> {
+async function branchPeers(a: Slot, to: MessageAddress, worktrees: (repo: string) => Promise<WtEntry[]> = listWorktrees): Promise<boolean> {
   if (to.kind !== "session") return false;
   const b = slotFrom(to.slot);
   if (!a.cwd || !b?.cwd || b.openedAt !== to.openedAt || b === a) return false;
   for (const [opener, other] of [[a, b], [b, a]]) {
-    for (const r of openedBy(branchBook, { slot: opener.id, cwd: opener.cwd ?? "" })) {
-      const path = (await listWorktrees(r.repo)).find((w) => w.branch === r.branch)?.path;
+    for (const r of openedBy(branchBook, { slot: opener.id, cwd: opener.cwd ?? "", linie: opener.linie })) {
+      const path = (await worktrees(r.repo)).find((w) => w.branch === r.branch)?.path;
       if (path && workplaceSession(path) === other) return true;
     }
   }
@@ -19024,11 +19193,61 @@ function anthropicSitzPaar(a: Slot, orchestratorSends: boolean, to: MessageAddre
   if (!b?.cwd || b.openedAt !== to.openedAt || b === a) return false;
   return (orchestratorSends || isSeat(a)) && istAnthropic(a.harness, a.model) && isSeat(b) && istAnthropic(b.harness, b.model);
 }
-const SESSION_COUNTERPART = "an unbound session may address only the Orchestrator, another Claude (Anthropic) seat without a standing role when it is one itself, "
-  + "or its branch counterpart "
-  + "(the session that opened its branch through POST /api/branches/open, or the session on a branch it opened), or the seats of "
-  + "POST /api/self/seats/open (the one that opened it, the ones it opened, their siblings, and the address of a role one of them holds); "
-  + "a session destination is otherwise only an Orchestrator reply";
+// DER VERTRAG (server/postfach-vertrag.ts): die Regeln stehen in der Vorlage „streng“; dieser Satz entsteht aus ihr, nicht daneben.
+const POSTFACH_VORLAGE = VORLAGEN[VORLAGE_STANDARD]!;
+const SESSION_COUNTERPART = regelnSatz(POSTFACH_VORLAGE);
+// DIE ZEUGEN EINES PAARES: was jede Regelart der Vorlage im Lauf prüft. Sie fragen das Senden (sendMessageFor) und das „Arbeitet mit“
+// der Fassung (postfachGegenseiten) — dieselben Funktionen, kein zweiter Satz. `replyTo` ist die Antwort der Orchestratorin auf eine Nachricht.
+function postfachZeugen(s: Slot, from: MessageAddress, to: MessageAddress, replyTo: string | null,
+  worktrees: (repo: string) => Promise<WtEntry[]> = listWorktrees): Zeugen {
+  const orchestratorSends = from.kind === "role" && from.role === "orchestrator";
+  const pairSender = from.kind === "session" || orchestratorSends;
+  return {
+    orchestrator: () => (from.kind === "session" && to.kind === "role" && to.role === "orchestrator")
+      || (orchestratorSends && to.kind === "session" && replyTo !== null),
+    kante: () => !!kanteFuer(s, from, to).live,
+    ...(pairSender ? {
+      "claude-paar": () => anthropicSitzPaar(s, orchestratorSends, to),
+      "branch-paar": () => branchPeers(s, to, worktrees),
+      "ordner-paar": () => folderPeers(s, to),
+    } : {}),
+  };
+}
+
+// „ARBEITET MIT“ AUS DEM VERTRAG: wen dieser Sitz heute anschreiben darf, gefragt bei jedem lebenden Platz mit den Zeugen, die auch das
+// Senden fragt. Ein Sitz ohne Absenderadresse im Postfach (Lane, MAIN, Steward) hat hier keine Liste; seine Zeile bleibt `selfPosition`.
+async function postfachGegenseiten(s: Slot): Promise<string[] | null> {
+  const sender = messageSenderFor(s);
+  if (!sender.ok || (sender.from.kind !== "session" && sender.from.kind !== "role")) return null;
+  const orch = deliveryRecipient({ kind: "orchestrator" });
+  type Ziel = { to: MessageAddress; slot: Slot | null };
+  const ziele: Ziel[] = [];
+  if (orch && orch !== s) ziele.push({ to: { kind: "role", role: "orchestrator" }, slot: orch });
+  for (const x of slots) {
+    if (!x.cwd || x.openedAt <= 0 || x === s || x === orch) continue;
+    ziele.push({ to: { kind: "session", slot: x.id, openedAt: x.openedAt }, slot: x });
+  }
+  const mine = sitzTatsache(s);
+  // ONE `git worktree list` per repo for the whole list, not one per candidate: a refused send builds this list for its 409 (Prüfung W1, Runde 2)
+  const listed = new Map<string, Promise<WtEntry[]>>();
+  const worktrees = (repo: string): Promise<WtEntry[]> => {
+    let l = listed.get(repo);
+    if (!l) listed.set(repo, l = listWorktrees(repo));
+    return l;
+  };
+  const paare = await gegenseiten(POSTFACH_VORLAGE, ziele, (z) => postfachZeugen(s, sender.from, z.to, null, worktrees), (z, regel) => {
+    const x = z.slot;
+    const sie = x ? sitzTatsache(x) : null;
+    const beziehung = regel === "orchestrator" ? "the Orchestrator"
+      : sie && istOeffnerin(sie, mine.openedBy) ? "opened you — your counterpart"
+      : sie && istOeffnerin(mine, sie.openedBy) ? "you opened it"
+      : sie && gleicheOeffnerin(sie.openedBy, mine.openedBy) ? "a sibling: the same seat opened you both"
+      : POSTFACH_VORLAGE.regeln.find((r) => r.art === regel)?.wer ?? regel;
+    return { slot: z.to.kind === "session" ? z.to.slot : x?.id ?? null, rolle: z.to.kind === "role" ? "orchestrator" : null,
+      label: x?.label && x.label !== "Orchestrator" ? x.label : null, beziehung };
+  });
+  return gegenseitenZeilen(POSTFACH_VORLAGE, paare);
+}
 
 // FERNPOST · a message to a seat of a neighbour fleet (server/nachbarn.ts, server/nachbar-tuer.ts). The row is stored only once the
 // neighbour has taken it: a refusal or an unreachable neighbour leaves nothing behind, and the same idempotencyKey may be sent again.
@@ -19088,6 +19307,20 @@ const nachbarEinDeps = (): EinDeps => ({
 // GUARD ORDER is STN-1's (401 at the dispatcher → 409 not-a-principal → 400 body → 409 policy):
 // a caller that cannot address anyone is told THAT, before its body is graded on a rail it may not
 // use at all.
+// THE ORCHESTRATOR'S SLOT (Prüfung W1, Lücke 2a): "Works with" lists her as "slot N: the Orchestrator", and `ctl.sh send --seat N` writes
+// {kind:"session",slot:N}. Where the mailbox lets that session address through (she opened the seat, an edge, a pair) it stays as it was;
+// where it would refuse it, the address becomes her role address, which the orchestrator rule lets every session write — the same message
+// `send --orchestrator` sends, so the one address form reaches every seat the list names.
+// She herself keeps `to` as it is: her own slot is no counterpart of hers, and the door refuses it as before instead of a message to herself.
+// `regel` is the rule that already let the kept address through, so sendMessageFor does not ask the witnesses a second time.
+async function orchestratorSlotFallback(s: Slot, from: MessageAddress, to: MessageAddress, replyTo: string | null):
+  Promise<{ to: MessageAddress; regel?: RegelArt }> {
+  if (to.kind !== "session" || (from.kind === "role" && from.role === "orchestrator")) return { to };
+  const orch = deliveryRecipient({ kind: "orchestrator" });
+  if (!orch || slotFrom(to.slot) !== orch || orch === s) return { to };
+  const regel = await erlaubtDurch(POSTFACH_VORLAGE, postfachZeugen(s, from, to, replyTo));
+  return regel ? { to, regel } : { to: { kind: "role", role: "orchestrator" } };
+}
 async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Promise<Response> {
   const choice = programChoiceOf(body?.programId);
   const sender = messageSenderFor(s, choice.ok ? choice.programId : undefined);
@@ -19099,8 +19332,8 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   if (!choice.ok) return json({ error: choice.error }, 400);
   if (body.personal !== undefined && typeof body.personal !== "boolean") return json({ error: "personal must be true or false" }, 400);
   const personal = body.personal === true;
-  const to = messageTargetOf(body.to);
-  if (typeof to === "string") return json({ error: to }, 400);
+  const target = messageTargetOf(body.to);
+  if (typeof target === "string") return json({ error: target }, 400);
   const payload = loadMessagePayload(body.payload, "payload");
   if (typeof payload === "string") return json({ error: payload }, 400);
   if (typeof body.idempotencyKey !== "string" || body.idempotencyKey === ""
@@ -19110,6 +19343,9 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   const replyTo = body.replyTo === undefined || body.replyTo === null ? null : body.replyTo;
   if (replyTo !== null && (typeof replyTo !== "string" || !/^[0-9a-f]{24}$/.test(replyTo)))
     return json({ error: "replyTo must be 24 hex characters or null" }, 400);
+  // before the idempotency check, so an HTTP retry compares the same address the first send stored
+  const routed = await orchestratorSlotFallback(s, sender.from, target, replyTo);
+  const to = routed.to;
 
   // IDEMPOTENCY FIRST, before the address is resolved. A replay must answer the same way it did the
   // first time even if the receiving Program has since been retired — otherwise "send it again if
@@ -19141,14 +19377,15 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   // session she opened went through /send with the owner token).
   let viaKante: Kante | null = null;
   if (sender.from.kind === "session" || to.kind === "session") {
-    const orchestratorSends = sender.from.kind === "role" && sender.from.role === "orchestrator";
-    const orchestrator = (sender.from.kind === "session" && to.kind === "role" && to.role === "orchestrator")
-      || (orchestratorSends && to.kind === "session" && replyTo !== null);
-    const kante = orchestrator ? null : kanteFuer(s, sender.from, to);
-    if (!orchestrator && !kante?.live && !((sender.from.kind === "session" || orchestratorSends) && (anthropicSitzPaar(s, orchestratorSends, to) || await branchPeers(s, to) || folderPeers(s, to))))
-      return json({ error: kante?.ended && s.cwd ? `${kanteAbgelaufen(kante.ended, { slot: s.id, cwd: s.cwd })}; ${SESSION_COUNTERPART}`
-        : SESSION_COUNTERPART }, 409);
-    viaKante = kante?.live ?? null;
+    const regel = routed.regel ?? await erlaubtDurch(POSTFACH_VORLAGE, postfachZeugen(s, sender.from, to, replyTo));
+    if (!regel) {
+      const ended = kanteFuer(s, sender.from, to).ended;
+      const mayWrite = await postfachGegenseiten(s);
+      return json({ error: ended && s.cwd ? `${kanteAbgelaufen(ended, { slot: s.id, cwd: s.cwd })}; ${SESSION_COUNTERPART}`
+        : SESSION_COUNTERPART, ...(mayWrite ? { mayWrite } : {}) }, 409);
+    }
+    // the edge an earlier rule did not need is still the one that let this through when no rule before it did
+    viaKante = regel === "kante" ? kanteFuer(s, sender.from, to).live : null;
   }
   if (to.kind === "lane") {
     if (sender.from.kind !== "program")
@@ -19311,8 +19548,8 @@ function ownerMessageView(url: URL): Response {
   const unknown: string[] = [];
   if (messagesLost)
     unknown.push(`the message record was unreadable at ${new Date(messagesLost.at).toISOString()} (${messagesLost.error}) and loaded as empty; every message written before then is gone.`);
-  if (messages.dropped > 0)
-    unknown.push(`${messages.dropped} messages have fallen off the fleet-wide cap of ${MESSAGES_MAX} since this record began.`);
+  if (messagesDroppedUnread)
+    unknown.push(`${messagesDroppedUnread} unread messages to a receiver that still lived have fallen off the fleet-wide cap of ${MESSAGES_MAX}.`);
   const entries = messages.entries
     .filter((m) => (unread === null || (m.readBy === null) === (unread === "true"))
       && (to === null || addressLabel(m.to) === to))
@@ -19325,7 +19562,7 @@ function ownerMessageView(url: URL): Response {
       return { ...m, resolution };
     });
   return json({ unread: messages.entries.filter((m) => m.readBy === null).length,
-    droppedFleetWide: messages.dropped, entries, unknown });
+    droppedFleetWide: messages.dropped, entries, unknown, history: geschichteLuecke(messages.dropped, messagesDroppedUnread, MESSAGES_MAX) });
 }
 
 async function replyToMessageAsOwner(id: string, body: Record<string, unknown> | null): Promise<Response> {
@@ -22561,8 +22798,11 @@ function fassungAufgabeFuerPlan(rolle: FassungRolle, repoRoot: string): FassungA
   return [unknownAbschnitt("aufgabe", "eine freie Session bekommt ihren Auftrag erst mit dem ersten Owner-Prompt")];
 }
 
+// the receiver line of "Works with", built in this one place (fassungArbeitetFuerPlan, fassungArbeitet, fassungArbeitetFrei)
+const empfaengerZeile = (receiver: { role: string; slot: number } | null): string =>
+  receiver ? `Empfänger: ${receiver.role} Slot ${receiver.slot}` : "Empfänger: unbekannt";
 function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot: string): FassungAbschnittEingang[] {
-  const empf = "Empfänger: unbekannt";
+  const empf = empfaengerZeile(null);
   // HOW THE POSTFACH WILL ARRIVE: before the start there is no setting, so the role decides — a
   // lane bundles, everything else comes direct (server/zustellung.ts)
   const zustellung = zustellungAbschnitt(null, rolle === "lane");
@@ -22572,9 +22812,13 @@ function fassungArbeitetFuerPlan(rolle: FassungRolle, harness: string, repoRoot:
     [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- YOUR RECIPIENT ---"), empf,
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ACCEPTANCE ---"),
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- HANDOVER ---")].filter(Boolean).join("\n"), false), zustellung];
-  return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
-    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
+  // vor dem Start gibt es keinen Platz, also keine Paare; die Regeln, die das Postfach prüft, stehen schon da (server/postfach-vertrag.ts)
+  return [textAbschnitt("arbeitet", "server/postfach-vertrag.ts#VORLAGEN (freie Session, vor dem Start)", fassungArbeitetFest(empf), true), zustellung];
 }
+const FREI_SATZ = "Keine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.";
+// DIE FESTE FORM von „Arbeitet mit“ einer freien Session: Empfänger, die Regeln, die das Postfach prüft, und der Satz. Sie ist, was der
+// Hash zählt — vor dem Start, beim Start und im laufenden Sitz dieselbe, denn die Paare hängen an der Flotte, nicht am Setup.
+const fassungArbeitetFest = (empf: string): string => [empf, ...gegenseitenZeilen(POSTFACH_VORLAGE, null), FREI_SATZ].join("\n");
 
 // WAS FLEET SELBST IN DEN START LEGT (nicht Claude Code): die Zeile am Systemprompt (Listenschnitt, Auto-Mode-Satz), der Berechtigungsmodus,
 // die Werkzeug- und Sperrliste und die Settings der Zeile. Dieselben Funktionen wie server.ts#agentCmd, damit der Hash sie sieht; die Adressen
@@ -22755,9 +22999,9 @@ async function fassungUebergabe(s: Slot, rolle: FassungRolle): Promise<FassungAb
   return [unknownAbschnitt("uebergabe", "kein stehender Record und kein Linien-Record für diese Session")];
 }
 
-function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): FassungAbschnittEingang[] {
+async function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Promise<FassungAbschnittEingang[]> {
   const receiver = selfPosition(s).receiver;
-  const empf = receiver ? `Empfänger: ${receiver.role} Slot ${receiver.slot}` : "Empfänger: unbekannt";
+  const empf = empfaengerZeile(receiver);
   // …and how this session's Postfach arrives, with its source: the owner's value, or the role default
   const zustellung = zustellungAbschnitt(s.zustellung, !!s.worktree);
   if (rolle === "lane") return [textAbschnitt("arbeitet", "server.ts#laneExitFooter",
@@ -22767,8 +23011,19 @@ function fassungArbeitet(s: Slot, rolle: FassungRolle, repoRoot: string): Fassun
     [fassungCardAbschnitt(MAIN_ROLE_CARD, "--- YOUR RECIPIENT ---"), empf,
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- ACCEPTANCE ---"),
       fassungCardAbschnitt(MAIN_ROLE_CARD, "--- HANDOVER ---")].filter(Boolean).join("\n"), false), zustellung];
-  return [textAbschnitt("arbeitet", "Slot.history (freie Session)",
-    `${empf}\nKeine stehende Rolle: Empfänger und Endbedingung stehen im Owner-Prompt dieser Session.`, true), zustellung];
+  return [await fassungArbeitetFrei(s, receiver), zustellung];
+}
+// „Arbeitet mit“ EINER FREIEN SESSION aus dem Vertrag: dieselben Regeln und Zeugen wie das Postfach beim Senden (postfachGegenseiten).
+// Die Paare ändern sich nach dem Start (ein Sitz kommt, einer geht); darum führt die gehaltene Fassung diesen Abschnitt nach (GET /api/slots/:id/fassung).
+// Sie sind Laufwerte (Slots, wer wen öffnete), keine Teile des Setups: der Hash zählt die feste Form vor dem Start (hashText), sonst zeigte
+// die Vorschau einen Hash, den der Start nicht trägt, denn das Fenster weiß nicht, wer öffnen wird, und zwei gleiche Sitze nebeneinander
+// hätten zwei Hashes (Orchestratorin 2026-10-31: ein Laufwert steht nicht im gehashten Start; server/sitz-tuer.test.ts, agenten-tuer, start-fassung).
+async function fassungArbeitetFrei(s: Slot, receiver: { role: string; slot: number } | null): Promise<FassungAbschnittEingang> {
+  const paare = await postfachGegenseiten(s);
+  // der Empfänger ist ein Laufwert wie die Paare (er nennt einen Slot, oft den Öffner): er steht da, der Hash zählt die Form vor dem Start
+  return { ...textAbschnitt("arbeitet", "server/postfach-vertrag.ts#VORLAGEN (Paare aus denselben Zeugen wie das Senden)",
+    paare ? `${receiver ? `${empfaengerZeile(receiver)}\n` : ""}${paare.join("\n")}\n${FREI_SATZ}` : fassungArbeitetFest(empfaengerZeile(receiver)), true),
+    hashText: fassungArbeitetFest(empfaengerZeile(null)) };
 }
 
 // WAS DEN SITZ AUSSER FLEETS ZEILE FORMT (server/fassung-umfeld.ts): die Hooks, Plugins und Claude-Code-Einstellungen, die Claude Code im
@@ -22989,7 +23244,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
     // denn Server-Rechte sind keine Claude-Regeln; die vier Schalter bleiben daneben Claude Codes.
     darf: [textAbschnitt("darf", "server/tuer-rechte.ts#rechteZeilen (Server-Rechte und Zaun)",
         rechteZeilen(s.rechte, rechteRollen(s), harnessOf(spawnPick.harness).id).join("\n"), true), ...fleet.darf, ...umfeld.darf],
-    arbeitet: [...fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s, eigen), ...umfeld.arbeitet],
+    arbeitet: [...await fassungArbeitet(s, rolle, repoRoot), ...fassungLaufwerteFuer(s, eigen), ...umfeld.arbeitet],
     claudeCode, agent: s.agent ? { ...s.agent, satz: agentHerkunftSatz(s.agent) } : null,
     // DER START NENNT SEINEN SETUP-HASH (Richtung Schritt 4): den des gespeicherten Agenten, aus dem er öffnete, oder den der
     // importierten Datei eines Sitzes — neben dem Start-Hash wie `agent`, denn er nennt nur, woraus der Start kam. Ohne gespeichertes Setup keiner.
@@ -23057,7 +23312,7 @@ const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => 
     rechte: eingang.rechte, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
     autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, rolleStein: eingang.rolleStein ?? null, zustellung: null, lauf: null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
-    programId: null, releasedBy: null, lineageId: null,
+    programId: null, releasedBy: null, lineageId: null, linie: null,
     handover: claude && eingang.schwelle != null ? schwelleAmStart(basis.id, openedAt, eingang.schwelle) : null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
     sessionIdLearned: null, sleeping: null, standingHandover: null, compaction: null, spawn: null, startCompact: null, laneStandNudged: null, history: [] };
 };
@@ -26279,8 +26534,9 @@ function viewEntry(raw: unknown, n: number, full = false, ask?: AskRead): TEntry
 // both come here as meta. viewEntry drops every meta line, so the chat view never showed it; the conversation readers
 // get it as meta — share, export and the fresh tail skip meta, the chat view draws it as a quiet line (Mangel 78). Not
 // inside viewEntry: tickHarvest takes each user entry that returns as a typed prompt.
-const CROSS_SESSION_LEAD = "Another Claude session sent a message:\n<cross-session-message ";
-const AGENT_LEAD = "Another Claude session sent a message:\n<agent-message ";
+// the lead in any of its three wordings (src/agent-message.ts#OTHER_SESSION_LEAD) — here it is required, the resting line always has it
+const CROSS_SESSION_LEAD = new RegExp(`^${OTHER_SESSION_LEAD}<cross-session-message `);
+const AGENT_LEAD = new RegExp(`^${OTHER_SESSION_LEAD}<agent-message `);
 function crossSessionEntry(raw: unknown, n: number, full: boolean): TEntry | null {
   const d = raw as { type?: unknown; isMeta?: unknown; isSidechain?: unknown; timestamp?: unknown; origin?: { name?: unknown };
     message?: { content?: unknown }; attachment?: { type?: unknown; commandMode?: unknown; prompt?: unknown; timestamp?: unknown } };
@@ -26295,11 +26551,11 @@ function crossSessionEntry(raw: unknown, n: number, full: boolean): TEntry | nul
   }
   const content = d.message?.content;
   if (d.type !== "user" || d.isMeta !== true || d.isSidechain === true || typeof content !== "string"
-    || (!content.startsWith(CROSS_SESSION_LEAD) && !content.startsWith(AGENT_LEAD))) return null;
+    || (!CROSS_SESSION_LEAD.test(content) && !AGENT_LEAD.test(content))) return null;
   // the subagent's NAME stands on the line's origin; the tag carries it to the chat view as a name="…"
   // attribute (src/agent-message.ts reads it back), so the quiet line says who reported
   const name = typeof d.origin?.name === "string" && d.origin.name && !/["\n]/.test(d.origin.name) ? d.origin.name : null;
-  const served = name && content.startsWith(AGENT_LEAD)
+  const served = name && AGENT_LEAD.test(content)
     ? content.replace("<agent-message ", `<agent-message name="${name}" `) : content;
   return { n, role: "user", ts: typeof d.timestamp === "string" ? d.timestamp : null,
     blocks: [{ t: "text", text: full ? served : trim(served, 20_000) }], meta: true };
@@ -26753,7 +27009,7 @@ interface OwnerInputRow {
   programId: string; cwd: string; branch: string; text: string;
 }
 const isOwnerWords = (e: TEntry, text: string): boolean =>
-  !e.meta && !text.startsWith("[fleet") && !/^<[a-z][a-z-]*>/.test(text);
+  !e.meta && !text.startsWith("[fleet") && !/^<[a-z][a-z-]*>/.test(text) && !istFremdeSessionHuelle(text);
 async function recordOwnerLaneInput(s: Slot, text: string, at: number): Promise<void> {
   if (!s.programId || !s.worktree || !s.cwd) return;
   const row: OwnerInputRow = { id: randomBytes(12).toString("hex"), at, slot: s.id, openedAt: s.openedAt,
@@ -26833,7 +27089,7 @@ async function tickHarvest(): Promise<void> {
           if (!t || t.startsWith("<command-") || t.startsWith("<local-command")) continue;
           if (composed.some((c) => c.text === t.slice(0, 5000))) continue;
           const ts = (e.ts && Date.parse(e.ts)) || Date.now();
-          s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
+          s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") || istFremdeSessionHuelle(t) ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
           logPrompt(s, t, "terminal", ts);
           if (isOwnerWords(e, t)) void recordOwnerLaneInput(s, t, ts).catch((err: unknown) => logError("recordOwnerLaneInput", err));
           dirty = true;
@@ -29261,7 +29517,14 @@ async function tickPostfachZustellung(): Promise<void> {
       const stillThere = (current: Slot): boolean => ids.every((id) => messages.entries.some((m) =>
         m.id === id && m.readBy === null && isDirectPostfachTarget(m.to) && messageInboundFor(current, m)));
       if (!stillThere(s)) continue;
-      if (art.gebuendelt) { zustellePostfachGebuendelt(s, plan, session, openedAt, ids, stillThere); continue; }
+      if (art.gebuendelt) {
+        // MANGEL 155: der gebündelte Weg hat dieselben Tore wie der direkte (POSTFACH_GATE) und hinterließ keine Spur. Das Tor wird benannt,
+        // der Eintrag bleibt angeboten und das Bündel tippt ihn, sobald es sich öffnet; geweckt wird dafür keine Pane.
+        const verdict = await canDeliver(s, { now, ...POSTFACH_GATE, wake: false });
+        if (!verdict.ok) await merkePostfachHindernis(s, ids, verdict);
+        zustellePostfachGebuendelt(s, plan, session, openedAt, ids, stillThere);
+        continue;
+      }
       await zustellePostfachDirekt(s, plan, session, openedAt, ids, stillThere);
     }
   } finally { postfachBusy = false; }
@@ -44690,7 +44953,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     packs,
     bedingungen: {
       "commit-expectation": o.ort === "worktree",
-      "delivery-header": harnessFamilie(harness) === "claude",
+      // the plan says what deliveryHeader does: every adapter is headed (W1), only a declared foreign FLEET_CMD keeps the paste bare
+      "delivery-header": headsDelivery(),
       // a Claude lane starts with autoMemoryEnabled:false (server/notizbuch.ts): the index may exist, it never loads
       ...(memory ? { "auto-memory": memory.erfuellt } : {}),
       ...(bibliothek ? "start" in bibliothek ? { bibliothek: bibliothek.start.text !== "", "bibliothek-skills": bibliothek.skills.length > 0 }
@@ -45222,7 +45486,8 @@ function planDoorRow(door: PlanDoor, row: SessionPlanBaustein, ctx: { readonly h
     case "auto-memory": return claude && door !== "lane" && row.bedingung?.erfuellt !== false ? { immer: "native Datei" }
       : { nie: !claude ? "nur Claude laedt ein Auto-Memory" : door === "lane" ? "eine Claude-Lane startet ohne Auto-Memory (server.ts#agentCmd)"
         : "kein Claude-Auto-Memory unter diesem Checkout" };
-    case "delivery-header": return claude ? { immer: "Zustellung" } : { nie: "nur der Claude-Adapter traegt den Zustellkopf" };
+    case "delivery-header": return row.bedingung?.erfuellt !== false ? { immer: "Zustellung" }
+      : { nie: "ein erklaerter fremder FLEET_CMD bekommt den Text ohne Kopf (server.ts#headsDelivery)" };
     case "task-brief": case "source-pointers": case "source-code": case "lane-notes": return { nie: PLAN_NUR_DISPATCH };
     // a seat without a standing role gets Fleet's library at its spawn (ensureSlot → seatStartFor), whichever door opened it
     case "bibliothek": case "bibliothek-skills":
@@ -46694,6 +46959,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     const predecessorSessionId = s.sessionId;
     // ...and how its Postfach arrived, which the successor keeps like a generic succession does
     const carriedZustellung = s.zustellung;
+    const carriedLinie = getrageneLinie(s, true); // the line and its opener, on the successor before its first save
     const box: BoxPin = { container: s.container, containerContext: s.containerContext };
     const openRoot = isGameMaker(program) ? preflight.value.repoRoot : predecessor.cwd;
     if (!predecessorCurrent())
@@ -46714,12 +46980,13 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
     laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
     const transit = holdSuccessionPaths([s.cwd, openRoot]); // ...and so are both worktrees: no landed branch ends under them
     try {
-      const respawned = await respawnInPlace(s, predecessor, `program ${program.id}`,
+      const respawned = await gibLinieWeiter(s, () => respawnInPlace(s, predecessor, `program ${program.id}`,
         { brief: deliveredBrief, path: "founding", draft: null, label },
         { cwd: openRoot, model: spawn.model, harness },
         (preObservedSupport, onCandidate) => openSlot(s, openRoot, null, spawn.model, label, harness, spawn.effort, box, treeLease,
           false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined,
-          planMcpServers(plan), undefined, null, null, carriedZustellung),
+          planMcpServers(plan), undefined, null, null, carriedZustellung, undefined, undefined, undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined, undefined, undefined, undefined, undefined, carriedLinie),
         // the predecessor is gone and no successor stands: drop the marker (stopping an exact
         // candidate the open left behind), which also closes the ended holding as `retire`. The
         // binding is then stale — the state bootstrapProgramMain re-founds over, loudly.
@@ -46739,7 +47006,7 @@ async function succeedProgramMain(program: Program, s: Slot, label: string | nul
           if (retained || companionRecords.length) await saveStateNow();
         },
         // refused before the kill: the predecessor stands and stays bound, only the marker falls
-        async () => { await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open"); });
+        async () => { await rollbackProgramFounding(program, founding, "predecessor-revoked-before-open"); }));
       if (!respawned.ok) return respawned.response;
       try {
         await waitForSuccessionTestLatch(SUCCESSION_AFTER_OPEN_LATCH, program.id);
@@ -47949,8 +48216,15 @@ if (existsSync(file)) {
     const pmsg = (persisted as { messages?: unknown }).messages;
     if (pmsg !== undefined) {
       const read = loadMessages(pmsg);
-      if (read.ok) messages = read.messages;
-      else {
+      if (read.ok) {
+        messages = read.messages;
+        const counter = droppedUnreadVonPlatte((persisted as Record<string, unknown>)[MESSAGES_DROPPED_UNREAD_KEY], messages.dropped);
+        messagesDroppedUnread = counter.wert;
+        if (counter.fehler) {
+          console.error(`messages counter unreadable: ${counter.fehler}`);
+          audit("messages_counter_unreadable", undefined, counter.fehler);
+        }
+      } else {
         console.error(`messages unreadable: ${read.error} — loaded as empty`);
         audit("messages_unreadable", undefined, read.error);
         messagesLost ??= { v: 1, at: Date.now(),
@@ -48431,6 +48705,7 @@ if (existsSync(file)) {
         if (!d) console.error("succession debt unreadable — dropped (its audit row `succession_debt` remains)");
         return d ? [d] : [];
       }).slice(-SUCCESSION_DEBTS_MAX);
+    endeteLinien = endeteLinienGeladen((persisted as { endeteLinien?: unknown }).endeteLinien);
     // THE SUCCESSION DECKEL'S COUNTER, per originId. Absent loads as empty; a malformed entry is
     // dropped rather than repaired — an under-count only re-opens the gate, never locks a row.
     const plsc = (persisted as { laneSucceedCounts?: unknown }).laneSucceedCounts;
@@ -48605,6 +48880,9 @@ if (existsSync(file)) {
           s.laneSeats = pse.map(laneSeatFrom).filter((x): x is LaneSeat => x !== null).slice(-LANE_SEATS_MAX);
         const pli = (v as { lineageId?: unknown }).lineageId;
         if (typeof pli === "string" && LINEAGE_ID_RE.test(pli)) s.lineageId = pli;
+        // ...and the seat's line (server/opener.ts): a row written before the field takes its handover line, else a fresh one
+        const pln = (v as { linie?: unknown }).linie;
+        s.linie = typeof pln === "string" && LINIE_RE.test(pln) ? pln : s.lineageId ?? randomBytes(12).toString("hex");
         // THE HANDOVER SETTING comes back only onto the occupant it was set on (HandoverSetting)
         const pho = (v as { handover?: unknown }).handover;
         if (pho !== undefined) {
@@ -48659,6 +48937,19 @@ if (existsSync(file)) {
     for (const s of slots) backfillProgramMainSessionId(s);
     // the codex normalization above may have dropped the id the sleep was taken for — then it is no sleep
     for (const s of slots) if (s.sleeping && s.sleeping.sessionId !== s.sessionId) s.sleeping = null;
+    // AN OPENER RECORD FROM BEFORE THE LINE takes the line of today's occupant of its slot when that occupant is the opener it names
+    // or one of the predecessors that handed into the occupant's line (its line records, its lane seats); else it stays as it was
+    for (const s of slots) {
+      if (!s.cwd || !s.openedBy || s.openedBy.linie) continue;
+      const by = slotFrom(s.openedBy.slot);
+      const vorgaenger = by ? [...lineageHandovers.filter((r) => by.lineageId !== null && r.lineageId === by.lineageId && r.from.slot === by.id).map((r) => r.from.openedAt),
+        ...by.laneSeats.map((x) => x.openedAt)] : [];
+      s.openedBy = linieFuerAltenOeffner(s.openedBy, by ?? undefined, vorgaenger);
+    }
+    // A LINE A SUCCESSION WAS HANDING ON WHEN THE SERVER STOPPED (R3-1): the successor's slot carries it when openSlot had saved it; carried
+    // by no slot (stopped after the kill, before the open), it ended here — the Orchestratorin the owner opens, or a resume, continues it
+    for (const r of endeteLinienGeladen((persisted as { linienInUebergabe?: unknown }).linienInUebergabe))
+      if (!slots.some((x) => x.cwd && x.linie === r.linie)) endeteLinien = linieEndet(endeteLinien, r);
     // THE SIXTH SITE: anchors orphaned by an in-place succession the rail did not rebind (above
     // respawnInPlace). Needs the slots, the programs and the role lines, so it runs after all three.
     healLaneAnchorsOnLoad();
@@ -49371,6 +49662,7 @@ async function produceOperationalData(now: number): Promise<OperationalData> {
       holder: bound ? { slot: holder.id, openedAt: holder.openedAt, sessionId: holder.sessionId ?? null } : null };
   });
   if (messagesLost) exceptions.push({ kind: "message", id: "messages", reason: "retained-record-lost" });
+  // retention-incomplete is the HISTORY's statement, as on main: any row that left the ring makes the retained list partial, read or not
   if (messages.dropped) exceptions.push({ kind: "message", id: "messages", reason: "retention-incomplete" });
   for (const [kind, rows] of [["report", fleetReports.filter((r) => !r.decision)],
     ["attention", attentionRequests.filter((r) => r.status === "open" || r.status === "send-uncertain")],
@@ -50919,8 +51211,8 @@ async function tickRateLimitResume(): Promise<void> {
 // --- THE WAITING NOTICE (server/warte-hinweis.ts): a seat whose pane has stood on Claude Code's permission question
 // for WARTE_HINWEIS_MS tells the session that gives it its work, once per question. Measured 2026-10-21: a branch seat
 // stood 98 minutes on the question after three classifier denials, and the board showed only an aging output time.
-// RECEIVER: the session that opened this one (Slot.openedBy), found by its seat — slot and folder, so the opener's
-// succession stays the receiver, like branchPeers. A session without an opener was opened by the owner, who sees its
+// RECEIVER: the session that opened this one (Slot.openedBy), found by its line (server/opener.ts#istOeffnerin), so the opener's
+// succession stays the receiver and a stranger later in the same slot and folder is not (Mangel 103). A session without an opener was opened by the owner, who sees its
 // pane — but since 2026-10-30 (Owner: „[Zitat entfernt]“) such a seat reports to
 // the Orchestratorin of its Fleet, if there is exactly one (deliveryRecipient), at her role address; with none the notice goes
 // to the OWNER by the mailbox's own escalation — the role address with no holder (Orchestratorin's word 2026-10-30) — never
@@ -50954,8 +51246,10 @@ const vertrauenView = (s: Slot, now: number): boolean => {
 let warteTickBusy = false;
 function warteEmpfaenger(s: Slot): Slot | null {
   const by = s.openedBy;
-  const r = by ? slotFrom(by.slot) : null;
-  return r?.cwd && r.cwd === by?.cwd && r !== s ? r : null;
+  if (!by) return null;
+  // the line's live seat, wherever it sits now (an Orchestratorin the owner reopened elsewhere); a record without a line by its slot
+  const r = by.linie ? slots.find((x) => x.cwd && x.linie === by.linie) ?? null : slotFrom(by.slot);
+  return r && r !== s && istOeffnerin({ slot: r.id, cwd: r.cwd, linie: r.linie }, by) ? r : null;
 }
 // who is TOLD: a living opener alone, as ever; a seat with none alive (never opened by a session, or its opener is gone) the
 // Orchestratorin — never the seat itself. A lane has no opener and reports through its hook. null: nobody can be told by session,
@@ -52669,6 +52963,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           messages: addresses.length ? {
             unread: messages.entries.filter((m) => m.readBy === null && messageInboundFor(s, m, addresses)).length,
             droppedFleetWide: messages.dropped, unknown: messageRetentionUnknown(),
+            history: geschichteLuecke(messages.dropped, messagesDroppedUnread, MESSAGES_MAX),
           } : { unread: null, reason: NO_MESSAGE_ADDRESS, unknown: [] },
           attention: attentionFor(s).filter((a) => a.status === "open" || a.status === "send-uncertain")
             .map((a) => ({ id: a.id, status: a.status })),
@@ -52704,6 +52999,14 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
       return json(konstellationSicht({ ich: sichtSlot(s), lebende: slots.filter((x) => x.cwd).map(sichtSlot), root: seatRoot(),
         historie: await liesHistorie(STATE_DIR, 5000), positionen: s.sitz ? liesPositionen(STATE_DIR, s.sitz.konst) : null }));
+    }
+    // DIE ÜBERSICHT (C1, server/lagebild.ts): was um den Sitz läuft, seit wann, wer es öffnete, worauf es wartet — je Feld mit seiner Quelle.
+    // Kein Recht nötig, nur lesen; die Reichweite ist die der Rückfrage (die Linie, die Orchestratorin alles), kein Text geht mit.
+    if (url.pathname === "/api/self/overview" && req.method === "GET") {
+      const p = resolveSelfPrincipal(req);
+      const s = p?.kind === "session" ? slots[p.slot - 1] : undefined;
+      if (!s?.cwd || p?.kind !== "session") { await Bun.sleep(400); return json({ error: "unauthorized" }, 401); }
+      return await selfLagebildTuer(s);
     }
 
     // WAS DIESE MASCHINE STARTET, FÜR EINEN SITZ, DER SITZE ÖFFNET (W3a): derselbe Katalog wie die Owner-Tür GET /api/harnesses — eine Leitung wählt Harness und
@@ -54823,6 +55126,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             ...(s.programId ? { programId: s.programId } : {}),
             // who opened this session (Slot.openedBy); the constellation hangs it under that one. Omitted when none
             ...(s.cwd && s.openedBy ? { openedBy: s.openedBy } : {}),
+            // ...and this seat's own line (server/opener.ts): the board's tree asks the same rule as the doors (src/linie.ts)
+            ...(s.cwd && s.linie ? { linie: s.linie } : {}),
             // the edges the Orchestratorin granted this seat (server/kanten.ts): whom it writes directly, until when. Omitted when none
             ...(s.cwd ? (() => {
               const seat = { slot: s.id, cwd: s.cwd }, now = Date.now();
@@ -55613,7 +55918,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const gehalten = holeFassung(STATE_DIR, s.id, s.openedAt);
         // Schwelle und Warmhalten gehören dem Slot und dürfen sich nach dem Start ändern: sie stehen, wie sie jetzt gelten, und
         // `nachgefuehrt` nennt, was sich seit dem Start bewegt hat (dann ist der Hash ein anderer als der des Starts)
-        const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", fassungLaufwerteFuer(s)) : null;
+        const nach = gehalten ? fuehreNach(gehalten.fassung, "arbeitet", [...fassungLaufwerteFuer(s),
+          ...(isSeat(s) ? [await fassungArbeitetFrei(s, selfPosition(s).receiver)] : [])]) : null;
         if (gehalten && nach) return json({ ...nach.fassung, anlass: "laufend", festgehalten: { wie: gehalten.wie, am: gehalten.am,
           ...(nach.geaendert.length ? { nachgefuehrt: nach.geaendert, startHash: gehalten.fassung.hash } : {}) }, wahlen, ...selbstTeil });
       }

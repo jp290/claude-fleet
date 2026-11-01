@@ -8,6 +8,7 @@
 //
 // Reine Logik: kein git, keine Datei, kein Server-Zustand. server.ts liest git, hält den Stand und
 // persistiert ihn in fleet.json. Jede Funktion gibt einen neuen Stand zurück und lässt den alten stehen.
+import { istOeffnerin, LINIE_RE } from "./opener";
 
 export const BRANCH_TEXT_MAX = 20_000; // Zeichen, wie der Notizblock bisher (WORKTREE_NOTE_MAX)
 export const BRANCH_NAME_MAX = 80;
@@ -46,8 +47,10 @@ export interface SitzPasst extends PasstVonSitz { at: number; head: string }
 // /api/branches/open mit ihrem Self-Token neben dem Owner-Bearer rief. Eine Nachfolge behält Slot und
 // Ordner und bleibt Öffner; ein Slot mit einer Session in einem anderen Ordner ist jemand anderes. Der
 // Öffner und die Session auf dem Branch schreiben sich im Postfach (server.ts#sendMessageFor).
-export interface BranchSeat { slot: number; cwd: string }
-export interface BranchOpener extends BranchSeat { at: number }
+// `linie` (server/opener.ts): die Linie der Öffnerin — ihre Nachfolgerin bleibt Öffner, eine fremde Session in Slot und Ordner nicht;
+// ein Datensatz ohne Linie (vor der Linie) gilt nach Slot und Ordner wie bisher
+export interface BranchSeat { slot: number; cwd: string; linie?: string | null }
+export interface BranchOpener { slot: number; cwd: string; linie?: string; at: number }
 export interface BranchRecord {
   repo: string; branch: string;
   name: string | null; // Board-Name; null = ein Branch mit Punkten, den das Board nicht benannt hat
@@ -138,7 +141,7 @@ export function markPasstVonSitz(book: BranchBook, repo: string, branch: string,
 // Session (Board, Owner-Token allein) ruft das nicht und lässt den Öffner stehen.
 export function setOpener(book: BranchBook, repo: string, branch: string, opener: BranchOpener): BranchChange {
   const prev = findBranch(book, repo, branch) ?? blank(repo, branch, opener.at);
-  return put(book, { ...prev, opener: { slot: opener.slot, cwd: opener.cwd, at: opener.at }, updatedAt: opener.at });
+  return put(book, { ...prev, opener: { slot: opener.slot, cwd: opener.cwd, ...(opener.linie ? { linie: opener.linie } : {}), at: opener.at }, updatedAt: opener.at });
 }
 export function setLandForm(book: BranchBook, repo: string, branch: string, form: LandForm, at: number): BranchChange {
   const prev = findBranch(book, repo, branch) ?? blank(repo, branch, at);
@@ -147,7 +150,7 @@ export function setLandForm(book: BranchBook, repo: string, branch: string, form
 export const isLandForm = (v: unknown): v is LandForm => v === "squash" || v === "commits";
 // die Branches, die dieser Sitz geöffnet hat
 export function openedBy(book: BranchBook, seat: BranchSeat): BranchRecord[] {
-  return book.filter((r) => r.opener?.slot === seat.slot && r.opener.cwd === seat.cwd);
+  return book.filter((r) => istOeffnerin(seat, r.opener));
 }
 
 // Was GET /api/branches je Repo zeigt, aus den Refs und Worktrees, die server.ts gelesen hat: die
@@ -249,6 +252,23 @@ export function checkVerdictOf(row: Record<string, unknown>): CheckVerdict {
   return row.mergeable === true ? "green" : "red";
 }
 
+/** WAS DER LETZTE MERGE-CHECK EINES BRANCHES ÜBER SEINEN TIP SAGT — die eine Regel, die die Branch-Sicht des Boards (server.ts#chargeCheckView)
+ *  und die Übersicht für Agenten (server.ts#lageZweig) teilen: „running“, solange ein Check für diesen Tip läuft; „none“ ohne Zeile; „stale“,
+ *  wenn die Zeile einen anderen Tip ODER eine andere Basis prüfte; ein Lauf, der vor dem Urteil abbrach, sagt es für diesen Tip. `rows` sind
+ *  die Zeilen des Merge-Check-Ledgers, in ihrer Reihenfolge. Rein. */
+export function checkAusLedger(rows: readonly unknown[], branch: string, tip: string, base: string | null, laeuft: boolean):
+  { state: "none" | "running" | "green" | "red" | "stale" | "uncheckable"; at: number | null; why: string | null } {
+  if (laeuft) return { state: "running", at: null, why: null };
+  const last = rows.filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && (x as Record<string, unknown>).branch === branch).at(-1);
+  if (!last) return { state: "none", at: null, why: null };
+  const at = typeof last.at === "number" ? last.at : null, why = typeof last.why === "string" ? last.why : null;
+  const state = checkVerdictOf(last);
+  // ein Lauf, der vor dem Urteil abbrach, sagt es für DIESEN Tip — auch wenn er die Spitze nie auflöste (kein tip in der Zeile)
+  if (state === "uncheckable" && (last.tip === undefined || last.tip === tip)) return { state, at, why };
+  if (last.tip !== tip || last.base !== base) return { state: "stale", at, why: `geprüft war ${String(last.tip).slice(0, 8)} gegen ${String(last.base)}` };
+  return { state, at, why };
+}
+
 export function dropBranch(book: BranchBook, repo: string, branch: string): BranchBook {
   return book.filter((r) => !(r.repo === repo && r.branch === branch));
 }
@@ -315,7 +335,7 @@ function openerOf(v: unknown): BranchOpener | undefined {
   if (!v || typeof v !== "object") return undefined;
   const o = v as Record<string, unknown>;
   return typeof o.slot === "number" && Number.isInteger(o.slot) && o.slot >= 1 && str(o.cwd) && o.cwd !== "" && num(o.at)
-    ? { slot: o.slot, cwd: o.cwd, at: o.at } : undefined;
+    ? { slot: o.slot, cwd: o.cwd, ...(typeof o.linie === "string" && LINIE_RE.test(o.linie) ? { linie: o.linie } : {}), at: o.at } : undefined;
 }
 // fleet.json → Stand. Was nicht die Form eines Datensatzes hat, fällt heraus; doppelte Einträge für
 // denselben Branch: der erste gilt.

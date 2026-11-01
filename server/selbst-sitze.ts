@@ -17,6 +17,7 @@ import { join, resolve, sep } from "node:path";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
 import { RECHTE_STANDARD, istRechtId, rechteAus, type RechtId, type Rechte } from "../session-rechte";
 import { liesShelf, packAusBibliothek, roleHash, roleStein, schreibShelf, type RoleStein, type SetupPack, type SetupRole } from "./setup-datei";
+import { gleicheOeffnerin, istOeffnerin, LINIE_RE, type Opener } from "./opener";
 import type { SeatKnowledge } from "./sitz-wissen";
 
 /** Die Wurzel, unter der eine Session Sitze öffnet: FLEET_SELF_SEAT_ROOT, sonst das Home des Nutzers (siehe oben). */
@@ -44,25 +45,26 @@ export function ordnerDerTuer(pfad: string, root: string): { ok: true; ordner: s
   return { ok: true, ordner: echt }; // der echte Pfad, den die Prüfung gelesen hat: das Kind öffnet dort, wo sie hinsah, nicht an einem Symlink, den man danach umlegt
 }
 
-/** Was vom Sitz für diese Schicht zählt: sein Platz, seine Belegung, sein Ordner, wer ihn öffnete, und die Rolle, in der er startete. */
+/** Was vom Sitz für diese Schicht zählt: sein Platz, seine Belegung, sein Ordner, seine Linie, wer ihn öffnete, und die Rolle, in der er startete. */
 export interface SitzTatsache {
-  slot: number; openedAt: number; cwd: string | null; openedBy: { slot: number; openedAt: number; cwd: string } | null;
+  slot: number; openedAt: number; cwd: string | null; linie?: string | null; openedBy: Opener | null;
   rolleStein: { id: string } | null;
 }
 
-/** WIE VIELE LEBENDE SITZE DIESE ÖFFNERIN GEÖFFNET HAT: Slot und Ordner ihres Platzes, wie das Branch-Buch es hält —
- *  eine Nachfolge der Öffnerin bleibt die Öffnerin, ein recycelter Platz fällt heraus. */
-export function geoeffneteKinder(seats: readonly SitzTatsache[], oeffner: { slot: number; cwd: string }): SitzTatsache[] {
-  return seats.filter((x) => x.cwd !== null && x.slot !== oeffner.slot && x.openedBy?.slot === oeffner.slot && x.openedBy?.cwd === oeffner.cwd);
+/** WIE VIELE LEBENDE SITZE DIESE ÖFFNERIN GEÖFFNET HAT: die Kinder ihrer Linie (server/opener.ts#istOeffnerin) — eine Nachfolge der
+ *  Öffnerin bleibt die Öffnerin, eine fremde Session im selben Platz und Ordner ist es nicht, ein recycelter Platz fällt heraus. */
+export function geoeffneteKinder(seats: readonly SitzTatsache[], oeffner: { slot: number; cwd: string; linie?: string | null }): SitzTatsache[] {
+  return seats.filter((x) => x.cwd !== null && x.slot !== oeffner.slot && istOeffnerin(oeffner, x.openedBy));
 }
 
 /** DIE GEGENSEITE ZWEIER SITZE (wie branchPeers an der Branch-Tür): wer einen Sitz in einem Ordner öffnete und der Sitz selbst sind
  *  einander Gegenüber im Postfach, und zwei Sitze derselben Öffnerin ebenso („[Zitat entfernt]“) —
- *  solange beide leben und die Aufzeichnung passt. */
+ *  solange beide leben und die Linie passt (server/opener.ts): die Nachfolgerin der Öffnerin bleibt im Paar, eine fremde Session im
+ *  selben Platz und Ordner nicht. */
 export function sitzGegenseite(a: SitzTatsache, b: SitzTatsache): boolean {
   if (!a.cwd || !b.cwd || a.slot === b.slot) return false;
-  if ((b.openedBy?.slot === a.slot && b.openedBy?.cwd === a.cwd) || (a.openedBy?.slot === b.slot && a.openedBy?.cwd === b.cwd)) return true;
-  return !!a.openedBy && !!b.openedBy && a.openedBy.slot === b.openedBy.slot && a.openedBy.cwd === b.openedBy.cwd;
+  if (istOeffnerin(a, b.openedBy) || istOeffnerin(b, a.openedBy)) return true;
+  return gleicheOeffnerin(a.openedBy, b.openedBy);
 }
 
 /** DER JÜNGSTE LEBENDE INHABER EINER GEBILDETEN ROLLE: die Adresse der Rolle geht an ihn — jüngste Belegung gewinnt,
@@ -89,16 +91,16 @@ export function unbekannteSchluessel(body: Record<string, unknown>, erlaubt: rea
 export const geoeffnetVonZeile = (slot: number, tuer: string): string =>
   `[opened by the session in slot ${slot} through ${tuer} — it is your counterpart in the mailbox]`;
 
-/** DIE ÖFFNERIN BEENDET EIN KIND, DAS SIE ÖFFNETE (POST /api/self/seats/<slot>/end): nur ein lebender Sitz, den diese Session durch die Ordner-Tür oder die
- *  Branch-Tür öffnete (ihr Platz und ihr Ordner stehen als openedBy an ihm) — nie die eigene Öffnerin, nie ein Geschwister, nie ein Fremder, nie ein Sitz in einer
+/** DIE ÖFFNERIN BEENDET EIN KIND, DAS SIE ÖFFNETE (POST /api/self/seats/<slot>/end): nur ein lebender Sitz, den diese Session oder ihre Linie durch die Ordner-Tür
+ *  oder die Branch-Tür öffnete (server/opener.ts#istOeffnerin) — nie die eigene Öffnerin, nie ein Geschwister, nie ein Fremder, nie ein Sitz in einer
  *  Rolle von Fleet. `openedAt`, wenn der Body ihn nennt, muss der Besetzer sein, den die Öffnerin meint (ein Platz wird neu belegt). Rein. */
 export function kindBeenden(oeffnerin: SitzTatsache, ziel: SitzTatsache | undefined, fleetRolle: boolean, openedAt: number | undefined):
   { ok: true } | { ok: false; status: number; error: string } {
   if (!ziel || ziel.cwd === null) return { ok: false, status: 409, error: "no live seat on that place — nothing to end" };
   if (openedAt !== undefined && ziel.openedAt !== openedAt) return { ok: false, status: 409, error: "this place has another occupant now" };
-  if (oeffnerin.openedBy?.slot === ziel.slot && oeffnerin.openedBy.cwd === ziel.cwd)
+  if (istOeffnerin(ziel, oeffnerin.openedBy))
     return { ok: false, status: 409, error: "that seat opened you — a seat never ends its opener" };
-  if (!(ziel.openedBy?.slot === oeffnerin.slot && ziel.openedBy.cwd === oeffnerin.cwd))
+  if (!istOeffnerin(oeffnerin, ziel.openedBy))
     return { ok: false, status: 409, error: `you did not open slot ${ziel.slot} — a seat ends only a child it opened itself, not a sibling or a stranger` };
   if (fleetRolle) return { ok: false, status: 409, error: `slot ${ziel.slot} holds one of Fleet's own roles (lane, steward, Orchestratorin) — those end through their owner` };
   return { ok: true };
@@ -123,9 +125,10 @@ export function rolleAusName(name: string): string | null {
 // heißt: eine Session mit `role.form` schrieb sie, ihr Bundel ist an ihre Rechte gedeckelt. Nur solche Rollen öffnet die Selbst-Tür —
 // der Hash gehört zum Eintrag, damit ein Import derselben Kennung mit anderem Inhalt nicht als gebildet gilt.
 export const GEBILDETE_ROLLEN_DATEI = "gebildete-rollen.json";
-// `slot` und `cwd`: die Linie der Bildnerin (Platz und Ordner, wie geoeffneteKinder sie zählt) — eine Nachfolge bleibt dieselbe Linie
-export interface Bildnerin { text: string; slot: number; cwd: string }
-export interface GebildeteRolle { id: string; hash: string; von: string; at: number; slot?: number; cwd?: string }
+// `slot`, `cwd` und `linie`: die Linie der Bildnerin (server/opener.ts) — eine Nachfolge bleibt dieselbe Linie, eine fremde Session im selben
+// Platz und Ordner ist es nicht; ein Eintrag von vor der Linie (ohne `linie`) gilt nach Platz und Ordner wie bisher
+export interface Bildnerin { text: string; slot: number; cwd: string; linie?: string | null }
+export interface GebildeteRolle { id: string; hash: string; von: string; at: number; slot?: number; cwd?: string; linie?: string }
 export function liesGebildete(dir: string): GebildeteRolle[] {
   try {
     const raw: unknown = JSON.parse(readFileSync(join(dir, GEBILDETE_ROLLEN_DATEI), "utf8"));
@@ -134,7 +137,7 @@ export function liesGebildete(dir: string): GebildeteRolle[] {
       const r = x && typeof x === "object" ? x as Record<string, unknown> : null;
       return r && typeof r.id === "string" && typeof r.hash === "string" && typeof r.von === "string" && typeof r.at === "number"
         ? [{ id: r.id, hash: r.hash, von: r.von, at: r.at, ...(typeof r.slot === "number" ? { slot: r.slot } : {}),
-          ...(typeof r.cwd === "string" ? { cwd: r.cwd } : {}) }] : [];
+          ...(typeof r.cwd === "string" ? { cwd: r.cwd } : {}), ...(typeof r.linie === "string" && LINIE_RE.test(r.linie) ? { linie: r.linie } : {}) }] : [];
     });
   } catch { return []; }
 }
@@ -197,7 +200,7 @@ export function rolleFormen(body: Record<string, unknown> | null, wirksame: Read
   if (schon && bisher?.hash !== schon.hash)
     return { ok: false, status: 409, error: `a role „${id}“ stands on this shelf already, from an imported setup — form another name` };
   // EINE ROLLE, DIE SCHON JEMAND TRÄGT, ÄNDERT NUR IHRE BILDNERIN: ein anderer Sitz mit role.form tauschte sonst Starttext und Bundel unter ihr aus
-  if (schon && (bisher?.slot !== von.slot || bisher?.cwd !== von.cwd))
+  if (schon && !(bisher?.slot !== undefined && bisher.cwd !== undefined && istOeffnerin(von, { slot: bisher.slot, cwd: bisher.cwd, linie: bisher.linie })))
     return { ok: false, status: 409, error: `the role „${id}“ was formed by ${bisher?.von ?? "another seat"} — only the seat that formed it forms it anew; form another name` };
   const packIds = body.packs === undefined || body.packs === null ? [] : body.packs;
   if (!Array.isArray(packIds) || packIds.some((x) => typeof x !== "string"))
@@ -214,7 +217,8 @@ export function rolleFormen(body: Record<string, unknown> | null, wirksame: Read
   const rolle: SetupRole = { id, name, hash: roleHash({ id, name, start, rights, packs: refs }), start, rights, packs: refs };
   schreibShelf(dir, { version: 1, packs: [...shelf.packs.filter((p) => !neuePacks.some((n) => n.id === p.id)), ...neuePacks],
     concepts: shelf.concepts, roles: [...(shelf.roles ?? []).filter((r) => r.id !== id), rolle] });
-  merkeGebildete(dir, [...liesGebildete(dir).filter((g) => g.id !== id), { id, hash: rolle.hash, von: von.text, at: jetzt, slot: von.slot, cwd: von.cwd }]);
+  merkeGebildete(dir, [...liesGebildete(dir).filter((g) => g.id !== id), { id, hash: rolle.hash, von: von.text, at: jetzt, slot: von.slot, cwd: von.cwd,
+    ...(von.linie ? { linie: von.linie } : {}) }]);
   return { ok: true, rolle: rolleAntwort(rolle, von.text) };
 }
 

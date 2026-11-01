@@ -1,0 +1,11 @@
+{
+  "name": "streng",
+  "satz": "an unbound session may address only the Orchestrator and the seats these rules name; a session destination is otherwise only an Orchestrator reply",
+  "regeln": [
+    { "art": "orchestrator", "wer": "the Orchestrator", "text": "the Orchestrator: an unbound session writes to her, and she answers it" },
+    { "art": "kante", "wer": "a seat she let through an edge", "text": "a seat the Orchestratorin let through an edge (GET /api/self/kanten shows it), until the edge ends" },
+    { "art": "claude-paar", "wer": "another Claude seat", "text": "another Claude (Anthropic) seat without a standing role, when you are one yourself — no edge, no end" },
+    { "art": "branch-paar", "wer": "the branch counterpart", "text": "the session that opened your branch through POST /api/branches/open, and the session on a branch you opened" },
+    { "art": "ordner-paar", "wer": "the seats of the folder door", "text": "the seats of POST /api/self/seats/open: the one that opened you, the ones you opened, their siblings, and the address of a role one of them holds" }
+  ]
+}

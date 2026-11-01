@@ -259,6 +259,7 @@ def own(self):
         unread = messages.get('unread', 'unknown') if not messages.get('unknown') else f"unknown (retainedUnread={messages.get('unread', 'unknown')})"
         emit(f"own-messages unread={unread} droppedFleetWide={messages.get('droppedFleetWide', 'unknown')} reason={messages.get('reason')} detail: GET /api/self/messages?unread=1; POST /api/self/messages/<id>/read after reading")
         group('message-unknown', messages.get('unknown'), 'GET /api/self/messages')
+        group('message-history', messages.get('history', []), 'GET /api/self/messages')
     else:
         emit('unknown own-messages reason=missing-status; detail: GET /api/self/messages')
     group('attention', position.get('attention'), 'GET /api/self/attention', accept=lambda r: r.get('status', 'unknown') in ('open', 'send-uncertain', 'unknown'))

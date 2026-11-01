@@ -15,6 +15,7 @@
 //     (server/opener.ts). Without it a session or branch session stands in its own group.
 // Every active session (a slot with a cwd) stands exactly once.
 import type { SlotInfo } from "./client";
+import { istOeffnerin } from "./linie";
 import { normalizeLaneAnchor, type BranchesView } from "./protocol";
 import type { ProgramInfo } from "./queue";
 
@@ -63,13 +64,14 @@ export function constellation(slots: readonly SlotInfo[], branches: BranchesView
     if (main) lane.program = main.program;
     if (opener) opener.children.push(lane); else loose.push(lane);
   }
-  // A SESSION OR BRANCH SESSION UNDER ITS OPENER (`openedBy`, server/opener.ts): the slot + cwd that opened it, so the
-  // opener's own succession stays the opener. Never under itself or under one of its own descendants.
+  // A SESSION OR BRANCH SESSION UNDER ITS OPENER (`openedBy`, server/opener.ts): the seat in the line that opened it (src/linie.ts), so the
+  // opener's own succession stays the opener and a stranger later in the same slot and folder is not; a record from before the line by
+  // slot + cwd. Never under itself or under one of its own descendants.
   const below = (n: KNode, x: KNode): boolean => n.children.some((c) => c === x || below(c, x));
   const placed = new Set<KNode>();
   for (const n of nodes.filter((x) => x.kind === "bau" || x.kind === "session").sort(byId)) {
     const by = n.slot.openedBy;
-    const opener = by ? nodes.find((o) => o.slot.id === by.slot && o.slot.cwd === by.cwd) : undefined;
+    const opener = by ? nodes.find((o) => istOeffnerin({ slot: o.slot.id, cwd: o.slot.cwd ?? null, linie: o.slot.linie }, by)) : undefined;
     if (opener && opener !== n && !below(n, opener)) { opener.children.push(n); placed.add(n); }
   }
   const orchester = orchs.length === 1 ? [{ ...orchs[0]!, children: [...mains, ...orchs[0]!.children] }] : [...orchs, ...mains];

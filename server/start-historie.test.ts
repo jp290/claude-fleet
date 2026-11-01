@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { branchTestkit, get, LIFE_DEADLINE_MS, post } from "./branches-testkit";
 import { SPEICHER_DATEI } from "../src/k15-speicher";
-import { liesHistorie, merkeNachtrag, merkeStart, startHistorie } from "./start-historie";
+import { liesHistorie, merkeNachfolge, merkeNachtrag, merkeStart, startHistorie } from "./start-historie";
 
 const belegung = (id: number, openedAt: number, mehr: object = {}) => ({ id, openedAt, cwd: `/w/${id}`, label: null, harness: "claude", model: "claude-opus-5-5",
   effort: "high", rechte: null, agentMd: null, worktree: null, ...mehr });
@@ -88,4 +88,24 @@ describe("jeder Start steht in der Historie", () => {
     const [, opened] = await life(f, [{ rohr: "audit.jsonl", ms: 10 * LIFE_DEADLINE_MS }, post("/api/branches/open", { repo: f.repo, branch: "branch/haengt" })]);
     expect(opened?.status).toBe(200);
   }, LIFE_DEADLINE_MS);
+});
+
+// PRÜFUNG RUNDE 2, kleiner Punkt: übernimmt eine Belegung die Nachfolge und hat der Owner ihr beim Öffnen ein neues Ziel gegeben, gewinnt sein
+// neueres Wort; ohne eigenes Ziel trägt sie das der Vorgängerin weiter.
+describe("merkeNachfolge", () => {
+  test("das eigene Ziel der Nachfolgerin bleibt; ohne eigenes erbt sie das der Vorgängerin", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "historie-"));
+    await merkeStart(belegung(4, 100), dir, 1000);
+    await merkeNachtrag(4, 100, { goal: "Altes Ziel." }, dir);
+    await merkeStart(belegung(4, 200), dir, 2000);
+    await merkeNachtrag(4, 200, { goal: "Neues Wort des Owners." }, dir);
+    await merkeNachfolge(4, 100, 200, { slot: 1, openedAt: 9, cwd: "/w/1" }, dir);
+    await merkeStart(belegung(5, 300), dir, 3000);
+    await merkeNachtrag(5, 300, { goal: "Ziel fünf." }, dir);
+    await merkeStart(belegung(5, 400), dir, 4000);
+    await merkeNachfolge(5, 300, 400, null, dir);
+    const h = await liesHistorie(dir);
+    expect(h.find((e) => e.openedAt === 200)).toMatchObject({ goal: "Neues Wort des Owners.", openedBy: { slot: 1 } });
+    expect(h.find((e) => e.openedAt === 400)).toMatchObject({ goal: "Ziel fünf." });
+  });
 });

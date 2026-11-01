@@ -43,6 +43,27 @@ export function merkeNachtrag(slot: number, openedAt: number, n: Nachtrag, dir: 
   return binnenGrenze(appendEvent(join(dir, HISTORIE_DATEI), { art: "nachtrag", slot, openedAt, ...n }));
 }
 
+// DIE NACHFOLGE IN DER HISTORIE: die neue Belegung desselben Platzes trägt, was die Linie trägt — wer sie öffnete (der Datensatz, der am Platz steht)
+// und das Ziel mit seiner Aufgabe aus der Zeile der Vorgängerin. Ohne das stand in der Zeile der Nachfolgerin nur ihr Start (gemessen 31.10.: Slot 2,
+// Öffner und Ziel nur bei der Vorgängerin). Schreibt nichts, wenn es nichts zu tragen gibt.
+export async function merkeNachfolge(slot: number, vorher: number, nachher: number, openedBy: Opener | null, dir: string): Promise<void> {
+  const { rows } = await readEventLog(join(dir, HISTORIE_DATEI));
+  let goal: string | null = null, aufgabe: unknown = undefined, eigenes = false;
+  for (const r of rows) {
+    if (r.art !== "nachtrag" || r.slot !== slot) continue;
+    // ...ein Ziel, das die Nachfolgerin schon selbst hat (der Owner gab es beim Übernehmen einer Schuld), ist das neuere Wort: es bleibt
+    if (r.openedAt === nachher && (typeof r.goal === "string" || r.aufgabe !== undefined)) eigenes = true;
+    if (r.openedAt !== vorher) continue;
+    if (typeof r.goal === "string") goal = r.goal;
+    if (r.aufgabe !== undefined) aufgabe = r.aufgabe;
+  }
+  if (eigenes) { goal = null; aufgabe = undefined; }
+  const au = aufgabe === undefined ? null : aufgabeAus(aufgabe);
+  if (!openedBy && goal === null) return;
+  await binnenGrenze(appendEvent(join(dir, HISTORIE_DATEI), { art: "nachtrag", slot, openedAt: nachher, ...(openedBy ? { openedBy } : {}),
+    ...(goal !== null ? { goal } : {}), ...(au && typeof au !== "string" ? { aufgabe: au } : {}) }));
+}
+
 const laufVon = (v: unknown): LaufNachtrag | null => {
   const o = v && typeof v === "object" ? v as Record<string, unknown> : null;
   return o && [o.id, o.pos, o.konst, o.name, o.hash].every((x) => typeof x === "string")

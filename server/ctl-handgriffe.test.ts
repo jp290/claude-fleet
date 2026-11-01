@@ -42,6 +42,15 @@ const server = Bun.serve({
         return refuseSend ? json({ error: "replyTo names no message addressed to this sender" }, 409)
           : json({ ok: true, existing: replay, message: { id: NEW_ID }, holder: { slot: 2, openedAt: SESSION.openedAt } });
       if (/^\/api\/self\/messages\/[0-9a-f]{24}\/read$/.test(path)) return json({ ok: true });
+      // die Übersicht (GET /api/self/overview): die Linie dieses Panes, ein Sitz des Owners nur mit Platz und Zustand
+      if (path === "/api/self/overview") return json({ schema: "fleet.overview/v1", sources: {}, me: { slot: 6, scope: "fleet",
+        seat: { slot: 6, relation: "self", name: "Orchestratorin", state: "live", ctxPct: null, idleMs: 1000, agent: "dead",
+          branch: { name: "main", head: "f00", check: null }, waits: [], unknown: {} } }, seats: [
+        { slot: 2, relation: "child", name: "Bau Probe", state: "live", ctxPct: 41.6, idleMs: 5 * 60_000, branch: { name: "branch/probe", head: "abc", check: null },
+          waits: [{ kind: "permission", since: now - 4 * 60_000 }, { kind: "mail", count: 2, oldestAt: now - 60_000 }], unknown: {} },
+        { slot: 9, relation: "fleet", name: "Prüferin", state: "handing-over", ctxPct: null, idleMs: null, branch: null,
+          waits: [{ kind: "handover", step: "hinted", nudges: 2, lastAt: now - 10 * 60_000, gaveUp: false }], unknown: { ctxPct: "…" } },
+        { slot: 16, relation: "owner-seat", state: "live" }] });
       if (path === "/api/self/merges" && oddMerges) return json({});
       if (path === "/api/self/merges") return json({ scope: "fleet", busy: [7], rows: [
         { slot: 7, running: true, last: null, lane: { branch: "fleet/probe-lane" } }] });
@@ -205,13 +214,19 @@ describe("ctl.sh status", () => {
     writeFileSync(join(fake, "merge-check.ts"), "await Bun.sleep(60_000);\n");
     probe = Bun.spawn([process.execPath, join(fake, "merge-check.ts"), "--base", "main", "branch/laeuft", `--x=${SELF}`], { stdout: "ignore", stderr: "ignore" });
     await Bun.sleep(300);
+    seen = [];
     const r = await ctl(["status"], { owner: true });
     probe.kill();
     expect(r.code).toBe(0);
     const lines = r.out.trimEnd().split("\n");
-    expect(lines).toContain("seats (2):");
-    expect(lines.find((l) => /^\s+2 /.test(l))).toMatch(/^ {3}2  Bau Probe\s+42%  quiet 5m\s+branch\/probe$/);
-    expect(lines.find((l) => /^\s+6\*/.test(l))).toMatch(/Orchestratorin\s+ctx \?\s+active\s+main  agent=dead$/);
+    // in einer Pane (Self-Token da) kommen die Sitze aus der Übersicht, nicht aus der Owner-Route
+    expect(seen.some((x) => x.path === "/api/self/overview")).toBe(true);
+    expect(lines).toContain("seats (4, every seat, GET /api/self/overview):");
+    expect(lines.find((l) => /^\s+2 /.test(l))).toMatch(/^ {3}2  Bau Probe · child\s+42%  quiet 5m\s+branch\/probe  waits: permission 4m, mail 2$/);
+    // die eigene Zeile (me.seat) mit *, und die Spalte agent= wie in der Owner-Route
+    expect(lines.find((l) => /^\s+6\*/.test(l))).toMatch(/^ {3}6\* Orchestratorin\s+ctx \?  active\s+main  agent=dead$/);
+    expect(lines.find((l) => /^\s+9 /.test(l))).toMatch(/^ {3}9  Prüferin · fleet\s+ctx \?  handing-over  -  waits: handover hinted 2x 10m ago$/);
+    expect(lines.find((l) => /^\s+16 /.test(l))).toMatch(/^ {2}16  \(a seat of the owner\)\s+live\s+-$/);
     const checks = lines.find((l) => l.startsWith("checks running:"));
     // die Prozesstabelle ist die echte: ein Merge-Check, der gerade auf diesem Rechner läuft, steht mit in der Zeile
     expect(checks).toStartWith("checks running: ");
@@ -231,11 +246,21 @@ describe("ctl.sh status", () => {
     expect(r.out).not.toContain(OWNER);
   });
 
-  test("ohne Owner-Credential bleiben Sitze, Audit und Helfer UNKNOWN mit Grund, Post und Lands kommen über die Self-Türen", async () => {
+  test("eine Shell ohne Self-Token liest die Sitze aus der Owner-Route, wie bisher", async () => {
+    seen = [];
+    const r = await ctl(["status"], { owner: true, self: false });
+    const lines = r.out.trimEnd().split("\n");
+    expect(seen.some((x) => x.path.startsWith("/api/self"))).toBe(false);
+    expect(lines).toContain("seats (2):");
+    expect(lines.find((l) => /^\s+2 /.test(l))).toMatch(/^ {3}2  Bau Probe\s+42%  quiet 5m\s+branch\/probe$/);
+    expect(lines.find((l) => /^\s+6\*/.test(l))).toMatch(/Orchestratorin\s+ctx \?\s+active\s+main  agent=dead$/);
+  });
+
+  test("ohne Owner-Credential bleiben Audit und Helfer UNKNOWN mit Grund; Sitze, Post und Lands kommen über die Self-Türen", async () => {
     const r = await ctl(["status", "--full"]);
     expect(r.code).toBe(1);
     const lines = r.out.trimEnd().split("\n");
-    expect(lines).toContain("seats: UNKNOWN — needs the owner credential, this shell has none");
+    expect(lines).toContain("seats (4, every seat, GET /api/self/overview):");
     expect(lines).toContain("audit: UNKNOWN — needs the owner credential, this shell has none");
     expect(lines).toContain("helper jobs queued: UNKNOWN — needs the owner credential, this shell has none");
     expect(lines).toContain("lands: WAIT — slot 7 fleet/probe-lane running");

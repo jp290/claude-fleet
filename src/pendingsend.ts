@@ -5,7 +5,7 @@
 // the TUI may re-wrap it. Nothing else — a pending bubble that retires on a DIFFERENT turn would
 // hide a send that never arrived.
 import { deliveryHeaderPrefixOf, deliveryParts, OWNER_HEADER } from "./delivery-format";
-import { agentMessage } from "./agent-message";
+import { agentMessage, OTHER_SESSION_LEAD } from "./agent-message";
 import { slashCommand } from "./slashcommand";
 
 const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
@@ -39,7 +39,7 @@ export function splitDeliveryHeader(entry: string): { header: string | null; bod
 // `who` labels the chat's quiet line, `text` is the message without head or wrapper (for a subagent's report, `note` says
 // its length). null = the owner's own words: typed in the terminal or sent through the owner
 // door. A bundle says whose each part is itself (src/delivery-format.ts#deliveryParts).
-const CROSS_SESSION = /^(?:Another Claude session sent a message:\n)?<cross-session-message((?: [a-z-]+="[^"]*")*)>\n?([\s\S]*?)\n?(?:<\/cross-session-message>\s*)?$/;
+const CROSS_SESSION = new RegExp(`^(?:${OTHER_SESSION_LEAD})?<cross-session-message((?: [a-z-]+="[^"]*")*)>\\n?([\\s\\S]*?)\\n?(?:<\\/cross-session-message>\\s*)?$`);
 // the paragraph Claude Code appends after the closing tag (measured 29.10. behind </agent-message>; it follows a
 // </cross-session-message> the same way) is frame, not message — the closing tag it rides on goes with it
 const FRAMED_TAIL = /\n?<\/cross-session-message>\n\nThat "other Claude session" is an agent working inside this same session[\s\S]*$/;

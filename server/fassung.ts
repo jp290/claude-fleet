@@ -40,6 +40,9 @@ export interface FassungAbschnittEingang {
   readonly notizbuch?: Notizbuch;
   /** gehört dem Owner (seine eigenen Claude-Code-Dateien): zählt im Hash, ist aber nicht Teil des teilbaren Setups und reist nicht mit */
   readonly eigentum?: "owner";
+  /** der Teil von `text`, den der Hash zählt, wenn der Rest lebende Anzeige ist: die Paare unter „Arbeitet mit“ ändern sich mit der
+   *  Flotte, nicht mit dem Setup (W1), und ein Hash, der an ihnen hinge, wiche zwischen Vorschau, Start und laufendem Sitz ab */
+  readonly hashText?: string;
 }
 
 export interface FassungAbschnitt {
@@ -52,6 +55,7 @@ export interface FassungAbschnitt {
   readonly dateien?: readonly { readonly pfad: string; readonly bytes: number; readonly eigentum?: "owner" }[];
   readonly notizbuch?: Notizbuch;
   readonly eigentum?: "owner";
+  readonly hashText?: string;
 }
 
 export interface FassungTeil {
@@ -106,7 +110,8 @@ const byteLength = (text: string): number => Buffer.byteLength(text);
 function normalisiere(a: FassungAbschnittEingang): FassungAbschnitt {
   const text = typeof a.text === "string" ? a.text : null;
   const bytes = a.bytes ?? (text !== null ? byteLength(text) : "unknown");
-  const notizbuch = { ...(a.notizbuch ? { notizbuch: a.notizbuch } : {}), ...(a.eigentum ? { eigentum: a.eigentum } : {}) };
+  const notizbuch = { ...(a.notizbuch ? { notizbuch: a.notizbuch } : {}), ...(a.eigentum ? { eigentum: a.eigentum } : {}),
+    ...(text !== null && a.hashText !== undefined && a.hashText !== text ? { hashText: a.hashText } : {}) };
   // Eine fehlende Quelle bleibt ein Abschnitt: unknown, Grund, nie leer.
   if (text === null)
     return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes: "unknown", text: null,
@@ -129,8 +134,9 @@ export const kanon = (v: unknown): unknown => Array.isArray(v) ? v.map(kanon)
 // genügt, um den Abschnitt als fehlend zu hashen, ohne einen lokalen Pfad in den Hash zu tragen.
 // Vom Notizbuch zählt nur, ob es eigen, geteilt oder aus ist; sein Ordner ist Anzeige wie `quelle`. Ob ein Abschnitt dem Owner gehört,
 // zählt mit: dasselbe Hook-Skript im Repo oder in den eigenen Dateien ist ein anderes Setup. Die Marke an einer Datei ist Anzeige.
+// `hashText` steht für `text`, wo ein Abschnitt lebende Anzeige trägt: dann zählen nur sein Text und seine Bytes.
 const hashInhalt = (a: FassungAbschnitt): unknown => ({
-  id: a.id, aenderbar: a.aenderbar, bytes: a.bytes, text: a.text,
+  id: a.id, aenderbar: a.aenderbar, bytes: a.hashText !== undefined ? byteLength(a.hashText) : a.bytes, text: a.hashText ?? a.text,
   ...(a.dateien ? { dateien: a.dateien.map((datei) => datei.bytes) } : {}),
   ...(a.notizbuch ? { notizbuch: a.notizbuch.art } : {}),
   ...(a.eigentum ? { eigentum: a.eigentum } : {}),
@@ -175,16 +181,20 @@ export function baueFassung(e: FassungEingang): Fassung {
 /**
  * Führt Abschnitte eines Teils nach, die sich nach dem Start ändern dürfen (Schwelle, Warmhalten): ein Abschnitt mit derselben id wird
  * ersetzt, einer, den die Fassung nicht trägt, nicht angehängt (ein Start von vor diesem Abschnitt bleibt, wie er war). Der Hash wird neu
- * gerechnet; `geaendert` nennt die ids, deren Inhalt sich bewegt hat.
+ * gerechnet; `geaendert` nennt die ids, deren Inhalt sich bewegt hat. Bewegt sich nur lebende Anzeige (`hashText`), steht sie neu da,
+ * und Hash und `geaendert` bleiben.
  */
 export function fuehreNach(f: Fassung, teilId: FassungTeil["id"], neu: readonly FassungAbschnittEingang[]): { fassung: Fassung; geaendert: string[] } {
   const ersatz = new Map(neu.map((a) => [a.id, normalisiere(a)]));
   const geaendert: string[] = [];
+  let angezeigt = false;
   const teile = f.teile.map((t) => t.id !== teilId ? t : { ...t, abschnitte: t.abschnitte.map((a) => {
     const n = ersatz.get(a.id);
     if (!n) return a;
     if (JSON.stringify(kanon(hashInhalt(n))) !== JSON.stringify(kanon(hashInhalt(a)))) geaendert.push(a.id);
+    else if (JSON.stringify(kanon(n)) !== JSON.stringify(kanon(a))) angezeigt = true;
     return n;
   }) });
-  return geaendert.length ? { fassung: { ...f, teile, hash: fassungsHash(teile) }, geaendert } : { fassung: f, geaendert };
+  return geaendert.length ? { fassung: { ...f, teile, hash: fassungsHash(teile) }, geaendert }
+    : angezeigt ? { fassung: { ...f, teile }, geaendert } : { fassung: f, geaendert };
 }

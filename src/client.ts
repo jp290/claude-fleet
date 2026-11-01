@@ -575,7 +575,9 @@ export interface SlotInfo {
   // what the session is for (server.ts, the /api/sessions slot row) — absent means none set
   mission?: string; awaiting?: "owner" | "main"; taskId?: string; taskHead?: string; programId?: string;
   // the session that opened this one with its self token (server/opener.ts); matched by slot + cwd
-  openedBy?: { slot: number; openedAt: number; cwd: string };
+  openedBy?: { slot: number; openedAt: number; cwd: string; linie?: string };
+  // the seat's own line (server/opener.ts); who opened whom is decided by it (src/linie.ts)
+  linie?: string;
   // the run of a constellation it sits in, on which position (server/laeufe.ts)
   lauf?: { id: string; pos: string };
   // the role the server gives this session (server.ts#positionRole), separate from the label the

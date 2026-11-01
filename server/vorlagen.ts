@@ -16,11 +16,15 @@ import { RECHTE_STANDARD, type RechtId } from "../session-rechte";
 import { SETUP_FORMAT, mitSetupHash, packAusBibliothek, roleHash, type SetupDatei, type SetupPack, type SetupRole, type SetupSeat } from "./setup-datei";
 import type { SeatKnowledge } from "./sitz-wissen";
 
-export interface Vorlage { id: string; name: string; satz: string }
+/** `spitze`: der Sitz, den der Start öffnet (die Leitung; bei einem einzelnen Agenten er selbst). `sitze`: wie viele Sitze die Vorlage trägt. */
+export interface Vorlage { id: string; name: string; satz: string; spitze: string; sitze: number }
 
 export const LEAD_WITH_BUILDERS = "lead-with-builders";
+export const SUPER_FLEETBOT = "super-fleetbot";
 export const VORLAGEN: readonly Vorlage[] = [
-  { id: LEAD_WITH_BUILDERS, name: "Lead with builders",
+  { id: SUPER_FLEETBOT, name: "Super FleetBot", spitze: "fleetbot", sitze: 1,
+    satz: "The agent you talk to: keeps the overview, thinks along, and sends each piece of work to the seat that fits it." },
+  { id: LEAD_WITH_BUILDERS, name: "Lead with builders", spitze: "lead", sitze: 3,
     satz: "A lead opens a builder and a checker, gives each a checkable goal, judges their reports; both report to it." },
 ];
 
@@ -44,10 +48,40 @@ const sitz = (id: string, name: string, role: string, reportsTo: string | null, 
   start: { role, folder: leererOrdner }, reads: [],
   may: { rechte, permissionMode: null }, worksWith: reportsTo ? { reportsTo } : {}, notebook: null });
 
+/** DER SUPER-FLEETBOT: der Agent, mit dem man spricht (Owner 1.11.: „[Zitat entfernt]“).
+ *  Er liest, was in Fleets Bibliothek allgemein ist. Was persönlich ist, reist nie mit Text, sondern als leerer Platz, den die Person mit ihrem eigenen füllt:
+ *  `working-with-the-owner` zählt als persönlich (src/sitz.ts#PERSOENLICH), `working-with-this-owner` und die Briefe des Owners liegen nur in dessen
+ *  Zustandsordner und stehen hier nicht; `your-own-agent` liegt nicht in der Bibliothek, sein Zweck steht unten in eigenen Worten. Sein Zweck steht hier, ohne Namen, Daten und Pfade einer Person. */
+export const FLEETBOT_PACKS: readonly string[] = ["operating-a-constellation", "finishing-desktop-work", "fleet-doors"];
+export const FLEETBOT_PLATZ = { id: "working-with-the-owner", useWhen: "When you talk with this person or write something they will read." };
+const FLEETBOT_ZWECK = { titel: "Super FleetBot", text: [
+  "You are this person's own agent in Fleet: the one they talk to, who keeps the overview and sends each piece of work to where it fits.",
+  "",
+  "The person thinks out loud with you and decides with you. You know what runs and what waits, and you answer from the state you read, not from memory.",
+  "Work that needs a seat of its own goes from you to a seat that fits it: you open it, give it a goal it can check, and judge what it reports back.",
+  "You stay light and reachable, so the person never waits on a busy pane and never has to ask twice where things stand.",
+  "",
+  "You are not a messenger. You understand what they mean, say your view next to theirs, and disagree with a reason when you disagree. Ask only the question that is due now.",
+  "Anything irreversible, anything public and any money stays with the person."].join("\n") };
+
+function fleetbotDatei(vorlage: Vorlage, bibliothek: SeatKnowledge): SetupDatei | string {
+  const packs: SetupPack[] = [];
+  for (const pid of FLEETBOT_PACKS) {
+    const block = packAusBibliothek(bibliothek, pid);
+    if (!block) return `the template „${vorlage.id}“ needs the pack „${pid}“, which Fleet's library at ${bibliothek.head.slice(0, 12)} does not have`;
+    packs.push(block);
+  }
+  const platz: SetupPack = { kind: "pack", id: FLEETBOT_PLATZ.id, hash: null, text: null, personal: true, useWhen: FLEETBOT_PLATZ.useWhen, sources: [] };
+  const reads = [...packs, platz].map((p) => ({ kind: "pack" as const, id: p.id, hash: p.hash }));
+  const seat: SetupSeat = { ...sitz(vorlage.spitze, vorlage.name, "", null), start: { purpose: FLEETBOT_ZWECK, folder: leererOrdner }, reads };
+  return mitSetupHash({ format: SETUP_FORMAT, name: vorlage.name, derivedFrom: null, derivedFromLine: [], seats: [seat], edges: [], packs: [...packs, platz], concepts: [], roles: [] });
+}
+
 /** Die Vorlage als Setup-Datei, aus der Bibliothek eines Sitzes in Fleets Repo; ein Satz, wenn sie nicht zu bauen ist. Rein. */
 export function vorlageDatei(id: string, bibliothek: SeatKnowledge): SetupDatei | string {
   const vorlage = VORLAGEN.find((v) => v.id === id);
   if (!vorlage) return `no Fleet template „${id}“ — Fleet's templates: ${VORLAGEN.map((v) => v.id).join(", ")}`;
+  if (vorlage.id === SUPER_FLEETBOT) return fleetbotDatei(vorlage, bibliothek);
   const packs: SetupPack[] = [];
   const roles: SetupRole[] = [];
   for (const r of ROLLEN) {

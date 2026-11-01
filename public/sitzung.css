@@ -64,6 +64,21 @@
 .k15sitz .sfbtns { display: flex; gap: 8px; padding: 10px 20px 20px; margin-top: auto; }
 .k15sitz .sfbtns button { flex: 1; border: 1px solid var(--sf-line); border-radius: 10px; padding: 10px; cursor: pointer; color: var(--sf-ink); text-align: center; }
 .k15sitz .sfbtns button:hover, .k15sitz .sfbtns button[aria-pressed="true"] { background: var(--sf-raised); border-color: #3a3a40; }
+.k15sitz .sfbtns button { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 10px 12px; }
+.k15sitz .sfbtns button b { font-size: 14.5px; font-weight: 600; }
+.k15sitz .sfbtns button span { font-size: 12px; color: var(--sf-ink3); line-height: 1.35; }
+/* the ready agents: a row with a Start of its own; the row opens the agent's page for a look, so a click on it never starts by accident */
+.k15sitz .sfbereit { cursor: default; }
+.k15sitz .sfbereit.sfoffen { cursor: pointer; }
+.k15sitz .sfbereit.sfoffen:hover { border-color: #3e3e44; }
+.k15sitz .sfbereit.repoag .sfav { background: #2a1a14; color: var(--sf-cc); }
+.k15sitz .sfbereit .sfagt { flex: 1; }
+.k15sitz .sfbereit .sfagf { max-width: 52ch; }
+.k15sitz .sfstart { flex: none; border: 1px solid #3f5a3c; background: #1b2a1a; color: var(--sf-ink); border-radius: 9px; padding: 7px 16px; font-weight: 600; cursor: pointer; }
+.k15sitz .sfstart:hover:not(:disabled) { background: #22351f; border-color: #55793f; }
+.k15sitz .sfstart:disabled { opacity: .45; cursor: default; }
+.k15sitz .sfmehr { align-self: flex-start; background: none; border: 0; color: var(--sf-ink3); font-size: 12.5px; padding: 2px 4px; cursor: pointer; }
+.k15sitz .sfmehr:hover { color: var(--sf-ink); }
 .k15sitz .sfdrop { display: flex; flex-direction: column; gap: 3px; border: 1px dashed #3a3a40; border-radius: 12px; padding: 16px; cursor: pointer; color: var(--sf-ink2); margin-top: 8px; }
 .k15sitz .sfdrop:hover, .k15sitz .sfdrop.ueber { border-color: #55555c; background: var(--sf-raised); }
 .k15sitz .sfdrop b { color: var(--sf-ink); font-size: 14.5px; }
@@ -317,6 +332,11 @@
   .k15sitz .sf, .k15sitz .sf.s2 { display: block; overflow: auto; padding: 12px; }
   .k15sitz .sfcol { margin-bottom: 12px; }
   .k15sitz .sfkarte { position: static; }
+  .k15sitz .sfbtns { flex-direction: column; }
+  /* a way is open (Design, Import): on a phone it takes the place of the ready list, so it is not pushed below the fold */
+  .k15sitz .sfweg .sfbereit, .k15sitz .sfweg .sfmehr, .k15sitz .sfweg .sfsub1 { display: none; }
+  .k15sitz .sfbereit { padding: 10px 12px; gap: 10px; }
+  .k15sitz .sfbereit .sfav, .k15sitz .sfbereit .sfagher { display: none; }
   .k15sitz .sf.s2 .sfrepos { display: none; }
   .k15sitz .sf.s1 .sfhood { display: none; }
   .k15sitz .sfhero { grid-template-columns: 1fr; }

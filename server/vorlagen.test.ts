@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { hashText, pruefeSetupDatei, type SetupDatei } from "./setup-datei";
 import type { SeatKnowledge } from "./sitz-wissen";
-import { LEAD_WITH_BUILDERS, LEITUNG_ERBITTET, VORLAGEN, vorlageDatei } from "./vorlagen";
+import { FLEETBOT_PACKS, FLEETBOT_PLATZ, LEAD_WITH_BUILDERS, LEITUNG_ERBITTET, SUPER_FLEETBOT, VORLAGEN, vorlageDatei } from "./vorlagen";
 
 const pack = (id: string, text: string) => ({ id, useWhen: `When ${id}.`, sources: [{ path: `docs/packs/${id}.md`, anchor: `# ${id}` }], text, weg: "start" as const, zurWahl: true as const });
 const bibliothek = (ids: readonly string[]): SeatKnowledge => ({ tree: "fleet", repoRoot: "/fleet", head: "a".repeat(40),
@@ -26,6 +26,19 @@ describe("vorlageDatei", () => {
     expect(d.seats.slice(1).every((s) => s.may.rechte === null)).toBe(true);
     // jeder Ordner ist ein leerer Platz: wer die Vorlage startet, wählt ihn
     expect(d.seats.every((s) => s.start.folder?.personal === true && s.start.folder.hint === null)).toBe(true);
+  });
+  test("super-fleetbot: ein Sitz ohne Rolle mit Zweck, liest die allgemeinen Packs mit Text, der persönliche Platz reist leer, und die Datei besteht die Prüfung", () => {
+    const d = vorlageDatei(SUPER_FLEETBOT, bibliothek([...FLEETBOT_PACKS, ...ALLE])) as SetupDatei;
+    expect(typeof d).toBe("object");
+    expect(pruefeSetupDatei(JSON.parse(JSON.stringify(d)))).toEqual(d);
+    expect(d.seats.length).toBe(1);
+    expect(d.seats[0]!.start.role).toBeUndefined();
+    expect(d.seats[0]!.start.purpose?.text.length).toBeGreaterThan(200);
+    expect(d.seats[0]!.reads.map((r) => r.id)).toEqual([...FLEETBOT_PACKS, FLEETBOT_PLATZ.id]);
+    const platz = d.packs.find((p) => p.id === FLEETBOT_PLATZ.id)!;
+    expect([platz.text, platz.hash, platz.personal]).toEqual([null, null, true]);
+    expect(d.packs.filter((p) => p.id !== FLEETBOT_PLATZ.id).every((p) => typeof p.text === "string" && p.hash !== null)).toBe(true);
+    expect(vorlageDatei(SUPER_FLEETBOT, bibliothek(["fleet-doors"]))).toContain("needs the pack");
   });
   test("ein Pack, den die Bibliothek nicht hat, und eine unbekannte Vorlage sind ein Satz", () => {
     expect(vorlageDatei(LEAD_WITH_BUILDERS, bibliothek(["leiten", "clean-and-effective-code"]))).toContain("needs the pack „bauen“");

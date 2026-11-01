@@ -701,6 +701,9 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       };
       // …an agent picked: step 2, both previews read
       const mitAgent = async (id: string, how: "mouse" | "touch" = "mouse") => {
+        // the menu shows the first few ready agents; the rest follow „Show … more“
+        await evaluate(`(() => { if (!${WIN}?.querySelector('.sfag[data-agent="${id}"]')) ${WIN}?.querySelector('.sfmehr')?.click(); })()`);
+        await idle();
         await press(`${WIN}?.querySelector('.sfag[data-agent="${id}"]')`, how);
         if (!await wait(`!!${WIN}?.querySelector('.sf.s2 .sfgo')`, 10000)) throw new Error(`the agent ${id} did not open its session`);
         await idle();
@@ -783,6 +786,8 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         await fresh();
         await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
         const ok = await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
+        await idle();
+        await evaluate(`${WIN}?.querySelector('.sfmehr')?.click()`);
         await idle();
         const seen = await evaluate<{ sitz: boolean; titel: string | null; repo: string | null; agenten: string[]; old: number }>(`({
           sitz: !!document.querySelector('#shell-found.k15sitz .sf.s1'), titel: ${WIN}?.querySelector('.shellhead h2')?.textContent ?? null,

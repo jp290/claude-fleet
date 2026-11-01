@@ -6,7 +6,7 @@
 // start read the same fields, so the Fassung hash the brief shows is the one the door checks.
 import { el, api, baseName, flotte, starte, zeigeSlot, meldung } from "./k15-haupt";
 import { icon, type IconName } from "./icons";
-import { S, antwort, hole, info, oeffneOrdner, planUrl, render, repoZeilen, tilde, type St } from "./k15-zustand";
+import { S, antwort, hole, info, lies, oeffneOrdner, planUrl, render, repoZeilen, tilde, type St } from "./k15-zustand";
 import type { PlanRolle } from "./k15-entwurf-modell";
 import { repoMenue } from "./k15-repo";
 import { agentVon, agentWort, effortVon, harnessOptionen, modelleVon, standardAgent } from "./k15-agent";
@@ -28,8 +28,13 @@ export interface AgentZeile {
 }
 type Liste = AgentZeile[] | "laedt" | { fehler: string };
 export interface FensterStand {
-  schritt: 1 | 2; wechsel: boolean; liste: "agenten" | "kopie" | "import";
+  schritt: 1 | 2; wechsel: boolean; liste: "agenten" | "gestalten" | "import";
   agenten: Map<string, Liste>;
+  // Fleet's ready-made agents (GET /api/setups/vorlagen), read once per window; „all“: the menu shows every ready agent, not the first few;
+  // `startet`: the key of the row that is starting right now
+  vorlagen: VorlageZeile[] | "laedt" | null; alle: boolean; startet: string | null;
+  // a phone: the folder list folds to the chosen folder until „Change folder…“ opens it
+  ordnerOffen: boolean;
   // the opened agent (null = a new one), its name, the choice now and as saved; `fremd`: what it carries that this window can't set
   agent: AgentZeile | null; name: string; wahl: Wahl; basis: Wahl; fremd: string[];
   // the open block on the left, the unfolded files on the right, „only changes“, what the last change touched (it lights up once)
@@ -39,13 +44,15 @@ export interface FensterStand {
   brief: boolean; speichern: boolean; nameEntwurf: string | null; loeschen: boolean;
   letzte: { a: Answer; n: Answer } | null; busy: boolean; fehler: string | null;
 }
-export const fensterStand0 = (): FensterStand => ({ schritt: 1, wechsel: false, liste: "agenten", agenten: new Map(), agent: null, name: "",
+export interface VorlageZeile { id: string; name: string; satz: string; spitze: string; sitze: number }
+export const fensterStand0 = (): FensterStand => ({ schritt: 1, wechsel: false, liste: "agenten", agenten: new Map(), vorlagen: null, alle: false, startet: null, ordnerOffen: false, agent: null, name: "",
   wahl: normal(), basis: normal(), fremd: [], offen: null, falten: new Set(), roh: new Set(), nur: false, heiss: null, blitz: false, brief: false,
   speichern: false, nameEntwurf: null, loeschen: false, letzte: null, busy: false, fehler: null });
 
 const KB = (b: number): string => b < 1000 ? `${b} B` : `${(b / 1000).toFixed(1)} kB`;
 const mehrzahl = (n: number, eins: string, mehr = `${eins}s`): string => `${n} ${n === 1 ? eins : mehr}`;
 const schmal = (): boolean => matchMedia("(max-width: 1350px)").matches;
+const telefon = (): boolean => matchMedia("(max-width: 760px)").matches;
 const ruhig = (): boolean => matchMedia("(prefers-reduced-motion: reduce)").matches;
 function vor(ts: number): string {
   const m = Math.round((Date.now() - ts) / 60_000);
@@ -318,7 +325,10 @@ function spalteRepos(s: St): HTMLElement {
   col.append(el("div", "sflabel", "Where it works"));
   const liste = el("div", "sfrepoliste");
   liste.dataset.scroll = "repos";
-  const zeilen = repoZeilen(s);
+  const alleZeilen = repoZeilen(s);
+  // on a phone the chosen folder stands alone, so the menu below it is not pushed off the screen; „Change folder…“ brings the list back
+  const gefaltet = telefon() && z.schritt === 1 && !z.ordnerOffen && !s.repoMenu && alleZeilen.some((r) => r.repo === s.repo) && alleZeilen.length > 1;
+  const zeilen = gefaltet ? alleZeilen.filter((r) => r.repo === s.repo) : alleZeilen;
   for (const r of zeilen) {
     const i = info(s, r.repo);
     const fakten = typeof i !== "object" || "fehler" in i ? (i === "laedt" ? "…" : "not readable")
@@ -327,6 +337,7 @@ function spalteRepos(s: St): HTMLElement {
         ...(i.last ? [vor(i.last.ts)] : [])].join(" · ");
     const b = knopf(`sfrepo${r.repo === s.repo ? " sel" : ""}`, [], () => {
       if (s.repo !== r.repo) { s.repo = r.repo; z.liste = "agenten"; }
+      z.ordnerOffen = false;
       if (z.schritt === 2) zurueck(s); else render();
     }, tilde(r.repo));
     b.dataset.repo = r.repo;
@@ -341,57 +352,185 @@ function spalteRepos(s: St): HTMLElement {
     liste.append(b);
   }
   if (!zeilen.length) liste.append(el("div", "sfleer", s.pins === null ? "Reading your repos …" : "No folder yet: choose the one your agent should work in."));
-  const anders = knopf("sfanders", [zeilen.length ? "Another folder…" : "Choose a folder…"], () => { s.repoMenu = true; void oeffneOrdner(s, "~"); });
-  liste.append(anders);
+  if (gefaltet) liste.append(knopf("sfanders", ["Change folder…"], () => { z.ordnerOffen = true; render(); }));
+  else liste.append(knopf("sfanders", [zeilen.length ? "Another folder…" : "Choose a folder…"], () => { s.repoMenu = true; void oeffneOrdner(s, "~"); }));
   const menue = repoMenue(s);
   if (menue) liste.append(menue);
   col.append(liste);
   return col;
 }
 
-// MIDDLE IN STEP 1: the agents of this repo, the repo's own first; copy, import, new
+// MIDDLE IN STEP 1: THE MENU (owner 1.11.: „[Zitat entfernt]“
+// ). Four ways in: start a ready agent right away (one click, the folder is already chosen),
+// set up a new one, design one you have, import one from a file. The ready agents are a short list that grows on demand; the other three ways are one
+// row of buttons that say what they do.
+const BEREIT_ZUERST = 4;
+// `sitz`: the top position of a template of several seats that was imported before („<constellation>/<position>“); starting it again opens that one
+interface Bereit { key: string; name: string; satz: string; her: string; agent?: AgentZeile; vorlage?: VorlageZeile; sitz?: string }
+function vorlagen(s: St): VorlageZeile[] {
+  const z = s.sitz;
+  if (Array.isArray(z.vorlagen)) return z.vorlagen;
+  if (z.vorlagen === null) {
+    z.vorlagen = "laedt";
+    void api("/api/setups/vorlagen").then(async (r) => {
+      const j = await r.json().catch(() => null) as { vorlagen?: VorlageZeile[] } | null;
+      return r.ok && Array.isArray(j?.vorlagen) ? j.vorlagen : [];
+    }).catch(() => [] as VorlageZeile[]).then((l) => { if (S !== s) return; z.vorlagen = l; render(); });
+  }
+  return [];
+}
+// the ready agents of this folder, in the order a newcomer wants them: plain Claude Code, Fleet's own, what was used here, the rest
+function bereit(s: St, l: AgentZeile[]): Bereit[] {
+  const out: Bereit[] = [];
+  const repoAg = l.find((a) => a.id === "repo");
+  if (repoAg) out.push({ key: "repo", name: "Claude Code", satz: "As you would start it here yourself.", her: "", agent: repoAg });
+  const genommen = new Set<string>();
+  for (const v of vorlagen(s)) {
+    // a template already imported once is that agent; starting it again starts the same one
+    const da = v.sitze === 1 ? l.find((a) => a.importiert && a.name === v.name) : undefined;
+    if (da) genommen.add(da.id);
+    const spitze = v.sitze > 1 ? l.find((a) => a.id.startsWith("sitz:") && a.id.endsWith(`/${v.spitze}`) && a.name.startsWith(`${v.name} · `)) : undefined;
+    out.push({ key: `vorlage:${v.id}`, name: v.name, satz: v.satz, her: "ready-made", vorlage: v, ...(da ? { agent: da } : {}), ...(spitze ? { sitz: spitze.id.slice(5) } : {}) });
+  }
+  // the seats and profiles of a constellation are its own: they show in the constellation view, not as agents to start
+  const rest = l.filter((a) => a.id !== "repo" && !genommen.has(a.id) && !a.id.startsWith("sitz:") && !a.id.startsWith("profil:"));
+  const hier = rest.filter((a) => a.zuletzt).sort((a, b) => (b.zuletzt ?? 0) - (a.zuletzt ?? 0));
+  for (const a of [...hier, ...rest.filter((a) => !a.zuletzt)]) out.push({ key: `agent:${a.id}`, name: agentName(a), satz: agentSatz(a), her: agentHer(a), agent: a });
+  return out;
+}
+function bereitZeile(s: St, b: Bereit): HTMLElement {
+  const z = s.sitz, zeile = el("div", `sfag sfbereit${b.key === "repo" ? " repoag" : ""}`);
+  zeile.dataset.agent = b.agent?.id ?? b.key;
+  zeile.dataset.bereit = b.key;
+  // the row opens the agent's page (what it gets, its blocks) for a look before starting; Start starts at once. A constellation has no such page.
+  if (!(b.vorlage && b.vorlage.sitze > 1)) {
+    zeile.classList.add("sfoffen");
+    zeile.onclick = () => void gestalte(s, b);
+  }
+  const t = el("span", "sfagt");
+  t.append(el("div", "sfagn", b.name), el("div", "sfagf", b.satz));
+  const meldet = z.startet === b.key;
+  const go = knopf("sfstart", [meldet ? "Starting …" : "Start"], (e) => { e.stopPropagation(); void startDirekt(s, b); },
+    s.repo ? `Starts ${b.name} in ${baseName(s.repo)}` : "Choose where it works first");
+  go.disabled = !s.repo || z.busy;
+  zeile.append(el("span", "sfav", b.name.charAt(0).toUpperCase()), t, ...(b.her ? [el("span", "sfagher", b.her)] : []), go);
+  return zeile;
+}
 function spalteAgenten(s: St): HTMLElement {
   const z = s.sitz, col = el("div", "sfcol sfagenten");
   const karte = el("div", "sfkarte");
   const h = el("div", "sfah");
-  h.append("Agents ", el("span", "", s.repo ? `for ${baseName(s.repo)}` : ""));
+  h.append("Start an agent ", el("span", "", s.repo ? `in ${baseName(s.repo)}` : ""));
   const liste = el("div", "sfaliste");
   liste.dataset.scroll = "agenten";
   const l = agenten(s);
   if (l === "laedt") liste.append(el("div", "sfleer", "Reading the agents …"));
   else if (!Array.isArray(l)) liste.append(el("div", "sfleer", `The agents are not readable: ${l.fehler}`));
+  else if (!s.repo) liste.append(el("div", "sfleer", "Choose the folder your agent should work in, then start it here."));
   else {
-    const repoAg = l.find((a) => a.id === "repo");
-    const rest = l.filter((a) => a.id !== "repo");
-    const hier = rest.filter((a) => a.zuletzt).sort((a, b) => (b.zuletzt ?? 0) - (a.zuletzt ?? 0)), sonst = rest.filter((a) => !a.zuletzt);
-    const karteVon = (a: AgentZeile, kopie = false) => {
-      const b = knopf(`sfag${a.id === "repo" ? " repoag" : ""}`, [], () => { void (kopie ? kopiere(s, a) : oeffne(s, a)); });
-      b.dataset.agent = a.id;
-      const t = el("span", "sfagt");
-      t.append(el("div", "sfagn", kopie ? `copy of ${agentName(a)}` : agentName(a)), el("div", "sfagf", agentSatz(a)));
-      b.append(el("span", "sfav", agentName(a).replace(/^The /, "").charAt(0).toUpperCase()), t, el("span", "sfagher", kopie ? "" : agentHer(a)));
-      return b;
-    };
-    if (z.liste === "kopie") {
-      liste.append(el("div", "sfsub", "Copy which one? The copy remembers where it came from."), ...l.map((a) => karteVon(a, true)));
-    } else {
-      if (repoAg) liste.append(karteVon(repoAg));
-      if (hier.length) liste.append(el("div", "sfsub", "Used here"), ...hier.map((a) => karteVon(a)));
-      if (sonst.length) liste.append(el("div", "sfsub", hier.length ? "Your other agents" : "Your agents"), ...sonst.map((a) => karteVon(a)));
-      if (!rest.some((a) => a.art === "eigen")) liste.append(el("p", "sfleer", "An agent is a set of blocks with a name. Change a block, save it, and it shows up here."));
-      if (z.liste === "import") liste.append(einwurf(s));
+    const alle = bereit(s, l);
+    liste.classList.toggle("sfweg", z.liste !== "agenten");
+    liste.append(el("div", "sfsub sfsub1", "Start right away"));
+    for (const b of z.alle ? alle : alle.slice(0, BEREIT_ZUERST)) liste.append(bereitZeile(s, b));
+    if (alle.length > BEREIT_ZUERST) {
+      const mehr = knopf("sfmehr", [z.alle ? "Show fewer" : `Show ${alle.length - BEREIT_ZUERST} more`], () => { z.alle = !z.alle; render(); });
+      liste.append(mehr);
     }
+    if (z.liste === "gestalten") {
+      liste.append(el("div", "sfsub", "Design which one? Its blocks open in the form; start it from there."));
+      // an agent of several seats is a constellation: its seats are designed in the constellation view, not in this form
+      for (const b of alle.filter((x) => !(x.vorlage && x.vorlage.sitze > 1))) {
+        const k = knopf("sfag", [], () => void gestalte(s, b));
+        k.dataset.gestalten = b.key;
+        const tt = el("span", "sfagt");
+        const kopie = b.agent && b.agent.id !== "repo" && !b.agent.aenderbar;
+        tt.append(el("div", "sfagn", b.name), el("div", "sfagf", kopie ? `${b.satz} · opens your own copy` : b.satz));
+        k.append(el("span", "sfav", b.name.charAt(0).toUpperCase()), tt, el("span", "sfagher", b.her));
+        liste.append(k);
+      }
+    }
+    if (z.liste === "import") liste.append(einwurf(s));
   }
   if (z.fehler) liste.append(el("div", "sffehler", z.fehler));
   const knoepfe = el("div", "sfbtns");
   const an = (id: FensterStand["liste"]) => () => { z.liste = z.liste === id ? "agenten" : id; z.fehler = null; render(); };
-  const k = knopf("", ["Copy an agent"], an("kopie")), i = knopf("", ["Import…"], an("import")), n = knopf("", ["New agent"], () => oeffne(s, null));
-  k.setAttribute("aria-pressed", String(z.liste === "kopie"));
-  i.setAttribute("aria-pressed", String(z.liste === "import"));
-  knoepfe.append(k, i, n);
+  const weg = (verb: string, satz: string, tu: () => void, gedrueckt: boolean): HTMLButtonElement => {
+    const k = knopf("", [el("b", "", verb), el("span", "", satz)], tu);
+    k.setAttribute("aria-pressed", String(gedrueckt));
+    return k;
+  };
+  knoepfe.append(weg("Set up", "a new agent from scratch", () => oeffne(s, null), false),
+    weg("Design", "change the blocks of one you have", an("gestalten"), z.liste === "gestalten"),
+    weg("Import", "an agent from a file", an("import"), z.liste === "import"));
   karte.append(h, liste, knoepfe);
   col.append(karte);
   return col;
+}
+// a template of Fleet's becomes the agent (or the constellation) it describes: one setup imported like any file. Null with the reason in the window.
+async function importiereVorlage(s: St, v: VorlageZeile): Promise<{ agent: AgentZeile } | { konst: string } | null> {
+  const r = await post("/api/setups/import", { vorlage: v.id, schreiben: true });
+  const j = r ? await r.json().catch(() => null) as { agent?: AgentZeile; konstellation?: { id: string }; error?: string } | null : null;
+  if (S !== s) return null;
+  if (!r?.ok || !j || (!j.agent && !j.konstellation)) {
+    s.sitz.busy = false; s.sitz.startet = null;
+    s.sitz.fehler = j?.error ?? (r ? `The server answered ${r.status}.` : "The server is not reachable.");
+    render();
+    return null;
+  }
+  if (s.repo) s.sitz.agenten.delete(s.repo);
+  return j.agent ? { agent: j.agent } : { konst: j.konstellation!.id };
+}
+// DESIGN: the agent opens in the form with its blocks. Plain Claude Code opens as it is; an agent that is not yours opens as your own copy; a template of
+// Fleet's is imported first.
+async function gestalte(s: St, b: Bereit): Promise<void> {
+  const z = s.sitz;
+  if (z.busy) return;
+  let a = b.agent ?? null;
+  if (!a && b.vorlage) {
+    z.busy = true; z.startet = b.key; z.fehler = null; render();
+    const k = await importiereVorlage(s, b.vorlage);
+    if (!k || !("agent" in k)) return;
+    z.busy = false; z.startet = null;
+    a = k.agent;
+  }
+  if (!a) return;
+  if (a.id === "repo" || a.aenderbar) oeffne(s, a); else await kopiere(s, a);
+}
+// START A READY AGENT IN ONE CLICK: the same door as the start button of the session page (los), with the preview read here instead of shown.
+// A template of Fleet's is imported first (one setup like any file); an agent of several seats starts at its top position.
+async function startDirekt(s: St, b: Bereit): Promise<void> {
+  const z = s.sitz, repo = s.repo;
+  if (!repo || z.busy) return;
+  z.busy = true; z.startet = b.key; z.fehler = null;
+  render();
+  const fehl = (text: string): void => { if (S !== s) return; z.busy = false; z.startet = null; z.fehler = text; render(); };
+  let agent = b.agent && b.agent.id !== "repo" ? b.agent : null, sitz: string | null = b.sitz ?? null;
+  if (b.vorlage && !agent && !sitz) {
+    const k = await importiereVorlage(s, b.vorlage);
+    if (!k) return;
+    if ("agent" in k) agent = k.agent; else sitz = `${k.konst}/${b.vorlage.spitze}`;
+  }
+  const n = planUrl(repo, "nur-ordner", {}, {}, sitz ? { sitz } : {});
+  const p = await lies(agent ? `${n}&agent=${encodeURIComponent(agent.id)}` : n);
+  if (S !== s) return;
+  if ("fehler" in p) return fehl(`The preview is not readable: ${p.fehler}`);
+  const slot = freierPlatz(s);
+  if (slot === null) return fehl("No free slot in the bar.");
+  const r: Antwort = await starte({ tuer: "open", cwd: repo, slot, dreier: {}, plan: p.a.start.startbar ? { hash: p.a.plan.planHash, role: "nur-ordner" } : null,
+    ...(p.a.fassungsHash ? { fassung: p.a.fassungsHash } : {}), wahl: {}, ...(agent ? { agent: agent.id } : {}), ...(sitz ? { sitz } : {}),
+    // the bar names the agent, not only the folder (Claude Code as it is keeps the folder's name, as every plain start does)
+    ...(b.key === "repo" ? {} : { label: b.name }) });
+  if (S !== s) return;
+  z.busy = false; z.startet = null;
+  if (r.ok) {
+    s.shell.close();
+    zeigeSlot(r.slot);
+    if (r.hinweis) meldung(`The session is on slot ${r.slot}. ${r.hinweis}`);
+    return;
+  }
+  z.fehler = r.fehler;
+  if (r.bewegt) s.plaene.clear();
+  render();
 }
 // IMPORT: a setup someone shared as a file (the Share button, or GET /api/setups/:id/datei elsewhere; the older agent and constellation files read too);
 // it never starts with No limits
@@ -1342,7 +1481,9 @@ async function los(s: St): Promise<void> {
     : slot === null ? { ok: false, fehler: "No free slot in the bar." }
     : await starte({ tuer: "open", cwd: s.repo, slot, dreier: dreierWahl, plan: a.start.startbar ? { hash: a.plan.planHash, role: rolle ?? "nur-ordner" } : null,
       // a role's door writes its label and card itself: its Fassung is not the preview's of its plan, so it carries no hash to check
-      ...(a.fassungsHash && !rolle ? { fassung: a.fassungsHash } : {}), wahl: { ...wahl, ...(ziel ? { goal: ziel } : {}) }, ...agent });
+      ...(a.fassungsHash && !rolle ? { fassung: a.fassungsHash } : {}), wahl: { ...wahl, ...(ziel ? { goal: ziel } : {}) }, ...agent,
+      // a saved agent starting whole names its slot, as the menu's Start does
+      ...(ganz && !rolle ? { label: z.name } : {}) });
   if (S !== s) return;
   z.busy = false;
   if (r.ok) {

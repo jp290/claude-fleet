@@ -349,11 +349,13 @@ describe("5 · der Export sagt, was der Sitz im eigenen Setup wirklich hatte", (
     expect(sitzOf(r[1]).liest.length).toBeGreaterThan(0);
   }, LIFE_DEADLINE_MS);
 
-  test("der Modus des eigenen Setups: local vor project vor user, sonst default", () => {
+  // sonst Claude Codes eingebaute Voreinstellung im Terminal, auto (W3 Auftrag 21: bis dahin stand hier „default“, und ein so exportierter Sitz trug
+  // Manual, wo er in auto lief; code.claude.com/docs/en/permission-modes)
+  test("der Modus des eigenen Setups: local vor project vor user, sonst Claude Codes Voreinstellung auto", () => {
     const dir = join(TMP, "modus"), home = join(dir, "home"), repo = join(dir, "repo");
     mkdirSync(join(repo, ".claude"), { recursive: true });
     mkdirSync(home, { recursive: true });
-    expect(eigenerModus(repo, home)).toBe("default");
+    expect(eigenerModus(repo, home)).toBe("auto");
     writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
     expect(eigenerModus(repo, home)).toBe("plan");
     writeFileSync(join(repo, ".claude/settings.json"), JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }));

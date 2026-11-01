@@ -3,7 +3,7 @@
 // Schritte aus argv[2] über den Route-Handler; die Antworten gehen als JSON nach stdout. Ein eigener
 // Prozess je Leben, weil bun test alle Testdateien in einem Prozess fährt: ein Import von server.ts
 // hier legte FLEET_STATE_DIR für server/load.test.ts mit fest.
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -14,7 +14,8 @@ interface Step { method: "GET" | "POST" | "PUT"; path: string; body?: unknown; t
   headers?: Record<string, string> }
 // `until`: warten, bis die Datei da ist, höchstens `ms` — was der Server nach einer Antwort im Hintergrund
 // anstößt (der Code-Graph nach einem Land), endet sonst mit diesem Leben; Antwort 200, oder 408 nach `ms`
-interface Until { until: string; ms: number }
+// `enthaelt`: erst, wenn die Datei diesen Text trägt (ein Paste schreibt den Kopf vor dem Körper; ohne das wartet der Schritt nur auf den Kopf)
+interface Until { until: string; ms: number; enthaelt?: string }
 // `rohr`: die Datei im Zustandsordner wird eine Röhre, aus der erst nach `ms` gelesen wird. Ein Schreiben dorthin hält die eine Schreibkette
 // von persist.ts an (alle Ereignisprotokolle teilen sie), und was der Server danach schreibt, kommt erst nach `ms` an: so wird „die Tür
 // antwortet vor dem Schreiben“ ein fester Ausgang statt eines Zufalls der Plattenzeit
@@ -137,8 +138,9 @@ for (const step of steps) {
   }
   if ("until" in step) {
     const end = Date.now() + step.ms;
-    while (!existsSync(step.until) && Date.now() < end) await Bun.sleep(25);
-    out.push({ status: existsSync(step.until) ? 200 : 408, body: { until: step.until } });
+    const da = () => existsSync(step.until) && (!step.enthaelt || readFileSync(step.until, "utf8").includes(step.enthaelt));
+    while (!da() && Date.now() < end) await Bun.sleep(25);
+    out.push({ status: da() ? 200 : 408, body: { until: step.until } });
     continue;
   }
   out.push(await call(step));

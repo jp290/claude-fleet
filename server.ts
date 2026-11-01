@@ -9,7 +9,7 @@ import { historySource } from "./src/drafts";
 import { createSubscriptionReader } from "./codex-quota";
 import { createClaudeQuotaReader } from "./server/usage";
 import { realSeatGateFrom, realSeatRefusal } from "./server/echte-sitze";
-import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek, type StartAspects } from "./server/session-start";
+import { hubHostOf, MCP_CONFIG_KEINE, PERMISSION_MODE, slotSpawnFrom, spawnListRole, startAspects, withoutSkipPermissions, type SlotSpawn, type SpawnBibliothek, type StartAspects, type StartModus } from "./server/session-start";
 import { bunInstall, installStand, starteInstall } from "./server/branch-install";
 import { faellig, liesAbnahme, mitAbnahme, ohneAbnahme, schreibAbnahme, vonLebt, vonSitz } from "./server/abnahme-instanz";
 import { kindNieWeiter, spawnNieWeiter, type Oeffnerin } from "./server/kind-weite";
@@ -245,7 +245,7 @@ import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfac
   postfachNichtsGetippt, postfachVersuchSignatur,
   type PostfachFehlerwort, type PostfachWeg } from "./server/postfach-fehler";
 import { beendeteVersuche, postfachVersuchRow, prunePostfachVersuch, rememberPostfachVersuch,
-  restorePostfachVersuche, vergangeneVersuche, type BeendeterVersuch, type PostfachVersuchMapRow } from "./server/postfach-versuche";
+  restorePostfachVersuche, vergangeneVersuche, verlasseVersuch, type BeendeterVersuch, type PostfachVersuchMapRow } from "./server/postfach-versuche";
 import { dieselbeSperre, loescheSperre, postfachHindernis,
   type PostfachGate, type PostfachHindernis } from "./server/postfach-befund";
 import { RECALL_KINDS, deliveredInField, recall, type RecallKind, type RecallResult } from "./server/recall";
@@ -277,7 +277,7 @@ import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
 import { claudeJsonPfad, vertraueOrdner, vertraueOrdnerPi, vertrauenJetzt, vertrauenJetztPi, vertrauenMerkenIn, vertrauenText, vertrauenTextPi, vertrauenUmDenStart } from "./server/claude-vertrauen";
-import { eigenerModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
+import { eigenerModus, eigenerStartModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
@@ -9543,7 +9543,11 @@ function oeffnerinOf(s: Slot): Oeffnerin {
   const role = s.spawn?.openedAt === s.openedAt ? s.spawn.role : spawnListRole({ claude: true, lane: !!s.worktree,
     orchestrator: positionRole(s) === "orchestrator", boundMain: boundProgramsForMain(s).length > 0 });
   const pe = slotPermissionsOf(s);
-  return { harness, modus: harness === CLAUDE_HARNESS.id && role ? PERMISSION_MODE[role] : null,
+  // EIN SITZ IM EIGENEN SETUP OHNE GEWÄHLTEN MODUS (W3 Auftrag 21, Queue ae423df4): seine Zeile trägt keinen, er startet in dem, den Claude Code
+  // wählt (server/fassung-umfeld.ts#eigenerStartModus), nicht in Fleets auto; dasselbe nennt sein Startfenster
+  const eigenOhneModus = role === "generic" && s.spawn?.openedAt === s.openedAt && s.spawn.eigen === true && !s.permissionMode && !NO_BYPASS && !!s.cwd;
+  return { harness, modus: harness === CLAUDE_HARNESS.id && role
+      ? eigenOhneModus ? (s.spawn?.startModus ?? eigenerStartModus(s.cwd!, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, s.model ?? null)).modus : PERMISSION_MODE[role] : null,
     permissions: pe.ok ? pe.permissions : null, rechte: s.rechte, rollen: rechteRollen(s) };
 }
 // a self filing's spawn choice, capped by its filer: the row-level pair, or each variant's (a group names none at row level)
@@ -11512,7 +11516,10 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       // ...and which library block its conversation reads (session-start.ts#SpawnBibliothek): a resumed conversation keeps
       // the prompt of its first request, unless it was compacted after the spawn before
       const priorBib = s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null;
-      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, ...(bau ? { bau: true as const } : {}), ...(eigen ? { eigen: true as const } : {}), ...(seat?.text
+      // the mode an own-setup seat without a chosen one starts in, read once here (W3 Auftrag 22 E2): the files may change later, the seat doesn't
+      const startModus = eigen && listRole === "generic" && !occupant.permissionMode && !NO_BYPASS
+        ? eigenerStartModus(occupant.cwd, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, occupant.model ?? null) : null;
+      s.spawn = listRole && s.openedAt ? { role: listRole, openedAt: s.openedAt, ...(bau ? { bau: true as const } : {}), ...(eigen ? { eigen: true as const } : {}), ...(startModus ? { startModus } : {}), ...(seat?.text
         ? { bibliothek: bibliothekBeimSpawn(priorBib, resume, sha256Of(seat.text), s.compaction?.at ?? null, Date.now()) } : {}) } : null;
       // record the pin only if the adapter actually PASSED it (pinsSession). A discovered Codex id
       // is preserved across the heal although pinsSession stays false; only openSlot's recycle clears it.
@@ -11857,7 +11864,7 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   gitInfo.delete(s.id);
   repoInfo.delete(s.id); // canonical repo belongs to this occupant/cwd just as much as gitInfo does
   inboxNudgeTried.delete(s.id); // a dead pane reopened in place is still a new main session
-  postfachAttempted.delete(s.id); // nor an attempt of the previous occupant
+  endePostfachVersuch(s.id); // nor an attempt of the previous occupant: what stood in its pane is read by it (Queue 672d48ec)
   autos = autos.filter((x) => x.slot !== s.id); // and no inherited schedules
   dropWatchesFor(s.id); // nor an inherited subscription, in either direction
   reapLaneSuiteOffersFor(s.id); // …nor an offer of a tree the previous occupant held
@@ -12049,7 +12056,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   reviewInflight.delete(s.id);
   reviewAutoTried.delete(s.id);
   inboxNudgeTried.delete(s.id);
-  postfachAttempted.delete(s.id);
+  endePostfachVersuch(s.id);
   postfachQueued.delete(s.id);
   hintLedger.forget(s.id);
   thresholdActs.delete(s.id);
@@ -22934,7 +22941,7 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
   mcp: { readonly browserMcp: boolean; readonly packMcp: readonly ContextPackMcpServer[] }, bau = false, fleetRepo = false,
   gewaehlt: readonly string[] = [], permissionMode: PermissionModeWahl | null = null, weglassen: Weglassen | null = null,
   umgebung = false, toolsWahl: readonly string[] | null = null, fleetCheckout = false, harness: string | null = null,
-  serverRechte: string | null = null):
+  serverRechte: string | null = null, ordner: string | null = null, modell: string | null = null, gehalten: StartModus | null = null):
   { zusatz: FassungAbschnittEingang; start: FassungAbschnittEingang | null; darf: FassungAbschnittEingang[] } {
   // A pi seat has Fleet's start as its own appended file (server.ts#piStartDatei): purpose and library, not Claude Code's
   // line features. Say that here instead of "this harness gets nothing" — the parts themselves stand under Liest.
@@ -22959,10 +22966,20 @@ function fassungFleetStart(listRole: SessionSpawnRole | null, rechte: Rechte | n
         : "eigenes Setup: Fleet hängt keinen eigenen Text an den Systemprompt"),
     start: null,
     darf: [
-      textAbschnitt("modus", "server/eigenes-setup.ts#eigenesSetup", NO_BYPASS
-        ? `eigenes Setup — auf dieser Testinstanz mit echten Sitzen ${aspects.mode} (jeder echte Sitz läuft hier so); sonst setzt Fleet keinen Berechtigungsmodus`
-        : permissionMode ? `eigenes Setup — Berechtigungsmodus ${permissionMode}, beim Öffnen gewählt`
-        : "eigenes Setup — Fleet setzt keinen Berechtigungsmodus, es gilt deiner", false),
+      // DER MODUS, IN DEM DIESER SITZ STARTET, als sein Name (W3 Auftrag 21, Queue ae423df4): das Startfenster liest ihn so (src/start-fenster.ts#wirkModus)
+      // und nahm bei einem Satz „Manual“ an, während ein Sitz ohne gewählten Modus in Claude Codes Voreinstellung auto lief
+      ...(() => {
+        // a running seat names the mode it started in (Slot.spawn.startModus), a new start the one it would get now, on its model
+        const start = !NO_BYPASS && !permissionMode && ordner ? gehalten ?? eigenerStartModus(ordner, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, modell) : null;
+        return [NO_BYPASS
+          ? textAbschnitt("modus", "server/eigenes-setup.ts#eigenesSetup", aspects.mode, false, undefined, undefined,
+            "eigenes Setup auf dieser Testinstanz mit echten Sitzen: jeder echte Sitz läuft hier so (die Zeile trägt --permission-mode)")
+          : permissionMode ? textAbschnitt("modus", "server/eigenes-setup.ts#eigenesSetup", permissionMode, false, undefined, undefined,
+            "eigenes Setup: beim Öffnen gewählt, die Zeile trägt --permission-mode")
+          : start ? textAbschnitt("modus", "server/fassung-umfeld.ts#eigenerStartModus", start.modus, false, undefined, undefined,
+            `eigenes Setup: Fleet setzt keinen Berechtigungsmodus, Claude Code startet so: ${start.quelle}`)
+          : textAbschnitt("modus", "server/eigenes-setup.ts#eigenesSetup", "eigenes Setup — Fleet setzt keinen Berechtigungsmodus, es gilt deiner", false)];
+      })(),
       textAbschnitt("eigenes-setup", "server/eigenes-setup.ts#EIGENES_SETUP_MINIMUM", [EIGENES_SETUP_SATZ,
         ...[...EIGENES_SETUP_MINIMUM, ...(NO_BYPASS ? [EIGENES_SETUP_TESTINSTANZ] : [])].map((m) => `- ${m.was}: ${m.warum}`)].join("\n"), false),
       // what the door chose, one line per addition with the door field's name; nothing chosen is its own named state
@@ -23021,7 +23038,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
     eigenesSetupGewaehlt({ model: o.modell, effort: o.effort, permissionMode: null, rechte: null, profil: null, bibliothek: false, notizbuch: null, remote: false, packMcp: [],
       autoModeEnvironment: false, tools: null }), null, null, false, null, o.rolle !== "lane" && fassungImFleetCheckout(o.repoRoot, null), o.harness,
     o.rolle !== "lane" && o.rolle !== "orchestrator" && o.rolle !== "program-main" && (fassungNeueListRolle(o.rolle, o.harness) === "generic" || harnessFamilie(o.harness) === "pi")
-      ? serverRechteZeile(o.rechte ?? null, ["generic"], o.harness) : null);
+      ? serverRechteZeile(o.rechte ?? null, ["generic"], o.harness) : null, realpathLoose(o.repoRoot), o.modell);
   const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness, fleetBaum !== null);
   const art: SessionKind = o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : o.rolle === "program-main" ? "program-main" : "session";
   return baueFassung({
@@ -23311,7 +23328,8 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
       remote: !!s.remote, packMcp: s.packMcp.map((m) => m.name), autoModeEnvironment: s.autoModeEnvironment === true, tools: s.tools }), s.permissionMode,
     s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree), spawnPick.harness,
-    isSeat(s) && (spawnRolle === "generic" && !pi || pi) ? serverRechteZeile(s.rechte, rechteRollen(s), spawnPick.harness) : null);
+    isSeat(s) && (spawnRolle === "generic" && !pi || pi) ? serverRechteZeile(s.rechte, rechteRollen(s), spawnPick.harness) : null, cwd,
+    spawnPick.model ?? null, s.spawn?.openedAt === s.openedAt ? s.spawn.startModus ?? null : null);
   const liest: FassungAbschnittEingang[] = [
     ...(steine?.role ? [textAbschnitt("rolle", "server/setup-datei.ts#steineFuerAgentWahl (role stone)", steine.block ?? "", false),
       textAbschnitt("richtung", "server/setup-datei.ts#RICHTUNG_PLATZ", RICHTUNG_PLATZ, false)]
@@ -29474,6 +29492,13 @@ const rememberPostfachAttempt = (s: Slot, ids: readonly string[], stand = false)
 // zurückkam (postfachHandlers#delivered). Ein Wurf, ein zurückgerollter Paste („cleared“) oder ein gescheiterter
 // geparkter Resend ist nur ein Vielleicht und erreicht die Nachfolgerin, auch nach einem Deploy (alte Ledger-Zeilen
 // tragen das Feld `stand` nicht).
+// EINE BESETZUNG, DIE JETZT ABGEBAUT WIRD (W3 Auftrag 21, Queue 672d48ec): die Nachfolge löschte ihre Versuchszeile, bevor der Takt sie
+// stempeln konnte, und der Takt tippte der Nachfolgerin, was in der Pane der Vorgängerin stand (d50df5ad am 01.11., erst der nächste Neustart
+// stempelte es aus dem Ledger). Was stand, gilt hier als von ihr gelesen; ein Vielleicht geht, wie im Takt, an die Nachfolgerin.
+function endePostfachVersuch(slot: number): void {
+  const b = verlasseVersuch(postfachAttempted, slot);
+  if (b && erledigeGetipptes([b])) void saveStateNow().catch((e) => logError("postfachNachfolge", e));
+}
 function erledigeGetipptes(beendet: readonly BeendeterVersuch[]): boolean {
   let stamped = 0;
   for (const b of beendet) for (const id of b.ids) {

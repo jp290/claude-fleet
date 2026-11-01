@@ -17,7 +17,7 @@ import type { DirInfoResp } from "./client";
 import { morph } from "./dom-morph";
 import { mdInto } from "./md";
 import { anzeige, fliessend, geaendert, imRepo, nurBeiPfaden, regelDateien, startbrief, uebergabeHinweis, zeilen, type Block, type Fassung } from "./start-brief";
-import { FRAGT, MODI, STUFEN, TOOLS, abweichungen, dreier, gleich, normal, packsAktiv, schaltePack as schalte, setzePacks, tuer, vorschau, wahlAus, wahlenVon, type Wahl } from "./start-wahl";
+import { FRAGT, MODI, ohneWahl, STUFEN, TOOLS, abweichungen, dreier, gleich, normal, packsAktiv, schaltePack as schalte, setzePacks, tuer, vorschau, wahlAus, wahlenVon, type Wahl } from "./start-wahl";
 import { anatomieVon } from "./k15-anatomie";
 
 // an agent as GET /api/agenten lists it (server/agenten.ts#AgentAnsicht), with `zuletzt` for this repo
@@ -927,9 +927,10 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
       satz: reicht(sv.filter((x) => !w.mcpAus.includes(x.key)).map((x) => x.name.replace(/^Google /, ""))), war: neben(weg > 0, `normally all ${sv.length}`) }
     : { id: "connectors", name: NAME.connectors, icon: ICON.connectors, wert: fest("Your claude.ai account's"), satz: "Your claude.ai connectors and your plugins' servers." });
   // ASKS YOU: four choices, and what holds without one says its level (cold read 26.10.: „[Zitat entfernt]“ said nothing)
-  const hier = MODI.find((m) => m.id === (wpn ?? "manual")) ?? MODI[1], gilt = MODI.find((m) => m.id === (w.permissionMode ?? wp ?? "manual")) ?? hier;
+  // what holds without a choice is the mode the start brief names (src/start-wahl.ts#ohneWahl)
+  const hier = ohneWahl(wpn), gilt = MODI.find((m) => m.id !== null && m.id === (w.permissionMode ?? wp)) ?? hier;
   K.set("permissions", { id: "permissions", name: NAME.permissions, icon: ICON.permissions, gehalten, satz: GIBT.permissions, war: neben(!!w.permissionMode, `normally ${hier.wort}`),
-    wert: wahl("permissions", [[null, `${hier.wort} · your setting`], ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
+    wert: wahl("permissions", [[null, hier.label], ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
       .map((m): [string, string] => [m.id!, m.wort])], w.permissionMode, (v) => { w.permissionMode = v; }, gehalten ? gilt.wort : w.permissionMode === null ? hier.wort : undefined) });
   const i = infoDa(s);
   if (w.branch !== null) K.set("workplace", { id: "workplace", name: NAME.workplace, icon: ICON.workplace, leise: true, wert: fest("Replaced by its own branch"), satz: "Its own branch takes its place." });
@@ -1142,8 +1143,8 @@ function lade(s: St, id: string, k: Kachel | undefined, fj: Fassung, fn: Fassung
   }
   if (frei && id === "rules" && eigenesSetup(fj)) d.append(opts([{ v: "ja", wort: "Yours + this repo's", satz: "Your rules for every project, and this repo's own." },
     { v: "nein", wort: "Only this repo's", satz: nurRepoSatz(fn ?? fj, s.repo ?? "") }], w.eigeneRegeln ? "ja" : "nein", (v) => { w.eigeneRegeln = v === "ja"; aendere(s, ["rules"]); }));
-  if (frei && id === "permissions") { const hier = MODI.find((m) => m.id === (wirkModus(fn ?? fj) ?? "manual")) ?? MODI[1];
-    d.append(opts([{ v: null, wort: `${hier.wort} · your setting`, satz: hier.satz }, ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
+  if (frei && id === "permissions") { const hier = ohneWahl(wirkModus(fn ?? fj));
+    d.append(opts([{ v: null, wort: hier.label, satz: hier.satz }, ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
       .map((m) => ({ v: m.id, wort: m.wort, satz: m.satz }))], w.permissionMode, (v) => { w.permissionMode = v; aendere(s, ["permissions"]); })); }
   if (frei && id === "rights") d.append(opts(STUFEN.map((x) => ({ v: x.id, wort: x.wort, satz: x.satz })), w.rechte, (v) => { w.rechte = v as Wahl["rechte"]; aendere(s, ["rights"]); }));
   if (frei && id === "succession" && w.schwelle !== null) d.append(opts(SCHWELLEN.map((n) => ({ v: String(n), wort: `At ${n} %` })), String(w.schwelle), (v) => { w.schwelle = Number(v); aendere(s, ["succession"]); }));

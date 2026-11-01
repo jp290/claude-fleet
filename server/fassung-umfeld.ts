@@ -9,7 +9,8 @@
 // `eigentum: "owner"`: es ist Teil des Hashes, aber nicht Teil des teilbaren Setups und reist nicht mit (src/sitz.ts).
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { textAbschnitt, unknownAbschnitt, type FassungAbschnittEingang } from "./fassung";
 import type { Threshold } from "./succession";
 
@@ -345,15 +346,81 @@ function eigenesAbschnitt(e: Eigenes, regelnAus: string | null): FassungAbschnit
     zeilen.join("\n"), true, undefined, dateien), eigentum: "owner" };
 }
 
-/** DER MODUS, MIT DEM CLAUDE CODE IM EIGENEN SETUP STARTET, wo die Tür keinen wählt: `permissions.defaultMode` aus den Einstellungen
- *  in Claude Codes Reihenfolge (local vor project vor user, code.claude.com/docs/en/settings), sonst „default“. Für den Export eines
- *  Sitzes (server/sitz-reise.ts), der so lief: er trägt diesen Modus, nicht Fleets `auto`. Rein bis auf das Lesen der drei Dateien. */
-export function eigenerModus(repo: string, claudeDir: string): string {
-  for (const pfad of [`${repo}/.claude/settings.local.json`, `${repo}/.claude/settings.json`, `${claudeDir}/settings.json`]) {
-    try {
-      const m = (JSON.parse(readFileSync(pfad, "utf8")) as { permissions?: { defaultMode?: unknown } }).permissions?.defaultMode;
-      if (typeof m === "string" && m) return m;
-    } catch { /* keine oder keine lesbare Datei: die nächste */ }
+/** DER MODUS, IN DEM CLAUDE CODE IM EIGENEN SETUP STARTET, wo die Tür keinen wählt und Fleets Zeile keinen trägt (W3 Auftrag 21, Queue ae423df4),
+ *  so wie Claude Code ihn wählt (code.claude.com/docs/en/permission-modes, „Which mode a session starts in“):
+ *  - `permissions.defaultMode` der ersten Datei, die einen nennt: verwaltet, lokal, Projekt, Nutzer. `default` heißt dort Manual.
+ *  - `auto` aus Projekt- oder lokaler Datei gilt nicht; dann gilt die eingebaute Voreinstellung, nicht die des Nutzers.
+ *  - `bypassPermissions` aus Projekt- oder lokaler Datei gilt nicht, und die Sitzung startet in Manual (Auftrag 22, D1: gemessen an
+ *    Claude Code 2.1.316, Fußzeile „manual mode on“; Fleet nannte hier auto).
+ *  - Die lokale Datei liegt an der Wurzel des Git-Repos, im Worktree an der des Haupt-Checkouts; eine alte im Startordner liest
+ *    Claude Code daneben, die Wurzel gewinnt (code.claude.com/docs/en/settings, ab v2.1.211; Auftrag 22, P1).
+ *  - Setzt eine Datei `disableAutoMode` auf "disable", oder läuft der Sitz auf einem Modell ohne auto (Haiku 4.5, Sonnet 4.5,
+ *    Opus 4.5, claude-3: permission-modes, Auftrag 22, P3), startet er in Manual statt in auto.
+ *  - Sonst Claude Codes eingebaute Voreinstellung im Terminal: auto (ab v2.1.283).
+ *  Verwaltete Quellen außer der einen Datei (managed-settings.d, MDM, Server) liest Fleet nicht (Auftrag 22, P2 bleibt draußen).
+ *  `modell` = das Modell auf der Zeile; null = keins, dann das `model` der Einstellungen, sonst Claude Codes Voreinstellung. */
+export function eigenerStartModus(repo: string, claudeDir: string, verwaltet: string | null = VERWALTETE_EINSTELLUNGEN,
+  modell: string | null = null): { modus: string; quelle: string } {
+  const wurzel = lokaleWurzel(repo);
+  const lokal = [...(wurzel && wurzel !== repo ? [wurzel] : []), repo].map((d) => ({ pfad: `${d}/.claude/settings.local.json`, voll: false }));
+  const dateien = [...(verwaltet ? [{ pfad: verwaltet, voll: true }] : []), ...lokal,
+    { pfad: `${repo}/.claude/settings.json`, voll: false }, { pfad: `${claudeDir}/settings.json`, voll: true }];
+  const gelesen = dateien.map((d) => {
+    try { return { ...d, p: (JSON.parse(readFileSync(d.pfad, "utf8")) as { permissions?: Record<string, unknown>; disableAutoMode?: unknown; model?: unknown }) }; }
+    catch { return { ...d, p: null }; } // keine oder keine lesbare Datei: die nächste
+  });
+  const ohneAuto = gelesen.some((d) => d.p?.permissions?.disableAutoMode === "disable" || d.p?.disableAutoMode === "disable");
+  const lauftAuf = modell ?? (gelesen.find((d) => typeof d.p?.model === "string" && d.p.model)?.p?.model as string | undefined) ?? null;
+  const modellOhne = lauftAuf !== null && modellOhneAuto(lauftAuf);
+  const auto = (quelle: string) => ohneAuto ? { modus: "manual", quelle: `${quelle}; disableAutoMode "disable" in den Einstellungen: Manual` }
+    : modellOhne ? { modus: "manual", quelle: `${quelle}; auf ${lauftAuf} gibt es auto nicht: Manual` } : { modus: "auto", quelle };
+  for (const d of gelesen) {
+    const m = d.p?.permissions?.defaultMode;
+    if (typeof m !== "string" || !m) continue;
+    if (!d.voll && m === "auto") return auto(`Claude Codes eingebaute Voreinstellung (auto in ${d.pfad} gilt aus dieser Datei nicht)`);
+    if (!d.voll && m === "bypassPermissions") return { modus: "manual", quelle: `bypassPermissions in ${d.pfad} gilt aus dieser Datei nicht; Claude Code startet dann in Manual` };
+    const modus = m === "default" ? "manual" : m;
+    return modus === "auto" ? auto(`permissions.defaultMode in ${d.pfad}`) : { modus, quelle: `permissions.defaultMode in ${d.pfad}` };
   }
-  return "default";
+  return auto("Claude Codes eingebaute Voreinstellung im Terminal (ab v2.1.283), keine Einstellung nennt einen Modus");
+}
+/** Ein Modell, auf dem es auto nicht gibt (code.claude.com/docs/en/permission-modes, „Eliminate prompts with auto mode“, Model): über die
+ *  Anthropic-API nur Opus ab 4.6, Sonnet ab 4.6, Haiku 5.5 und Fable; „Older models, including Sonnet 4.5, Opus 4.5, Haiku 4.5, and claude-3
+ *  models, are not supported on any provider“. Eine Kennung, die Fleet nicht als Claude-Version liest (ein Alias wie `opus`), zählt als mit
+ *  auto: Fleet behauptet kein Manual, das es nicht weiß. Die engere Liste für Bedrock, Agent Platform und Foundry kennt Fleet nicht. */
+export function modellOhneAuto(modell: string): boolean {
+  if (/claude-(?:instant|[12])(?![0-9])|claude-3/i.test(modell)) return true;
+  const m = /claude-(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?![0-9]))?/i.exec(modell);
+  if (!m) return false;
+  const v = Number(m[2]) + Number(m[3] ?? 0) / 10, ab = m[1]!.toLowerCase() === "haiku" ? 5.5 : 4.6;
+  return v < ab;
+}
+/** Die Wurzel, an der Claude Code die lokale Datei liest: der Ordner mit `.git`; im Worktree (`.git` ist eine Datei) der Haupt-Checkout,
+ *  aus `gitdir:` und dessen `commondir`. null = dort nicht, nur der Startordner: kein Repo, eines ohne Haupt-Checkout (nackt), und wie
+ *  Claude Code (settings, „Where Claude Code keeps the local file in a git repository“) eine Wurzel, die das Home ist, oder deren `.git`
+ *  oder `.claude` nicht dem Nutzer gehört. */
+export function lokaleWurzel(start: string, home: string = homedir()): string | null {
+  const w = gitWurzel(start);
+  if (!w || resolve(w) === resolve(home)) return null;
+  const uid = process.getuid?.();
+  const fremd = (pfad: string) => { try { return uid !== undefined && statSync(pfad).uid !== uid; } catch { return false; } };
+  return [w, join(w, ".git"), join(w, ".claude")].some(fremd) ? null : w;
+}
+function gitWurzel(start: string): string | null {
+  for (let d = start; ; d = dirname(d)) {
+    const g = join(d, ".git");
+    try {
+      if (statSync(g).isDirectory()) return d;
+      const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(g, "utf8"))?.[1]?.trim();
+      if (!gitdir) return d;
+      const wt = resolve(d, gitdir);
+      const common = resolve(wt, (() => { try { return readFileSync(join(wt, "commondir"), "utf8").trim(); } catch { return "."; } })());
+      return basename(common) === ".git" ? dirname(common) : null;
+    } catch { /* hier kein .git: eine Ebene höher */ }
+    if (dirname(d) === d) return null;
+  }
+}
+/** Für den Export eines Sitzes (server/sitz-reise.ts), der so lief: er trägt diesen Modus, nicht Fleets `auto`. */
+export function eigenerModus(repo: string, claudeDir: string): string {
+  return eigenerStartModus(repo, claudeDir).modus;
 }

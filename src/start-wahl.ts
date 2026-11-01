@@ -52,7 +52,7 @@ export const STUFEN: readonly { id: Stufe; wort: string; satz: string }[] = [
   { id: "deployen", wort: "May deploy", satz: "May also redeploy Fleet and throw working copies away." },
 ];
 export const MODI: readonly { id: string | null; wort: string; satz: string }[] = [
-  { id: null, wort: "Your setting", satz: "Asks before it acts, as your Claude Code is set." },
+  { id: null, wort: "Your setting", satz: "Fleet sets no mode; it starts as your Claude Code is set." },
   { id: "manual", wort: "Before changes", satz: "Asks you before every change it makes." },
   { id: "acceptEdits", wort: "Before commands", satz: "Edits files on its own; asks before commands." },
   { id: "auto", wort: "On its own", satz: "Works on its own; a safety check stops risky steps." },
@@ -60,6 +60,12 @@ export const MODI: readonly { id: string | null; wort: string; satz: string }[] 
   { id: "dontAsk", wort: "Never asks", satz: "Never asks; what isn't allowed is refused." },
   { id: "bypassPermissions", wort: "No limits", satz: "Never asks; only deny rules still stop it." },
 ];
+// WHAT HOLDS WITHOUT A CHOICE (W3 Auftrag 21, Queue ae423df4): the mode the start brief names (darf/modus, server/fassung-umfeld.ts#eigenerStartModus),
+// as "On its own · your setting"; when it names none, "Your setting" and never an assumed Manual (the window said "Before changes" while the seat ran in auto)
+export function ohneWahl(wirk: string | null): { id: string | null; wort: string; satz: string; label: string } {
+  const m = MODI.find((x) => x.id !== null && x.id === wirk) ?? MODI[0]!;
+  return { ...m, label: m.id === null ? m.wort : `${m.wort} · your setting` };
+}
 // ASKS YOU OFFERS FOUR (owner 25.10. 19:50): when it stops to ask; planning is „[Zitat entfernt]“, and No limits stays a mode an agent may carry
 export const FRAGT: readonly string[] = ["manual", "acceptEdits", "auto", "dontAsk"];
 

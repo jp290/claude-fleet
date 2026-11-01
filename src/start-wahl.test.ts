@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { abweichungen, dreier, gleich, normal, packsAktiv, schaltePack, tuer, vorschau, wahlAus, wahlenVon } from "./start-wahl";
+import { abweichungen, dreier, gleich, normal, ohneWahl, packsAktiv, schaltePack, tuer, vorschau, wahlAus, wahlenVon } from "./start-wahl";
 
 describe("the choices of the start window, read by the doors", () => {
   test("normal sends nothing: the session starts like claude by hand", () => {
@@ -140,5 +140,14 @@ describe("the packs a start gets, switch by switch", () => {
     expect(packsAktiv(w, [], ort, katalog)).toEqual(["who-it-is-for"]);
     schaltePack(w, "who-it-is-for", [], ort, katalog, reihe);
     expect(w.packs).toBeNull();
+  });
+});
+
+// W3 Auftrag 21, Queue ae423df4: „Asks you“ ohne Wahl nennt den Modus, den der Startbrief nennt. Ein Sitz im eigenen Setup ohne Einstellung
+// startet in Claude Codes Voreinstellung auto, und das Fenster sagte „Before changes · your setting“, weil es ohne einen Modusnamen Manual annahm.
+describe("Asks you ohne Wahl", () => {
+  test("der Modus des Startbriefs mit „your setting“; nennt er keinen, nur „Your setting“, nie ein angenommenes Manual", () => {
+    expect(["auto", "acceptEdits", "manual", null, "eigenes Setup — Fleet setzt keinen Berechtigungsmodus, es gilt deiner"].map((m) => ohneWahl(m).label))
+      .toEqual(["On its own · your setting", "Before commands · your setting", "Before changes · your setting", "Your setting", "Your setting"]);
   });
 });

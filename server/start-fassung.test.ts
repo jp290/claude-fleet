@@ -161,7 +161,7 @@ const gitRepo = (dir: string): void => {
   Bun.spawnSync(["git", "-c", "user.email=f@f.f", "-c", "user.name=f", "commit", "-qm", "init"], { cwd: dir });
 };
 
-interface Abschnitt { id: string; text: string | null }
+interface Abschnitt { id: string; text: string | null; quelle?: string | null }
 interface Teil { id: string; abschnitte: Abschnitt[] }
 interface Antwort { hash: string; teile: Teil[] }
 const abschnitt = (f: Antwort, teil: string, id: string): Abschnitt | undefined =>
@@ -183,12 +183,15 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
         const fassungen = { lane: await neu("lane", "claude"), orch: await neu("orchestrator", "claude"),
           frei: await S.fassungFuerNeuenPlan({ rolle: "nur-ordner", harness: "claude", modell: null, effort: null, repoRoot: ${JSON.stringify(ROOT)} }),
           eigen: await neu("nur-ordner", "claude"), codex: await neu("lane", "codex") };
-        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ fassungen }));
+        // der Modus, den Claude Code in diesem Ordner ohne --permission-mode wählt, mit denselben Einstellungen (Nutzer: home/.claude)
+        const { eigenerStartModus } = await import(${JSON.stringify(join(ROOT, "server/fassung-umfeld.ts"))});
+        const claudeWaehlt = eigenerStartModus((await import("node:fs")).realpathSync(repoRoot), process.env.HOME + "/.claude").modus;
+        await Bun.write(${JSON.stringify(out)}, JSON.stringify({ fassungen, claudeWaehlt }));
         process.exit(0);
       `;
       const r = await runServer(script, dir);
       expect({ code: r.code, stderr: r.code === 0 ? "" : r.stderr.slice(-1500) }).toEqual({ code: 0, stderr: "" });
-      const got = JSON.parse(readFileSync(out, "utf8")) as { fassungen: Record<"lane" | "orch" | "frei" | "eigen" | "codex", Antwort> };
+      const got = JSON.parse(readFileSync(out, "utf8")) as { fassungen: Record<"lane" | "orch" | "frei" | "eigen" | "codex", Antwort>; claudeWaehlt: string };
       const { lane, orch, frei, eigen, codex } = got.fassungen;
       for (const f of [lane, orch, frei]) {
         expect(abschnitt(f, "darf", "modus")?.text ?? "").not.toBe("");
@@ -201,8 +204,11 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
       expect(abschnitt(frei, "darf", "mcp")?.text).toContain("--strict-mcp-config nein");
       expect(abschnitt(lane, "darf", "werkzeuge")?.text).not.toBe(abschnitt(orch, "darf", "werkzeuge")?.text);
       expect(new Set([lane.hash, orch.hash, frei.hash, eigen.hash]).size).toBe(4);
-      // DAS EIGENE SETUP: kein Modus, kein Schnitt, nur die Zeile der Server-Rechte am Systemprompt, kein Modell von Fleet; die Ansicht nennt, was Fleet dazulegt
-      expect(abschnitt(eigen, "darf", "modus")?.text).toStartWith("eigenes Setup");
+      // DAS EIGENE SETUP: kein Modus auf der Zeile, kein Schnitt, nur die Zeile der Server-Rechte am Systemprompt, kein Modell von Fleet; die Ansicht
+      // nennt, was Fleet dazulegt, und als Modus den, den Claude Code dann wählt (W3 Auftrag 21/22, server/fassung-umfeld.ts#eigenerStartModus);
+      // ohne Einstellung in der Fixture ist das Claude Codes eingebaute Voreinstellung auto
+      expect(abschnitt(eigen, "darf", "modus")?.text).toBe(got.claudeWaehlt);
+      expect(abschnitt(eigen, "darf", "modus")?.quelle).toBe("server/fassung-umfeld.ts#eigenerStartModus");
       expect(abschnitt(eigen, "darf", "werkzeuge")?.text).toBe("--tools alle eingebauten\n--disallowedTools keine");
       expect(abschnitt(eigen, "darf", "einstellungen")?.text).toBe("{}");
       // ...nur die eine Zeile, was sein Self-Token an Fleets Türen öffnet (F3, Ziel 2)
@@ -289,7 +295,9 @@ describe("die Fassung und die Zeile des Spawns", () => {
         // ein Sitz ohne Rolle außerhalb von Fleets Repo startet im eigenen Setup (server/eigenes-setup.ts): keinen Modus auf der Zeile
         const eigen = f.listRole === "generic" && !f.fleetRepo;
         // ...außer auf einer Instanz mit echten Sitzen: dort läuft jeder echte Sitz in auto (testinstanz-claude.sh)
-        if (eigen) { gleich(flag("--permission-mode"), "FLEET_NO_BYPASS" in env ? "auto" : null); gleich(darf("modus").startsWith("eigenes Setup"), true); }
+        // die Fassung nennt den Modus der Zeile; ohne einen auf der Zeile und ohne Ordner (hier keiner) sagt sie, dass deiner gilt
+        if (eigen) { gleich(flag("--permission-mode"), "FLEET_NO_BYPASS" in env ? "auto" : null);
+          if ("FLEET_NO_BYPASS" in env) gleich(darf("modus"), flag("--permission-mode")); else gleich(darf("modus").startsWith("eigenes Setup"), true); }
         else {
           gleich(darf("modus"), flag("--permission-mode"));
           if ("FLEET_NO_BYPASS" in env) gleich(darf("modus"), "auto");

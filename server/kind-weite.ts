@@ -13,7 +13,8 @@ import type { CodexPermissions } from "./types";
 // Permission-Mode ihres letzten Starts (nur Claude Code), `permissions` ihre Codex-Schranken (null: keine lesbaren)
 export interface Oeffnerin {
   harness: string;
-  modus: ClaudePermissionMode | null;
+  // im eigenen Setup ohne gewählten Modus der, den Claude Code wählt (server/fassung-umfeld.ts#eigenerStartModus), also jeder seiner Modi
+  modus: ClaudePermissionMode | string | null;
   permissions: CodexPermissions | null;
   rechte: Rechte | null;
   // Die Rollenansprüche der Öffnerin, aus denselben Prädikaten wie an ihren Türen (server.ts#rechteRollen).

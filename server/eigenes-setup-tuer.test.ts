@@ -42,7 +42,8 @@ describe("der Berechtigungsmodus ist eine Wahl an der Tür", () => {
     expect(zeilen.filter((z) => z.includes("--permission-mode")).length).toBe(1);
     expect(zeilen.find((z) => z.includes("--permission-mode"))).toContain("--permission-mode 'acceptEdits'");
     expect(darf(fassung, "mitgegeben")).toBe("permissionMode: acceptEdits");
-    expect(darf(fassung, "modus")).toBe("eigenes Setup — Berechtigungsmodus acceptEdits, beim Öffnen gewählt");
+    // der Modus als sein Name, wie das Startfenster ihn liest (W3 Auftrag 21); warum er gilt, steht im Grund des Abschnitts
+    expect(darf(fassung, "modus")).toBe("acceptEdits");
     expect(darf({ status: 200, body: vorschau?.body.fassung as Record<string, unknown> }, "mitgegeben")).toBe("permissionMode: plan");
     expect(falsch?.status).toBe(400);
     expect(String(falsch?.body.error)).toContain("permissionMode must be one of");

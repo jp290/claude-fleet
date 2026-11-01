@@ -112,7 +112,10 @@ export function spawnListRole(f: { claude: boolean; lane: boolean; orchestrator:
 // spawn must leave the persisted record as it was (e2e/lanes-lifecycle.ts), and nothing read one. `bau`: a "generic" seat
 // that builds and so started with its own tools (.fleet/sitz-werkzeuge.json). `eigen`: a "generic" seat that started in its
 // own setup (server/eigenes-setup.ts#eigenesSetup); the succession tick reads it (server.ts#thresholdFor).
-export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; bau?: true; eigen?: true; bibliothek?: SpawnBibliothek }
+// `startModus`: an own-setup seat whose line carries no --permission-mode starts in the mode Claude Code picks, read once at this spawn
+// (server/fassung-umfeld.ts#eigenerStartModus, W3 Auftrag 22 E2); the self door and the brief use it instead of reading the files again.
+export interface SlotSpawn { role: ClaudeStartRole; openedAt: number; bau?: true; eigen?: true; bibliothek?: SpawnBibliothek; startModus?: StartModus }
+export interface StartModus { modus: string; quelle: string }
 // FLEETS BIBLIOTHEK AT THAT SPAWN (server/sitz-wissen.ts): which start block the conversation reads. Claude Code records
 // the system prompt on a conversation's first request and keeps it after --resume until the conversation is compacted
 // (code.claude.com/docs/en/cli-reference, „System prompt flags in resumed conversations“). `wirksam` = the sha256 of the
@@ -128,6 +131,9 @@ export function slotSpawnFrom(raw: unknown, openedAt: number): SlotSpawn | null 
   const b = typeof r.bibliothek === "object" && r.bibliothek !== null ? r.bibliothek as Record<string, unknown> : null;
   const bibliothek = b && (b.wirksam === null || typeof b.wirksam === "string" && SHA.test(b.wirksam)) && typeof b.zuletzt === "string"
     && SHA.test(b.zuletzt) && typeof b.am === "number" && Number.isFinite(b.am) ? { wirksam: b.wirksam as string | null, zuletzt: b.zuletzt, am: b.am } : null;
+  const m = typeof r.startModus === "object" && r.startModus !== null ? r.startModus as Record<string, unknown> : null;
+  const startModus = m && typeof m.modus === "string" && m.modus && typeof m.quelle === "string" ? { modus: m.modus, quelle: m.quelle } : null;
   return { role: r.role as ClaudeStartRole, openedAt, ...(r.role === "generic" && r.bau === true ? { bau: true as const } : {}),
-    ...(r.role === "generic" && r.eigen === true ? { eigen: true as const } : {}), ...(bibliothek ? { bibliothek } : {}) };
+    ...(r.role === "generic" && r.eigen === true ? { eigen: true as const } : {}), ...(bibliothek ? { bibliothek } : {}),
+    ...(r.role === "generic" && r.eigen === true && startModus ? { startModus } : {}) };
 }

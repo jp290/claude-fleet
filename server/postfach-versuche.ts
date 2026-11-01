@@ -95,6 +95,15 @@ export function rememberPostfachVersuch(map: PostfachVersuchMap, row: PostfachVe
   return previous && !same ? beendet(row.slot, previous) : null;
 }
 
+// DIE BESETZUNG GEHT JETZT (W3 Auftrag 21, Queue 672d48ec): eine Nachfolge baut sie ab (server.ts#teardownSlotOccupant, #openSlot), bevor
+// der Takt sie als beendet sieht. Ihre Zeile verlässt die Map hier und kommt als BeendeterVersuch zurück, statt verworfen zu werden.
+export function verlasseVersuch(map: PostfachVersuchMap, slot: number): BeendeterVersuch | null {
+  const row = map.get(slot);
+  if (!row) return null;
+  map.delete(slot);
+  return beendet(slot, row);
+}
+
 // Der laufende Takt: jede Zeile, deren Slot leer ist oder heute anders besetzt, hat ihre Besetzung
 // verloren. Sie verlässt die Map und kommt als BeendeterVersuch zurück.
 export function beendeteVersuche(map: PostfachVersuchMap,

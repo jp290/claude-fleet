@@ -74,7 +74,7 @@ describe("Postfach: ein Sitz antwortet der Orchestratorin, die ihn geöffnet hat
     const getippt = `${frame}.getippt`;
     const r = await life(f, [{ datei: frame, text: "⏺ Die Orchestratorin wartet.\n", ms: 1500 },
       bericht(f, sitz, "b", "Bericht B: in die Pane"), { ausgabe: ORCH, vorMs: 10_000 },
-      { postfach: true }, { until: getippt, ms: 10_000 }], { FLEET_POSTFACH_FENSTER_SEC: "0" });
+      { postfach: true }, { until: getippt, enthaelt: "Bericht B: in die Pane", ms: 10_000 }], { FLEET_POSTFACH_FENSTER_SEC: "0" });
     expect([r[1]?.status, r[4]?.status]).toEqual([200, 200]);
     const typed = existsSync(getippt) ? readFileSync(getippt, "utf8") : "";
     expect(typed).toContain("Bericht B: in die Pane");
@@ -97,5 +97,34 @@ describe("Postfach: ein Sitz antwortet der Orchestratorin, die ihn geöffnet hat
     expect([receipt?.status, receipt?.body.existing]).toEqual([200, false]);
     // ihre Rolle bleibt die erste Adresse: was sie sendet und was an die Rolle geht, ändert sich nicht
     expect((view?.body.addresses as unknown[])[0]).toEqual({ kind: "role", role: "orchestrator" });
+  }, LIFE_DEADLINE_MS * 4);
+
+  // Queue 672d48ec (W3 Auftrag 21): Auftrag 2 an Slot 3 stand am 01.11. um 18:23 in seiner Pane (Annahme nicht beobachtet, `stand`), und nach
+  // seiner Nachfolge um 19:38 tippte der Takt ihn der Nachfolgerin noch einmal: die Nachfolge baute die Besetzung ab (teardownSlotOccupant,
+  // openSlot) und warf dabei ihre Versuchszeile weg, bevor der Takt sie als beendet stempeln konnte; erst der nächste Neustart las sie aus
+  // dem Ledger. Hier in EINEM Leben des Servers, wie im Betrieb: getippt, Nachfolge, Takt.
+  test("was in der Pane eines Sitzes stand, tippt der Takt nach seiner Nachfolge im selben Prozess nicht noch einmal", async () => {
+    const { f, sitz } = await orchestratorinMitSitz();
+    const vorher = seat(f, sitz);
+    const frame = join(FRAMES, vorher.cwd.split("/").slice(-3).join("_"));
+    const getippt = `${frame}.getippt`;
+    const text = "Auftrag 2: baue die Probe";
+    const r = await life(f, [{ datei: frame, text: "⏺ Der Sitz wartet.\n", ms: 1500 },
+      as(seat(f, ORCH).selfToken, post("/api/self/messages", { to: { kind: "session", slot: sitz }, payload: { kind: "text", text }, idempotencyKey: "auftrag-2" })),
+      // wie bei d50df5ad: der Paste ist zurückgekommen und steht (die Ledger-Zeile trägt `stand`), erst danach kommt die Nachfolge
+      { ausgabe: sitz, vorMs: 10_000 }, { postfach: true }, { until: join(f.state, "postfach-versuche.jsonl"), enthaelt: '"stand":true', ms: 30_000 },
+      // die Nachfolgerin zeigt ihr Feld, sobald ihre Pane steht (die Bereitschaft, auf die ihr Nachfolge-Brief wartet)
+      { datei: frame, text: `⏺ Bereit.\n${"─".repeat(20)}\n❯ \n${"─".repeat(20)}\n`, ms: 200 },
+      as(vorher.selfToken, post("/api/self/succeed", { intent: "Auftrag 2 ist gebaut und berichtet" })),
+      { ausgabe: sitz, vorMs: 10_000 }, { postfach: true }, { datei: frame, text: "⏺ Die Nachfolgerin wartet.\n", ms: 1500 }, { postfach: true }],
+    { ...QUICK, FLEET_POSTFACH_FENSTER_SEC: "0" });
+    expect([r[1]?.status, r[4]?.status, r[6]?.status, r[6]?.body.slot, r[6]?.body.error ?? null]).toEqual([200, 200, 200, sitz, null]);
+    const nachher = seat(f, sitz);
+    expect(nachher.openedAt).toBeGreaterThan(vorher.openedAt);
+    const typed = existsSync(getippt) ? readFileSync(getippt, "utf8") : "";
+    const msg = ((persisted(f).messages as { entries?: (Entry & { readBy: { slot: number; openedAt: number } | null })[] } | undefined)?.entries ?? [])
+      .find((m) => m.payload.text === text);
+    expect({ getippt: typed.split(text).length - 1, gelesenVon: msg?.readBy ? { slot: msg.readBy.slot, openedAt: msg.readBy.openedAt } : null })
+      .toEqual({ getippt: 1, gelesenVon: { slot: sitz, openedAt: vorher.openedAt } });
   }, LIFE_DEADLINE_MS * 4);
 });

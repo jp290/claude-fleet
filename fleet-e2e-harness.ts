@@ -509,6 +509,9 @@ export async function checkCodexSpawnFixtures(source: string,
     const lease = fixture.founding ? { founding: { target: { openedAt: 20, selfTokenHash: "hash" } } } : null;
     class Refusal extends Error { constructor(readonly modelSupport: CodexModelSupport) { super("catalog-excluded"); } }
     Object.assign(scope, {
+      // FIXTURE TWIN of server.ts#endePostfachVersuch (W3 Auftrag 21, Queue 672d48ec): the occupant's open mailbox attempt ends with it; the
+      // stamping of what stood in its pane needs the message store, which no Codex fixture has, so the twin keeps only the map effect
+      endePostfachVersuch: (slot: number) => { (scope.postfachAttempted as Map<number, unknown>).delete(slot); },
       resolve: (p: string) => p, expandCwd: (p: string) => p, existsSync: () => true,
       statSync: () => ({ isDirectory: () => true }),
       slotTeardownInflight: new Map(fixture.joined ? [[17, { occupant: { slot: 17, openedAt: 10, selfToken: oldToken } }]] : []),
@@ -1477,6 +1480,7 @@ export async function codexPermissionSpawnClaims(source: string): Promise<Record
       const harvest=new Map(),startCache=new Map(),mergeParked=new Map(),mergeLast=new Map(),mergeInflight=new Map(),mergeStart=new Map();
       const aliveInfo=new Map(),paneModelInfo=new Map(),gitOpInfo=new Map(),laneHunkInfo=new Map(),gitInfo=new Map(),repoInfo=new Map();
       const inboxNudgeTried=new Set(),postfachAttempted=new Map(),postfachQueued=new Map();
+      const endePostfachVersuch=(slot)=>{postfachAttempted.delete(slot);}; // twin of server.ts#endePostfachVersuch, map effect only
       const parkMergeVerdict=()=>{},dropWatchesFor=()=>{},reapLaneSuiteOffersFor=()=>{},MAX_RECENTS=10;
       const merkeStart=async()=>{},STATE_DIR="/fixture-state",REAL_SEAT_GATE=null;
       const slotOpenHold=new Map(),fassungTestHaken={},halteStart=async()=>null,vergissFassung=()=>{};class FassungBewegt extends Error{}

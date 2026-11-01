@@ -32,7 +32,8 @@ export type RechtId =
   | "text.handover" | "text.pack" | "text.concept.version"
   | "text.concept.annotation" | "text.program"
   | "setup.save" | "setup.export" | "setup.import"
-  | "role.form";
+  | "role.form"
+  | "branch.passt";
 export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.program", "fleet.deploy", "edge.grant",
   "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program",
   // DIE SETUP-RECHTE (Richtung Schritt 4): kein Rollenbundel trägt sie — der Owner vergibt sie je Sitz,
@@ -40,7 +41,10 @@ export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.
   "setup.save", "setup.export", "setup.import",
   // DIE ROLLEN-BILDUNG (Richtung Schritt 5): eine gebildete Rolle ist ein Setup-Stück mit einer Adresse —
   // kein Rollenbundel trägt das Recht, denn sonst bildete jede Rolle Rollen (Owner 30.10., „[Zitat entfernt]“).
-  "role.form"];
+  "role.form",
+  // DAS „PASST“ EINES SITZES (W3b, Owner 31.10.): die Öffnerin gibt es auf die Spitze ihres Kindes, die Land-Tür liest es — kein Rollenbundel trägt das
+  // Recht, der Owner vergibt es je Sitz oder bestätigt es an einer Position einer Vorlage.
+  "branch.passt"];
 // Der eine benannte leere Bundel dieses Schnitts: der Owner öffnet damit eine Probe, deren Rolle nichts
 // hinzufügt. Er ist kein Produktions-Rollenbundel und nimmt einer Rolle nichts weg.
 export type RechteBuendel = "none";

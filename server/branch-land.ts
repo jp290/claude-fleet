@@ -33,6 +33,8 @@ export interface LandDeps {
   // the owner's standing word for this repo (server/land-zusage.ts): at the session's door it does what „[Zitat entfernt]“ on
   // this very tip does. It never replaces the green check below and never touches the owner's door.
   zusage(repo: string): boolean;
+  // die Zeile im Audit-Log, die ein Land schreibt (W3b): wessen „passt“ es trug — der Owner, ein Sitz, die Zusage oder keins (die Owner-Tür)
+  audit?(detail: string, fields: Record<string, string | number | boolean>): void;
   // the answer's word on a deploy, where the server runs from this repo
   deployNote(repo: string): string | null;
   // a repo that is not Fleet's own gets its charge commit in English (chargeMessage)
@@ -55,11 +57,13 @@ const refuse = (status: number, error: string): LandAnswer => ({ status, body: {
 // nennt BEIDE Wege — die Markierung der Spitze und die Zusage des Repos —, damit niemand rätselt, wo das Wort herkommt.
 export const NOT_SEEN = "er markiert diese Spitze (POST /api/branches/seen { repo, branch, head }) oder setzt für das Repo die "
   + "stehende Zusage (POST /api/branches/zusage { repo, zusage: true })";
+// ...und der dritte Weg (W3b): der Sitz, der diesen öffnete, gibt mit dem Recht branch.passt „passt“ auf die Spitze
+export const PASST_SITZ = "or the seat that opened this one sets „passt“ on this tip with the right `branch.passt` (POST /api/self/seats/<slot>/passt)";
 export const notSeen = (r: BranchRecord, tip: string): string =>
   `${
     r.seen ? `„passt“ gilt ${r.seen.head.slice(0, 8)}, die Spitze ist ${tip.slice(0, 8)} — der Owner hat sie noch nicht gesehen`
       : `noch kein „passt“ auf ${tip.slice(0, 8)} — der Owner hat diesen Stand noch nicht gesehen`
-  }; ${NOT_SEEN}`;
+  }${r.passtVon ? `; das „passt“ von Slot ${r.passtVon.slot} gilt ${r.passtVon.head.slice(0, 8)}, nicht dieser Spitze` : ""}; ${NOT_SEEN}; ${PASST_SITZ}`;
 // what a session in a repo without a check hears: the way to one (server/pruefbefehl.ts), and that the owner may land without
 export const NO_CHECK_OWN = "this repo has no check command, and a session lands its branch only after a green check — propose one with "
   + "POST /api/self/repo-check { cmd } (the owner takes it on the board), or the owner lands it without a check";
@@ -80,8 +84,11 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
     // THE SESSION'S OWN LAND: the owner's eye on exactly this tip (Mangel 121) or his standing word for the repo
     // (28.10.). Without either, a commit after „[Zitat entfernt]“ stays unseen and the refusal names both ways.
     const passt = record.seen?.head === tip;
+    // ...oder das „passt“ des Sitzes, der diesen öffnete, auf genau dieser Spitze (W3b); das des Owners geht vor und bleibt, wie es war
+    const sitzPasst = a.own && !passt && record.passtVon?.head === tip ? record.passtVon : null;
+    // die Zusage geht vor wie bisher (Text und Zeile wie vorher, Orchestratorin W3-1); die Zeile nennt das „passt“ des Sitzes dann zusätzlich
     const zusage = d.zusage(repo);
-    if (a.own && !passt && !zusage) return refuse(409, notSeen(record, tip));
+    if (a.own && !passt && !sitzPasst && !zusage) return refuse(409, notSeen(record, tip));
     const base = chargeBase(record, main);
     if (!base) return refuse(400, "cannot resolve the charge's base");
     const checked = d.hasMergeCheck(repo);
@@ -107,24 +114,28 @@ export async function landCharge(d: LandDeps, a: LandAsk): Promise<LandAnswer> {
       tree = built.tree;
     }
     const aufZusage = a.own && !passt && zusage;
+    const vonSitz = sitzPasst ? { slot: sitzPasst.slot, openedAt: sitzPasst.openedAt, name: sitzPasst.name } : null;
     let sha: string;
     if (form === "commits" && use) sha = use.row.candidate;
     else {
       const commit = await d.git(repo, "commit-tree", tree, "-p", mainSha, "-m", chargeMessage(subject, { branch, tip, commits, passt,
-        zusage: aufZusage, checked, english: await d.english(repo) }));
+        zusage: aufZusage, checked, english: await d.english(repo), ...(vonSitz && !aufZusage ? { passtVon: vonSitz } : {}) }));
       if (commit.code !== 0 || !commit.out) return refuse(409, `commit-tree: ${commit.err.slice(0, 200)}`);
       sha = commit.out;
     }
     const moved = await d.advanceIntegration(repo, main, sha);
     if (moved) return refuse(409, `main wurde nicht bewegt: ${moved.error}`);
     const landed = recordLand(d.book(), repo, branch, { sha, at: Date.now(), tip, base, subject, points: doneSinceLastLand(record), passt, checked, form,
-      ...(aufZusage ? { zusage: true as const } : {}),
+      ...(aufZusage ? { zusage: true as const } : {}), ...(vonSitz ? { passtVon: vonSitz } : {}),
       ...(use?.row.repair === true ? { repair: true as const } : {}) });
     if (landed.ok) d.setBook(landed.book);
+    const wessen = passt ? "owner" : aufZusage ? "zusage" : vonSitz ? `seat ${vonSitz.slot}` : "none";
+    d.audit?.(`${repo} ${branch} ${sha.slice(0, 12)} passt=${wessen}`, { repo, branch, sha, tip, own: a.own === true, passt: wessen,
+      ...(vonSitz ? { passtSlot: vonSitz.slot, passtOpenedAt: vonSitz.openedAt, ...(vonSitz.name ? { passtName: vonSitz.name } : {}) } : {}) });
     await d.saveStateNow();
     await d.afterLand(repo, main, branch, sha);
     const deploy = d.deployNote(repo);
-    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, zusage: aufZusage, checked, form, ...(use?.row.repair === true ? { repair: true } : {}), ...(deploy ? { deploy } : {}) } };
+    return { status: 200, body: { ok: true, sha, main, commits: commits.length, passt, zusage: aufZusage, ...(vonSitz ? { passtVon: vonSitz } : {}), checked, form, ...(use?.row.repair === true ? { repair: true } : {}), ...(deploy ? { deploy } : {}) } };
   } finally {
     d.landing.delete(repo);
   }

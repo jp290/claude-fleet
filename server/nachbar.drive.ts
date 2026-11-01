@@ -4,7 +4,7 @@
 import { join } from "node:path";
 const stateDir = process.env.FLEET_STATE_DIR;
 if (!stateDir || !process.env.FLEET_PORT || !process.env.FLEET_TOKEN) throw new Error("FLEET_STATE_DIR, FLEET_PORT und FLEET_TOKEN fehlen");
-const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, tickPostfachZustellung, slotFrom, meldeNachbarProbleme } = await import("../server");
+const { serveOptions, adoptTokens, loadStateAndReap, settleBranchBook, tickPostfachZustellung, slotFrom, meldeNachbarProbleme, abnahmeTick } = await import("../server");
 await loadStateAndReap(join(stateDir, "fleet.json"));
 await settleBranchBook();
 adoptTokens();
@@ -19,4 +19,7 @@ setInterval(() => {
   tick = true;
   void tickPostfachZustellung().catch((e) => console.error("postfach-takt:", e instanceof Error ? e.message : e)).finally(() => { tick = false; });
 }, 300);
+// der Takt der Abnahme-Instanzen (server/abnahme-instanz.ts), wenn ein Test ihn verlangt
+if (process.env.FLEET_ABNAHME_TICK_MS)
+  setInterval(() => { void abnahmeTick().catch((e) => console.error("abnahme-takt:", e instanceof Error ? e.message : e)); }, Number(process.env.FLEET_ABNAHME_TICK_MS));
 process.stdout.write(`${JSON.stringify({ bereit: server.port })}\n`);

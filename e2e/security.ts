@@ -384,10 +384,15 @@ const PRE_AUTH_ROUTES = [
   // F6: GET /api/self/constellation — what a seat may see of the constellation it stands in (the seats it may write to and the positions of its saved constellation), never
   // its own stones; slot-bound, read-only, no right; a seat outside gets an empty list.
   '= /api/self/constellation',
+  // W3a: GET /api/self/harnesses — the harness catalogue GET /api/harnesses gives the owner's picker (server.ts#harnessKatalog), for a seat that picks harness and
+  // model of the seats it opens; slot-bound, read-only, no right, 401 without a live seat's self token.
+  '= /api/self/harnesses',
   // Sitze in einem Ordner öffnen und Rollen bilden (Richtung Schritt 5, server/selbst-sitze.ts): hinter verlangeRecht (seat.open, role.form,
   // setup.export) mit dem Self-Token; die Öffnen-Tür geht durch den Weg der Owner-Tür und durch kindNieWeiter, eine Rolle liegt als SetupRole auf dem Regal.
   '= /api/self/seats/open',
   String.raw`~ /^\/api\/self\/seats\/(\d+)\/end$/`,   // the opener ends a child it opened (seat.open; server/selbst-sitze.ts#kindBeenden)
+  String.raw`~ /^\/api\/self\/seats\/(\d+)\/passt$/`, // the opener gives „passt“ on its child's tip (W3b; right branch.passt, a child it opened, the tip it names)
+  '= /api/self/testinstanz', // a seat brings up a test instance for acceptance from its own tree (W3b; self token, itself, a child or a sibling; serveTestinstanz)
   '= /api/self/roles',
   String.raw`~ /^\/api\/self\/roles\/([^/]+)\/datei$/`,
   String.raw`~ /^\/api\/self\/setups\/([^/]+)\/datei$/`,

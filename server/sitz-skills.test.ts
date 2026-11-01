@@ -107,3 +107,16 @@ describe("Fleets Skills im Agent-Verzeichnis eines pi-Sitzes", () => {
     } finally { rmSync(wurzel, { recursive: true, force: true }); }
   });
 });
+
+describe("Claude Codes Ordner einer Belegung, wenn ein Skill nicht geschrieben werden kann", () => {
+  test("ein Name, den das Dateisystem nicht trägt, kostet nur diesen Skill; die übrigen stehen, kein .tmp bleibt liegen", () => {
+    const wurzel = mkdtempSync(join(tmpdir(), "fleet-seat-skills-"));
+    try {
+      const dir = join(wurzel, "4-200");
+      seatSkillsWrite(dir, [{ pfad: `.claude/skills/${"a".repeat(300)}/SKILL.md`, text: "lang" }, { pfad: ".claude/skills/gut/SKILL.md", text: "gut" }]);
+      expect(gelesen(join(dir, ".claude", "skills", "gut", "SKILL.md"))).toBe("gut");
+      expect(readdirSync(join(dir, ".claude", "skills"))).toEqual(["gut"]);
+      expect(readdirSync(wurzel)).toEqual(["4-200"]);
+    } finally { rmSync(wurzel, { recursive: true, force: true }); }
+  });
+});

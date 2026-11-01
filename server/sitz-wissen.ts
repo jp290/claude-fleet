@@ -99,6 +99,10 @@ export interface SeatPack {
   readonly autor?: string;
   /** die Marke am Wissen: sein Text bleibt in einer geteilten Datei daheim */
   readonly personal?: true;
+  /** ein Pack aus dem Register des Repos, in dem der Sitz arbeitet (server.ts#projektPacksFor): das Wissen des Projekts, wie eine Lane es liest; seine Quelle ist ein ganzer Pfad */
+  readonly projekt?: true;
+  /** nur ein Projekt-Pack: der Commit des Projekts, an dem er gelesen wurde (seine SKILL.md nennt ihn statt Fleets Kopf) */
+  readonly kopf?: string;
 }
 
 export interface SeatKnowledge {
@@ -191,7 +195,7 @@ export function seatKatalog(k: SeatKnowledge): KatalogPack[] {
  *  der Text am Kopf. */
 export function renderSkillFile(pack: SeatPack, head: string): string {
   return `---\nname: ${pack.id}\ndescription: ${JSON.stringify(pack.useWhen ?? "")}\n---\n`
-    + `From Fleet's library: ${quelleOf(pack)} at commit ${head.slice(0, 12)}.\n\n${pack.text}`;
+    + `${pack.projekt ? "From the project's register" : "From Fleet's library"}: ${quelleOf(pack)} at commit ${(pack.kopf ?? head).slice(0, 12)}.\n\n${pack.text}`;
 }
 
 /** WO DIE SKILLS EINES SITZES LIEGEN: Claude Code im Ordner seiner Belegung, den der Start mit `--add-dir` bekommt
@@ -336,7 +340,7 @@ export function seatFassungAbschnitte(k: SeatKnowledge, claude: boolean, skillsD
       nichtWirksam ? `nicht wirksam: ${nichtWirksam}` : undefined),
     ...box.map((pack) => textAbschnitt("wissen", pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       boxBlock(pack), true, undefined, undefined, nichtWirksam ? `nicht wirksam: ${nichtWirksam}`
-        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.mitgereist ? "ein Pack aus einer importierten Setup-Datei, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : "so mitgereist")}`)),
+        : `wörtlich im Start: ${SEAT_BOX[pack.id] ?? (pack.privat ? "ein eigener Pack, gewählt" : pack.mitgereist ? "ein Pack aus einer importierten Setup-Datei, gewählt" : pack.zurWahl ? "ein Pack zur Wahl, gewählt" : pack.projekt ? "aus dem Register dieses Repos (.fleet/context-packs.json), wie eine Lane es liest" : "so mitgereist")}`)),
     ...skills.map((pack) => textAbschnitt("wissen", `${skillsPfad}/${pack.id}/SKILL.md\n`
       + pack.sources.map((source) => `${quellPfad(k, source.path)} · ${source.anchor}`).join("\n"),
       skillZeile(pack), true, undefined, undefined,

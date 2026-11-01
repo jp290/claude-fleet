@@ -34,7 +34,14 @@ export interface BranchLand { sha: string; at: number; tip: string; base: string
   // server/branch-land.ts): der Grund steht im Merge-Check und in der Land-Zeile, damit man später
   // sieht, welche Länder trotz rotem main liefen. Fehlt das Feld, war main nicht rot.
   repair?: boolean;
-  form?: LandForm }
+  form?: LandForm;
+  // das Land stand auf dem „passt“ eines Sitzes mit dem Recht branch.passt (W3b): wer es gab
+  passtVon?: PasstVonSitz }
+// DAS „PASST“ EINES SITZES (W3b, Owner 31.10.: „[Zitat entfernt]“): die Öffnerin eines Sitzes setzt es mit
+// dem Recht branch.passt auf genau eine Spitze seines Branches (POST /api/self/seats/<n>/passt). Es steht neben dem des Owners (`seen`), ersetzt es nie und
+// wird wie es durch einen späteren Commit alt; die Land-Tür der Session liest beide (server/branch-land.ts).
+export interface PasstVonSitz { slot: number; openedAt: number; name: string | null }
+export interface SitzPasst extends PasstVonSitz { at: number; head: string }
 // Neuaufbau K13 · wer den Branch über die Tür geöffnet hat: der Sitz (Slot und Ordner) der Session, die
 // /api/branches/open mit ihrem Self-Token neben dem Owner-Bearer rief. Eine Nachfolge behält Slot und
 // Ordner und bleibt Öffner; ein Slot mit einer Session in einem anderen Ordner ist jemand anderes. Der
@@ -49,6 +56,7 @@ export interface BranchRecord {
   seen: BranchSeen | null;
   lands: BranchLand[];
   opener?: BranchOpener; // fehlt: vom Board oder ohne Self-Token geöffnet, oder vor K13
+  passtVon?: SitzPasst; // das „passt“ eines Sitzes auf eine Spitze (W3b); fehlt: keins
   landForm?: LandForm; // wie eine Charge landet, wenn die Route es nicht sagt; fehlt = ein Commit
   createdAt: number; updatedAt: number;
 }
@@ -119,6 +127,13 @@ export function markSeen(book: BranchBook, repo: string, branch: string, head: s
   return put(book, { ...prev, seen: { at, head, via }, updatedAt: at });
 }
 
+// Ein Sitz mit dem Recht branch.passt gibt „passt“ an genau diesem Commit; ein neues ersetzt das alte, das des Owners bleibt unberührt.
+export function markPasstVonSitz(book: BranchBook, repo: string, branch: string, passt: SitzPasst): BranchChange | BranchRefusal {
+  if (!SHA_RE.test(passt.head)) return { ok: false, status: 400, error: "head muss eine volle Commit-SHA sein" };
+  const prev = findBranch(book, repo, branch) ?? blank(repo, branch, passt.at);
+  return put(book, { ...prev, passtVon: { slot: passt.slot, openedAt: passt.openedAt, name: passt.name, at: passt.at, head: passt.head }, updatedAt: passt.at });
+}
+
 // Eine Session öffnet den Branch: Sie wird sein Öffner, auch anstelle einer früheren. Ein Öffnen ohne
 // Session (Board, Owner-Token allein) ruft das nicht und lässt den Öffner stehen.
 export function setOpener(book: BranchBook, repo: string, branch: string, opener: BranchOpener): BranchChange {
@@ -184,14 +199,17 @@ export function recordLand(book: BranchBook, repo: string, branch: string, land:
 // Betreff), damit die Herkunft lesbar bleibt, und ob der Owner diesen Stand gesehen hatte.
 // `english`: der main eines fremden Repos liest englisch (Brief fremdes-repo-rund, Punkt 6) — Fleets eigener behält seine Sprache
 export function chargeMessage(subject: string, o: { branch: string; tip: string; commits: readonly { sha: string; subject: string }[];
-  passt: boolean; zusage?: boolean; checked: boolean; english?: boolean }): string {
+  passt: boolean; zusage?: boolean; checked: boolean; english?: boolean; passtVon?: PasstVonSitz }): string {
   const lines = o.commits.map((c) => `- ${c.sha.slice(0, 8)} ${c.subject}`);
   const tip = o.tip.slice(0, 8);
+  const sitz = o.passtVon ? `slot ${o.passtVon.slot}${o.passtVon.name ? ` (${o.passtVon.name})` : ""}` : null;
   if (o.english) return [subject.trim(), "", `Batch from ${o.branch} up to ${tip}${o.checked ? "" : " (without a check)"}:`, ...lines, "",
     o.passt ? `Looked at and marked “looks good” at ${tip}.`
+      : sitz ? `Marked “looks good” at ${tip} by the seat that opened it: ${sitz}.`
       : o.zusage ? `Landed on the owner's standing word for this repo, not on a “looks good” at ${tip}.` : "Not marked “looks good”."].join("\n");
   return [subject.trim(), "", `Charge aus ${o.branch} bis ${tip}${o.checked ? "" : " (ohne Merge-Check)"}:`, ...lines, "",
     o.passt ? `Owner hat diesen Stand gesehen: passt (${tip}).`
+      : sitz ? `„passt“ auf ${tip} vom Sitz, der ihn öffnete: ${sitz}.`
       : o.zusage ? `Owner hat für dieses Repo zugesagt: das Land steht auf der stehenden Zusage, nicht auf einem „passt“ dieser Spitze (${tip}).`
       : "Owner hat diesen Stand nicht als „passt“ markiert."].join("\n");
 }
@@ -267,6 +285,17 @@ function seenOf(v: unknown): BranchSeen | null | undefined {
   return num(s.at) && str(s.head) && SHA_RE.test(s.head) && (s.via === "cookie" || s.via === "bearer" || s.via === "query")
     ? { at: s.at, head: s.head, via: s.via } : undefined;
 }
+function passtVonOf(v: unknown): PasstVonSitz | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const p = v as Record<string, unknown>;
+  return num(p.slot) && Number.isInteger(p.slot) && num(p.openedAt) && (p.name === null || str(p.name))
+    ? { slot: p.slot, openedAt: p.openedAt, name: p.name } : undefined;
+}
+function sitzPasstOf(v: unknown): SitzPasst | undefined {
+  const von = passtVonOf(v);
+  const p = v as Record<string, unknown> | null;
+  return von && p && num(p.at) && str(p.head) && SHA_RE.test(p.head) ? { ...von, at: p.at, head: p.head } : undefined;
+}
 // a land comes back whole or not at all; a record from before S3 has none
 function landsOf(v: unknown): BranchLand[] {
   if (!Array.isArray(v)) return [];
@@ -277,7 +306,8 @@ function landsOf(v: unknown): BranchLand[] {
       && Array.isArray(l.points) && l.points.every(str) && typeof l.passt === "boolean" && typeof l.checked === "boolean"
       && (l.form === undefined || isLandForm(l.form)) && (l.zusage === undefined || typeof l.zusage === "boolean")
       ? [{ sha: l.sha, at: l.at, tip: l.tip, base: l.base, subject: l.subject, points: [...l.points], passt: l.passt, checked: l.checked,
-        ...(l.zusage === true ? { zusage: true as const } : {}), ...(l.form ? { form: l.form } : {}) }] : [];
+        ...(l.zusage === true ? { zusage: true as const } : {}), ...(l.form ? { form: l.form } : {}),
+        ...(passtVonOf(l.passtVon) ? { passtVon: passtVonOf(l.passtVon)! } : {}) }] : [];
   });
 }
 // ein Öffner kommt ganz oder gar nicht; ein kaputter nimmt den Datensatz nicht mit
@@ -300,9 +330,9 @@ export function restoreBook(raw: unknown): BranchBook {
     if (!str(r.repo) || !str(r.branch) || !(r.name === null || str(r.name)) || !(r.base === null || str(r.base))
       || !str(r.text) || !num(r.rev) || !Number.isInteger(r.rev) || seen === undefined || !num(r.createdAt) || !num(r.updatedAt)) continue;
     if (findBranch(out, r.repo, r.branch)) continue;
-    const opener = openerOf(r.opener);
+    const opener = openerOf(r.opener), passtVon = sitzPasstOf(r.passtVon);
     out.push({ repo: r.repo, branch: r.branch, name: r.name, base: r.base, text: r.text, rev: r.rev, seen, lands,
-      ...(opener ? { opener } : {}), ...(isLandForm(r.landForm) ? { landForm: r.landForm } : {}), createdAt: r.createdAt, updatedAt: r.updatedAt });
+      ...(opener ? { opener } : {}), ...(passtVon ? { passtVon } : {}), ...(isLandForm(r.landForm) ? { landForm: r.landForm } : {}), createdAt: r.createdAt, updatedAt: r.updatedAt });
   }
   return out;
 }

@@ -30,6 +30,7 @@ import { merkeFassungen } from "./konst-fassungen";
 import { ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH } from "./orchestrator-start";
 import { LANE_ROLE_CARD, MAIN_ROLE_CARD } from "./rollenkarten";
 import { RECHT_WAS, ROLLEN_BUENDEL } from "./tuer-rechte";
+import { VORLAGEN, vorlageDatei } from "./vorlagen";
 import type { SeatKnowledge, SeatPack } from "./sitz-wissen";
 
 export const SETUP_FORMAT = "fleet-setup/1";
@@ -853,7 +854,7 @@ export interface SetupVorschau {
   seatList: { id: string; name: string; role: string | null; goal: string | null }[];
   edges: SetupEdge[];
   personalPlaces: string[]; emptyPlaces: string[];
-  collisions: { kind: "pack" | "concept"; id: string; neu: string }[];
+  collisions: { kind: "pack" | "concept" | "role"; id: string; neu: string }[];
   /** die Rechte, die der Import erbittet: die des Sitzes und je Rolle ihr Bundel */
   requestedRights: unknown[];
   requestedRoles: { id: string; name: string; rights: RechtId[] }[];
@@ -982,15 +983,41 @@ export async function loeseBausteine(d: SetupDatei, q: SetupQuellen, dir: string
     const block = ref.kind === "pack" ? [...d.packs, ...neuPacks].find((x) => x.id === id) : [...d.concepts, ...neuConcepts].find((x) => x.id === id);
     return { kind: ref.kind, id, hash: block?.hash ?? null };
   });
-  const seats = d.seats.map((s) => ({ ...s, reads: um(s.reads) }));
+  // EINE ROLLE MIT EINER KENNUNG, DIE DAS REGAL SCHON MIT ANDEREM TEXT TRÄGT (Prüfung W3a Runde 1, Befund 4): das Regal ersetzt Rollen nach der Kennung,
+  // und ein laufender Sitz liest seine Rolle beim Namen (roleStein). Die Rolle der Datei bekommt darum eine eigene Kennung `<id>-<hash8>`, die Sitze der
+  // Datei zeigen auf sie, und die Vorschau nennt es als Kollision; gleicher Hash ist dieselbe Rolle
+  const rollenNeu = new Map<string, string>();
+  const rollenIds = new Set((shelf.roles ?? []).map((r) => r.id));
+  const roles = d.roles.map((r): SetupRole => {
+    const da = shelf.roles?.find((x) => x.id === r.id);
+    if (!da || da.hash === r.hash) return r;
+    const { hash: _alt, ...ohne } = r;
+    // ...und eine Kopie, die ein früherer Import schon umbenannt hat, ist dieselbe Rolle, wenn ihr Inhalt gleich ist (der Hash zählt die Kennung mit): kein
+    // zweites Exemplar, die Sitze zeigen auf sie (Runde 2, R2-2)
+    const kopie = shelf.roles?.find((x) => x.id !== r.id && x.hash === roleHash({ ...ohne, id: x.id }));
+    if (kopie) {
+      rollenNeu.set(r.id, kopie.id);
+      vorschau.collisions.push({ kind: "role", id: r.id, neu: kopie.id });
+      return kopie;
+    }
+    const id = frei(`${r.id.slice(0, 62)}-${r.hash.slice(0, 8)}`, rollenIds);
+    rollenIds.add(id);
+    rollenNeu.set(r.id, id);
+    vorschau.collisions.push({ kind: "role", id: r.id, neu: id });
+    return { ...ohne, id, hash: roleHash({ ...ohne, id }) };
+  });
+  const rolleUm = (id: string | undefined): string | undefined => id === undefined ? id : rollenNeu.get(id) ?? id;
+  vorschau.seatList = vorschau.seatList.map((x) => ({ ...x, role: x.role === null ? null : rolleUm(x.role) ?? null }));
+  vorschau.requestedRoles = vorschau.requestedRoles.map((x) => ({ ...x, id: rolleUm(x.id)! }));
+  const seats = d.seats.map((s) => ({ ...s, reads: um(s.reads), ...(s.start.role !== undefined ? { start: { ...s.start, role: rolleUm(s.start.role) } } : {}) }));
   // DIE LEEREN PERSÖNLICHEN PLÄTZE BLEIBEN IN DER DATEI, die der Import weitergibt: sie werden nicht gespeichert (nur der
   // mitgereiste Text landet im Regal), aber sitzAusSetup braucht den Block, um den Platz am Sitz leer anzulegen.
   const persoenlichePacks = d.packs.filter((p) => p.personal === true);
   const persoenlicheKonzepte = d.concepts.filter((c) => c.personal === true);
-  const datei: SetupDatei = { ...d, seats, packs: [...persoenlichePacks, ...neuPacks,
+  const datei: SetupDatei = { ...d, seats, roles, packs: [...persoenlichePacks, ...neuPacks,
     ...lokal.filter((p) => vorschau.packs.some((v) => v.source === "local" && v.id === p.id) && !neuPacks.some((n) => n.id === p.id))],
     concepts: [...persoenlicheKonzepte, ...neuConcepts, ...lokalKonzepte.filter((c) => vorschau.concepts.some((v) => v.source === "local" && v.id === c.id))] };
-  return { datei, vorschau, zuSpeichern: { version: 1, packs: [...neuPacks, ...leereAufRegal], concepts: neuConcepts, roles: d.roles } };
+  return { datei, vorschau, zuSpeichern: { version: 1, packs: [...neuPacks, ...leereAufRegal], concepts: neuConcepts, roles } };
 }
 
 async function k15Lesen(dir: string): Promise<Record<string, unknown>> {
@@ -1171,6 +1198,12 @@ export interface SetupServer extends SetupQuellen {
   agenten: () => Promise<readonly AgentAnsicht[]>;
 }
 const antwort = (body: unknown, status = 200): Response => Response.json(body, { status });
+const VORLAGEN_PFAD = "vorlagen";
+async function vorlageAusBibliothek(id: unknown, q: SetupServer): Promise<SetupDatei | string> {
+  if (typeof id !== "string") return "vorlage is the id of one of Fleet's templates (GET /api/setups/vorlagen)";
+  if (!q.bibliothek) return "Fleet's library is not readable here, so no template can be built";
+  try { return vorlageDatei(id, await q.bibliothek()); } catch (e) { return `Fleet's library could not be read (${e instanceof Error ? e.message : String(e)})`; }
+}
 
 export async function setupRoute(req: Request, url: URL, q: SetupServer): Promise<Response> {
   const rest = url.pathname.slice(SETUP_ROUTE.length).split("/").filter(Boolean).map(decodeURIComponent);
@@ -1188,10 +1221,21 @@ export async function setupRoute(req: Request, url: URL, q: SetupServer): Promis
     const d = setupAusKonstellation(alte.datei, form, alte.hinweise, q);
     return typeof d === "string" ? antwort({ error: d }, 409) : antwort(d);
   }
+  // FLEETS VORLAGEN (server/vorlagen.ts): die Liste, eine als Datei, und der Import mit `vorlage` statt `datei` — dieselbe Prüfung, dasselbe Schreiben
+  if (rest[0] === VORLAGEN_PFAD && req.method === "GET" && rest.length === 1)
+    return antwort({ vorlagen: VORLAGEN.map((v) => ({ ...v, datei: `${SETUP_ROUTE}/${VORLAGEN_PFAD}/${v.id}/datei`, import: { vorlage: v.id } })) });
+  if (rest[0] === VORLAGEN_PFAD && req.method === "GET" && rest.length === 3 && rest[2] === "datei") {
+    const d = await vorlageAusBibliothek(rest[1]!, q);
+    return typeof d === "string" ? antwort({ error: d }, 404) : antwort(d);
+  }
   if (rest.length === 1 && rest[0] === "import" && req.method === "POST") {
     const body = rec(await req.json().catch(() => null));
-    if (!body || !("datei" in body)) return antwort({ error: "expected { datei, schreiben? }" }, 400);
-    const r = await importiereSetup(body.datei, q, { schreiben: body.schreiben === true });
+    if (!body || !("datei" in body) === !("vorlage" in body)) return antwort({ error: "expected { datei, schreiben? } or { vorlage, schreiben? }" }, 400);
+    // nur der Vorlagenweg kennt die 404; ein Text unter `datei` geht wie vorher an die Prüfung (400 „expected a JSON object“)
+    const vorlage = "vorlage" in body ? await vorlageAusBibliothek(body.vorlage, q) : null;
+    if (typeof vorlage === "string") return antwort({ error: vorlage }, 404);
+    const datei = vorlage ?? body.datei;
+    const r = await importiereSetup(datei, q, { schreiben: body.schreiben === true });
     return antwort(r.body, r.status);
   }
   return antwort({ error: "not found" }, 404);

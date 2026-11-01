@@ -144,5 +144,5 @@ for (const step of steps) {
   out.push(await call(step));
 }
 await Promise.all(pending);
-process.stdout.write(`${JSON.stringify(out)}\n`);
-process.exit(0);
+// erst beenden, wenn die Antwort ganz in der Pipe steht: ein exit direkt nach write kann eine große Antwort abschneiden
+process.stdout.write(`${JSON.stringify(out)}\n`, () => process.exit(0));

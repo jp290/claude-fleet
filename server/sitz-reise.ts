@@ -22,6 +22,7 @@ import {
 } from "../src/sitz";
 import { rechteAus, istRechtId, type RechtId, type Rechte } from "../session-rechte";
 import { agentMdText, MAX_AGENTMD_BYTES, type AgentMd } from "./agentmd";
+import { permissionModeDerTuer, type PermissionModeWahl } from "./eigenes-setup";
 import { fassungsHash } from "./konst-fassungen";
 import { kindNieWeiter, type Oeffnerin } from "./kind-weite";
 import type { Lauf } from "./laeufe";
@@ -157,7 +158,11 @@ export async function ordnerDerPosition(v: unknown, dir: string, eigene: string 
 
 // WAS DIE DATEI FÜR AGENT, MODELL UND EFFORT SAGT, in die Felder des Bodys, wo der Body keine hat; `sitz` steht danach voll da
 // ("<konst>/<position>"), damit jede weitere Lesung dieselbe Position trifft. Ohne `sitz` bleibt der Body, wie er ist
-export async function mitSitzWerten(body: Record<string, unknown>, dir: string, eigene: string | null, selbst = false):
+// AN DER SELBST-TÜR (`oeffnerin` = die Rechte der Öffnerin, auch null) auch die Rechte (Prüfung W3a Runde 1, Befund 3): ohne `rechte` im Body trägt ein Sitz aus
+// einer Position deren Rechte (src/sitz.ts#sitzRechte: gedeckelt, außer der Owner bestätigte sie für diese Position), sonst die der Öffnerin ohne ihre Zusagen
+// (`recht`): was der Owner einer Leitung bestätigte, gilt nur ihr, nicht jedem Sitz, den sie öffnet. Ein Kind ohne Position erbt weiter alles
+// (server/kind-weite.ts#kindNieWeiter), und dieselbe Regel deckelt danach auch diese Rechte.
+export async function mitSitzWerten(body: Record<string, unknown>, dir: string, eigene: string | null, selbst = false, oeffnerin?: Rechte | null):
   Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; error: string }> {
   if (body.sitz === undefined || body.sitz === null) return { ok: true, body };
   const g = await sitzPosition(body.sitz, dir, eigene, selbst);
@@ -168,16 +173,24 @@ export async function mitSitzWerten(body: Record<string, unknown>, dir: string, 
     return typeof v === "string" && v ? v : undefined;
   };
   const harness = wert("agent"), model = wert("modell"), effort = wert("effort");
-  return { ok: true, body: { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...body, sitz: `${g.konst}/${String(g.pos.id)}` } };
+  let rechte: Rechte | null = null;
+  if (oeffnerin !== undefined && body.rechte === undefined) {
+    const s = g.pos.sitz === undefined || g.pos.sitz === null ? null : sitzAus(g.pos.sitz);
+    const eigen = s && typeof s !== "string" ? sitzRechte(s.darf) : null;
+    if (eigen) rechte = eigen;
+    else if (oeffnerin) { const { recht: _zusagen, ...ohne } = oeffnerin; rechte = ohne; }
+  }
+  return { ok: true, body: { ...(harness ? { harness } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(rechte ? { rechte } : {}), ...body,
+    sitz: `${g.konst}/${String(g.pos.id)}` } };
 }
 
 // DIE TÜR: `sitz` fehlt → nichts; sonst eine Position einer gespeicherten Konstellation (sitzPosition). Was sie trägt: ihren Sitz-Block (Lesestoff,
 // gedeckeltes Darf, Notizbuch), ihre eigene Datei als Auftrag und die Agent-MD ihres Profils
 export async function sitzDerTuer(body: Record<string, unknown> | null, harness: string, dir: string, label: string | null, orchLabel: (l: string) => boolean,
   eigene: string | null = null, selbst = false):
-  Promise<{ ok: true; sitz: SitzStart | null; rechte: Rechte | null; notizbuch: SitzNotizbuch | null; agentMd: AgentMd | null } | { ok: false; error: string }> {
+  Promise<{ ok: true; sitz: SitzStart | null; rechte: Rechte | null; modus: PermissionModeWahl | null; notizbuch: SitzNotizbuch | null; agentMd: AgentMd | null } | { ok: false; error: string }> {
   const v = body?.sitz;
-  if (v === undefined || v === null) return { ok: true, sitz: null, rechte: null, notizbuch: null, agentMd: null };
+  if (v === undefined || v === null) return { ok: true, sitz: null, rechte: null, modus: null, notizbuch: null, agentMd: null };
   if (harness !== "claude") return { ok: false, error: `harness ${harness} takes no sitz — what it reads goes into Claude Code's start` };
   const g = await sitzPosition(v, dir, eigene, selbst);
   if ("error" in g) return { ok: false, error: g.error };
@@ -213,7 +226,20 @@ export async function sitzDerTuer(body: Record<string, unknown> | null, harness:
       ...(typeof g.pos.ziel === "string" && g.pos.ziel.trim() && (body?.aufgabe !== undefined || (typeof body?.goal === "string" && body.goal.trim() !== "")) ? { zielErsetzt: true as const } : {}),
       ...(rec(g.pos.ordner) ? { ordner: { hint: typeof rec(g.pos.ordner)!.hint === "string" ? String(rec(g.pos.ordner)!.hint) : null } } : {}) },
     rechte: s ? sitzRechte(s.darf) : null,
+    // der Modus der Position (darf.modus): die Tür nimmt ihn, wenn ihr Body keinen nennt (modusAnDerTuer); einer, den Claude Code nicht kennt, zählt nicht
+    modus: s?.darf.modus ? (() => { const m = permissionModeDerTuer(s.darf.modus); return m.ok ? m.wahl : null; })() : null,
     notizbuch: s?.notizbuch ?? null, agentMd };
+}
+
+// DER MODUS EINES SITZES AN DER TÜR (Prüfung W3a Runde 1, Befund 5; Runde 2, R2-1): der Body gilt zuerst (an der Selbst-Tür geprüft wie bisher); ohne ihn der
+// Modus der Position, sonst nähme Claude Code den Standard des Nutzers (bis bypass). An der Selbst-Tür (`oeffnerin` = ihr Modus) das Engere aus Position und
+// Öffnerin nach MODUS_RANG: eine Öffnerin in bypass gibt einem Sitz aus einer Position nie bypass, und eine engere Position bleibt eng. Eine Öffnerin ohne
+// Claude-Modus (null: ein anderer Harness) ist nicht vergleichbar; dann gilt die Position. Die Position selbst ist nie bypass (sitzDerTuer lehnt das ab).
+export const MODUS_RANG: readonly PermissionModeWahl[] = ["plan", "manual", "dontAsk", "acceptEdits", "auto", "bypassPermissions"];
+export function modusAnDerTuer(tuer: PermissionModeWahl | null, position: PermissionModeWahl | null, oeffnerin?: string | null): PermissionModeWahl | null {
+  if (tuer || !position) return tuer;
+  const o = oeffnerin === undefined || oeffnerin === null ? null : MODUS_RANG.find((m) => m === oeffnerin) ?? null;
+  return o === null || MODUS_RANG.indexOf(position) <= MODUS_RANG.indexOf(o) ? position : o;
 }
 
 // DIE ANDEREN SITZE DERSELBEN KONSTELLATION mit ihrem Auftrag: so nennt Fleet einem Sitz, wen er öffnen kann, und erkennt ein Ziel, das der

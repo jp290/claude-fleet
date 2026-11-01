@@ -9,8 +9,8 @@ their defaults. The start window shows what fills each part as stones (a purpose
 right) and settings (harness, model, effort).
 
 - **Who:** harness, model and effort. Choose for the work. Does it need judgment, breadth, speed or low cost? What
-  this machine can run right now: `GET /api/harnesses`. Pass model and effort explicitly on every open and every
-  succession; a seat without them inherits a default you didn't choose. Before you say a model or a capability is
+  this machine can run right now: `GET /api/self/harnesses` with your self token. Pass model and effort explicitly on
+  every open and every succession; a seat without them inherits a default you didn't choose. Before you say a model or a capability is
   missing, ask the harness itself: its own inventory (for Claude, `claude --model <id> -p` with a
   control probe) and one mechanical probe. Env keys and app folders prove nothing, and Fleet accepts any model id
   that fits its pattern, so a wrong id dies in the pane, not at the route. Switching a living Claude pane is a

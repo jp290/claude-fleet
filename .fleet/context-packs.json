@@ -186,7 +186,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 9269,
+    "estimatedBytes": 9309,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"
@@ -419,6 +419,94 @@
     "status": "active"
   },
   {
+    "id": "leiten",
+    "useWhen": "When you lead a constellation: open builders and a checker, give checkable goals, judge reports.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": [
+      "seat-choice"
+    ],
+    "hardness": "guidance",
+    "sources": [
+      {
+        "id": "leiten.text",
+        "path": "docs/packs/leiten.md",
+        "anchor": "# Leading builders",
+        "sorte": "anleitung",
+        "positions": {
+          "lane": "ausleihe",
+          "main": "ausleihe",
+          "orchestratorin": "ausleihe"
+        }
+      }
+    ],
+    "requiredCapabilities": [
+      "tracked-source-read"
+    ],
+    "harnesses": [
+      "claude",
+      "pi",
+      "pi-zai",
+      "pi-deepseek",
+      "pi-zai-unfenced",
+      "pi-unfenced",
+      "container",
+      "codex"
+    ],
+    "modes": [
+      "read-only",
+      "mutating"
+    ],
+    "estimatedBytes": 5629,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "bauen",
+    "useWhen": "When a lead opened you to build one goal and you report to it: scope, questions, the report.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": [
+      "seat-choice"
+    ],
+    "hardness": "guidance",
+    "sources": [
+      {
+        "id": "bauen.text",
+        "path": "docs/packs/bauen.md",
+        "anchor": "# Building for a lead",
+        "sorte": "anleitung",
+        "positions": {
+          "lane": "ausleihe",
+          "main": "ausleihe",
+          "orchestratorin": "ausleihe"
+        }
+      }
+    ],
+    "requiredCapabilities": [
+      "tracked-source-read"
+    ],
+    "harnesses": [
+      "claude",
+      "pi",
+      "pi-zai",
+      "pi-deepseek",
+      "pi-zai-unfenced",
+      "pi-unfenced",
+      "container",
+      "codex"
+    ],
+    "modes": [
+      "read-only",
+      "mutating"
+    ],
+    "estimatedBytes": 2485,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
     "id": "sharpening-an-order",
     "useWhen": "Before you give an order to a session that has a history: how sharpen3 reads it against its conversation.",
     "scope": "repo-contract",
@@ -559,7 +647,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 29290,
+    "estimatedBytes": 30643,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

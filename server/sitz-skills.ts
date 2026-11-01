@@ -32,19 +32,29 @@ export function seatSkillsRemove(path: string): void {
 export function seatSkillsWrite(dir: string, files: readonly { pfad: string; text: string }[]): void {
   const stamp = `${process.pid}-${Date.now()}`;
   const tmp = `${dir}.tmp-${stamp}`;
-  for (const file of files) {
-    mkdirSync(dirname(`${tmp}/${file.pfad}`), { recursive: true });
-    writeFileSync(`${tmp}/${file.pfad}`, file.text);
-  }
-  // the old folder steps aside first (a rename onto a non-empty folder fails); its removal comes after the new one stands,
-  // and a removal that fails is logged, never the spawn's failure
-  const old = lstatSync(dir, { throwIfNoEntry: false }) ? `${dir}.alt-${stamp}` : null;
-  if (old) {
-    if (lstatSync(dir).isDirectory()) chmodSync(dir, 0o755);
-    renameSync(dir, old);
-  }
-  try { renameSync(tmp, dir); } catch (e) {
+  // one skill the file system refuses (a name too long, a bad character) costs only that skill, never the rest of the library
+  // (Prüfung W3a Runde 1, Befund 2); the folder itself must stand, or nothing can be written
+  let old: string | null = null;
+  try {
+    mkdirSync(tmp, { recursive: true });
+    for (const file of files) {
+      try {
+        mkdirSync(dirname(`${tmp}/${file.pfad}`), { recursive: true });
+        writeFileSync(`${tmp}/${file.pfad}`, file.text);
+      } catch (e) { logError("seat-library:skill", e); }
+    }
+    // the old folder steps aside first (a rename onto a non-empty folder fails); its removal comes after the new one stands,
+    // and a removal that fails is logged, never the spawn's failure
+    old = lstatSync(dir, { throwIfNoEntry: false }) ? `${dir}.alt-${stamp}` : null;
+    if (old) {
+      if (lstatSync(dir).isDirectory()) chmodSync(dir, 0o755);
+      renameSync(dir, old);
+    }
+    renameSync(tmp, dir);
+  } catch (e) {
+    // nothing stays behind: the half-written folder goes, and an old folder that stepped aside comes back
     seatSkillsRemove(tmp);
+    if (old && !lstatSync(dir, { throwIfNoEntry: false })) try { renameSync(old, dir); old = null; } catch (r) { logError("seat-library:restore", r); }
     throw e;
   }
   if (old) seatSkillsRemove(old);

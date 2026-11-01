@@ -182,6 +182,13 @@ type AuditEvent =
   // lives in the repo and travels with the commit, this row lives in the fleet's own trail and
   // survives a repo that was never cloned anywhere.
   | "land_actor"
+  // a charge land through server/branch-land.ts#landCharge (W3b): whose „passt“ carried it — owner, seat <slot> (the right branch.passt),
+  // the repo's standing word, or none (the owner's own door)
+  | "charge_land"
+  // a seat with the right branch.passt set „passt“ on the tip of a seat it opened (POST /api/self/seats/<n>/passt)
+  | "branch_passt"
+  // a test instance a seat brought up for acceptance (POST /api/self/testinstanz) ended with a „passt“ on its branch or its seat's end (server/abnahme-instanz.ts)
+  | "abnahme_instanz_ended"
   // a land in a repo that has no remote under FLEET_HUB_REMOTE's name (5857e934): the variable is
   // fleetwide, the remote is per repo, and such a repo lands locally with no hub. Written at the
   // same choke point as land_actor, beside the `hubSkipped` field on the note that says the same.

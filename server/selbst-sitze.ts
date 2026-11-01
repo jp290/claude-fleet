@@ -110,7 +110,7 @@ export const FLEET_ROLLEN_IDS: readonly string[] = ["orchestrator", "orchestrato
   "owner", "controller", "supervisor"];
 const ROLLE_ID = /^[a-z][a-z0-9-]{0,79}$/;
 /** DIE RECHTE, DIE KEIN ROLLENBUNDEL TRÄGT (session-rechte.ts#RECHT_IDS, rechte-tueren.test.ts): der Owner vergibt sie je Sitz. Eine gebildete Rolle trägt sie ebenso wenig. */
-export const RECHTE_NUR_JE_SITZ: readonly RechtId[] = ["setup.save", "setup.export", "setup.import", "role.form"];
+export const RECHTE_NUR_JE_SITZ: readonly RechtId[] = ["setup.save", "setup.export", "setup.import", "role.form", "branch.passt"];
 
 /** Die Kennung einer gebildeten Rolle aus ihrem Namen: klein, Bindestriche, so wie eine Adresse sie trägt. */
 export function rolleAusName(name: string): string | null {

@@ -20,6 +20,7 @@ export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
   "setup.export": "export a setup as one file",
   "setup.import": "import a setup file",
   "role.form": "form a role of its own",
+  "branch.passt": "give „passt“ on the tip of a seat it opened, so that seat may land it",
 };
 
 // Die Rollen, die ein Sitz gleichzeitig tragen kann (Steward auf einer Lane, Lane als gebundene MAIN, …).

@@ -42,7 +42,7 @@ wireRights({
   tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
   // the block's own read repaints the board when it moves the answer — loadPrograms repaints only the
   // queue, and "steht gleich hier" must not wait for the 3 s tick; unchanged (floored fail) paints nothing
-  programsRead: () => programsRead, loadPrograms: () => { const was = programsRead; return loadPrograms().then(() => { if (programsRead !== was) void renderBoard(); }); },
+  programsRead: () => programsRead, loadPrograms: () => { const was = programsRead; return loadPrograms().then(() => { if (programsRead !== was) repaintBoard(); }); },
   source: () => instanceSource,
   openSheet: (repo) => { openQueue(); qSelect(`repo:${repo}`); },
 });
@@ -182,7 +182,7 @@ export function boardFold(key: string, title: string, count: string | null, fill
   hd.onclick = () => {
     if (boardFolds.has(key)) boardFolds.delete(key); else boardFolds.add(key);
     prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
-    void renderBoard();
+    repaintBoard();
   };
   box.appendChild(hd);
   // a folded group builds nothing: its body is only filled (and its data only fetched) when open
@@ -204,7 +204,7 @@ export async function doRebase(slot: number): Promise<void> {
   if (rebaseBusy.has(slot)) return;
   rebaseBusy.add(slot);
   rebaseNote.delete(slot);
-  void renderBoard();
+  repaintBoard();
   try {
     const r = await post(`/api/slots/${slot}/rebase`, {});
     const j = (await r.json().catch(() => null)) as
@@ -244,7 +244,7 @@ popover({
     const kind = boardPop?.kind ?? null;
     boardPop = null;
     if (refocus) popFocus = kind;
-    void renderBoard();
+    repaintBoard();
   },
   rows: () => fxMenu ? [...fxMenu.panel.querySelectorAll<HTMLButtonElement>(".fxmenuitem")]
     : [...boardBody.querySelectorAll<HTMLButtonElement>(".bpop .bmenuitem, .bpop .pr button")],
@@ -316,7 +316,7 @@ export let laneReqBusy = false;
 export let discardArm: { path: string; at: number } | null = null;
 export const DISCARD_READ_MS = 4000;
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && discardArm) { discardArm = null; void renderBoard(); }
+  if (e.key === "Escape" && discardArm) { discardArm = null; repaintBoard(); }
 });
 
 // shared risk-preview panel: shows the ACTUAL file names / commit subjects a destructive
@@ -493,7 +493,7 @@ export async function doCommit(slot: number, mode: "quick" | "agent", activeConf
   // reserve synchronously BEFORE the confirmMidRun await (mirrors doLand's mergePending
   // fix) — else two near-simultaneous triggers both pass the has() check and double-commit.
   commitBusy.set(slot, mode);
-  void renderBoard(); // reflect the disabled/"… writing message" state immediately
+  repaintBoard(); // reflect the disabled/"… writing message" state immediately
   try {
     // the session is still producing output → confirm before snapshotting a half-finished tree.
     // main sessions already warn inside their staging preview, so they pass activeConfirmed.
@@ -760,7 +760,7 @@ export function openBoardWindow(): void {
     if (!boardPop) return false;
     popFocus = boardPop.kind;
     boardPop = null;
-    void renderBoard();
+    repaintBoard();
     return true;
   });
 }
@@ -1190,7 +1190,7 @@ const RUNS_OPEN_HINT = "Click opens each check as a line of its own";
 function toggleRuns(): void {
   if (boardFolds.has(RUNS_FOLD)) boardFolds.delete(RUNS_FOLD); else boardFolds.add(RUNS_FOLD);
   prefSet("fleet.board.folds", JSON.stringify([...boardFolds]));
-  void renderBoard();
+  repaintBoard();
 }
 // the closed block's one line: a diamond per run in its state, then "2 running · 1 waiting"
 function runsSummary(open: MeterBall[]): HTMLElement {
@@ -1280,17 +1280,17 @@ export function errorsSection(): HTMLElement | null {
     // one fetch per (boot, total): reopening after nothing new happened costs no request
     if (errorsOpen && errorRows?.key !== errorKey(e)) {
       void api("/api/errors").then(async (r) => {
-        if (!r.ok) { errorRows = { key: errorKey(e), rows: [], err: `HTTP ${r.status}` }; void renderBoard(); return; }
+        if (!r.ok) { errorRows = { key: errorKey(e), rows: [], err: `HTTP ${r.status}` }; repaintBoard(); return; }
         const j = (await r.json()) as { errors?: ErrorRow[] };
         errorRows = { key: errorKey(e), rows: j.errors ?? [], err: null };
-        void renderBoard();
+        repaintBoard();
       }).catch(() => {
         // an unhandled rejection here used to leave the section open and empty forever
         errorRows = { key: errorKey(e), rows: [], err: "the server could not be reached" };
-        void renderBoard();
+        repaintBoard();
       });
     }
-    void renderBoard();
+    repaintBoard();
   };
   sec.appendChild(head);
   const last = e.last;
@@ -1482,19 +1482,8 @@ export async function renderBoard() {
     const slot = panes[focused]?.slot;
     const s = slot ? fleet[slot - 1] : undefined;
     if (!slot || !s?.cwd) {
-      // the alarms are about the MACHINE, not the focused lane — they must not disappear just
-      // because the pane under the cursor is empty; the Arbeitsorte and their checks strip neither
-      // (rechter-tab-notiz.md §4a `leer`). The helper devices are counted in that strip.
-      const er = errorsSection();
-      const pla0 = plaBoardCard();
-      const plaTop = pla0?.dataset.place === "top" ? [pla0] : [], plaQuiet = pla0 && !plaTop.length ? [pla0] : [];
-      // the same scroll rescue the main path has, or the column jumped to the top on every tick
-      const y0 = boardBody.scrollTop;
-      boardPop = null;
-      perfRebuild("renderBoard");
-      const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Pick a pane to see its session.")];
-      boardBody.replaceChildren(...next);
-      boardBody.scrollTop = y0;
+      boardReads = null;
+      paintBoardEmpty();
       return;
     }
     const [briefRes, outlineRes, wtRes, mgRes] = await Promise.all([
@@ -1526,125 +1515,8 @@ export async function renderBoard() {
     // the focus moved to another pane while we were fetching — this render describes
     // the wrong slot; drop it (the re-run below paints the right one)
     if (panes[focused]?.slot !== slot) { boardAgain = true; return; }
-    // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
-    // is new on every tick, so a focused control was dropped to <body> three times a minute; a
-    // stable key (boardFocusKey) finds its successor after the swap.
-    // Both are read HERE, before the first section is built: a section that keeps its element
-    // across ticks takes it out of the live
-    // column while the new nodes are assembled, the column is that much shorter for a moment, and
-    // a scrollTop read then is already clamped — the restore jumped the column under the pointer.
-    // From here to the swap nothing awaits, so the values are still the reader's at the swap.
-    const y = boardBody.scrollTop;
-    const focusKey = ((): string | null => {
-      const a = document.activeElement;
-      if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
-      return boardFocusKey(a);
-    })();
-    const nodes: HTMLElement[] = [];
-    // THE COLUMN TELLS ONE STORY, top to bottom (docs/design/rechter-tab-notiz.md §3–§3d, Variante 3A,
-    // owner-Ja 2026-10-05: „[Zitat entfernt]“): alarms only when due → ARBEITSORTE
-    // (every worktree, the checks strip in its head, a due restart in its Live row) → THIS SESSION
-    // (name, state, its lane's values, the handover line) → CHANGES with Land lane as the one primary
-    // action → the NOTEPAD → HISTORY (three commits, the rest behind one button) → MORE (Setup, Rechte,
-    // Files, Your prompts as tabs). Every function of the former column has a place (§3d's table).
-    // 0 — ALARMS, only when due: the check after the land (something failed ON MAIN), then what the
-    // server has been throwing. The due restart moved into the Arbeitsorte's Live row (§3, I3).
-    // WHAT NEEDS YOU comes first, and only that (owner 2026-10-08): an alarm a session, the
-    // Program's inbox or a judgement already holds recedes to one quiet line under the Arbeitsorte
-    const pla0 = plaBoardCard();
-    const plaTop = pla0?.dataset.place === "top";
-    if (pla0 && plaTop) nodes.push(pla0);
-    const esec0 = errorsSection();
-    if (esec0) nodes.push(esec0);
-    // 1 — ARBEITSORTE: the selected session's repo as its git structure, the checks, the machines this server knows
-    // (cards e66909b1, abe74821, owner Z131); the former lane list and test-instance card live in it
-    const ranke = arbeitsorteSection(slot, wts);
-    nodes.push(ranke);
-    if (pla0 && !plaTop) nodes.push(pla0);
-    // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane session, vs
-    // the upstream (from the sessions-poll gitInfo)
-    const ahead = brief ? (brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0)) : 0;
-    const behind = brief ? (brief.laneScoped ? brief.behind : (s.git?.behind ?? 0)) : 0;
-    const c: BoardCtx = { s, slot, brief, noGit, facts, mg, wts, ahead, behind,
-      own: ownWorkplace(s), prompts, outlineErr };
-    // 2 — THIS SESSION
-    const idsec = sessionSection(c);
-    nodes.push(idsec);
-    if (noGit) {
-      // NOT-APPLICABLE, drawn once and quietly: no fail styling, no "keeps trying" — nothing is
-      // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
-      const ng = el("div", "bsec");
-      ng.appendChild(sectionHead(SECTION.changes, "session"));
-      const e = el("div", "bempty", "No git in this folder — changes, history and lanes exist only in a repository.");
-      e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
-      ng.appendChild(e);
-      nodes.push(ng);
-    }
-    if (briefErr) {
-      const fail = el("div", "bsec bfail");
-      fail.appendChild(sectionHead("Changes, history and lanes are missing", "session"));
-      fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
-      // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
-      // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
-      fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
-      nodes.push(fail);
-    }
-    // 3 — CHANGES: the uncommitted tree, Commit, and on a lane Land lane with ⋯ beside it
-    if (brief) {
-      const work = changesSection(c, brief);
-      const ub = handoverUnderChanges(c) ? handoverBlock(c) : null;
-      if (ub) work.appendChild(ub);
-      nodes.push(work);
-    }
-    // 4 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
-    // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts). It
-    // stands above the notepad and History (owner 2026-10-09: „[Zitat entfernt]“)
-    const msec = moreSection(c);
-    nodes.push(msec);
-    // 5 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn
-    // from the lanes read alone, so it stands even when the brief failed; a repo session (the primary
-    // checkout is no board row) and a failed lanes read draw none.
-    {
-      const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
-      if (ownWt && wts) {
-        const noteSec = el("div", "bsec bnotesec");
-        noteSec.appendChild(sectionHead(SECTION.notepad, "repo"));
-        noteSec.appendChild(notepadBlock(wts.repo, ownWt));
-        nodes.push(noteSec);
-      }
-    }
-    // 6 — HISTORY: the three newest commits, the full list behind one button
-    if (brief) {
-      const csec = historySection(c, brief);
-      nodes.push(csec);
-      // the repo's lane map lives in the Arbeitsorte; what stays here is the one sentence when the
-      // focused repo's lane list could not be read, since the close controls of its orphans hang on it
-      if (wtErr) {
-        const lfail = el("div", "bsec bfail");
-        lfail.appendChild(sectionHead("Lanes", "repo"));
-        lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
-        nodes.push(lfail);
-      }
-    }
-    perfRebuild("renderBoard");
-    boardBody.replaceChildren(...nodes);
-    boardBody.scrollTop = y;
-    const opened = popScroll && !isMobile() ? boardBody.querySelector<HTMLElement>(".bpop") : null;
-    if (opened) { popScroll = false; opened.scrollIntoView({ block: "nearest" }); }
-    if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
-    if (focusKey) {
-      // inputs too (K5): a branch card's "Punkt hinzufügen" keeps the focus over the write's repaints,
-      // so the second point typed after Enter lands in the field (Critic B4)
-      for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex], input")) {
-        if (boardFocusKey(cand) !== focusKey) continue;
-        // the reading position was put back above — a focus that scrolled to its button would undo it
-        cand.focus({ preventScroll: true });
-        break;
-      }
-    }
-    // the explorer card's own scroll offset and its search box's focus/caret — restorable only
-    // now that the nodes this pass built are actually in the document (see fxRestoreAfterPaint)
-    fxRestoreAfterPaint();
+    boardReads = { slot, openedAt: s.openedAt, cwd: s.cwd, brief, noGit, facts, briefErr, wts, wtErr, mg, prompts, outlineErr };
+    paintBoard(boardReads);
   } finally {
     boardBusy = false;
     if (boardAgain) {
@@ -1652,6 +1524,173 @@ export async function renderBoard() {
       void renderBoard();
     }
   }
+}
+
+// THE COLUMN'S TWO HALVES. renderBoard READS (the brief, the prompt outline, the lane map, the merge
+// state: four requests, and the brief alone runs the session's git) and then paints; repaintBoard
+// PAINTS AGAIN FROM THE LAST READ. A click that only opens a fold, a menu or an explanation, a busy
+// state shown before its request, and a side read that just arrived (the Arbeitsorte, the branches,
+// the Postfach) change what is drawn, not what the session is — they used to read all four again
+// and drew only after the slowest answer (measured: docs/messungen/2026-11-01-board-schnell.md).
+// What changes the session's facts (a commit, a land, a saved note, a focus change, opening the
+// column) and the board's own timer still read. A repaint for another occupant reads, too.
+interface BoardReads {
+  slot: number; openedAt: number | undefined; cwd: string | null | undefined;
+  brief: BriefInfo | null; noGit: BriefNoGit | null;
+  facts: Pick<BriefInfo, "sessionStart" | "setup" | "succession"> | null; briefErr: string | null;
+  wts: WtInfo | null; wtErr: string | null; mg: MergeState | null; prompts: string[]; outlineErr: string | null;
+}
+let boardReads: BoardReads | null = null;
+export function repaintBoard(): void {
+  if (document.activeElement instanceof HTMLTextAreaElement && boardBody.contains(document.activeElement)) return;
+  if (!boardOpen) return;
+  const slot = panes[focused]?.slot;
+  const s = slot ? fleet[slot - 1] : undefined;
+  if (!slot || !s?.cwd) { paintBoardEmpty(); return; }
+  const r = boardReads;
+  if (!r || r.slot !== slot || r.openedAt !== s.openedAt || r.cwd !== s.cwd) { void renderBoard(); return; }
+  if (boardPop && boardPop.slot !== slot) boardPop = null;
+  paintBoard(r);
+}
+function paintBoardEmpty(): void {
+  // the alarms are about the MACHINE, not the focused lane — they must not disappear just
+  // because the pane under the cursor is empty; the Arbeitsorte and their checks strip neither
+  // (rechter-tab-notiz.md §4a `leer`). The helper devices are counted in that strip.
+  const er = errorsSection();
+  const pla0 = plaBoardCard();
+  const plaTop = pla0?.dataset.place === "top" ? [pla0] : [], plaQuiet = pla0 && !plaTop.length ? [pla0] : [];
+  // the same scroll rescue the main path has, or the column jumped to the top on every tick
+  const y0 = boardBody.scrollTop;
+  boardPop = null;
+  perfRebuild("renderBoard");
+  const next = [...plaTop, ...(er ? [er] : []), arbeitsorteSection(null, null), ...plaQuiet, el("div", "bempty bnopane", "Pick a pane to see its session.")];
+  boardBody.replaceChildren(...next);
+  boardBody.scrollTop = y0;
+}
+function paintBoard(r: BoardReads): void {
+  const { slot, brief, noGit, facts, briefErr, wts, wtErr, mg, prompts, outlineErr } = r;
+  const s = fleet[slot - 1]!;
+  // rebuild in place but keep the reading position — AND the keyboard focus. Every node here
+  // is new on every tick, so a focused control was dropped to <body> three times a minute; a
+  // stable key (boardFocusKey) finds its successor after the swap.
+  // Both are read HERE, before the first section is built: a section that keeps its element
+  // across ticks takes it out of the live
+  // column while the new nodes are assembled, the column is that much shorter for a moment, and
+  // a scrollTop read then is already clamped — the restore jumped the column under the pointer.
+  // From here to the swap nothing awaits, so the values are still the reader's at the swap.
+  const y = boardBody.scrollTop;
+  const focusKey = ((): string | null => {
+    const a = document.activeElement;
+    if (!(a instanceof HTMLElement) || !boardBody.contains(a)) return null;
+    return boardFocusKey(a);
+  })();
+  const nodes: HTMLElement[] = [];
+  // THE COLUMN TELLS ONE STORY, top to bottom (docs/design/rechter-tab-notiz.md §3–§3d, Variante 3A,
+  // owner-Ja 2026-10-05: „[Zitat entfernt]“): alarms only when due → ARBEITSORTE
+  // (every worktree, the checks strip in its head, a due restart in its Live row) → THIS SESSION
+  // (name, state, its lane's values, the handover line) → CHANGES with Land lane as the one primary
+  // action → the NOTEPAD → HISTORY (three commits, the rest behind one button) → MORE (Setup, Rechte,
+  // Files, Your prompts as tabs). Every function of the former column has a place (§3d's table).
+  // 0 — ALARMS, only when due: the check after the land (something failed ON MAIN), then what the
+  // server has been throwing. The due restart moved into the Arbeitsorte's Live row (§3, I3).
+  // WHAT NEEDS YOU comes first, and only that (owner 2026-10-08): an alarm a session, the
+  // Program's inbox or a judgement already holds recedes to one quiet line under the Arbeitsorte
+  const pla0 = plaBoardCard();
+  const plaTop = pla0?.dataset.place === "top";
+  if (pla0 && plaTop) nodes.push(pla0);
+  const esec0 = errorsSection();
+  if (esec0) nodes.push(esec0);
+  // 1 — ARBEITSORTE: the selected session's repo as its git structure, the checks, the machines this server knows
+  // (cards e66909b1, abe74821, owner Z131); the former lane list and test-instance card live in it
+  const ranke = arbeitsorteSection(slot, wts);
+  nodes.push(ranke);
+  if (pla0 && !plaTop) nodes.push(pla0);
+  // for a lane, ahead/behind are vs the base branch (from the brief); for a non-lane session, vs
+  // the upstream (from the sessions-poll gitInfo)
+  const ahead = brief ? (brief.laneScoped ? brief.ahead : (s.git?.ahead ?? 0)) : 0;
+  const behind = brief ? (brief.laneScoped ? brief.behind : (s.git?.behind ?? 0)) : 0;
+  const c: BoardCtx = { s, slot, brief, noGit, facts, mg, wts, ahead, behind,
+    own: ownWorkplace(s), prompts, outlineErr };
+  // 2 — THIS SESSION
+  const idsec = sessionSection(c);
+  nodes.push(idsec);
+  if (noGit) {
+    // NOT-APPLICABLE, drawn once and quietly: no fail styling, no "keeps trying" — nothing is
+    // wrong, the folder simply has no repository for Changes, History, Files or Lanes to read
+    const ng = el("div", "bsec");
+    ng.appendChild(sectionHead(SECTION.changes, "session"));
+    const e = el("div", "bempty", "No git in this folder — changes, history and lanes exist only in a repository.");
+    e.title = `${s.cwd} is a plain folder; the session, its prompts and its setup are read as usual`;
+    ng.appendChild(e);
+    nodes.push(ng);
+  }
+  if (briefErr) {
+    const fail = el("div", "bsec bfail");
+    fail.appendChild(sectionHead("Changes, history and lanes are missing", "session"));
+    fail.appendChild(el("div", "bstate", `The session brief could not be read — ${briefErr}.`));
+    // the server names the cause (folder gone, unreadable, git error — server.ts#cwdGitBody), so
+    // the sentence no longer guesses at it; a plain folder never reaches here (noGit above)
+    fail.appendChild(el("div", "bempty", "This is a failed read, not an empty session. The column keeps trying."));
+    nodes.push(fail);
+  }
+  // 3 — CHANGES: the uncommitted tree, Commit, and on a lane Land lane with ⋯ beside it
+  if (brief) {
+    const work = changesSection(c, brief);
+    const ub = handoverUnderChanges(c) ? handoverBlock(c) : null;
+    if (ub) work.appendChild(ub);
+    nodes.push(work);
+  }
+  // 4 — MORE ABOUT THIS SESSION: what is fixed at its founding or reached for rarely, as tabs with
+  // a one-line summary each (G3.2); which tab is open is remembered per browser (src/prefs.ts). It
+  // stands above the notepad and History (owner 2026-10-09: „[Zitat entfernt]“)
+  const msec = moreSection(c);
+  nodes.push(msec);
+  // 5 — THE NOTEPAD, the owner's free text on THIS lane's worktree (owner: it stays visible). Drawn
+  // from the lanes read alone, so it stands even when the brief failed; a repo session (the primary
+  // checkout is no board row) and a failed lanes read draw none.
+  {
+    const ownWt = wts?.worktrees.find((x) => x.path === s.cwd);
+    if (ownWt && wts) {
+      const noteSec = el("div", "bsec bnotesec");
+      noteSec.appendChild(sectionHead(SECTION.notepad, "repo"));
+      noteSec.appendChild(notepadBlock(wts.repo, ownWt));
+      nodes.push(noteSec);
+    }
+  }
+  // 6 — HISTORY: the three newest commits, the full list behind one button
+  if (brief) {
+    const csec = historySection(c, brief);
+    nodes.push(csec);
+    // the repo's lane map lives in the Arbeitsorte; what stays here is the one sentence when the
+    // focused repo's lane list could not be read, since the close controls of its orphans hang on it
+    if (wtErr) {
+      const lfail = el("div", "bsec bfail");
+      lfail.appendChild(sectionHead("Lanes", "repo"));
+      lfail.appendChild(el("div", "bstate", `The lane map could not be read — ${wtErr}.`));
+      nodes.push(lfail);
+    }
+  }
+  perfRebuild("renderBoard");
+  boardBody.replaceChildren(...nodes);
+  boardBody.scrollTop = y;
+  const opened = popScroll && !isMobile() ? boardBody.querySelector<HTMLElement>(".bpop") : null;
+  if (opened) { popScroll = false; opened.scrollIntoView({ block: "nearest" }); }
+  if (popFocus) { boardBody.querySelector<HTMLElement>(`button[data-pop="${popFocus}"]`)?.focus(); popFocus = null; }
+  if (focusKey) {
+    // inputs too (K5): a branch card's "Punkt hinzufügen" keeps the focus over the write's repaints,
+    // so the second point typed after Enter lands in the field (Critic B4)
+    for (const cand of boardBody.querySelectorAll<HTMLElement>("button, [tabindex], input")) {
+      if (boardFocusKey(cand) !== focusKey) continue;
+      // the reading position was put back above — a focus that scrolled to its button would undo it
+      cand.focus({ preventScroll: true });
+      break;
+    }
+  }
+  // the explorer card's own scroll offset and its search box's focus/caret — restorable only
+  // now that the nodes this pass built are actually in the document (see fxRestoreAfterPaint)
+  // the explorer card's own scroll offset and its search box's focus/caret — restorable only
+  // now that the nodes this pass built are actually in the document (see fxRestoreAfterPaint)
+  fxRestoreAfterPaint();
 }
 
 // --- THE INFO COLUMN BELOW THE ARBEITSORTE (docs/design/rechter-tab-notiz.md §3, §3b, §4; cards R1–R3,
@@ -1714,7 +1753,7 @@ function popTrigger(kind: BoardPopKind, slot: number, btn: HTMLButtonElement): H
   btn.classList.toggle("on", open);
   btn.setAttribute("aria-haspopup", "menu");
   btn.setAttribute("aria-expanded", String(open));
-  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; void renderBoard(); };
+  btn.onclick = () => { boardPop = open ? null : { kind, slot }; popScroll = !open; repaintBoard(); };
   return btn;
 }
 // the panel: a menu at its button on the desktop, a sheet from the bottom on the phone (G4.1 mobil)
@@ -1984,7 +2023,7 @@ let handoverExplain = false;
 const handoverOpenOn = (c: BoardCtx): boolean => handoverOpen?.slot === c.slot && handoverOpen.openedAt === c.s.openedAt;
 const toggleHandover = (c: BoardCtx, open: boolean): void => {
   handoverOpen = open ? null : { slot: c.slot, openedAt: c.s.openedAt };
-  if (!paintHandover(c)) void renderBoard();
+  if (!paintHandover(c)) repaintBoard();
 };
 function handoverBlock(c: BoardCtx): HTMLElement | null {
   const sc = successionOf(c);
@@ -2002,7 +2041,7 @@ function handoverBlock(c: BoardCtx): HTMLElement | null {
   info.dataset.uk = "ueb-i";
   info.title = handoverExplain ? "Hide the explanations" : "Explain each line";
   info.setAttribute("aria-pressed", String(handoverExplain));
-  info.onclick = () => { handoverExplain = !handoverExplain; if (!paintHandover(c)) void renderBoard(); };
+  info.onclick = () => { handoverExplain = !handoverExplain; if (!paintHandover(c)) repaintBoard(); };
   const edit = el("button", `buebedit${open ? " on" : ""}`, open ? "Done" : "Change") as HTMLButtonElement;
   edit.type = "button";
   edit.dataset.uk = "ueb-edit";
@@ -2305,7 +2344,7 @@ function footprintBlock(slot: number, brief: BriefInfo): HTMLElement {
     b.type = "button";
     b.setAttribute("aria-expanded", String(all));
     b.title = all ? `Back to the first ${FILES_SHOWN} files` : "Every file this lane changes against its base";
-    b.onclick = () => { toggleFold("changed"); void renderBoard(); };
+    b.onclick = () => { toggleFold("changed"); repaintBoard(); };
     box.appendChild(b);
   }
   return box;
@@ -2366,7 +2405,7 @@ function historySection(c: BoardCtx, brief: BriefInfo): HTMLElement {
     b.type = "button";
     b.setAttribute("aria-expanded", String(all));
     b.title = all ? "Back to the three newest commits" : "The whole history: every commit and what is already in the base";
-    b.onclick = () => { toggleFold("history"); void renderBoard(); };
+    b.onclick = () => { toggleFold("history"); repaintBoard(); };
     csec.appendChild(b);
   }
   return csec;
@@ -2390,7 +2429,7 @@ function boardTab(key: string, title: string, sum: string, fill: (body: HTMLElem
   chev.classList.add("chev");
   b.append(chev, el("span", "tt", title), el("span", "sum", sum));
   b.title = `${title} — ${open ? "collapse" : "expand"}`;
-  b.onclick = () => { toggleFold(key); void renderBoard(); };
+  b.onclick = () => { toggleFold(key); repaintBoard(); };
   hd.appendChild(b);
   if (extra) hd.appendChild(extra);
   box.appendChild(hd);
@@ -2427,7 +2466,7 @@ function moreSection(c: BoardCtx): HTMLElement {
   // POSTFACH (K13, src/postfach.ts): only where this session has written or received a message
   const openedAt = s.openedAt;
   if (openedAt) {
-    loadPostfach(() => void renderBoard());
+    loadPostfach(repaintBoard);
     const mail = postfachOf(slot, openedAt);
     if (mail?.length) sec.appendChild(boardTab("postfach", SECTION.messages, postfachSummary(mail, slot, openedAt),
       (body) => postfachBody(body, mail, slot, openedAt)));
@@ -2707,7 +2746,7 @@ export const WORKPLACES_EVERY_MS = 10_000;
 let workplacesAgain = false;
 onPlacesChanged(() => loadWorkplaces(true));
 export function loadWorkplaces(force = false): void {
-  loadBranches(force, () => void renderBoard()); // the branches of the board ride the same beat (K5)
+  loadBranches(force, repaintBoard); // the branches of the board ride the same beat (K5)
   if (workplacesBusy && force) { workplacesAgain = true; return; }
   if (workplacesBusy || (!force && Date.now() - workplacesAt < WORKPLACES_EVERY_MS)) return;
   workplacesBusy = true;
@@ -2723,7 +2762,7 @@ export function loadWorkplaces(force = false): void {
     .finally(() => {
       workplacesBusy = false;
       if (workplacesAgain) { workplacesAgain = false; loadWorkplaces(true); }
-      void renderBoard();
+      repaintBoard();
     });
 }
 
@@ -2851,14 +2890,14 @@ const gsViewOf = (): GsView => {
 };
 let gsView = gsViewOf();
 let gsSetOpen = false;
-export function reloadGsView(): void { gsView = gsViewOf(); void renderBoard(); }
+export function reloadGsView(): void { gsView = gsViewOf(); repaintBoard(); }
 // the settings window resets the two (src/client.ts#PREF_APPLY): read them again and repaint
 export function reloadRankePrefs(): void {
   rankeRepos.clear();
   const v = prefJSON<unknown>("fleet.ranke.repos");
   if (v && typeof v === "object" && !Array.isArray(v))
     for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (typeof x === "boolean") rankeRepos.set(k, x);
-  void renderBoard();
+  repaintBoard();
 }
 // ONE open line under a row: `wt:<path>` (a worktree without a session) or `ti:<path>` (its test instance)
 let rankeOpen: string | null = null;
@@ -2944,7 +2983,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
   liveBusy.add(repo);
   liveErr.delete(repo);
   liveArrive = { repo, sentence, path: null, until: Date.now() + 120_000 };
-  void renderBoard();
+  repaintBoard();
   // 1 — the lane
   let slot: number, cwd: string;
   try {
@@ -2982,7 +3021,7 @@ async function startLiveSession(repo: string, text: string): Promise<void> {
   }
   // 3 — its own test instance, once more after the session had time for `bun install`
   tiBusy.add(cwd);
-  void renderBoard();
+  repaintBoard();
   const up = () => post(`/api/slots/${slot}/testinstanz`, { action: "up", ttlMin: 240 });
   try {
     let r = await up();
@@ -3038,7 +3077,7 @@ function setLandForm(kind: keyof LandForms, key: string, form: LandForm | null):
   const next = { ...f, [kind]: { ...f[kind] } };
   if (form) next[kind][key] = form; else delete next[kind][key];
   prefSet("fleet.board.landform", JSON.stringify(next));
-  void renderBoard();
+  repaintBoard();
 }
 // the choice under the Projekte head (one line per project shown) or the opened lane: a lane may also
 // follow its project; an ⓘ after the last choice opens the one sentence on where it holds
@@ -3067,7 +3106,7 @@ function landFormField(kind: keyof LandForms, key: string, repo: string, label: 
     i.title = landFormInfo ? "Close the explanation" : "Where this choice holds";
     i.setAttribute("aria-label", "Where this choice holds");
     i.setAttribute("aria-expanded", String(landFormInfo));
-    i.onclick = (e) => { e.stopPropagation(); landFormInfo = !landFormInfo; void renderBoard(); };
+    i.onclick = (e) => { e.stopPropagation(); landFormInfo = !landFormInfo; repaintBoard(); };
     box.appendChild(i);
     if (landFormInfo) box.appendChild(el("div", "hint lf-hint", LAND_FORM_NOTE));
   }
@@ -3130,7 +3169,7 @@ function liveField(repo: string, arrive: NonNullable<typeof liveArrive> | null):
   how.title = liveHowOpen ? "Close the explanation" : "What Start does, from the sentence to the merge";
   how.setAttribute("aria-label", "What Start does");
   how.setAttribute("aria-expanded", String(liveHowOpen));
-  how.onclick = (e) => { e.stopPropagation(); liveHowOpen = !liveHowOpen; void renderBoard(); };
+  how.onclick = (e) => { e.stopPropagation(); liveHowOpen = !liveHowOpen; repaintBoard(); };
   box.append(f, go, how);
   // what this start is, beside the + that opens the founding window: one line, not a manual
   box.appendChild(el("div", "hint live-hint", "A lane with its own test instance · merge at the end"));
@@ -3469,7 +3508,7 @@ async function tiAct(repo: string, w: WorkplaceRow, slot: number | null, action:
   if (tab) tab.opener = null; // the instance's page gets no handle on this one
   tiBusy.add(w.path);
   tiErr.delete(w.path);
-  void renderBoard();
+  repaintBoard();
   try {
     const r = await post(tiRoute(repo, w, slot), action === "up" ? { action, ttlMin: 240 } : { action });
     const j = (await r.json().catch(() => ({}))) as { error?: string; refusal?: string; url?: string };
@@ -3595,7 +3634,7 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
       void renderBoard();
     } else {
       discardArm = { path: w.path, at: Date.now() }; // deliberate destruction gate (read-window below)
-      void renderBoard();
+      repaintBoard();
     }
   };
   row.appendChild(close);
@@ -3641,7 +3680,7 @@ function worktreeControls(wts: WtInfo, w: WtRow): HTMLElement[] {
       box.appendChild(el("div", "bdline", `no commits beyond ${wts.main} — branch deleted`));
     }
     const cancel = el("button", "bwtact", "cancel") as HTMLButtonElement;
-    cancel.onclick = () => { discardArm = null; void renderBoard(); };
+    cancel.onclick = () => { discardArm = null; repaintBoard(); };
     const go = el("button", "bwtact del", "") as HTMLButtonElement;
     const tick = () => {
       const left = Math.ceil((arm.at + DISCARD_READ_MS - Date.now()) / 1000);
@@ -3978,7 +4017,7 @@ function machineRow(key: string, name: string, kind: MachineKind, roles: string[
   fc.appendChild(icon("chevron"));
   row.appendChild(fc);
   if (open) row.classList.add("open");
-  rowTarget(row, () => { rankeOpen = open ? null : id; void renderBoard(); });
+  rowTarget(row, () => { rankeOpen = open ? null : id; repaintBoard(); });
   row.setAttribute("aria-expanded", String(open));
   if (!open) return [row];
   return [row, ...lines.map((parts) => {
@@ -4200,7 +4239,7 @@ export function arbeitsorteSection(focusSlot: number | null, wts: WtInfo | null)
   why.title = machinesLegendOpen ? "Close the explanation" : "What the device states mean";
   why.setAttribute("aria-label", "What the device states mean");
   why.setAttribute("aria-expanded", String(machinesLegendOpen));
-  why.onclick = () => { machinesLegendOpen = !machinesLegendOpen; void renderBoard(); };
+  why.onclick = () => { machinesLegendOpen = !machinesLegendOpen; repaintBoard(); };
   devices.firstElementChild!.appendChild(why);
   if (machinesLegendOpen) devices.appendChild(machinesLegend());
   sec.append(...(focusR ? [git] : []), checks, devices);
@@ -4248,7 +4287,7 @@ function remoteLine(R: WorkplaceRepo, standOf: Map<string, WorkplaceStand>): str
 // which head offers which word): the head with the project's state and „[Zitat entfernt]“, the menu of the selected head or diamond,
 // and under the structure what must stay in sight — a live start on its way or failed, the fold of many quiet worktrees
 function gitBlock(R: WorkplaceRepo, wts: WtInfo | null, standOf: Map<string, WorkplaceStand>): HTMLElement {
-  const repaint = () => void renderBoard();
+  const repaint = repaintBoard;
   const rows = R.worktrees ?? [];
   // MORE THAN 12 WORKTREES WITHOUT A SESSION wait behind one line, as they did in the Ranke
   const idle = rows.filter((w) => !w.primary && !workSlot(w) && !boardBranch(R.repo, w.branch));
@@ -4468,7 +4507,7 @@ function gsSettings(repo: string): HTMLElement {
         if (on) return;
         gsView = { ...gsView, [key]: show };
         prefSet("fleet.gs.view", JSON.stringify(gsView));
-        void renderBoard();
+        repaintBoard();
       };
       chips.appendChild(c);
     }
@@ -4741,9 +4780,9 @@ export function renderPostLandAudit() {
   // more goes back on top) is not swapped where it stood: the column is drawn again and puts it there
   const had = plaCard?.isConnected ? plaCard : null;
   const card = plaBoardCard();
-  if (had && card && had.dataset.place !== card.dataset.place) { had.remove(); if (boardOpen) void renderBoard(); }
+  if (had && card && had.dataset.place !== card.dataset.place) { had.remove(); if (boardOpen) repaintBoard(); }
   else if (had) { if (card) had.replaceWith(card); else had.remove(); }
-  else if (card && boardOpen) void renderBoard();
+  else if (card && boardOpen) repaintBoard();
 }
 
 // THE HELD WORD IN INFO (owner 2026-10-08: „[Zitat entfernt]“

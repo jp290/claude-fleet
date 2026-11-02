@@ -204,7 +204,7 @@
     "requiredCapabilities": ["tracked-source-read"],
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
-    "estimatedBytes": 1885,
+    "estimatedBytes": 1935,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active",
@@ -703,6 +703,24 @@
     "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
     "modes": ["read-only", "mutating"],
     "estimatedBytes": 7124,
+    "evidence": "tree-anchor",
+    "owner": "owner",
+    "status": "active"
+  },
+  {
+    "id": "snappy-web-app",
+    "useWhen": "Before you change how a web app that polls and redraws loads, caches or paints, or when someone says it feels slow.",
+    "scope": "repo-contract",
+    "audience": "agent",
+    "triggers": ["seat-start-any-repo", "visible-surface"],
+    "hardness": "guidance",
+    "sources": [
+      { "id": "snappy-web-app.text", "path": "docs/packs/snappy-web-app.md", "anchor": "# Making a web app feel snappy", "sorte": "anleitung", "positions": { "lane": "ausleihe", "main": "ausleihe", "orchestratorin": "ausleihe" } }
+    ],
+    "requiredCapabilities": ["tracked-source-read"],
+    "harnesses": ["claude", "pi", "pi-zai", "pi-deepseek", "pi-zai-unfenced", "pi-unfenced", "container", "codex"],
+    "modes": ["read-only", "mutating"],
+    "estimatedBytes": 6739,
     "evidence": "tree-anchor",
     "owner": "owner",
     "status": "active"

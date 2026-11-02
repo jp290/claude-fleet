@@ -11,7 +11,7 @@ import { readOrchestratorStart, readOrchestratorStartParts, renderOrchestratorSt
 const ROOT = join(import.meta.dir, "..");
 const GENERAL_PACK = join(ROOT, "docs/packs/working-with-the-owner.md");
 const GENERAL = ["Read the whole conversation, not only the last message.", "Stay with their core.", "Lead with what you did or found",
-  "Ask only the question that is due now", "Decide what you can, and report it."];
+  "Questions come at the end", "Decide what you can, and report it."];
 // A TEST'S OWN PRIVATE TEXT, never the owner's: no sentence of his stands in the tree. The id is what makes it the private pack.
 const PRIVAT = "# A private pack this test writes\n\nOnly this test's private sentence: read me before you talk with the owner.";
 

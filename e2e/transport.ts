@@ -68,15 +68,25 @@ export async function run(): Promise<void> {
     check("an app.js URL with a stale ?v is served no-store, with the current bytes",
       wrongV.headers.get("cache-control") === "no-store" && (await bytes(wrongV)).equals(onDisk()),
       wrongV.headers.get("cache-control") ?? "");
-    check("index.html itself is never cached — it is what hands out the version",
-      (await fetch(BASE + "/")).headers.get("cache-control") === "no-store");
+    // index.html hands out the version, so a browser must never REUSE it unasked: `no-cache` makes every open
+    // ask, and the ETag lets an unchanged page answer 304 without its ~90 KB (server/transport.ts#staticResponse)
+    const page = await fetch(BASE + "/");
+    const pageTag = page.headers.get("etag") ?? "";
+    check("index.html is never reused unasked — every open revalidates it",
+      page.headers.get("cache-control") === "no-cache" && pageTag !== "", `${page.headers.get("cache-control")} · etag ${pageTag || "none"}`);
+    const again = await fetch(BASE + "/", { headers: { "if-none-match": pageTag } });
+    check("an unchanged index.html answers 304 without a body",
+      again.status === 304 && (await again.arrayBuffer()).byteLength === 0, `${again.status}`);
 
     // --- a NEW bundle reaches a client: swap the file, the version moves, the URL moves ---
     await Bun.sleep(1100); // mtime resolution: a rewrite in the same second must still be a new v
     writeFileSync(appJs, fixture("v2"));
-    const src2 = scriptSrc(await (await fetch(BASE + "/")).text());
-    check("a rebuilt bundle changes the URL index.html hands out",
-      src2 !== src && /^\/app\.js\?v=\d+$/.test(src2), `${src} → ${src2}`);
+    // the counter-case of the 304: the browser asks with the OLD tag, and the new bundle must come back as a full page
+    const afterSwap = await fetch(BASE + "/", { headers: { "if-none-match": pageTag } });
+    const src2 = scriptSrc(await afterSwap.text());
+    check("a rebuilt bundle changes the URL index.html hands out, even to a browser that asks with the old tag",
+      afterSwap.status === 200 && afterSwap.headers.get("etag") !== pageTag
+      && src2 !== src && /^\/app\.js\?v=\d+$/.test(src2), `${afterSwap.status} · ${src} → ${src2}`);
     const swapped = (await bytes(await fetch(BASE + src2, { headers: { "accept-encoding": "gzip" } }))).toString();
     check("the new URL serves the NEW bundle (no cache entry survives the swap)",
       swapped.includes("fixture v2") && !swapped.includes("fixture v1"), swapped.slice(0, 40));

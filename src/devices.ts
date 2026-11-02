@@ -1,5 +1,5 @@
 import { $, el, post, setDrawer } from "./client";
-import { boardHead, gateAge, renderBoard } from "./board";
+import { boardHead, gateAge, repaintBoard } from "./board";
 
 // --- WHICH MACHINES TAKE WORK OFF THIS BOX: the helper device register --------------------------
 // The board's only view of the second machine. It sits with the gate line rather than in the lane
@@ -238,7 +238,7 @@ export function renderDevBtn() {
 function repaintDevices() {
   renderDevBtn();
   if (devIsOpen()) renderDevDlg();
-  void renderBoard();
+  repaintBoard();
 }
 export function closeDevDlg() {
   devdlg.style.display = "none";

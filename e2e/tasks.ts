@@ -194,13 +194,13 @@ async function codexCliFixtures(serverSource: string, clientSource: string): Pro
     const changed = observer.read();
     check("R3c: switching the spawn binary invalidates an unexpired cache", calls === 3
       && changed.version === "0.160.0" && changed.binary !== first.binary, JSON.stringify(changed));
-    const slow = script("slow", "while :; do :; done");
+    const slow = script("slow", "exec sleep 60"); // never answers within the probe's 2 s, and ends by itself if a killed run leaves it
     const timeout = await fixture.probeCodexCliVersion(slow);
     check("R3c: a nonterminating version process is bounded and returns timeout", timeout.version === null && timeout.reason === "timeout");
     const ownerDir = join(dir, "owner");
     mkdirSync(ownerDir);
     const stub = join(ownerDir, "codex"), stubPid = join(ownerDir, "stub.pid"), ownerRunner = join(ownerDir, "owner.ts");
-    writeFileSync(stub, `#!/bin/sh\necho $$ > '${stubPid}'\nwhile :; do :; done\n`);
+    writeFileSync(stub, `#!/bin/sh\necho $$ > '${stubPid}'\nexec sleep 60\n`); // no busy loop: a run killed between start and SIGTERM left one spinning for 10 h (2.11.)
     chmodSync(stub, 0o755);
     const runner = `import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";

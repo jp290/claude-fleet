@@ -219,8 +219,18 @@ async function bundleBytes(path: string): Promise<BundleBytes | null> {
 
 export async function staticResponse(req: Request, url: URL, st: { path: string; type: string }): Promise<Response> {
   if (url.pathname === "/") {
+    // THE PAGE IS ASKED FOR EVERY TIME, AND SENT ONLY WHEN IT CHANGED. It hands out the bundle's version, so
+    // a browser must never reuse it unasked: `no-cache` makes every open revalidate. The ETag is the page's
+    // own hash after the version is written in, so a new bundle or a new index.html is a new tag and the
+    // full answer; an unchanged page is a 304 of a few hundred bytes instead of ~90 KB gzipped, on every
+    // reopen of the board (measured on a phone link: docs/messungen/2026-11-01-board-schnell.md). Weak,
+    // because the gzip and the plain answer carry the same tag.
     const html = (await Bun.file(st.path).text()).replace('src="/app.js"', `src="/app.js?v=${bundleV()}"`);
-    return new Response(html, { headers: { "content-type": st.type, "cache-control": "no-store" } });
+    const etag = `W/"${Bun.hash(html).toString(36)}"`;
+    const headers = { "content-type": st.type, "cache-control": "no-cache", etag, vary: "accept-encoding" };
+    const asked = (req.headers.get("if-none-match") ?? "").split(",").map((t) => t.trim());
+    if (asked.includes(etag)) return new Response(null, { status: 304, headers });
+    return new Response(html, { headers });
   }
   if (url.pathname === "/app.js" || url.pathname === "/share.js" || url.pathname === "/helper.js" || url.pathname === "/k15.js") {
     const b = await bundleBytes(st.path);

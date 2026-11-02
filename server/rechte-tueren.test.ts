@@ -70,7 +70,7 @@ describe("die Rollen als benannte Bundel", () => {
     expect(wirksameRechte({ stufe: "bauen", an: [], aus: [], buendel: "none" }, ["orchestrator"]).size).toBe(0);
     expect([...wirksameRechte({ stufe: "bauen", an: [], aus: [], buendel: "none", recht: ["edge.grant"] }, ["lane"])])
       .toEqual(["edge.grant"]);
-    expect(RECHT_IDS.length).toBe(16);
+    expect(RECHT_IDS.length).toBe(17);
     // DIE DREI SETUP-RECHTE (Richtung Schritt 4) UND role.form (Schritt 5) TRÄGT KEIN ROLLENBUNDEL: sie ändern das Setup als solches,
     // nicht nur einen Start daraus — der Owner vergibt sie je Sitz (server/setup-tueren.ts). Jede Rolle behält genau, was sie hatte.
     for (const [rolle, bundel] of Object.entries(ROLLEN_BUENDEL) as [RechtRolle, RechtId[]][])

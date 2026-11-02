@@ -8,6 +8,7 @@
 // this list is where that decision is recorded. `=` is an exact pathname, `~` a regex.
 export const PRE_AUTH_ROUTES: readonly string[] = [
   '= /',                  // login (?token=, tokenGate'd) AND the share-host landing page
+  '= /bot',               // the same login for the owner's own bot page: /bot?token=… sets the cookie and stays on /bot (tokenGate'd)
   // Owner-only despite sitting before the shared gate: the handler performs its own owner check so
   // valid scoped credentials can get an existence-hiding 404. No credential and unknown tokens 401.
   '= /api/machine-settings',

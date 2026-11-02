@@ -7,6 +7,7 @@ import { initFieldPerf } from "./fieldperf";
 import { pasteText } from "./paste";
 import { initBoard, machineSigns, nameWithoutModel, renderWorkplaceField, reloadRankePrefs, reloadGsView, setInstanceSource, BriefInfo, BriefSetup, boardBody, boardOpen, termLimitOn, setTermLimit, boardFolds, outline, ReviewFinding, mergeWatch, mergePending, showRiskPreview, fetchSlotRisk, doLand, doMergeLand, doShelve, doCommit, sessionActive, boardShell, applyBoard, setBoard, GateInfo, gateInfo, postLandLive, meterSuites, renderSuiteMeter, DeployGapInfo, BundleStaleInfo, deployGapInfo, bundleStaleInfo, ErrorsInfo, errorsInfo, renderBoard, repaintBoard, postLandAudit, renderPostLandAudit, setPostLandAudit, setGateInfo, setPostLandLive, setErrorsInfo, setMeterSuites, setDeployGapInfo, setBundleStaleInfo, takeFxAfterPaint } from "./board";
 import { initComposer, compEl, compOpts, compTray, compFiles, live, liveOn, setComposerSize, growComposer, reshapeSurface, mountComposer, renderParkHint, renderHeldHint, renderFrageHint, renderTarget, cacheTtlFor, tickCacheAge, renderComposerOpts, buildTray, setLive, renderChips, serverClock, cacheAge, CACHE_TTL_MS, promptPlaceholder, optChoices, stageOpt, unstageOpt, applyOpt, setOptsAnywhere } from "./composer";
+import { initBot, botOn, syncBot, botReapply, isBotPage } from "./bot";
 import { initDevices, devdlg, devbtn, closeDevDlg, devIsOpen, renderDevBtn, renderDevDlg, devicesSection, helperDevicesInfo, deviceOnlineMs, type HelperDeviceInfo, setDeviceSnapshot } from "./devices";
 import { initAttention, attndlg, opsdlg, attnRows, ownerReportRows, opsRows, loadAttention, loadOwnerReports, setAttentionOpen, setOpsEvents, setReportsAwaitingOwner, closeAttnDlg, closeOpsDlg } from "./attention";
 import { Terminal } from "@xterm/xterm";
@@ -34,6 +35,7 @@ import { pollPlan } from "./pollplan";
 import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { syncWichte } from "./wicht";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
+import { keepWarmStep } from "./keep-warm";
 import { isInterruptMark, otherSender, pendingSettledBy, splitDeliveryHeader, unwrapPasted } from "./pendingsend";
 import { AGENT_LINE_TITLE } from "./agent-message";
 import { foldOwnerToggle } from "./bubble-fold";
@@ -538,6 +540,8 @@ export interface SlotInfo {
   // Both are optional for compatibility with an older server. `repo` is the canonical toplevel;
   // cwd can be a subdirectory and therefore cannot substitute for it in an ownership join.
   openedAt?: number; repo?: string | null;
+  // the owner's mark „[Zitat entfernt]“ (the right owner.bot, server.ts poll): Info's button to /bot; absent = not marked
+  ownBot?: true;
   share?: ShareInfo | null; git?: GitInfo | null; worktree?: WorktreeInfo | null; mergePending?: boolean;
   // WHAT THIS PANE WAS STARTED WITH — the founding choices, all on the poll since the row was
   // widened, none of them read by the board before. `model` is the spawn-time model the server
@@ -568,6 +572,8 @@ export interface SlotInfo {
   // is NOT the same claim as "session 1" — the server cannot tell a founding main apart from one
   // whose lineage was never recorded, so nothing is printed for an absent key.
   succession?: { session: number; taken: number | null; cap: number | null };
+  // the plant's glow in the bar (server.ts#noSuccessionHere): kept warm, and no succession the owner could set — each omitted unless true
+  keepWarm?: true; noSuccession?: true;
   // which agent this session runs. ABSENT means the default harness — the server omits the field
   // when it is null (it is the 2 s poll), so absent and "claude" are the same state here too.
   permissions?: { sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "never" } | { state: "invalid" };
@@ -1353,6 +1359,8 @@ class Pane {
   private perfChat: PerfSpan | null = null;
   private perfChatLoaded = false;
   private perfSeedReady = false;
+  // the conversation view is showing and its first read of the transcript has come back (the bot page's loading animation ends on it)
+  get chatReady(): boolean { return this.view === "chat" && this.perfChatLoaded; }
   visibleExistingSwitch(): void {
     if (this.view === "chat" ? this.perfChatLoaded : this.perfSeedReady) this.visibleSwitch(true);
   }
@@ -1965,6 +1973,7 @@ class Pane {
     this.toolGroup = null;
     this.notifGroup = null;
     this.pending = [];
+    this.inWarmTurn = false;
     // a rebuilt view starts at its end, following, with nothing unread
     this.chatStuck = true;
     this.chatUnseen = 0;
@@ -2223,7 +2232,14 @@ class Pane {
 
   // One message: the rendered body (a bubble for you, free prose for the agent — t3code's layout
   // grammar) and a meta row that appears on hover with the time and a copy of the SOURCE text.
+  // the bot page keeps Fleet's keep-warm ping and the bot's "ok" out of the conversation (src/keep-warm.ts)
+  private inWarmTurn = false;
   private appendEntry(e: TEntry) {
+    if (botOn()) {
+      const step = keepWarmStep(e, this.inWarmTurn);
+      this.inWarmTurn = step.inTurn;
+      if (step.hide) return;
+    }
     if (e.meta && e.blocks.length && e.blocks.every((b) => b.t === "text" && isInterruptMark(b.text))) { this.addInterrupt(e); return; }
     // the model's safeguards stopped an answer, or Claude Code switched models after a safety flag
     // (server.ts#viewEntry serves the system line as meta): one quiet line, never a bubble of yours
@@ -2724,6 +2740,7 @@ class Pane {
       if (this.chatSource !== null && data.source !== this.chatSource) {
         this.chatEl.replaceChildren();
         this.pending = [];
+        this.inWarmTurn = false;
         this.openAgents.clear();
         this.chatTotal = 0;
         this.chatSource = data.source;
@@ -5546,7 +5563,7 @@ function focusPane(index: number) {
   }
 }
 
-function setLayout(n: number, assignments?: number[]) {
+export function setLayout(n: number, assignments?: number[]) {
   layout = n;
   for (const p of panes) p.dispose();
   panes = [];
@@ -5626,6 +5643,7 @@ MOBILE_MQ.addEventListener("change", () => {
   applyBoard(); // same for the right sideboard — a desktop-only surface
   renderPostLandAudit(); // the alarm card follows Info: the board column on the desktop, the window on a phone
   setLayout(isMobile() ? 1 : layout, panes.map((p) => p.slot));
+  botReapply();
 });
 
 // iOS Safari: the on-screen keyboard shrinks the visual viewport but not the layout
@@ -6446,6 +6464,7 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#layouts button"))
   };
 
 function saveView() {
+  if (botOn()) return; // the bot page stands: fleet.view keeps the board's panes (src/bot.ts)
   // `chats`: which panes show the conversation view — a reload used to land every pane back on the
   // terminal, and with it the composer's switches and cache counter were gone (seventeenth cut)
   prefSet("fleet.view", JSON.stringify({ layout, panes: panes.map((p) => p.slot), focused,
@@ -7348,6 +7367,7 @@ function updateTitle() {
   if (ta.placeholder !== ph) ta.placeholder = ph;
   renderIsland(); // …and so does the phone's top island
   renderSheet(); // …and an open sheet
+  syncBot(); // …and the bot page's bar
 }
 
 // --- attended Codex bind ---------------------------------------------------------------
@@ -12082,17 +12102,8 @@ dropFile.addEventListener("change", () => {
   void uploadDrops(files);
 });
 
-// --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
-initBoard();
-// THE TESTINSTANZEN CARD IS GONE (owner 2026-10-08: „[Zitat entfernt]“): every worktree's test instance stands at its row under Arbeitsorte, with Öffnen
-// and Stoppen there (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md).
-initQueue();
-initAttention();
-initDevices();
-initComposer();
-buildTray(); // the tray's entries are the functions that used to own an icon button of their own
-void (async () => {
-  await refresh();
+// The board's panes as fleet.view last saved them (the boot; the bot page at /bot does not read them, src/bot.ts)
+function restoreView(): void {
   const view = prefJSON<{ layout?: number; panes?: number[]; focused?: number; chats?: boolean[] }>("fleet.view");
   const legacy = prefNumber("fleet.current");
   const n = !isMobile() && view.layout && LAYOUTS[String(view.layout)] ? view.layout : 1;
@@ -12106,6 +12117,20 @@ void (async () => {
   // (syncHarnessAffordances sends a slot without one back to the terminal on its own)
   panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
+}
+
+// --- boot: restore layout + pane assignments (migrates the old fleet.current key) ---
+initBoard();
+// THE TESTINSTANZEN CARD IS GONE (owner 2026-10-08: „[Zitat entfernt]“): every worktree's test instance stands at its row under Arbeitsorte, with Öffnen
+// and Stoppen there (src/board.ts#tiLine); GET /api/testinstanzen keeps its other readers (docs/testinstanz.md).
+initQueue();
+initAttention();
+initDevices();
+initComposer();
+buildTray(); // the tray's entries are the functions that used to own an icon button of their own
+void (async () => {
+  await refresh();
+  if (isBotPage()) initBot(); else restoreView();
   setCollapsed(prefBool("fleet.sidecollapsed"));
   booting = false;
   restoreFocus("term");

@@ -7,6 +7,7 @@
 // Every write redraws the block in place from what the client holds and then from the server's answer
 // (HandoverView.repaint → board.ts#paintHandover): no /brief and no column render per click.
 import { agentHarnesses, api, el, fleet, harnesses, loadHarnesses, post } from "./client";
+import { icon } from "./icons";
 import { serverClock } from "./composer";
 import type { BriefSuccession } from "./board";
 import { CAP_GAP_PCT, OFF_WHY, PLAN_WORDS, cacheNow, choiceOf, clockText, flowSteps, handoverDoesNothing, laterText, lockedGate,
@@ -212,6 +213,23 @@ function spawnPicker(v: HandoverView): HTMLElement {
 // server/succession.ts#actDecision „cold-offer“), so the cap stays where Fleet acts there and is gone where it does not
 // (a lane); without a cache reading, or from a server that sends no cap, the base alone. null = no handover comes: no
 // threshold, or the nudge off with nothing at the cap (Mangel 76b)
+// THE COFFEE MUG (owner 2026-11-01): one press keeps the session warm, the next lets it cool — the „[Zitat entfernt]“ switch of the
+// block below, at the Context line where he already looks at a session. The plant in the bar glows warm while it is on. Nothing
+// for a session that cannot be kept warm (a lane, the steward, another agent).
+export function keepWarmButton(v: HandoverView): HTMLButtonElement | null {
+  const kc = v.sc.keepCache;
+  if (!kc || kc.exempt) return null;
+  const b = el("button", `kwmug${kc.on ? " on" : ""}`) as HTMLButtonElement;
+  b.type = "button";
+  b.dataset.uk = "keepwarm";
+  b.appendChild(icon("coffee"));
+  b.title = kc.on ? "Kept warm — press to let it cool" : "Press to keep this session warm";
+  b.setAttribute("aria-label", b.title);
+  b.setAttribute("aria-pressed", String(kc.on));
+  // the fleet's value takes the session back to the fleet: no own record is kept (as the Keep warm switch below)
+  b.onclick = () => { void write(v, { keepCache: kc.fleetOn === !kc.on ? null : !kc.on }); };
+  return b;
+}
 export function handoverAt(sc: BriefSuccession): { pct: number; cache: "warm" | "kalt" | null; cap: number | null } | null {
   if (sc.thresholdPct === null || handoverDoesNothing(sc)) return null;
   const cache = sc.cache ? cacheNow(sc.cache, serverClock()).state : null;

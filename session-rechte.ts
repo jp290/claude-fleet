@@ -34,7 +34,8 @@ export type RechtId =
   | "setup.save" | "setup.export" | "setup.import"
   | "role.form"
   | "branch.passt"
-  | "overview.fleet";
+  | "overview.fleet"
+  | "owner.bot";
 export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.program", "fleet.deploy", "edge.grant",
   "text.handover", "text.pack", "text.concept.version", "text.concept.annotation", "text.program",
   // DIE SETUP-RECHTE (Richtung Schritt 4): kein Rollenbundel trägt sie — der Owner vergibt sie je Sitz,
@@ -48,7 +49,10 @@ export const RECHT_IDS: readonly RechtId[] = ["seat.open", "land.branch", "land.
   "branch.passt",
   // DIE GANZE ÜBERSICHT (W3 Auftrag 11): jeden Sitz in GET /api/self/overview sehen wie die Orchestratorin — ihr Bundel trägt es, der Owner gibt es
   // einem Sitz dazu (sein eigener Agent), am laufenden Sitz über POST /api/slots/<n>/rechte { grant }
-  "overview.fleet"];
+  "overview.fleet",
+  // DER EIGENE BOT DES OWNERS (Owner 1.11., „[Zitat entfernt]“): die Markierung „[Zitat entfernt]“. Kein Rollenbundel trägt sie,
+  // nur der Owner gibt sie einem Sitz (POST /api/slots/<n>/rechte), sie bleibt bei der Nachfolge. Wer sie trägt, dem zeigt Info den Knopf zur Seite /bot.
+  "owner.bot"];
 // Der eine benannte leere Bundel dieses Schnitts: der Owner öffnet damit eine Probe, deren Rolle nichts
 // hinzufügt. Er ist kein Produktions-Rollenbundel und nimmt einer Rolle nichts weg.
 export type RechteBuendel = "none";

@@ -4455,11 +4455,81 @@
     .fleetrow .setctl { flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
     .setbranch { width: 8em; }
   }
+
+  /* --- THE OWNER'S OWN BOT PAGE (src/bot.ts; owner 2026-11-01: "[Zitat entfernt]"). Address /bot: the board's shell with only the conversation of the seat
+     the owner marked (the right owner.bot) and the one composer — not a mode of the board. html.botpage is set by
+     the server's answer for /bot (server/transport.ts#staticResponse), so no board chrome ever paints and no script is needed for it. The chat itself is the pane's: black, flakes, its
+     typography, font size, copyable text (owner correction chat-ansicht-geschmack). */
+  #botveil, #botbar { display: none; }
+  html.botpage #botveil { display: flex; position: fixed; inset: 0; z-index: 200; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 24px; background: #000; color: var(--chat-prose, #c9c9c9);
+    font-family: var(--chat-sans, system-ui, sans-serif); text-align: center; transition: opacity 520ms ease; }
+  html.botpage #botveil.done { opacity: 0; pointer-events: none; }
+  /* a ring that draws a comet around itself: calm, one movement, nothing jumps */
+  #botorbit { position: relative; width: 56px; height: 56px; border-radius: 50%; margin-bottom: 8px; border: 2px solid rgba(255, 255, 255, .1); }
+  #botorbit::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; animation: botspin 1.15s linear infinite;
+    background: conic-gradient(from 0deg, transparent 0 55%, rgba(255, 255, 255, .9) 100%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px)); }
+  @keyframes botspin { to { transform: rotate(360deg); } }
+  #botveilname { font-size: 20px; font-weight: 600; letter-spacing: .01em; color: #fff; opacity: 0; animation: botrise 700ms 250ms ease forwards; }
+  #botveilmsg { font-size: 13px; color: #8d8d8d; opacity: 0; animation: botrise 700ms 550ms ease forwards; }
+  @keyframes botrise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  #botveilback { display: none; margin-top: 10px; padding: 8px 16px; border-radius: 999px; border: 1px solid #333; color: #d8d8d8;
+    font-size: 13px; text-decoration: none; }
+  #botveil.stuck #botveilback { display: inline-block; }
+  #botveil.stuck #botorbit::after { animation: none; opacity: .35; }
+  #botveil.stopped #botorbit { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    #botorbit::after { animation: none; opacity: .7; }
+    #botveilname, #botveilmsg { animation: none; opacity: 1; }
+    html.botpage #botveil { transition: none; }
+  }
+  html.botpage #side, html.botpage #board, html.botpage #mhead, html.botpage #mtop, html.botpage #msheetwrap, html.botpage #mreadtl,
+  html.botpage #mgrip, html.botpage #keys, html.botpage #chips, html.botpage #livebar, html.botpage #compopts,
+  html.botpage #mobmore, html.botpage #live, html.botpage #histbtn, html.botpage #autobtn, html.botpage #comptray,
+  html.botpage #compfoot, html.botpage #comptarget { display: none !important; }
+  html.botpage #botbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    padding-top: max(8px, env(safe-area-inset-top)); font-family: var(--chat-sans); }
+  #botback { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px 0 8px; border-radius: 999px;
+    border: 1px solid var(--chat-edge); background: var(--chat-raised); color: var(--chat-prose); text-decoration: none;
+    font: 500 var(--chat-ui-fs) / 1 var(--chat-sans); }
+  #botback:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  #botback .ico { width: 15px; height: 15px; flex: none; }
+  #botname { min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--chat-ink);
+    font: 600 var(--chat-fs) / 1.2 var(--chat-sans); }
+  html.botpage .panetools .viewtoggle, html.botpage .panetools .boardtoggle, html.botpage .panetools .panereload,
+  html.botpage .panetools .termwidth, html.botpage .panetools .panegear { display: none !important; }
+  html.botpage .panechat { padding-top: 12px; }
+  /* where the bot works, quietly under the input (src/bot.ts#syncBot): folder · branch, as the board's foot line shows it */
+  html.botpage #botwhere:not([hidden]) { display: flex; padding: 2px 14px 6px; font: 400 var(--chat-ui-fs) / 1.4 var(--chat-sans); }
+  /* Info's side: the button on a marked seat, and the row in Setup where the owner sets the mark */
+  .bbotopen { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 8px; min-height: 34px;
+    border-radius: 999px; border: 1px solid var(--b-edge, var(--chat-edge)); background: var(--chat-raised); color: var(--chat-ink);
+    font: 600 12px / 1 var(--chat-sans); cursor: pointer; text-decoration: none; }
+  .bbotopen:hover { border-color: var(--c-edge-hi); }
+  .bbotopen .ico { width: 14px; height: 14px; }
+  .bsbotset { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--chat-edge); background: var(--chat-raised);
+    color: var(--chat-prose); font: 500 11px / 1.5 var(--chat-sans); cursor: pointer; }
+  .bsbotset:hover { color: var(--chat-ink); border-color: var(--c-edge-hi); }
+  .bsbotset[aria-busy="true"] { cursor: progress; opacity: .6; }
+  /* the coffee mug at the Context line (src/handover.ts#keepWarmButton): grey, warm amber while the session is kept warm */
+  .kwmug { display: inline-flex; align-items: center; vertical-align: middle; padding: 3px 5px; border: 0; border-radius: 6px; background: none;
+    color: var(--chat-mute); cursor: pointer; }
+  .kwmug:hover { color: var(--chat-ink); background: var(--c-hover); }
+  .kwmug.on { color: #E3A857; }
+  .kwmug .ico { width: 16px; height: 16px; }
 </style>
 </head>
 <body>
 <div id="plaudit" class="plaudit"></div>
 <div id="tiband" hidden></div>
+<div id="botveil" role="status" aria-live="polite">
+  <div id="botorbit" aria-hidden="true"></div>
+  <div id="botveilname"></div>
+  <div id="botveilmsg"></div>
+  <a id="botveilback" href="/"></a>
+</div>
 <div id="app">
   <div id="mhead">
     <button id="menu" title="sessions">☰</button>
@@ -4502,6 +4572,12 @@
     <div id="sidefoot">Enter — send · Shift+Enter — new line<br>Click a terminal to type into it directly</div>
   </div>
   <div id="main">
+    <!-- THE OWNER'S OWN BOT PAGE (src/bot.ts, address /bot): the same shell as the board, with only the chat of the
+         marked seat. #botbar is its head, #botveil the loading animation; both show only under html.botpage -->
+    <div id="botbar">
+      <a id="botback" href="/" title="Back to the board"></a>
+      <span id="botname"></span>
+    </div>
     <div id="panes" class="l1"></div>
     <div id="bar">
       <!-- the phone upright only (the island block): the grip over the bottom island folds the
@@ -4545,6 +4621,7 @@
         </div>
         <div id="compfrage" hidden></div>
         <div id="compfoot"></div>
+        <div id="botwhere" class="wtfield" hidden></div>
         <div id="comptray"></div>
         <input id="dropfile" type="file" multiple hidden>
         <button id="live" title="Live typing — every key goes straight to the terminal"><span class="tricon"></span><span class="trlabel">Live</span></button>

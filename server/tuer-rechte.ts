@@ -22,12 +22,13 @@ export const RECHT_WAS: Readonly<Record<RechtId, string>> = {
   "role.form": "form a role of its own",
   "branch.passt": "give „passt“ on the tip of a seat it opened, so that seat may land it",
   "overview.fleet": "see every seat in the overview, as the Orchestratorin does",
+  "owner.bot": "be the owner's own bot: his Info offers a page that holds only the chat with this seat",
 };
 
 // DIE RECHTE, DIE NUR DER OWNER GIBT (W3 Auftrag 14): über seine Tür (POST /api/slots/<n>/rechte { grant | revoke }) einem Sitz, sonst nie — kein Kind
 // bekommt es (kindNieWeiter weist es im Body ab und vererbt es nicht), keine gebildete Rolle trägt es (rolleFormen). Die Orchestratorin trägt
 // overview.fleet in ihrem Bundel nur für sich: ein Kind von ihr, vielleicht ein pi-Sitz, sähe sonst Namen und Zwecke jedes Sitzes, was der Owner nie wählte.
-export const RECHTE_NUR_DURCH_OWNER: readonly RechtId[] = ["overview.fleet"];
+export const RECHTE_NUR_DURCH_OWNER: readonly RechtId[] = ["overview.fleet", "owner.bot"];
 /** Rechte ohne die, die nur der Owner gibt: was ein Kind von seiner Öffnerin erben kann. */
 export function ohneOwnerRechte(r: Rechte | null): Rechte | null {
   if (!r?.recht?.some((x) => RECHTE_NUR_DURCH_OWNER.includes(x))) return r;

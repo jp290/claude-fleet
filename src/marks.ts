@@ -84,6 +84,8 @@ export type MarkState = "work" | "need" | "rest" | "done" | "sleep" | "bad";
 export type MarkHarness = "claude" | "codex" | "pi";
 export interface MarkFacts {
   repo: string; harness: string; role: MarkRole; slot: number; openedAt: number; state: MarkState;
+  // a light behind the plant, nothing else changes: warm while the session is kept warm, red where no succession is set
+  glow?: "warm" | "red";
 }
 
 // the slice of a sidebar row the mark reads — structural, so this module needs nothing from client.ts
@@ -91,6 +93,7 @@ export interface MarkSlot {
   id: number; label: string | null; harness?: string; model?: string | null; openedAt?: number;
   worktree?: unknown; awaiting?: "owner" | "main";
   git?: { dirty: number; ahead: number } | null;
+  keepWarm?: true; noSuccession?: true;
 }
 
 // the same role words the server keys off (server.ts#isOrchestratorLabel, STEWARD_LABEL)
@@ -115,7 +118,17 @@ export function markFacts(s: MarkSlot, project: string, glyph: "work" | "rest" |
     : glyph === "work" ? "work"
     : role === "lane" && s.git && s.git.dirty === 0 && s.git.ahead > 0 ? "done"
     : glyph;
-  return { repo: project, harness: s.harness ?? "claude", role, slot: s.id, openedAt: s.openedAt ?? 0, state };
+  // red wins over warm: it says „step in here“, which a warm cache does not
+  const glow = s.noSuccession ? "red" : s.keepWarm ? "warm" : undefined;
+  return { repo: project, harness: s.harness ?? "claude", role, slot: s.id, openedAt: s.openedAt ?? 0, state, ...(glow ? { glow } : {}) };
+}
+const GLOW = { warm: "227, 168, 87", red: "229, 112, 95" } as const; // the board's amber and red (docs/packs/made-with-love.md, „Where the look comes from“)
+function paintGlow(ctx: Pen, glow: "warm" | "red", s: number): void {
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, `rgba(${GLOW[glow]}, .38)`);
+  g.addColorStop(1, `rgba(${GLOW[glow]}, 0)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
 }
 
 export const harnessOf = (h: string): MarkHarness =>
@@ -380,7 +393,7 @@ function browserEnv(): MarkEnv {
 }
 
 export interface MarkRow { x: number; y: number; size: number; facts: MarkFacts | null }
-interface StageCell { x: number; y: number; s: number; t: number; key: string; shape: MarkShape | null; painted: boolean }
+interface StageCell { x: number; y: number; s: number; t: number; key: string; shape: MarkShape | null; painted: boolean; glow?: "warm" | "red" }
 
 export class MarkStage {
   readonly canvas: HTMLCanvasElement;
@@ -421,7 +434,8 @@ export class MarkStage {
     this.cells = rows.map((r) => {
       const shape = r.facts ? markShape(r.facts, r.size) : null;
       const key = shape ? `${shape.seed}|${r.facts!.role}|${r.size}|${shape.state}` : `free|${r.x}|${r.y}`;
-      return { x: r.x, y: r.y, s: r.size, t: before.get(key) ?? 0, key, shape, painted: false };
+      // the glow is not in the key: a plant keeps its time (no jump of the wind) when its glow comes or goes
+      return { x: r.x, y: r.y, s: r.size, t: before.get(key) ?? 0, key, shape, painted: false, glow: r.facts?.glow };
     });
     this.sync();
   }
@@ -465,6 +479,7 @@ export class MarkStage {
       ctx.beginPath(); ctx.rect(c.x, c.y, c.s, c.s); ctx.clip();
       ctx.clearRect(c.x, c.y, c.s, c.s);
       ctx.translate(c.x, c.y);
+      if (c.glow) paintGlow(ctx, c.glow, c.s);
       if (c.shape) paintMark(ctx, c.shape, c.t);
       else paintFree(ctx, c.s);
       ctx.restore();

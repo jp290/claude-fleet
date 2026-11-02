@@ -20,11 +20,12 @@ import { CHECK_KIND, RUN_STATE, SECTION } from "./board-words";
 import { PLA_ACK_KEY, postLandAlarm, plaHolder, plaNeedsOwner, type PlaHolder } from "./plaudit";
 import { porcelainPath } from "./gitpath";
 import { icon, type IconName } from "./icons";
+import { botOn } from "./bot";
 import { devbtn, deviceOnlineMs, devicesSection, helperDevicesInfo } from "./devices";
 import { compTray, serverClock } from "./composer";
 import { rightsSection, wireRights } from "./rights";
 import { perfRebuild } from "./perfmarks";
-import { OFF_WHY, freshSuccession, handoverAt, handoverFlow } from "./handover";
+import { OFF_WHY, freshSuccession, handoverAt, handoverFlow, keepWarmButton } from "./handover";
 import { loadPostfach, postfachBody, postfachOf, postfachSummary } from "./postfach";
 import { fassungKurz } from "./fassung-zeile";
 import { GRUPPE, setupDateien, umfeldZeilen, type SetupDatei, type UmfeldGruppe, type UmfeldTeil, type UmfeldZeile } from "./fassung-umfeld-zeilen";
@@ -1467,6 +1468,7 @@ function boardFocusKey(a: HTMLElement): string {
   return `${a.tagName}\u0000${cls}\u0000${a.getAttribute("aria-label") ?? ""}\u0000${(a.textContent ?? "").slice(0, 40)}`;
 }
 export async function renderBoard() {
+  if (botOn()) return; // the bot page (src/bot.ts) shows no Info: nothing is read for a column nobody sees
   // never rebuild the board out from under an open note edit (the sidebar rename precedent): the
   // draft map keeps the TEXT across re-renders, this check keeps the CARET — a board tick that
   // lands mid-typing simply waits for the next one
@@ -1846,6 +1848,15 @@ function sessionSection(c: BoardCtx): HTMLElement {
     if (since) meta.title = `Session since ${new Date(since).toLocaleString("en-GB")}`;
     idsec.appendChild(meta);
   }
+  // THE OWNER'S OWN BOT (the right owner.bot, set in Setup below): only its seat shows this, and it opens /bot — a page of its own
+  // that holds only the chat with this seat (src/bot.ts)
+  if (s.ownBot) {
+    const open = el("a", "bbotopen") as HTMLAnchorElement;
+    open.href = `/bot?slot=${slot}`;
+    open.title = "A page of its own with only the chat with this bot";
+    open.append(icon("chat"), el("span", "", "Open your bot"));
+    idsec.appendChild(open);
+  }
   // THE STATES THAT ONLY EXIST WHEN THEY ARE TRUE — none of them costs a line on a healthy session
   if (s.agent === "no-agent") {
     const a = el("div", "bwait owner", "No agent in this pane");
@@ -1978,6 +1989,9 @@ function contextRow(c: BoardCtx): HTMLElement {
   sw.onclick = () => toggleHandover(c, open);
   // that and when Fleet nudged stands on the block's first line right below, not twice
   const v: (Node | string)[] = [el("span", "fill", fill), " · ", sw];
+  const mug = keepWarmButton({ slot: c.slot, openedAt: c.s.openedAt, sc, open, lane: sc.kind === "lane" || sc.rail === "lane", handoverAt: c.s.standingHandover?.at,
+    repaint: () => paintHandover(c), succeeded: () => { handoverOpen = null; void renderBoard(); } });
+  if (mug) v.push(" ", mug);
   const r = kvRow("Context", v, "ctx");
   const fillEl = r.querySelector<HTMLElement>(".fill");
   if (fillEl) fillEl.title = sc.fill
@@ -2672,6 +2686,24 @@ function setupBody(c: BoardCtx, su: HTMLElement): void {
       if (gehalten) fassungZeigen(v, gehalten, c);
       if (!gehalten || Date.now() - gehalten.at > FASSUNG_FRISCH_MS) fassungLesen(c, s.openedAt, v);
     }
+  }
+  // THE MARK „my own bot“ (the right owner.bot): the owner sets it here, on the one seat that is his agent. It stays through a succession,
+  // and it is what makes Info show „[Zitat entfernt]“ (above) and the page /bot find this seat.
+  {
+    const mark = row("Your bot", s.ownBot ? "marked" : "not marked",
+      "Mark the one seat that is your own bot: Info then offers a page of its own with only the chat with it. A succession keeps the mark.");
+    const sw = el("button", "bsbotset", s.ownBot ? "Unmark" : "Mark as my bot") as HTMLButtonElement;
+    sw.type = "button";
+    sw.onclick = async () => {
+      sw.setAttribute("aria-busy", "true");
+      const res = await post(`/api/slots/${slot}/rechte`, s.ownBot ? { revoke: ["owner.bot"] } : { grant: ["owner.bot"] }).catch(() => null);
+      sw.removeAttribute("aria-busy");
+      if (!res?.ok) { mark.textContent = "not saved — try again"; return; }
+      s.ownBot = s.ownBot ? undefined : true; // until the next poll says the same
+      void renderBoard();
+    };
+    mark.parentElement?.appendChild(sw);
+    if (mark.parentElement) su.prepend(mark.parentElement); // first row: the owner's one switch should be found when Setup opens
   }
   if (s.browser) row("Browser", "Playwright MCP", "this lane was started with the browser tool attached");
   if (s.container) row("Container", s.containerContext ? `${s.container} · ${s.containerContext}` : s.container,

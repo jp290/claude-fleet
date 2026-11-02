@@ -29886,6 +29886,16 @@ function selfContextView(s: Slot): Record<string, unknown> {
     hint: handoverNudgeOn(s), choice: thresholdChoiceOf(s, t.kind), cache: cacheStateOf(s, Date.now()).state };
 }
 const handoverNudgeOn = (s: Slot): boolean => !(s.handover && s.handover.occupant.openedAt === s.openedAt && !s.handover.nudge);
+// THE BAR'S TWO GLOWS (owner 2026-11-01, the coffee mug): a session kept warm, and a session with no succession the owner could
+// set — the board's „[Zitat entfernt]“ (src/handover-now.ts#planOf) where its gate is one he can open (not lockedGate: not the fleet's
+// master switch, another agent, the steward, a session waiting for him or not yet pinned). Both are omitted from the poll row when false.
+function noSuccessionHere(s: Slot): boolean {
+  if (!s.cwd) return false;
+  const t = thresholdFor(s);
+  const off = successionThresholdOff(s, t);
+  if (off) return off === "rail" || off === "session" || off === "setup";
+  return !handoverNudgeOn(s) && thresholdChoiceOf(s, t.kind) === "hint";
+}
 function successionThresholdOff(s: Slot, t: Threshold): ThresholdOff | null {
   return thresholdOffOf({ steward: s.label === STEWARD_LABEL, awaitingOwner: s.awaiting === "owner", pinned: !!s.sessionId,
     harness: harnessOf(s.harness).id, fleetPct: MIGRATE_PCT, threshold: t });
@@ -54893,6 +54903,20 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         },
       });
     }
+    // …and /bot?token=… does the same and stays on /bot (a bookmarked link to the owner's own bot opens it in a fresh browser),
+    // keeping the page's other parameters (?slot)
+    if (url.pathname === "/bot" && url.searchParams.has("token")) {
+      if (!(await tokenGate(url.searchParams.get("token")))) return json({ error: "bad token" }, 401);
+      const rest = new URLSearchParams(url.searchParams);
+      rest.delete("token");
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: rest.size ? `/bot?${rest}` : "/bot",
+          "set-cookie": `${cookieName}=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`,
+        },
+      });
+    }
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
 
     // --- share routes: per-share cookie auth, never the owner token ---
@@ -55407,6 +55431,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
             // what this seat started with on top of its predecessor (Slot.selbst.neu, server/selbst-einrichten.ts): the board's
             // „gave itself N stones“; omitted when it got nothing new
             ...(s.selbst?.neu.length ? { gaveItself: s.selbst.neu } : {}),
+            // the owner's mark „[Zitat entfernt]“ (the right owner.bot, given only by him): Info's button to /bot and the page read it; omitted when not given
+            ...(rechteFuerHarness(s.rechte, harnessOf(s.harness).id)?.recht?.includes("owner.bot") ? { ownBot: true } : {}),
             // the addresses its Postfach is read under (messageAddressesFor, as GET /api/self/messages) —
             // the board's Postfach tab filters and counts with them; omitted when it is only the
             // occupant's own session or lane address, which the board has from id and openedAt
@@ -55480,6 +55506,9 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
               const kc = keepCacheRowView(s);
               return kc ? { keepCache: kc } : {};
             })(),
+            // the plant's glow in the left bar: warm while the session is kept warm, red where no succession is set
+            ...(keepCacheOn(s) ? { keepWarm: true } : {}),
+            ...(noSuccessionHere(s) ? { noSuccession: true } : {}),
             // WHY THIS LANE IS STILL STANDING, in the actuator's own words — the sentence the
             // tick's next pass will decide on, through the one function it decides with
             // (laneAutoCloseView). Served ONLY while armed, because `laneAutoclose` above answers

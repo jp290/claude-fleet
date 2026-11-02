@@ -104,6 +104,12 @@ export async function run(): Promise<void> {
   const setc = login.headers.get("set-cookie") ?? "";
   check("login URL sets cookie + redirects", login.status === 302 && setc.startsWith(`fleet_${PORT}=${TOKEN}; `),
     `status=${login.status} cookie=${setc.slice(0, 40)}`);
+  // the owner's own bot page logs in the same way and stays on /bot, keeping ?slot (src/bot.ts)
+  const botLogin = await fetch(BASE + `/bot?slot=16&token=${TOKEN}`, { redirect: "manual" });
+  check("/bot?token logs in like / and stays on /bot without the token", botLogin.status === 302
+    && botLogin.headers.get("location") === "/bot?slot=16" && (botLogin.headers.get("set-cookie") ?? "").startsWith(`fleet_${PORT}=${TOKEN}; `),
+    `status=${botLogin.status} location=${botLogin.headers.get("location")}`);
+  check("/bot?token with a wrong token is refused", (await fetch(BASE + "/bot?token=wrong", { redirect: "manual" })).status === 401);
   check("login cookie keeps its name, attributes and Max-Age",
     setc === `fleet_${PORT}=${TOKEN}; Path=/; SameSite=Strict; HttpOnly; Max-Age=31536000`, setc);
   // THE ORIGINAL FAILURE, replayed at the level the browser actually behaves: cookies ignore

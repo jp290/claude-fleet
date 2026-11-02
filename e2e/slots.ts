@@ -6122,6 +6122,12 @@ function sessionMarkChecks(): void {
     JSON.stringify(derived) === JSON.stringify({ repo: "/r", harness: "codex", role: "orch", slot: 3, openedAt: 5, state: "need" }),
     JSON.stringify(derived));
 
+  // the plant's glow (owner 2026-11-01): warm while kept warm, red where no succession is set (red wins: it says „[Zitat entfernt]“), none otherwise
+  const glowOf = (extra: object) => markFacts({ id: 3, label: "Shell", openedAt: 5, ...extra } as Parameters<typeof markFacts>[0], "/r", "work").glow;
+  check("session mark: glow is red without succession, warm while kept warm, red wins over warm, none otherwise",
+    glowOf({ noSuccession: true }) === "red" && glowOf({ keepWarm: true }) === "warm" && glowOf({ keepWarm: true, noSuccession: true }) === "red" && glowOf({}) === undefined,
+    JSON.stringify([glowOf({ noSuccession: true }), glowOf({ keepWarm: true }), glowOf({ keepWarm: true, noSuccession: true }), glowOf({})]));
+
   // the stage: a fake world whose rAF only records, driven by hand
   const world = (reduce: boolean, hidden = false) => {
     const w = { reduce, hidden, rafs: 0, cafs: [] as number[], next: null as ((t: number) => void) | null, wake: () => {} };

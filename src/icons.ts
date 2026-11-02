@@ -51,6 +51,7 @@ const PATHS = {
   // 24-unit box, stroke 1.8, round caps, currentColor as every set above.
   info: ["M20.5 12a8.5 8.5 0 1 1-17 0a8.5 8.5 0 1 1 17 0z", "M12 11v5", "M12 7.6h.01"],
   chat: ["M21 14a2 2 0 0 1-2 2H8l-4.5 4V6a2 2 0 0 1 2-2H19a2 2 0 0 1 2 2z"],
+  back: ["M15 5l-7 7 7 7"],
   up: ["M12 19V5", "M6 11l6-6 6 6"],
   down: ["M12 5v14", "M6 13l6 6 6-6"],
   // the settings cog: a toothed ring around a hub, drawn after the classic settings shape
@@ -81,6 +82,7 @@ const PATHS = {
   label: ["M4 12V5h7l8.5 8.5-6.5 6.5z", "M8 9h.01"],
   tree: ["M9 3h6v5H9z", "M12 8v4", "M6 16v-4h12v4", "M3 16h6v5H3z", "M15 16h6v5h-6z"],
   branch: ["M7 4v16", "M17 7v2a4 4 0 0 1-4 4H7", "M7 4h.01", "M17 7h.01", "M7 20h.01"],
+  coffee: ["M10 2v2", "M14 2v2", "M6 2v2", "M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1"],
   commit: ["M3.5 12h5", "M15.5 12h5", "M12 15.5a3.5 3.5 0 1 0 0-7a3.5 3.5 0 1 0 0 7z"],
 } as const;
 

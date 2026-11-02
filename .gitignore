@@ -13,6 +13,9 @@ fleet.json.*.tmp
 k15-eigenes.json
 k15-eigenes.json.*.tmp
 fleet.pid
+tmux-server
+tmux-server.tmp
+.tmux-proc.*
 audit.jsonl
 audit.jsonl.1
 steward-journal.jsonl

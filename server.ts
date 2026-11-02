@@ -219,6 +219,7 @@ import { diskAdmission } from "./server/disk-space";
 import { STATE_DIR } from "./server/state-dir";
 import { TRANSKRIPT_JOURNAL, openTranscriptJournal } from "./server/transkript-gesehen";
 import { repoGraph, roleOf } from "./server/deploy-classify";
+import { configureTmuxWacht, pruefeTmux, tmuxVerloren, tmuxWachtTakt } from "./server/tmux-wacht";
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import type { PiZaiFenceInput } from "./server/pi-zai-fence";
 import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piHomeLockCleanup, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
@@ -10729,12 +10730,21 @@ const slotOpenHold = new Map<number, number>();
 // ONE HEAL TICK (every 2 s, registered below only when this file is the main module): ensureSlot for every slot, except one whose pane another
 // route rebuilds. A function of its own so a test can let a tick fall exactly between an open's stamp and its Fassung.
 function healAlleSlots(): void {
+  // a lost tmux socket (server/tmux-wacht.ts) is looked at every 10 s; while Fleet's tmux server lives without answering, the heal
+  // opens nothing, because every pane it would open is a second copy of one that still runs
+  tmuxWachtTakt();
+  if (tmuxVerloren()) return;
   for (const s of slots) {
     if (restarting.has(s.id)) continue; // the ↻ route owns this pane's rebuild — see `restarting`
     if (slotOpenHold.has(s.id)) continue; // an open holds the slot until its Fassung is held and checked (slotOpenHold)
-    void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e));
+    // one heal per slot at a time: behind a stalled tmux server each tick used to add one more waiting client per slot, and 128
+    // waiting clients fill its listen backlog, the moment a connect is refused (1.11. 21:58, server/tmux-wacht.ts)
+    if (healInflight.has(s.id)) continue;
+    healInflight.add(s.id);
+    void ensureSlot(s).catch((e: unknown) => logError("selfHeal", e)).finally(() => healInflight.delete(s.id));
   }
 }
+const healInflight = new Set<number>();
 // Prüfhaken der Tests (wie waitForGameMakerOpenTestLatch): zwischen der Prüfung der Tür und openSlot, und zwischen dem Stempel und dem Halten der Fassung
 const fassungTestHaken: { nachPruefung?: () => Promise<void>; vorHalten?: () => Promise<void> } = {};
 
@@ -49298,8 +49308,25 @@ process.on("exit", () => {
 
 mkdirSync(STREAM_DIR, { recursive: true });
 chmodSync(STREAM_DIR, 0o700);
-await tmux("start-server");
+// THE TMUX SERVER THIS FLEET'S PANES LIVE IN is recorded next to fleet.pid, so a restarted server still knows it (server/tmux-wacht.ts).
+// `start-server` only when no such server lives: it is a command that may start one, and on a refused connect tmux would unlink
+// the socket of a server that is merely slow and start a second one (1.11. 21:58).
+// …and when this process runs in another tmux server than the one holding the seats (the watchdog started srv there), the guard
+// gives the seats' server its path back and this process ends its own pid, only while it holds fleet.pid, so srv starts beside them.
+// Fleet's own seats are known to the guard by their CURRENT self credential (round 4's R4: an orphaned Fleet server's seat lines
+// carry stale ones), handed over in memory, never written or printed; until the state is loaded the guard does not know them and waits.
+let tmuxSitzeBekannt = false;
+configureTmuxWacht({ file: `${STATE_DIR}/tmux-server`, melde: (line) => logError("tmux-socket", new Error(line)),
+  sitze: () => tmuxSitzeBekannt ? slots.filter((s) => !!s.cwd).map((s) => ({ slot: s.id, token: s.selfToken })) : null,
+  neustart: () => {
+    if (readPidFile() !== process.pid) return false;
+    console.log(`tmux: this server (pid ${process.pid}) ran in a tmux server without Fleet's seats — ending its own pid so srv starts beside them`);
+    setTimeout(() => process.kill(process.pid, "SIGTERM"), 1_000);
+    return true;
+  } });
+if ((await pruefeTmux()).state === "none") await tmux("start-server");
 await loadStateAndReap(STATE_FILE);
+tmuxSitzeBekannt = true;
 await ladePostfachVersuche();
 if (startupStateRefusal !== null) {
   console.log(`REFUSING TO START: ${startupStateRefusal}. The safety marker was left on disk for owner inspection.`);
@@ -51911,6 +51938,9 @@ const DEPLOY_RESTART_DELAY_MS = 250;
 // same process wrote it and should not have survived it. Resolving it (rather than blocking on it
 // forever) is what keeps one failed restart from wedging the verb.
 const DEPLOY_INFLIGHT_MAX_MS = 10 * 60_000;
+// How long this process waits after a restart command that exited 0 before it takes its own survival as the proof that the command
+// missed it. A kill-session ends it within milliseconds; 20 s also covers a slow tmux under swap.
+const DEPLOY_SURVIVE_MS = Math.max(500, Number(process.env.FLEET_DEPLOY_SURVIVE_MS ?? 20_000) | 0);
 
 // the two principals the verb admits; a marker can only ever name one of them
 type DeployPrincipal = "owner" | "steward";
@@ -51925,7 +51955,11 @@ interface DeployMarker {
   audit?: DeployAuditStamp;       // which full audit of `target` admitted it (deployAuditOf)
   unaudited?: DeployUnaudited;    // …or why none did. Exactly one of the two on every new marker
   gateOnly?: DeployGateOnly;      // with `unaudited: "gate-only"` only: the audited ancestor (deployGateOnlyOf)
+  restartMissed?: DeployRestartMissed; // the restart exited 0 and left this process alive; it ended itself (runDeployRestart)
 }
+// THE RESTART THAT MISSED ITS SERVER (queue 84ecf66b): on 1.11. 22:45 `tmux -L claudefleet kill-session -t srv` exited 0 against a
+// second tmux server that had taken the socket path, while this process lived on in the first one, so the deploy stood in flight.
+interface DeployRestartMissed { pid: number; at: number; afterMs: number }
 // THE TIP'S AUDIT, AS THE LEDGER ROW CARRIES IT. `audit` names the row that let the deploy through;
 // `unaudited` says why none did — `forced` (the owner's {„[Zitat entfernt]“:true}), `no-audit-command` (no
 // tier-2 command applies to this repo, so there is nothing to wait for) or `gate-only` (every land
@@ -51948,6 +51982,7 @@ interface DeployRow {
   audit?: DeployAuditStamp;
   unaudited?: DeployUnaudited;
   gateOnly?: DeployGateOnly;
+  restartMissed?: DeployRestartMissed;
 }
 
 function appendDeployRow(row: DeployRow): Promise<void> {
@@ -52039,6 +52074,7 @@ async function judgeDeploy(m: DeployMarker, stage: DeployRow["stage"], extra?: s
     ...(m.audit ? { audit: m.audit } : {}),
     ...(m.unaudited ? { unaudited: m.unaudited } : {}),
     ...(m.gateOnly ? { gateOnly: m.gateOnly } : {}),
+    ...(m.restartMissed ? { restartMissed: m.restartMissed } : {}),
   };
 }
 
@@ -52157,7 +52193,7 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
   const out = retainRunOutput(await new Response(p.stdout).text().catch(() => ""),
     await new Response(p.stderr).text().catch(() => ""), DEPLOY_OUT_CAP).trim();
   const exitCode = await p.exited;
-  if (exitCode === 0) return; // expected: this process is on its way out, the next boot judges it
+  if (exitCode === 0) return await deployRestartSurvived(m, out);
   if (!readDeployMarker()) return; // something else already closed it
   clearDeployMarker();
   // judged with the SAME function the next boot uses, so the row names the residual gap rather than
@@ -52168,6 +52204,35 @@ async function runDeployRestart(m: DeployMarker): Promise<void> {
     exitCode, out,
   });
   audit("deploy", undefined, `${m.id} FAILED: restart command exit ${exitCode}`);
+}
+
+// The restart command exited 0, so this process should be gone within milliseconds. Still running after DEPLOY_SURVIVE_MS means the
+// command reached something else (1.11. 22:45: the srv of a second tmux server). While this process holds this repo's state (its pid
+// in fleet.pid), it is exactly the pid the deploy meant to end: it notes that on the marker and ends itself through its own SIGTERM
+// handler, and the watchdog's next boot judges the deploy as it judges every other. Holding no state, it ends nothing and closes the
+// deploy as failed with its pid. Never a pid by name, never another process.
+async function deployRestartSurvived(m: DeployMarker, out: string): Promise<void> {
+  await Bun.sleep(DEPLOY_SURVIVE_MS);
+  const marker = readDeployMarker();
+  if (marker?.id !== m.id) return; // something else already closed it
+  const missed: DeployRestartMissed = { pid: process.pid, at: Date.now(), afterMs: DEPLOY_SURVIVE_MS };
+  const holder = readPidFile();
+  if (holder === process.pid) {
+    writeDeployMarker({ ...marker, restartMissed: missed });
+    const line = `deploy ${m.id}: the restart command exited 0 but this server (pid ${process.pid}) still runs after ${DEPLOY_SURVIVE_MS} ms`
+      + ` — it holds ${PID_FILE}, so it ends itself; the next boot judges the deploy`;
+    console.log(line);
+    audit("deploy", undefined, line);
+    process.kill(process.pid, "SIGTERM");
+    return;
+  }
+  clearDeployMarker();
+  await appendDeployRow({
+    ...await judgeDeploy(m, "restart", `the restart command exited 0 but this server (pid ${process.pid}) still runs after`
+      + ` ${DEPLOY_SURVIVE_MS} ms and does not hold ${PID_FILE} (${holder ? `pid ${holder}` : "no holder"}), so nothing was ended`),
+    exitCode: 0, out, restartMissed: missed,
+  });
+  audit("deploy", undefined, `${m.id} FAILED: restart exited 0, pid ${process.pid} survived and holds no state`);
 }
 
 // THE DEPLOY'S AUDIT PRECONDITION (owner 2026-10-08 ~16:0x: „[Zitat entfernt]“

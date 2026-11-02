@@ -164,12 +164,69 @@ srv_mem_mb() {
     if (u == "G") n *= 1024; else if (u == "K") n /= 1024; else if (u == "B") n /= 1048576
     printf "%d\n", n }'
 }
+# --- A LOST TMUX SOCKET (queue 8ef80095, 1.11. 21:58) -------------------------------------------------------------------
+# When the socket path of WD_SOCK vanished or another tmux server took it, `has-session -t =srv` failed although srv ran on in the
+# old server, and this loop started a new srv every ~10 s that refused ("REFUSING TO START: fleet server pid … already running").
+# Two rules now. While this repo's fleet server still holds fleet.pid, srv is not down: no respawn, one line, and the server
+# gives its tmux server the path back itself (server/tmux-wacht.ts). And while the tmux server Fleet recorded in tmux-server is
+# alive, the respawn runs with `tmux -N`: a client that may start a server unlinks the socket of one that is only slow (a refused
+# connect, tmux client.c#client_connect). If that respawn fails because the old server lost its path and no fleet server is
+# left to say so, this loop sends that recorded pid SIGUSR1, tmux's documented way to recreate a removed socket. Only that pid,
+# only when it is a tmux process of this socket name; never a name pattern, never a kill.
+WD_STATE="${FLEET_WATCHDOG_STATE_DIR:-$FLEET_DIR}"
+fleet_holder() {
+  hp=$(head -n 1 "$WD_STATE/fleet.pid" 2>/dev/null | tr -cd '0-9')
+  [ -n "$hp" ] && kill -0 "$hp" 2>/dev/null && ps -p "$hp" -o args= 2>/dev/null | grep -q 'server\.ts' && printf '%s' "$hp"
+}
+tmux_host() {
+  tp=$(head -n 1 "$WD_STATE/tmux-server" 2>/dev/null | cut -f1 | tr -cd '0-9')
+  # on Linux a tmux server renames itself (tmux compat/setproctitle.c): comm is `tmux: server` there, its args stay
+  [ -n "$tp" ] && kill -0 "$tp" 2>/dev/null && case "$(basename "$(ps -p "$tp" -o comm= 2>/dev/null)")" in tmux|"tmux: server") true ;; *) false ;; esac \
+    && ps -p "$tp" -o args= 2>/dev/null | grep -qE -- "-L *$WD_SOCK( |\$)" && printf '%s' "$tp"
+}
+held_by=""
+# N5 and W1, by identity (rounds 3 and 4): when the record names a live server X and another server A answers on the path, the path
+# goes to the one holding Fleet's own seats: panes whose line carries Fleet's self export, FLEET_SELF_TOKEN='…'; export
+# FLEET_SELF_SLOT='<n>' (server.ts#ensureSlot). A session name or the bare text is no seat. Read from the process table, so X without
+# a path shows them too and nothing has to be remembered across a restart of this loop. A keeps the path when it holds more of them
+# than X; X gets SIGUSR1 when it holds at least as many and at least one. Only when neither holds a seat do panes and age decide: A
+# keeps it when it holds a pane besides srv, no fewer than X, and is the older (within one second the lower pid). This loop has no
+# credentials, so a stale seat line counts here; the fleet server, which has them, decides by the current ones.
+# The table is read once, bounded at 3 s (round 4's R6b: what cannot be read waits), and only pid, ppid and a 0/1 seat mark leave
+# awk: the command lines carry the panes' self credentials and are never printed or written.
+PROC_T="$WD_STATE/.tmux-proc.$$"
+proc_table() {
+  rm -f "$PROC_T" "$PROC_T.w"
+  ( ps -A -o pid= -o ppid= -o args= 2>/dev/null | awk -v q="'" '{ seat = ($0 ~ ("FLEET_SELF_TOKE" "N=" q "[^" q " ]+" q "; *export FLEET_SELF_SLOT=" q "[0-9]+" q)) ? 1 : 0
+      print $1, $2, seat }' > "$PROC_T.w" && mv "$PROC_T.w" "$PROC_T" ) &
+  pt=$!; end=$(( $(date +%s) + 3 )) # by the clock: one `sleep 0.1` round costs about 0.2 s here
+  while [ ! -f "$PROC_T" ] && [ "$(date +%s)" -lt "$end" ] && kill -0 "$pt" 2>/dev/null; do sleep 0.1; done
+  if [ -f "$PROC_T" ]; then wait "$pt" 2>/dev/null; return 0; fi
+  pkill -P "$pt" 2>/dev/null; kill "$pt" 2>/dev/null; wait "$pt" 2>/dev/null; rm -f "$PROC_T.w"; return 1
+}
+panes_of() { awk -v p="$1" '$2 == p' "$PROC_T" | wc -l | tr -cd '0-9'; }
+seats_of() { awk -v p="$1" '$2 == p && $3 == 1' "$PROC_T" | wc -l | tr -cd '0-9'; }
+seats_at_path() {
+  { awk '$3 == 1 { print "m", $1 }' "$PROC_T"; tmux -N -L "$WD_SOCK" list-panes -a -F 'p #{session_name} #{pane_pid}' 2>/dev/null; } \
+    | awk '$1 == "m" { m[$2] = 1; next } $1 == "p" && $2 != "srv" && ($3 in m) { n++ } END { print n + 0 }'
+}
+age_of() { ps -p "$1" -o etime= 2>/dev/null | awk '{ s = $1; d = 0; if (index(s, "-")) { split(s, x, "-"); d = x[1]; s = x[2] }
+  n = split(s, t, ":"); v = t[n] + 60 * t[n - 1]; if (n == 3) v += 3600 * t[1]; print v + 86400 * d }'; }
+
 strikes=0
 next_probe=0
 answered_url=""
 
 while true; do
-  if ! tmux -L "$WD_SOCK" has-session -t '=srv' 2>/dev/null; then
+  srv_up=1; holder=""
+  if ! tmux -N -L "$WD_SOCK" has-session -t '=srv' 2>/dev/null; then srv_up=0; holder=$(fleet_holder); fi
+  [ -n "$holder" ] || held_by=""
+  if [ "$srv_up" = 0 ] && [ -n "$holder" ]; then
+    if [ "$held_by" != "$holder" ]; then
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv is not on tmux socket $WD_SOCK, but fleet server pid $holder still runs and holds $WD_STATE/fleet.pid — no second srv; the server takes its tmux socket back itself" >> "$FLEET_DIR/server.log"
+      held_by="$holder"
+    fi
+  elif [ "$srv_up" = 0 ]; then
     # PATH must be baked INTO the pane command: the pane's shell inherits the tmux
     # SERVER's env (often the bare launchd default without brew), not this script's
     #
@@ -270,13 +327,47 @@ while true; do
     # the health strike's when this loop killed srv, else "srv was down"; cut to a safe alphabet.
     boot_why=$(printf '%s' "${respawn_why:-srv was down}" | tr -cd 'A-Za-z0-9 =:/._(),-' | cut -c1-120)
     respawn_why=""
-    if tmux -L "$WD_SOCK" new-session -d -s srv \
+    tmux_pid=$(tmux_host); nostart=""; [ -n "$tmux_pid" ] && nostart="-N"
+    # another tmux server answers on the path while the one holding Fleet's seats lives: `-N` alone would put srv into the wrong
+    # server, beside none of the seats (slot 7's W1). The seats' server gets its path back first; then srv starts in it.
+    answering=""; [ -n "$tmux_pid" ] && answering=$(tmux -N -L "$WD_SOCK" display-message -p '#{pid}' 2>/dev/null | tr -cd '0-9')
+    seats_here=""
+    if [ -n "$tmux_pid" ] && [ -n "$answering" ] && [ "$answering" != "$tmux_pid" ] && ! proc_table; then
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] tmux server pid $answering answers on $WD_SOCK while pid $tmux_pid in tmux-server lives too, and ps -A did not answer within 3 s — which one holds Fleet's seats cannot be told: no signal, no srv start this round" >> "$FLEET_DIR/server.log"
+      sleep 5; continue
+    fi
+    if [ -n "$tmux_pid" ] && [ -n "$answering" ] && [ "$answering" != "$tmux_pid" ]; then
+      here_s=$(seats_at_path); there_s=$(seats_of "$tmux_pid")
+      if [ -n "$here_s" ] && [ -n "$there_s" ] && [ "$here_s" -gt "$there_s" ]; then
+        seats_here=1
+        echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] tmux server pid $answering answers on $WD_SOCK and holds $here_s of Fleet's seats; pid $tmux_pid in tmux-server holds $there_s and has no path — no signal, srv starts beside the seats in $answering" >> "$FLEET_DIR/server.log"
+      elif [ "${there_s:-1}" = 0 ]; then
+        here=$(tmux -N -L "$WD_SOCK" list-panes -a -F '#{session_name}' 2>/dev/null | grep -cvx srv | tr -cd '0-9'); there=$(panes_of "$tmux_pid")
+        here_age=$(age_of "$answering"); there_age=$(age_of "$tmux_pid")
+        if [ -n "$here" ] && [ -n "$there" ] && [ -n "$here_age" ] && [ -n "$there_age" ] && [ "$here" -ge 1 ] && [ "$here" -ge "$there" ] \
+          && { [ "$here_age" -gt "$there_age" ] || { [ "$here_age" -eq "$there_age" ] && [ "$answering" -lt "$tmux_pid" ]; }; }; then
+          seats_here=1
+          echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] neither tmux server holds one of Fleet's seats; pid $answering answers on $WD_SOCK, is the older and holds $here pane(s) besides srv, pid $tmux_pid in tmux-server holds $there and has no path — no signal, srv starts in $answering" >> "$FLEET_DIR/server.log"
+        fi
+      fi
+      rm -f "$PROC_T"
+    fi
+    if [ -z "$seats_here" ] && [ -n "$tmux_pid" ] && [ -n "$answering" ] && [ "$answering" != "$tmux_pid" ]; then
+      echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] tmux server pid $answering holds the path $WD_SOCK while pid $tmux_pid holds Fleet's seats — SIGUSR1 to $tmux_pid so it takes the path back; srv then starts beside the seats" >> "$FLEET_DIR/server.log"
+      kill -USR1 "$tmux_pid" 2>/dev/null
+      n=0; while [ $n -lt 10 ] && [ "$(tmux -N -L "$WD_SOCK" display-message -p '#{pid}' 2>/dev/null)" != "$tmux_pid" ]; do sleep 0.5; n=$((n + 1)); done
+    fi
+    if tmux $nostart -L "$WD_SOCK" new-session -d -s srv \
       "umask 077; export PATH='$PATH_Q'; cd '$FLEET_DIR' && { if [ -f .env ]; then set -a; . ./.env; set +a; else echo '[watchdog] no .env — FLEET_HOST/ALLOWED_HOSTS/SHARE_* unset, server falls back to its own defaults (likely unreachable at the deployment address)' >> server.log; fi; } && { [ \"\${FLEET_POSTLAND_AUDIT:-on}\" = off ] || export FLEET_POSTLAND_AUDIT_CMD='$AUDIT_Q'; } && FLEET_VERIFY_CMD='$VERIFY_Q' FLEET_VERIFY_TIMEOUT_MS=\${FLEET_VERIFY_TIMEOUT_MS:-480000} FLEET_VERIFY_WAIT_MS=\${FLEET_VERIFY_WAIT_MS:-2700000} FLEET_POSTLAND_AUDIT_TIMEOUT_MS=4500000 FLEET_CLEAN_REVIEW=off FLEET_HARNESS_AUTOMATION=1 FLEET_AUTO_REVIEW_MS=0 FLEET_AUDIT_PING_MS=60000 FLEET_DISPATCH_REPO='$FLEET_DIR' FLEET_DISPATCH_MAX_LANES=1 FLEET_LANE_AUTOCLOSE=1 FLEET_BOOT_CAUSE=watchdog FLEET_BOOT_WHY='$boot_why' exec bun server.ts >> server.log 2>&1"; then
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv was down, restarted" >> "$FLEET_DIR/server.log"
     else
       # log the truth: an unconditional "restarted" here used to fill the log with
       # success lines during the exact outage it should have documented
       echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] srv down and RESTART FAILED (tmux error)" >> "$FLEET_DIR/server.log"
+      if [ -n "$tmux_pid" ] && ! tmux -N -L "$WD_SOCK" has-session 2>/dev/null; then
+        echo "$(date +%Y-%m-%dT%H:%M:%S) [watchdog] tmux server pid $tmux_pid holds Fleet's panes but its socket $WD_SOCK does not answer — SIGUSR1 so it recreates the socket; no second tmux server" >> "$FLEET_DIR/server.log"
+        kill -USR1 "$tmux_pid" 2>/dev/null
+      fi
       sleep 25 # back off — a broken tmux/deploy isn't fixed by hammering every 5s
     fi
   elif [ "$(date +%s)" -ge "$next_probe" ]; then

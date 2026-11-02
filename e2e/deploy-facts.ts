@@ -413,6 +413,35 @@ export async function run(): Promise<void> {
       await restartSrv({ FLEET_REPO_DIR: FIX });
     }
 
+    // --- §5b2 A RESTART THAT EXITS 0 AND MISSES ITS SERVER (queue 84ecf66b) ---------------------
+    // 1.11. 22:45: `kill-session -t srv` reached the srv of a second tmux server that had taken the socket path, exited 0, and
+    // the server that answered the deploy lived on in the first one, so the deploy hung in flight. `true` is that command: it
+    // succeeds and ends nothing. The server holds this instance's fleet.pid, so it ends exactly its own pid, and the next boot
+    // (this suite plays the watchdog) judges the deploy and names the pid that survived.
+    await restartSrv({ FLEET_REPO_DIR: FIX, FLEET_DEPLOY_RESTART_CMD: "true", FLEET_DEPLOY_SURVIVE_MS: "1500" });
+    if (await openGap("// v4b", "restart that misses its server")) {
+      const pidOf = (): number => { try { return Number.parseInt(readFileSync(`${ROOT}/fleet.pid`, "utf8").trim(), 10) || 0; } catch { return 0; } };
+      const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      const pid = pidOf();
+      const r = await post("/api/deploy", {});
+      const b = (await r.json()) as { ok: unknown; stage?: string; id?: string };
+      check("§5b2 the deploy starts as usual (202, restarting)", r.status === 202 && b.stage === "restarting",
+        `${r.status} ${JSON.stringify(b).slice(0, 200)}`);
+      let gone = false;
+      for (let i = 0; i < 80 && !gone; i++) { gone = pid > 0 && !alive(pid); if (!gone) await Bun.sleep(250); }
+      check("§5b2 the server the restart missed ends its own pid instead of standing in flight", gone,
+        `pid ${pid} ${alive(pid) ? "still alive after 20 s" : "unknown"}; marker ${existsSync(marker) ? "in flight" : "absent"}`);
+      await restartSrv({ FLEET_REPO_DIR: FIX });
+      let row: Row & { restartMissed?: { pid: number } } | undefined;
+      for (let i = 0; i < 40 && !row; i++) {
+        row = (await deploys()).deploys.find((x) => x.id === b.id) as typeof row;
+        if (!row) await Bun.sleep(250);
+      }
+      check("§5b2 ...and the next boot judges that deploy: it reached its target, and the row names the pid that survived",
+        row?.stage === "boot" && row.ok === true && row.hitTarget === true && row.restartMissed?.pid === pid
+          && !existsSync(marker), JSON.stringify(row).slice(0, 300));
+    }
+
     // --- §5c THE FULL GREEN CYCLE, verified by the process that came after ----------------------
     if (await openGap("// v5", "green cycle")) {
       const before = buildRuns();

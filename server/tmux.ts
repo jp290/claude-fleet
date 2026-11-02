@@ -1,3 +1,4 @@
+import { configureTmuxWacht, nachNeuerSitzung, vorNeuerSitzung } from "./tmux-wacht";
 // separate tmux socket per instance — lets a test instance (FLEET_SOCK=fleettest)
 // run its own s1..sN sessions without touching the live fleet's
 export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
@@ -9,6 +10,7 @@ export const SOCK = process.env.FLEET_SOCK ?? "claudefleet";
 export const paneEnv = (env: Record<string, string | undefined>): Record<string, string> =>
   Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined && !e[0].startsWith("FLEET_")));
 const TMUX_ENV = paneEnv(process.env);
+configureTmuxWacht({ sock: SOCK, env: TMUX_ENV });
 export interface TmuxResult { out: string; err: string; code: number }
 export async function tmux(...args: string[]): Promise<TmuxResult> {
   const p = Bun.spawn(["tmux", "-u", "-L", SOCK, ...args], { env: TMUX_ENV, stdout: "pipe", stderr: "pipe" });
@@ -18,7 +20,7 @@ export async function tmux(...args: string[]): Promise<TmuxResult> {
   return { out: out.trim(), err: err.trim(), code };
 }
 
-export interface TmuxNewSessionResult { out: string; err: string; code: number | null; timedOut: boolean }
+export interface TmuxNewSessionResult { out: string; err: string; code: number | null; timedOut: boolean; refused?: true }
 export const tmuxNewSessionTimeout = (raw: string | undefined): number => {
   const parsed = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN;
   return Number.isSafeInteger(parsed) && parsed >= 100 ? parsed : 15_000;
@@ -31,8 +33,17 @@ export const TMUX_NEW_SESSION_KILL_GRACE_MS = 500;
 // of unrelated call sites. new-session is different: open/kill wait on its per-slot promise, so an
 // unbounded client process strands both lifecycle verbs. Kill only the exact Bun child we started:
 // TERM first, KILL after a short grace, and never a name-pattern/process-tree sweep.
+// THE ONE WAY A TMUX SERVER STARTS (server/tmux-wacht.ts): while the server that holds Fleet's panes lives, new-session runs with
+// `-N` and can never unlink its socket; when that server lost its path and does not take it back, nothing is opened at all.
 export async function tmuxNewSession(...args: string[]): Promise<TmuxNewSessionResult> {
-  const p = Bun.spawn(["tmux", "-u", "-L", SOCK, "new-session", ...args], { env: TMUX_ENV, stdout: "pipe", stderr: "pipe" });
+  const gate = await vorNeuerSitzung();
+  if ("refuse" in gate) return { out: "", err: gate.refuse, code: null, timedOut: false, refused: true };
+  const r = await tmuxNewSessionRaw(gate.flags, args);
+  if (gate.startsServer && r.code === 0) await nachNeuerSitzung();
+  return r;
+}
+async function tmuxNewSessionRaw(flags: string[], args: string[]): Promise<TmuxNewSessionResult> {
+  const p = Bun.spawn(["tmux", "-u", ...flags, "-L", SOCK, "new-session", ...args], { env: TMUX_ENV, stdout: "pipe", stderr: "pipe" });
   const outP = new Response(p.stdout).text().catch(() => "");
   const errP = new Response(p.stderr).text().catch(() => "");
   let timer: ReturnType<typeof setTimeout> | undefined;

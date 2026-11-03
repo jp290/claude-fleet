@@ -38,7 +38,7 @@
   #app { display: flex; height: 100vh; height: 100dvh; }
 
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .dot.on { background: #3fb950; } .dot.off { background: var(--danger); }
+  .dot.on { background: #3fb950; } .dot.off { background: var(--danger); } .dot.weak { background: var(--amber); } .dot.wait { background: #888; }
 
   #mhead { display: none; }
   #mread { display: none; }
@@ -621,6 +621,8 @@
     font-family: var(--chat-sans); font-size: var(--chat-ui-fs); font-weight: 400; color: var(--chat-mute);
     user-select: none; -webkit-user-select: none; }
   .msenddot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--chat-faint); }
+  .msend.retry { color: var(--amber); }
+  .msend.retry .msenddot { background: var(--amber); }
   .msend.wait { color: var(--q-wait); }
   .msend.wait .msenddot { background: var(--q-wait); }
   .msend.done { color: var(--chat-faint); }
@@ -817,7 +819,7 @@
      past bar's material, amber text, the ▼ pill steps up over it. Terminal view only: the socket is
      the terminal's, the conversation view reads over HTTP. */
   .panedown { display: none; }
-  .pane.down:not(.chat) .panedown { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex;
+  .pane.down:not(.chat) .panedown, .pane.noline .panedown { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex;
     align-items: center; gap: 10px; padding: 6px 12px; background: var(--chat-raised);
     border-top: 1px solid var(--chat-edge); font-family: var(--chat-sans); font-size: var(--chat-ui-fs);
     color: var(--amber); }
@@ -825,7 +827,8 @@
   .panedown .downnow { flex: none; font: inherit; color: var(--chat-prose); background: var(--chat-surface);
     border: 1px solid var(--chat-edge); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
   .panedown .downnow:hover { color: var(--chat-ink); }
-  .pane.down:not(.chat) .jump { bottom: 44px; }
+  .pane.down:not(.chat) .jump, .pane.noline .jump { bottom: 44px; }
+  .pane.noline .downnow, .pane.slotempty .downnow { display: none; }
   /* long-press copy (Pane#selectLineAt): one button above the finger, shown inline by the script */
   .termcopy { display: none; position: absolute; z-index: 6; min-width: 96px; height: 40px; padding: 0 14px; border-radius: var(--r1);
     border: 1px solid var(--chat-mute); background: var(--chat-raised); color: var(--chat-ink);
@@ -3919,6 +3922,10 @@
       body.mopen #mglas { width: var(--maw); height: 56px; border-radius: 28px; }
       body.mopen #main::after { content: ""; position: absolute; inset: 0; z-index: 7; pointer-events: none;
         background: color-mix(in srgb, var(--chat-void) 45%, transparent); }
+      /* the line (paintConn): the seat's dot in the pill says what the page can't confirm, a ring when it is only weak */
+      body.lineoff #mtop .act { border-radius: 50%; background: var(--danger); box-shadow: none; animation: none; }
+      body.lineweak #mtop .act { outline: 2px solid var(--amber); outline-offset: 1px; }
+      body.linewait #mtop .act { border-radius: 50%; background: #888; box-shadow: none; animation: none; }
       #mtop button { padding: 0; border: 0; background: none; color: var(--chat-ink); font-family: var(--chat-sans); cursor: pointer; }
       #mtop button:focus-visible { outline: 2px solid var(--glas-fokus); outline-offset: -4px; }
       #mpill { position: absolute; inset: 0; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 11px;
@@ -4580,7 +4587,7 @@
          marked seat. #botbar is its head, #botveil the loading animation; both show only under html.botpage -->
     <div id="botbar">
       <a id="botback" href="/" title="Back to the board"></a>
-      <span id="botname"></span>
+      <span id="botdot" class="dot off"></span><span id="botname"></span>
     </div>
     <div id="panes" class="l1"></div>
     <div id="bar">

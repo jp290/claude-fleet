@@ -41,7 +41,7 @@ export async function run(): Promise<void> {
     // --- static assets: gzip on demand, identical bytes either way ---
     const src = scriptSrc(await (await fetch(BASE + "/")).text());
     check("index.html hands out a versioned app.js URL (the cache-buster)",
-      src === `/app.js?v=${Math.trunc(statSync(appJs).mtimeMs)}`, src);
+      /^\/app\.js\?v=\d+$/.test(src), src);
 
     const gz = await fetch(BASE + src, { headers: { "accept-encoding": "gzip" } });
     const gzLen = Number(gz.headers.get("content-length"));
@@ -78,8 +78,34 @@ export async function run(): Promise<void> {
     check("an unchanged index.html answers 304 without a body",
       again.status === 304 && (await again.arrayBuffer()).byteLength === 0, `${again.status}`);
 
+    // --- a deploy that changes no client: the file is written again, byte for byte. No phone reloads for it ---
+    const polledV = async (): Promise<number> => ((await (await get("/api/sessions")).json()) as { v: number }).v;
+    const vBefore = await polledV();
+    await Bun.sleep(20);
+    writeFileSync(appJs, fixture("v1"));
+    const sameStand = await fetch(BASE + "/", { headers: { "if-none-match": pageTag } });
+    const vRebuilt = await polledV();
+    const bundleAgain = await fetch(BASE + src);
+    check("a rebuild with the same bytes keeps the version, the URL and the page's 304",
+      sameStand.status === 304 && vRebuilt === vBefore && (bundleAgain.headers.get("cache-control") ?? "").includes("immutable"),
+      `${sameStand.status} · v ${vBefore} → ${vRebuilt} · ${bundleAgain.headers.get("cache-control")}`);
+    await bundleAgain.arrayBuffer();
+
+    // --- the page belongs to the version: its styles live in index.html, and an open tab has to get them too ---
+    const pageFile = `${ROOT}/public/index.html`;
+    const pageBefore = readFileSync(pageFile);
+    try {
+      writeFileSync(pageFile, Buffer.concat([pageBefore, Buffer.from("<!-- a changed page -->\n")]));
+      const vPage = await polledV();
+      const srcPage = scriptSrc(await (await fetch(BASE + "/")).text());
+      check("a changed page alone moves the version and the URL, so an open tab reloads for it",
+        vPage !== vBefore && srcPage === `/app.js?v=${vPage}`, `v ${vBefore} → ${vPage} · ${srcPage}`);
+    } finally {
+      writeFileSync(pageFile, pageBefore);
+    }
+    check("the page back as it was is the version it was", await polledV() === vBefore);
+
     // --- a NEW bundle reaches a client: swap the file, the version moves, the URL moves ---
-    await Bun.sleep(1100); // mtime resolution: a rewrite in the same second must still be a new v
     writeFileSync(appJs, fixture("v2"));
     // the counter-case of the 304: the browser asks with the OLD tag, and the new bundle must come back as a full page
     const afterSwap = await fetch(BASE + "/", { headers: { "if-none-match": pageTag } });

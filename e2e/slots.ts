@@ -10,6 +10,7 @@ import { BASE, IP, PORT, REPO, ROOT, SOCK, TOKEN, check, fleetSeatDir, get, pane
 import { MERGE_IDLE_MS, exists } from "./lane-helpers";
 import { RECONNECT_MAX_MS, reconnectDelay } from "../src/backoff";
 import { pollPlan } from "../src/pollplan";
+import { Line } from "../src/line";
 import { MarkStage, markFacts, markShape, paintMark, type MarkEnv, type MarkFacts } from "../src/marks";
 import { otherSender, pendingSettledBy, splitDeliveryHeader } from "../src/pendingsend";
 import { DELIVERY_HEADER_PREFIX, deliveryBundleText, deliveryParts, fleetEventBundleText, type BundleEntry } from "../src/delivery-format";
@@ -1159,6 +1160,46 @@ export async function run(): Promise<void> {
     check("held bundle: the owner's send takes the held auto along, and afterwards the slot row carries no heldDeliveries",
       sent.ok && !after.present && countIn(turns, autoText) === 1 && countIn(turns, ownerText) === 1,
       JSON.stringify({ sent: sent.status, after, auto: countIn(turns, autoText), owner: countIn(turns, ownerText) }));
+    // ONE SEND UNDER ONE NAME (server/send-once.ts): the answer got lost and the page asks again. Mutation caught: a
+    // second typing, or a name read but not honoured.
+    const namedOnce = { slot: 3, text: "named-send-probe", submit: true, clientId: `probe-${Date.now()}` };
+    const namedFirst = await post("/send", namedOnce);
+    const namedFirstBody = await namedFirst.json() as { receipt?: { sendId?: string } };
+    const namedAgain = await post("/send", namedOnce);
+    const namedAgainBody = await namedAgain.json() as { receipt?: { sendId?: string } };
+    for (let i = 0; i < 100 && countIn(turnsOf(), namedOnce.text) === 0; i++) await Bun.sleep(50);
+    await Bun.sleep(500); // a second typing would land right after the first
+    const namedTurns = countIn(turnsOf(), namedOnce.text);
+    check("send: asked twice under one name, the session gets it once and both answers carry the one receipt",
+      namedFirst.status === 200 && namedAgain.status === 200 && namedTurns === 1 && !!namedFirstBody.receipt?.sendId
+        && namedAgainBody.receipt?.sendId === namedFirstBody.receipt?.sendId && namedAgain.headers.get("x-fleet-send-repeat") === "1",
+      JSON.stringify({ first: namedFirst.status, again: namedAgain.status, namedTurns, a: namedFirstBody.receipt?.sendId, b: namedAgainBody.receipt?.sendId }));
+    // A name already here answers before the occupant pin: „nothing typed“ would be false about a message its occupant got.
+    // Mutation caught: the pin asked first, or a new name getting past the pin.
+    const namedPinned = await post("/send", { ...namedOnce, openedAt: 1 });
+    const pinnedFresh = { slot: 3, text: "pinned-send-probe", submit: true, clientId: `pinned-${Date.now()}`, openedAt: 1 };
+    const pinnedFirst = await post("/send", pinnedFresh);
+    await Bun.sleep(300);
+    check("send: a name already here answers first, also under an old occupant, and a new name to another occupant types nothing",
+      namedPinned.status === 200 && namedPinned.headers.get("x-fleet-send-repeat") === "1"
+        && pinnedFirst.status === 409 && countIn(turnsOf(), pinnedFresh.text) === 0 && countIn(turnsOf(), namedOnce.text) === 1,
+      JSON.stringify({ named: namedPinned.status, fresh: pinnedFirst.status }));
+    // The name survives a restart (server/send-once.test.ts reads it back): this is the door writing it. Mutation caught: the
+    // server not keeping its names in a file, so a land inside a page's two minutes doubles a message.
+    const namesOnDisk = (() => { try { return readFileSync(`${ROOT}/send-names.jsonl`, "utf8"); } catch { return ""; } })();
+    check("send: the name is on disk, beside the server's state, without the text",
+      namesOnDisk.includes(namedOnce.clientId) && !namesOnDisk.includes(namedOnce.text), `${namesOnDisk.length} bytes`);
+    // Mutation caught: a slot number written as a string skips the name, and types twice
+    const namedString = { slot: "3", text: "named-string-slot-probe", submit: true, clientId: `string-${Date.now()}` };
+    const stringFirst = await post("/send", namedString);
+    const stringAgain = await post("/send", namedString);
+    for (let i = 0; i < 100 && countIn(turnsOf(), namedString.text) === 0; i++) await Bun.sleep(50);
+    await Bun.sleep(500);
+    check("send: a slot written as a string, asked twice under one name, types once",
+      stringFirst.status === 200 && stringAgain.status === 200 && stringAgain.headers.get("x-fleet-send-repeat") === "1" && countIn(turnsOf(), namedString.text) === 1,
+      JSON.stringify({ first: stringFirst.status, again: stringAgain.status, turns: countIn(turnsOf(), namedString.text) }));
+    const namedBad = await post("/send", { slot: 3, text: "named-send-bad", submit: true, clientId: "x" });
+    check("send: a name that isn't one is 400 and types nothing", namedBad.status === 400, String(namedBad.status));
     const oneShotText = `immediate-one-shot-${Date.now()}`;
     const oneShotAuditFrom = readFileSync(`${ROOT}/audit.jsonl`, "utf8").split("\n").length - 1;
     const oneShotStartedAt = Date.now();
@@ -1670,7 +1711,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
         chatTotal: 0, chatSource: null, chatGen: 0, chatMemo: null, chatBusy: false, chatPinUntil: 0,
         lastTurnAt: 0, cacheTtl: null, observedModel: null, observedEffort: null, toolGroup: null, notifGroup: null,
         pending: [], openAgents: new Map(), grow: 0,
-        leavePast() {}, closeSearch() {}, hideDown() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
+        leavePast() {}, closeSearch() {}, hideDown() {}, seatSettled() {}, hideCopy() {}, syncHarnessAffordances() {}, connect() {}, focus() {},
         snapToBottom() {}, pinToBottom() {}, updateWork() {},
         // the network stand-in; what it does with the entries is the real pollChat's delta path
         // (first/before/chatFresh/chatAdd/chatGrew — pinned against the source below)
@@ -1973,7 +2014,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   // what is asserted about client.ts is that it SHIPS the module under test — a plan re-inlined
   // there would leave the checks below measuring code the bundle never runs
   check("client: the poll pump takes pollPlan from src/pollplan.ts, the module under test",
-    /import \{ pollPlan \} from "\.\/pollplan"/.test(cliSrc) && /const plan = \(\) => pollPlan\(document\.hidden, dataSaver\)/.test(cliSrc),
+    /import \{ pollPlan \} from "\.\/pollplan"/.test(cliSrc) && /const plan = \(\) => pollPlan\(document\.hidden, dataSaver \|\| line\.weak\)/.test(cliSrc),
     "the pollplan import + plan() in src/client.ts");
   const visible = pollPlan(false, false), saver = pollPlan(false, true);
   check("data saver off = today's behaviour, unchanged (2s poll, 1s chat, 3s brief, server-default seed)",
@@ -2073,7 +2114,7 @@ export default LiftedPane;`).replace(/export default LiftedPane;?/, "return Lift
   check("pending bubble: an empty or whitespace-only text never settles anything",
     !pendingSettledBy("", "") && !pendingSettledBy("  \n", " "));
   check("client: doSend shows the pending bubble BEFORE it awaits POST /send, and drops it when delivery fails",
-    /const pending = pane\.addPending\(outgoing\);[\s\S]*const delivery = deliver\(slot, outgoing\);\s*sendOk = await delivery;[\s\S]*if \(!sendOk\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
+    /const pending = pane\.addPending\(outgoing\);[\s\S]*const delivery = deliver\(slot, outgoing, \{[\s\S]*?\}\);\s*sendOk = await delivery;[\s\S]*if \(!sendOk\) \{ if \(pending\) pane\.dropPending\(pending\); return; \}/.test(cliSrc),
     "doSend in src/client.ts");
   check("client: a user entry from the transcript retires its pending bubble through src/pendingsend.ts",
     // (the Esc marker joined the import, card "wartet in der Chat-Ansicht"; the chat's recall joined it
@@ -10279,8 +10320,12 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
     reads: [] as number[],
     // scenario 17: the slot rows held back, so a reload's Cmd+V comes before the board knows its slots
     holdSessions: false, heldSessions: [] as (() => void)[],
+    dark: false, polls: 0, darkSendNames: [] as string[],
     // the bundle's stand as /api/sessions says it (server/transport.ts#bundleV); scenario 17 raises it like a deploy
-    v: 1,
+    v: 1, sendAsked: [] as { name: string; openedAt: unknown }[], sendReply: null as { status: number; body: unknown; repeat?: boolean } | null,
+    firstSeatOpenedAt: 1000, firstSeatEmpty: false, arrivedName: "", // a name the door already knows answers „repeat“, whoever sits in the slot now
+    holdSend: false, heldSends: [] as (() => void)[], listsV: undefined as string | undefined, lists: [] as Record<string, unknown>[], listReads: 0, listsBroken: false, listsSlowMs: 0, sendFails: false,
+    label: "Orchestratorin", secondSeat: false, homeDead: false, homeStatus: 200,
     // the transcript's raw lines as far as the model/effort facts go (scenario 15): the route folds them with
     // server/live-state.ts#viewFolder, the way server.ts#transcriptPayload does
     raw: [JSON.stringify({ type: "assistant", effort: "high", message: { model: "claude-opus-5-5", content: [{ type: "text", text: "x" }] } })] };
@@ -10327,7 +10372,23 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         let body: { text?: string } | null = null;
         try { body = request.postData ? JSON.parse(request.postData) : null; } catch { body = null; }
         // answered like a delivered prompt; the transcript does not have it until the probe says so
-        if (p === "/send") { fx.sends.push(String(body?.text ?? "")); return void json(requestId, { ok: true, receipt: { delivery: "typed" } }); }
+        // scenario 14b: a send into a dropout gets no answer, and its name is what the next try must repeat
+        if (p === "/send" && fx.dark) { fx.darkSendNames.push(String((body as { clientId?: unknown } | null)?.clientId ?? "")); return; }
+        // a line that refuses at once: a retry would show within the pause, no waiting out a try's limit
+        if (p === "/send" && fx.sendFails) { fx.darkSendNames.push(String((body as { clientId?: unknown } | null)?.clientId ?? "")); return void send("Fetch.failRequest", { requestId, errorReason: "ConnectionFailed" }); }
+        if (p === "/send") {
+          const sent = body as { text?: unknown; clientId?: unknown; openedAt?: unknown } | null;
+          fx.sendAsked.push({ name: String(sent?.clientId ?? ""), openedAt: sent?.openedAt });
+          if (fx.sendReply || (fx.arrivedName && sent?.clientId === fx.arrivedName)) {
+            const r = fx.sendReply ?? { status: 200, body: { ok: true, receipt: { delivery: "typed" } }, repeat: true };
+            return void send("Fetch.fulfillRequest", { requestId, responseCode: r.status,
+              responseHeaders: [{ name: "content-type", value: "application/json" }, ...(r.repeat ? [{ name: "x-fleet-send-repeat", value: "1" }] : [])],
+              body: Buffer.from(JSON.stringify(r.body)).toString("base64") }).catch(() => undefined);
+          }
+          const answer = () => { fx.sends.push(String(body?.text ?? "")); void json(requestId, { ok: true, receipt: { delivery: "typed" } }); };
+          if (fx.holdSend) fx.heldSends.push(answer); else answer();
+          return;
+        }
         // what server/recall.ts answers; a recall that took the queue leaves it empty
         if (p === "/api/slots/1/recall") {
           const kind = String((body as { kind?: unknown } | null)?.kind ?? "");
@@ -10337,14 +10398,28 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         }
         return void json(requestId, { ok: true });
       }
+      // scenario 14b: a dropout. Nothing the page asks gets any answer; the old connections are simply dead
+      if (fx.dark && p.startsWith("/api/")) { if (p === "/api/sessions") fx.polls++; return; }
+      // scenario 14d: the probe a hidden tab asks before it reloads
+      if (p === "/" && request.method === "HEAD") { if (fx.homeDead) return; return void reply(requestId, fx.homeStatus, "", "text/html"); }
       if (p === "/" || p === "/blank") return void reply(requestId, 200, p === "/" ? indexHtml : "<!doctype html><title>blank</title>", "text/html");
       if (p === "/app.js") return void reply(requestId, 200, appJs, "text/javascript");
       if (p === "/xterm.css") return void reply(requestId, 200, xtermCss, "text/css");
       if (p === "/api/sessions") {
-        const answer = () => void json(requestId, { now: Date.now(), v: fx.v, chips: [], tasks: [],
-          slots: [{ id: 1, cwd: "/fixture/orch", label: "Orchestratorin", openedAt: 1000, harness: "claude" }, ...Array.from({ length: 15 }, (_, i) => ({ id: i + 2, cwd: null }))] });
+        fx.polls++;
+        const answer = () => void json(requestId, { now: Date.now(), v: fx.v, chips: [], ...(fx.listsV ? { listsV: fx.listsV } : { tasks: [] }),
+          slots: [fx.firstSeatEmpty ? { id: 1, cwd: null } : { id: 1, cwd: "/fixture/orch", label: fx.label, openedAt: fx.firstSeatOpenedAt, harness: "claude" },
+            fx.secondSeat ? { id: 2, cwd: "/fixture/zwei", label: "Zweiter Sitz", openedAt: 2000, harness: "claude" } : { id: 2, cwd: null },
+            ...Array.from({ length: 14 }, (_, i) => ({ id: i + 3, cwd: null }))] });
         if (fx.holdSessions) fx.heldSessions.push(answer); else answer();
         return;
+      }
+      if (p === "/api/board-lists") {
+        fx.listReads++;
+        if (fx.listsBroken) return void reply(requestId, 200, "this is no list");
+        const listAnswer = { tasks: fx.lists, programs: [], events: [] };
+        if (fx.listsSlowMs) return void setTimeout(() => void json(requestId, listAnswer), fx.listsSlowMs);
+        return void json(requestId, listAnswer);
       }
       if (p === "/api/slots/1/transcript") {
         const after = Number(url.searchParams.get("after") ?? 0);
@@ -10356,7 +10431,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
           source: "/fixture/orch.jsonl", ttlSec: 300, model, effort });
       }
       // the composer's model and effort switches (scenario 15) need the slot's adapter entry
-      if (p === "/api/harnesses") return void json(requestId, { harnesses: [{ id: "claude", default: true, note: null,
+      if (p === "/api/harnesses") return void json(requestId, { harnesses: [{ id: "claude", default: true, note: null, commands: [{ name: "/context", purpose: "shows what fills the context" }],
         effortLevels: ["low", "medium", "high", "xhigh", "max"], models: modelsForHarness("claude"),
         supports: { resume: true, transcript: true, model: true, effort: true, selfSchedule: true, container: false, chat: true } }],
         modelRegistry: MODEL_REGISTER.map((entry) => ({ ...entry, availability: "unknown" })) });
@@ -10427,7 +10502,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
       await send("Page.enable"); await send("Runtime.enable");
       // the pane socket never opens here; scenario 14 speaks through it (window.__ws) the way the server pushes
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `window.__ws = []; window.WebSocket = class { constructor(u) { this.url = String(u); this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `{ const every = window.setInterval; window.setInterval = (f, ms, ...a) => every(ms === 1000 ? () => { if (!window.__tickStop) f(); } : f, ms, ...a); } window.__ws = []; window.WebSocket = class { constructor(u) { this.url = String(u); this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
@@ -10695,6 +10770,261 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       fx.entries = [...fx.entries, text("assistant", droppedText, 61)];
       claims["push: when the socket drops, the chat asks every second again and the next answer arrives without a push"] =
         await wait(shows(droppedText), 2500);
+      // --- 14b. He runs Fleet from his phone on a weak line: „[Zitat entfernt]“. After a dropout the dot
+      // stayed green, reads piled up and the chat stood with no word; afterwards green means connected and it comes
+      // back on its own. And the conversation view takes the short history, the terminal gets the whole one on demand.
+      // At the width the suite runs (e2e/dom.ts): nothing here depends on it, and it costs up to 85 s of waiting.
+      // The clock: the first read goes out within a poll (2 s), is cut 20 s later, the next tick is within 2 s more.
+      // A read made in the dark hangs its own 20 s after the line is back, because the fixture never answers it
+      if (width === 1200) {
+        const MDOT = "document.querySelector('#mdot').className";
+        const socketUp = () => evaluate(`(() => { window.WebSocket.OPEN = 1; const w = window.__ws.at(-1); w.readyState = 1; w.onopen?.({}); })()`);
+        await wait("window.__ws.length > 0");
+        await settle(2500); // the socket scenario 14 dropped has its next try by now
+        await socketUp();
+        claims["the line: an open socket and a server that answers is a green dot"] = await wait(`${MDOT}.includes('on')`, 4000);
+        // Breaks if: #botdot stays out of the paint. It starts as off, so the red check alone can't see that
+        const BOT_SAME = `document.querySelector('#botdot').className === ${MDOT}`;
+        claims["the line: the bot page's dot is green with it"] = await evaluate<boolean>(BOT_SAME);
+        claims["history: the conversation view's socket asks for the short history"] = await evaluate<boolean>("/[?&]seed=50(&|$)/.test(window.__ws.at(-1).url)");
+        const sockets = await evaluate<number>("window.__ws.length");
+        const polls = fx.polls;
+        fx.dark = true;
+        const LINE_BAR = "getComputedStyle(document.querySelector('.pane .panedown')).display !== 'none' ? document.querySelector('.pane .downmsg').textContent : ''";
+        const inDark = "Das geht in den Aussetzer.";
+        await evaluate(`(() => { const t = document.getElementById('input'); t.value = ${JSON.stringify(inDark)}; t.dispatchEvent(new Event('input', { bubbles: true })); document.getElementById('send').click(); })()`);
+        await settle(12_000);
+        claims["the line: a server that has gone silent turns the dot red within 15 s"] = await evaluate<boolean>(`${MDOT}.includes('off')`);
+        claims["the line: the conversation says it in words, above the composer"] = await evaluate<string>(LINE_BAR) === "No connection";
+        claims["the line: the bot page's dot says the same"] = await evaluate<boolean>(`document.querySelector('#botdot').className === ${MDOT}`);
+        facts.line = { pollsIn12s: fx.polls - polls };
+        claims["the line: no reads pile up while the first hangs"] = fx.polls - polls <= 1;
+        await settle(13_000);
+        facts.line = { ...(facts.line as object), pollsIn25s: fx.polls - polls, sockets: await evaluate<number>("window.__ws.length") - sockets };
+        claims["the line: a read with no byte for 20 s is cut, and the next one goes out on its own"] = fx.polls - polls === 2;
+        claims["the line: the panes take a new socket, because one on a dead line never closes"] = await evaluate<number>("window.__ws.length") === sockets + 1;
+        const waiting = await evaluate<{ box: string; bar: string; bubble: string }>(`({ box: document.getElementById('input').value, bar: ${LINE_BAR},
+          bubble: [...document.querySelectorAll('.pane .panechat .msg.user.pending .msend')].at(-1)?.textContent ?? '' })`);
+        facts.sendInDark = { ...waiting, names: fx.darkSendNames.length };
+        claims["sending: while no answer comes the text stays in the box, and the bubble and the bar say so"] = waiting.box === inDark
+          && waiting.bubble === "no answer yet · trying again" && waiting.bar === "No connection · no answer yet";
+        claims["sending: it asks again by itself, every time under the one name of this message"] =
+          fx.darkSendNames.length >= 2 && new Set(fx.darkSendNames).size === 1 && fx.darkSendNames[0]!.length >= 8;
+        fx.dark = false;
+        await socketUp();
+        claims["sending: when the line is back it goes out by itself, once, and the box is empty"] =
+          await wait("document.getElementById('input').value === ''", 30_000) && fx.sends.filter((x) => x === inDark).length === 1;
+        const comeBack = "Nach dem Aussetzer ist der Chat wieder da.";
+        fx.entries = [...fx.entries, text("assistant", comeBack, 62)];
+        claims["the line: after the dropout the chat comes back with no touch, in under 30 s"] =
+          await wait(`[...document.querySelectorAll('.pane .panechat .msg.assistant')].some((m) => m.innerText.includes(${JSON.stringify(comeBack)}))`, 30_000);
+        claims["the line: and the dot is green again"] = await wait(`${MDOT}.includes('on')`, 4000);
+        claims["the line: and the words are gone"] = await wait("!document.querySelector('.pane.noline')", 4000);
+        const beforeTerm = await evaluate<number>("window.__ws.length");
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        const toTerm = await evaluate<{ more: number; url: string }>(`({ more: window.__ws.length - ${beforeTerm}, url: window.__ws.at(-1).url })`);
+        facts.history = toTerm;
+        claims["history: going to the terminal connects again and asks for the whole history"] = toTerm.more === 1 && !/[?&]seed=/.test(toTerm.url);
+        await socketUp();
+        const beforeChat = await evaluate<number>("window.__ws.length");
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        claims["history: back in the conversation the socket with the whole history stays"] = await evaluate<number>("window.__ws.length") === beforeChat;
+        // --- 14c. „[Zitat entfernt]“: the checker's inputs, each with what would break it named beside it.
+        const BOX = "document.getElementById('input')";
+        const put = (words: string, typed = true) => evaluate(`(() => { const t = ${BOX}; t.value = ${JSON.stringify(words)}; ${typed ? "t.dispatchEvent(new Event('input', { bubbles: true }));" : ""} })()`);
+        const press = () => evaluate("document.getElementById('send').click()");
+        const boxIs = (words: string) => `${BOX}.value === ${JSON.stringify(words)}`;
+        const toastsSay = (words: string) => `[...document.querySelectorAll('body > div')].some((d) => d.style.position === 'fixed' && d.textContent === ${JSON.stringify(words)})`;
+        const setHidden = (hidden: boolean) => evaluate(`(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => ${hidden} });
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => ${hidden ? "'hidden'" : "'visible'"} }); document.dispatchEvent(new Event('visibilitychange')); })()`);
+        const DOT_ON = `${MDOT}.includes('on')`;
+        await wait(DOT_ON, 4000);
+        // A name belongs to one press. Breaks if: an answer no longer ends the name, and every „ok“, „ok“ is swallowed
+        fx.sends = []; fx.sendAsked = [];
+        await put("ok"); await press();
+        await wait(boxIs(""), 3000);
+        await put("ok", false); await press(); // ↑ brings the same words back with no typing
+        await wait(`${boxIs("")} && !document.getElementById('send').disabled`, 3000);
+        facts.pressNames = fx.sendAsked.slice();
+        claims["sending: „ok“, „ok“ are two presses, two names, and both go out"] =
+          fx.sends.filter((x) => x === "ok").length === 2 && new Set(fx.sendAsked.map((a) => a.name)).size === 2;
+        // Breaks if: a send isn't pinned to whom it was pressed for
+        claims["sending: a send names the occupant it was pressed for"] = fx.sendAsked.length === 2 && fx.sendAsked.every((a) => a.openedAt === 1000);
+        // A restored box keeps its name, and the repeat says so. Breaks if: the second press says nothing about the first
+        const held = (words: string) => evaluate(`sessionStorage.setItem('fleet.sendName.1', JSON.stringify({ id: 'kept-name-1', text: ${JSON.stringify(words)}, at: Date.now() }))`);
+        fx.sendAsked = [];
+        await held("wieder"); await put("wieder", false);
+        fx.sendReply = { status: 200, body: { ok: true, receipt: { delivery: "typed" } }, repeat: true };
+        await press();
+        const toldRepeat = await wait(toastsSay("That message had already arrived. It wasn't sent twice."), 3000);
+        fx.sendReply = null;
+        claims["sending: a press on the text a reload restored asks about the same message, and he is told it had arrived"] =
+          fx.sendAsked.at(-1)?.name === "kept-name-1" && toldRepeat && await wait(boxIs(""), 3000);
+        // The checker's „ok“ 8 s later: emptied, the same words typed anew. Breaks if: the name goes with the words
+        fx.sendAsked = []; fx.sends = [];
+        await held("nochmal"); await put(""); await put("nochmal"); await press();
+        await wait(boxIs(""), 3000);
+        claims["sending: the same words typed anew are a new message, and they arrive"] =
+          fx.sendAsked.at(-1)?.name !== "kept-name-1" && fx.sends.includes("nochmal");
+        // The checker's wrong seat. The slot has another occupant now: nothing typed, the text stays, a word says so
+        await put("Für den alten Sitz");
+        fx.sendReply = { status: 409, body: { error: "slot 1 is held by a different occupant (openedAt 9, not 1000) — nothing typed", occupant: { slot: 1, openedAt: 9 } } };
+        await press();
+        const toldSeat = await wait(toastsSay("send refused — slot occupant changed; nothing was typed"), 3000);
+        fx.sendReply = null;
+        claims["sending: another occupant in the slot: the text stays in the box and a word says so"] = toldSeat && await evaluate<boolean>(boxIs("Für den alten Sitz"));
+        await put("");
+        // An uncertain answer. Breaks if: it drops the name, so a second press types it again
+        fx.sendAsked = [];
+        fx.sendReply = { status: 409, body: { error: "send outcome uncertain: the server stopped while typing it", receipt: { delivery: "uncertain" } } };
+        await put("Vielleicht getippt"); await press();
+        await wait("!document.getElementById('send').disabled", 3000);
+        await settle(100);
+        await press();
+        await wait("!document.getElementById('send').disabled", 3000);
+        await settle(100);
+        fx.sendReply = null;
+        facts.uncertain = fx.sendAsked.map((a) => a.name);
+        claims["sending: after an uncertain answer a second press asks under the same name, so nothing types twice"] =
+          fx.sendAsked.length === 2 && fx.sendAsked[0]!.name === fx.sendAsked[1]!.name;
+        await put("");
+        // A ⌘ command on a dead line. Breaks if: it goes on trying, and a /clear arrives two minutes late
+        fx.sendFails = true; fx.darkSendNames = [];
+        await evaluate("[...document.querySelectorAll('#compopts .optsw')].find((b) => b.textContent.includes('⌘'))?.click()");
+        const cmdOpen = await wait("[...document.querySelectorAll('#compopts .cmdline')].some((b) => !b.title.includes('asks first'))", 3000);
+        await evaluate("[...document.querySelectorAll('#compopts .cmdline')].find((b) => !b.title.includes('asks first'))?.click()");
+        await settle(3500); // past the retry pause
+        fx.sendFails = false;
+        facts.cmdTries = fx.darkSendNames.length;
+        claims["sending: a ⌘ command gets one try"] = cmdOpen && fx.darkSendNames.length === 1;
+        fx.darkSendNames = [];
+        await evaluate("document.querySelector('#compopts .optsw.on')?.click()");
+        // Breaks if: a late answer empties the box over what he wrote since
+        fx.holdSend = true;
+        await put("Die alte Zeile"); await press();
+        await wait("document.getElementById('send').disabled", 3000);
+        await put("Was er seitdem schrieb");
+        fx.holdSend = false;
+        for (const answer of fx.heldSends.splice(0)) answer();
+        await wait("!document.getElementById('send').disabled", 3000);
+        claims["sending: a late answer leaves what he wrote since"] = await evaluate<boolean>(boxIs("Was er seitdem schrieb"));
+        await put("");
+        // A dropout. Breaks if: he changed the text and it keeps trying the old one; the phone's pill stays green (lineoff);
+        // the terminal says nothing
+        fx.dark = true; fx.darkSendNames = [];
+        await put("Wird gleich geändert"); await press();
+        await wait("document.getElementById('send').disabled", 3000);
+        await settle(500);
+        await put("Geändert");
+        await settle(12_000);
+        claims["the line: on a dead line the phone's pill can't stay green"] = await evaluate<boolean>("document.body.classList.contains('lineoff')");
+        await settle(6_000); // past the first try's 15 s
+        facts.changedTries = fx.darkSendNames.length;
+        claims["sending: he changed the text: nothing more goes out for the old one"] = fx.darkSendNames.length === 1 && await evaluate<boolean>(boxIs("Geändert"));
+        claims["sending: and the toast claims nothing it doesn't know"] = await evaluate<boolean>(toastsSay("No answer from the server. It may have arrived."));
+        await put("");
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        await socketUp();
+        claims["the line: a dropout in the terminal says so in words"] = await wait(`(${LINE_BAR}) === 'No connection'`, 3000);
+        fx.dark = false;
+        await socketUp();
+        await wait(DOT_ON, 8000);
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        // Back from hidden. Breaks if: old silence counts as silence now
+        await settle(2500);
+        fx.dark = true;
+        await settle(2500); // a read is out on the dark line
+        await setHidden(true);
+        await settle(11_000);
+        fx.dark = false;
+        await setHidden(false);
+        await socketUp();
+        claims["the line: back from hidden on a good line: green at once, the silence while away doesn't count"] = await wait(DOT_ON, 2500);
+        // Back on a dead line: the old socket still reads open. Breaks if: the dot says connected before a read has confirmed it
+        fx.dark = true;
+        await setHidden(true);
+        await setHidden(false);
+        await settle(1200);
+        facts.backOnDead = await evaluate<string>(MDOT);
+        claims["the line: back on a dead line the dot isn't green, nothing has confirmed it"] = await evaluate<boolean>(`${MDOT}.includes('wait')`);
+        // Breaks if: the phone's pill has no grey, or /bot's dot isn't painted in it
+        claims["the line: the phone's pill goes grey with it"] = await evaluate<boolean>("document.body.classList.contains('linewait')");
+        claims["the line: and the bot page's dot"] = await evaluate<boolean>(BOT_SAME);
+        await settle(10_500);
+        claims["the line: and after the silence it is red"] = await evaluate<boolean>(`${MDOT}.includes('off')`);
+        fx.dark = false;
+        await socketUp();
+        await wait(DOT_ON, 25_000);
+        // A healthy return, with the 1 s tick stopped so only the page's own paints count. Breaks if: grey waits for the
+        // tick, or green does (the checker's one second of grey on every return)
+        const DOT_LOG = "window.__dotLog";
+        await evaluate(`(() => { window.__dotLog = []; new MutationObserver(() => window.__dotLog.push(document.querySelector('#mdot').className)).observe(document.querySelector('#mdot'), { attributes: true, attributeFilter: ['class'] }); })()`);
+        await evaluate("window.__tickStop = true");
+        await setHidden(true); await settle(50); await setHidden(false);
+        const greenAgain = await wait(DOT_ON, 2000);
+        const backLog = await evaluate<string[]>(DOT_LOG);
+        await evaluate("window.__tickStop = false");
+        facts.backLog = backLog;
+        claims["the line: back on a good line, grey comes at once and the answer ends it, with no tick"] = greenAgain && backLog.some((x) => x.includes("wait"));
+        await evaluate("(() => { delete document.hidden; delete document.visibilityState; })()"); // Mangel 64 below hides the tab for real
+        // Candidate 2's client side, in a browser. Breaks if: the task list is read once and never again; the board shows
+        // no tasks from a new server. The queue button glows for a task that waits on his answer
+        const HOT = "document.getElementById('queuebtn').classList.contains('hot')";
+        fx.lists = [{ id: "t-1", status: "dispatched", criterion: { confirmedAt: null } }];
+        fx.listReads = 0;
+        fx.listsV = "a";
+        claims["the lists: the board shows the tasks a new poll names, in a list of their own"] = await wait(HOT, 5000);
+        await settle(4500);
+        claims["the lists: the same word asks for nothing"] = fx.listReads === 1;
+        fx.lists = [];
+        fx.listsV = "b";
+        claims["the lists: a new word is read again, so a task changed elsewhere arrives"] = await wait(`!(${HOT})`, 5000) && fx.listReads === 2;
+        // The checker's 1.5 s. Breaks if: a slow list that answers flashes grey
+        await evaluate("window.__dotLog = []");
+        fx.listsSlowMs = 1500;
+        fx.listReads = 0;
+        fx.lists = [{ id: "t-2", status: "dispatched", criterion: { confirmedAt: null } }];
+        fx.listsV = "slow";
+        const slowArrived = await wait(HOT, 6000);
+        fx.listsSlowMs = 0;
+        facts.slowLog = await evaluate<string[]>(DOT_LOG);
+        claims["the lists: a slow list that answers doesn't flash grey"] = slowArrived && fx.listReads === 1 && !(facts.slowLog as string[]).some((x) => x.includes("wait"));
+        fx.lists = [];
+        fx.listsV = "b2";
+        await wait(`!(${HOT})`, 5000);
+        // The checker's frozen board. Breaks if: a failing list throws out of the poll or stands behind a green dot
+        fx.listsBroken = true;
+        fx.listsV = "c";
+        fx.label = "Umbenannt";
+        claims["the lists: a list that fails leaves the dot not green"] = await wait(`${MDOT}.includes('wait')`, 5000);
+        claims["the lists: and the board's poll goes on"] = await wait("document.getElementById('slots').innerText.includes('Umbenannt')", 6000);
+        fx.listsBroken = false;
+        claims["the lists: and when it answers again the dot is green"] = await wait(DOT_ON, 6000);
+        fx.listsV = undefined;
+        fx.label = "Orchestratorin";
+        await settle(2500);
+        // He moved to another seat while it waits. Breaks if: the parked copy stays and can go twice
+        fx.secondSeat = true;
+        await settle(2500);
+        fx.dark = true; fx.sends = [];
+        await put("Geht von selbst raus"); await press();
+        await wait("document.getElementById('send').disabled", 3000);
+        await evaluate("[...document.querySelectorAll('#slots .slot')][1]?.click()");
+        await settle(500);
+        fx.dark = false;
+        await socketUp();
+        for (let i = 0; i < 80 && !fx.sends.includes("Geht von selbst raus"); i++) await settle(250);
+        const wentOut = fx.sends.includes("Geht von selbst raus");
+        await settle(500);
+        await evaluate("[...document.querySelectorAll('#slots .slot')][0]?.click()");
+        await settle(800);
+        await socketUp();
+        facts.parked = { wentOut, box: await evaluate<string>(`${BOX}.value`) };
+        claims["sending: sent while he is at another seat: it goes out, and no parked copy is left to go twice"] = wentOut && await evaluate<boolean>(boxIs(""));
+        fx.secondSeat = false;
+        await settle(2500);
+        await evaluate("delete window.WebSocket.OPEN");
+      }
       // --- 15. Mangel 53, owner 13.10.: „[Zitat entfernt]“
       // . Claude Code writes the switch as two local_command lines (recorded, 2.1.296); the switch under the
       // field shows the new model from them, before any answer ran on it
@@ -11026,6 +11356,225 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       }
       if (width === 390) await send("Emulation.setTouchEmulationEnabled", { enabled: false });
       facts.login63 = loginFacts;
+      // --- 14d, last: it ends in a reload. A tab can't stick on an old build. A new version arrives while the tab is hidden.
+      // Breaks if: it reloads with no probe, or whatever the probe answered, or an unanswered probe is the end of it
+      if (width === 1200) {
+        const buildBefore = await evaluate<number>("performance.timeOrigin");
+        // a page in the middle of reloading answers nothing: each look has its limit, and only this page's clock says „the same page“
+        const samePage = async (): Promise<boolean | null> => {
+          const look = await Promise.race([send("Runtime.evaluate", { returnByValue: true, expression: "performance.timeOrigin" }).catch(() => null), Bun.sleep(3000).then(() => null)]);
+          const origin = (look?.result as { value?: number } | undefined)?.value;
+          return origin === undefined ? null : origin === buildBefore;
+        };
+        fx.holdSessions = true;
+        fx.heldSessions = [];
+        for (let i = 0; i < 40 && !fx.heldSessions.length; i++) await Bun.sleep(200);
+        await evaluate(`(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); })()`);
+        fx.homeDead = true;
+        fx.v = 7;
+        fx.holdSessions = false;
+        for (const answer of fx.heldSessions.splice(0)) answer();
+        await Bun.sleep(4000);
+        claims["a new build: hidden with no answer to the probe, the page stands"] = await samePage() === true;
+        fx.homeDead = false;
+        fx.homeStatus = 503;
+        await Bun.sleep(7000);
+        claims["a new build: a server that answers no, the page stands"] = await samePage() === true;
+        fx.homeStatus = 200;
+        let reloaded = false;
+        for (let i = 0; i < 30 && !reloaded; i++) {
+          await Bun.sleep(500);
+          reloaded = await samePage() === false;
+        }
+        claims["a new build: it asks again by itself and reloads when it can"] = reloaded;
+      }
+      if (width === 1200) {
+        // THE FIRST LOAD ON A BAD LINE. Load the board while the list fails. Breaks if: an empty list reads as „none“
+        // („Work is clear“ over 11 tasks, the checker's first.ts), or the sentence stays once it has been read
+        fx.dark = false; fx.lists = []; fx.listsBroken = true; fx.listsV = "first"; fx.sendReply = null;
+        await send("Page.reload", {});
+        await wait("document.getElementById('queuebtn')", 8000);
+        await settle(3000);
+        await evaluate("document.getElementById('queuebtn').click()");
+        await wait("document.querySelector('.pknone')", 3000);
+        const seen = () => evaluate<string>("document.body.innerText");
+        const unread = await seen();
+        facts.firstLoad = unread.slice(0, 300);
+        claims["the lists: loaded while the list fails, the queue says the tasks aren't read yet"] = unread.includes("Tasks not read yet");
+        claims["the lists: and never that there is no work, nor any count"] = !unread.includes("Work is clear") && !/\b0 running\b/.test(unread) && !/\b0 backlog\b/.test(unread) && !/\bAll\s+0\b/.test(unread);
+        claims["the lists: and the dot isn't green"] = !(await evaluate<string>("document.querySelector('#mdot').className")).split(" ").includes("on");
+        claims["the lists: and the inbox's title doesn't count what wasn't read"] = await evaluate<boolean>("document.getElementById('opsbtn').title.includes('not read yet')");
+        fx.listsBroken = false;
+        claims["the lists: when the list arrives the queue says what is there"] = await wait("document.body.innerText.includes('Work is clear') && document.body.innerText.includes('0 running') && !document.body.innerText.includes('Tasks not read yet')", 8000);
+        await send("Page.reload", {});
+        await wait("document.getElementById('input') && document.querySelectorAll('#slots .slot').length", 8000);
+        await settle(2000);
+        await evaluate("[...document.querySelectorAll('#slots .slot')][0]?.click()");
+        await settle(800);
+        // A NEW TAB. The tab closed with the answer out; its draft and the draft's name wait in localStorage. Breaks if: the
+        // restored box types again with no word, against „If it arrived, pressing again tells you“
+        const left = (words: string) => evaluate(`(() => { sessionStorage.removeItem('fleet.sendName.1'); localStorage.setItem('fleet.sendName.1', JSON.stringify({ id: 'draft-name-1', text: ${JSON.stringify(words)}, at: Date.now() })); })()`);
+        const inBox = (words: string, typed: boolean) => evaluate(`(() => { const t = document.getElementById('input'); t.value = ${JSON.stringify(words)}; ${typed ? "t.dispatchEvent(new Event('input', { bubbles: true }));" : ""} })()`);
+        const sendBox = () => evaluate("document.getElementById('send').click()");
+        fx.sendAsked = [];
+        await left("Aus dem alten Tab");
+        await inBox("Aus dem alten Tab", false);
+        fx.sendReply = { status: 200, body: { ok: true, receipt: { delivery: "typed" } }, repeat: true };
+        await sendBox();
+        const toldTab = await wait(`[...document.querySelectorAll('body > div')].some((d) => d.style.position === 'fixed' && d.textContent === "That message had already arrived. It wasn't sent twice.")`, 3000);
+        fx.sendReply = null;
+        claims["sending: a new tab asks about the message the closed tab pressed, and he is told it had arrived"] = fx.sendAsked.at(-1)?.name === "draft-name-1" && toldTab;
+        // „ok“ typed in a tab while another's name stands for the same words: a message of its own
+        fx.sendAsked = [];
+        await settle(300);
+        await left("Getippt");
+        await inBox("Getippt", true);
+        claims["sending: typing drops the name for every tab"] = await evaluate<boolean>("localStorage.getItem('fleet.sendName.1') === null");
+        await left("Getippt"); // another tab pressed the same words since
+        await sendBox();
+        await wait("document.getElementById('input').value === ''", 3000);
+        claims["sending: the same words typed in a tab are its own message"] = fx.sendAsked.length === 1 && fx.sendAsked[0]!.name !== "draft-name-1";
+        // ADOPT. The draft's message reached the seat that ended; the door knows its name. Breaks if: Adopt keeps the name in
+        // either store, and he reads „had already arrived“ about a new seat whose pane holds nothing (slot 7, s5-adopt.log)
+        const arrivedSaid = `[...document.querySelectorAll('body > div')].some((d) => d.style.position === 'fixed' && d.textContent === "That message had already arrived. It wasn't sent twice.")`;
+        await wait(`!(${arrivedSaid})`, 10000);
+        const forHeir = "Für den neuen Sitz";
+        await inBox(forHeir, false);
+        await evaluate(`(() => { const named = JSON.stringify({ id: 'draft-name-2', text: ${JSON.stringify(forHeir)}, at: Date.now() }); sessionStorage.setItem('fleet.sendName.1', named); localStorage.setItem('fleet.sendName.1', named); })()`);
+        fx.arrivedName = "draft-name-2"; fx.sendAsked = []; fx.sends = [];
+        fx.firstSeatOpenedAt = 3000;
+        const offered = await wait("document.querySelector('#comptarget .ctadopt')", 8000);
+        await evaluate("document.querySelector('#comptarget .ctadopt').click()");
+        const namesGone = await evaluate<boolean>("![sessionStorage, localStorage].some((s) => (s.getItem('fleet.sendName.1') ?? '').includes('draft-name-2'))");
+        await sendBox();
+        const emptied = await wait("document.getElementById('input').value === ''", 3000);
+        await settle(300);
+        facts.adopted = { offered, namesGone, emptied, asked: fx.sendAsked, sends: fx.sends };
+        claims["sending: a draft adopted for a new seat is typed there once, and never called arrived"] = offered && namesGone && emptied
+          && fx.sendAsked.length === 1 && fx.sendAsked[0]!.name !== "draft-name-2" && fx.sendAsked[0]!.openedAt === 3000
+          && fx.sends.filter((x) => x === forHeir).length === 1 && !await evaluate<boolean>(arrivedSaid);
+        fx.firstSeatOpenedAt = 1000; fx.arrivedName = "";
+        // A SEAT REPLACED. The poll reads the slot between the two seats, the socket drops, its retry finds no seat. Breaks
+        // if: that retry was the last, and the pane stands on „connecting“ with a red dot on a healthy line (order 8, occ3.log)
+        const openSocket = () => evaluate("(() => { window.WebSocket.OPEN = 1; const w = window.__ws.at(-1); w.readyState = 1; w.onopen?.({}); })()");
+        await wait("window.__ws.length > 0");
+        await openSocket();
+        fx.firstSeatEmpty = true;
+        const pollsAtEmpty = fx.polls;
+        for (let i = 0; i < 60 && fx.polls < pollsAtEmpty + 2; i++) await settle(100);
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); })()");
+        await settle(2000);
+        const socketsInGap = await evaluate<number>("window.__ws.length");
+        fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = 4000;
+        const tookSocket = await wait(`window.__ws.length > ${socketsInGap}`, 8000);
+        if (tookSocket) await openSocket();
+        await settle(300);
+        facts.seatReplaced = { socketsInGap, tookSocket, down: await evaluate<boolean>("document.querySelector('.pane').classList.contains('down')"), dot: await evaluate<string>("document.querySelector('#mdot').className") };
+        claims["the line: a seat replaced while a poll read its slot empty: the pane takes a socket by itself, and no red stays"] = tookSocket
+          && !await evaluate<boolean>("document.querySelector('.pane').classList.contains('down')")
+          && !(await evaluate<string>("document.querySelector('#mdot').className")).split(" ").includes("off");
+        fx.firstSeatOpenedAt = 1000;
+        // AN EMPTY SLOT. The seat ended from elsewhere and nobody reopens: the row says empty and the line is fine. Breaks if: the
+        // dot says „No connection“ and the bar „connecting …“ until he moves on (slot 7, pruefung-4, leer-bleibt.png)
+        const isRed = "document.querySelector('#mdot').className.split(' ').includes('off')";
+        const barSays = "document.querySelector('.pane .downmsg').textContent";
+        fx.firstSeatEmpty = true;
+        const pollsAtGone = fx.polls;
+        for (let i = 0; i < 60 && fx.polls < pollsAtGone + 2; i++) await settle(100);
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); })()");
+        await settle(1400);
+        facts.emptySlot = { red: await evaluate<boolean>(isRed), bar: await evaluate<string>(barSays), button: await evaluate<string>("getComputedStyle(document.querySelector('.pane .downnow')).display") };
+        claims["the line: an empty slot has no socket to lose: no red, and the bar says the slot is empty"] = !await evaluate<boolean>(isRed)
+          && await evaluate<string>(barSays) === "Slot empty"
+          && await evaluate<string>("getComputedStyle(document.querySelector('.pane .downnow')).display") === "none";
+        // Breaks if: the empty slot's green outranks the server's own read, or the look-again ended while it stood empty
+        fx.dark = true;
+        const deadIsRed = await wait(isRed, 14000);
+        const deadSays = await evaluate<string>(barSays);
+        fx.dark = false;
+        // the read that hung is cut at POLL_STALL_MS, and the stall may take a socket to the empty slot: the server refuses it at once
+        const redEnds = await wait(`!(${isRed})`, 25000);
+        await evaluate("(() => { const w = window.__ws.at(-1); if (w.readyState === 0) { w.readyState = 3; w.onclose?.({}); } })()");
+        const socketsEmpty = await evaluate<number>("window.__ws.length");
+        fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = 5000;
+        const seatBack = await wait(`window.__ws.length > ${socketsEmpty}`, 8000);
+        if (seatBack) await openSocket();
+        await settle(300);
+        facts.emptyDead = { deadIsRed, deadSays, redEnds, seatBack, bar: await evaluate<string>(barSays), down: await evaluate<boolean>("document.querySelector('.pane').classList.contains('down')") };
+        claims["the line: a dead line goes red over an empty slot too, and the pane heals when a seat comes back"] = deadIsRed && deadSays === "No connection" && redEnds && seatBack
+          && !await evaluate<boolean>("document.querySelector('.pane').classList.contains('down')") && !await evaluate<boolean>(isRed);
+        fx.firstSeatOpenedAt = 1000;
+        // A SEAT RETURNS, on a healthy line. Breaks if: the dot goes green, red, green with „disconnected“ in the bar, because the
+        // socket waits for the timer from the drop (slot 7, pruefung-5, leer.log), or goes red while the new socket is on its way
+        const seatDown = "document.querySelector('.pane').classList.contains('down')";
+        const seatGoes = async () => {
+          fx.firstSeatEmpty = true;
+          const pollsAt = fx.polls;
+          for (let i = 0; i < 60 && fx.polls < pollsAt + 2; i++) await settle(100);
+        };
+        await seatGoes();
+        // a socket that closes on a slot already read empty, like one the server refuses there
+        const redAtClose = await evaluate<boolean>(`(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); return ${isRed}; })()`);
+        claims["the line: a socket closing on a slot already read empty doesn't flash red"] = !redAtClose;
+        await settle(1300);
+        await evaluate(`(() => { window.__seatSeen = []; const look = () => { if (${isRed}) window.__seatSeen.push('red'); if (${seatDown} && ${barSays} !== 'Slot empty') window.__seatSeen.push(${barSays}); };
+          const o = new MutationObserver(look); o.observe(document.querySelector('#mdot'), { attributes: true }); o.observe(document.querySelector('.pane'), { attributes: true }); o.observe(document.querySelector('.pane .downmsg'), { childList: true, characterData: true, subtree: true }); window.__seatObs = o; })()`);
+        const socketsAtReturn = await evaluate<number>("window.__ws.length");
+        fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = 6000;
+        const seatAnswers = () => evaluate("window.__ws.at(-1).onmessage?.({ data: new Uint8Array([32]).buffer })");
+        const returnSocket = await wait(`window.__ws.length > ${socketsAtReturn}`, 3500);
+        await settle(1100); // past a tick of the dot, the new socket still on its way
+        const seenWaiting = await evaluate<string[]>("window.__seatSeen.slice()");
+        const downWaiting = await evaluate<boolean>(seatDown);
+        // the row is written before the seat's pane exists: the handshake opens and the server refuses, as case B did for real
+        const socketsAtRefusal = await evaluate<number>("window.__ws.length");
+        if (returnSocket) {
+          await openSocket();
+          await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); })()");
+        }
+        const askedAgain = await wait(`window.__ws.length > ${socketsAtRefusal}`, 1500);
+        if (askedAgain) { await openSocket(); await seatAnswers(); }
+        await settle(200);
+        const seenReturn = await evaluate<string[]>("(window.__seatObs.disconnect(), window.__seatSeen)");
+        facts.seatReturn = { returnSocket, seenWaiting, downWaiting, askedAgain, seenReturn };
+        claims["the line: a seat returning to an empty slot brings no red and no „disconnected“, even when its first socket is refused"] = returnSocket && !downWaiting && askedAgain && seenReturn.length === 0
+          && !await evaluate<boolean>(isRed) && !await evaluate<boolean>(seatDown);
+        // and that green has its limit. Breaks if: a seat whose socket never comes up stays green and says nothing
+        await seatGoes();
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); })()");
+        await settle(1300);
+        const socketsAtHung = await evaluate<number>("window.__ws.length");
+        fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = 7000;
+        await wait(`window.__ws.length > ${socketsAtHung}`, 3500);
+        await settle(4300); // the seat's time, and a tick of the dot
+        const hungRed = await evaluate<boolean>(isRed);
+        const hungSays = await evaluate<string>(barSays);
+        await openSocket();
+        await seatAnswers();
+        await settle(1300);
+        facts.seatHung = { hungRed, hungSays };
+        claims["the line: a returned seat whose socket doesn't come up goes red and says so, and opening heals it"] = hungRed && hungSays === "disconnected — connecting …"
+          && !await evaluate<boolean>(isRed) && !await evaluate<boolean>(seatDown);
+        fx.firstSeatOpenedAt = 1000;
+        // HE MOVED ON. The socket dropped and its retry is pending when he goes to another seat. Breaks if: that retry still
+        // fires, and a socket that is fine is thrown away for a second one. Going there and back first resets the backoff, so the wait is the first one
+        fx.secondSeat = true;
+        const goTo = (n: number) => evaluate(`[...document.querySelectorAll('#slots .slot')][${n}]?.click()`);
+        await wait("document.querySelectorAll('#slots .slot')[1]?.textContent.includes('Zweiter Sitz')", 5000);
+        await goTo(1); await settle(300); await goTo(0); await settle(300);
+        await openSocket();
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({}); })()");
+        await goTo(1);
+        await wait("window.__ws.at(-1).url.includes('/ws/2')", 1000);
+        const socketsMoved = await evaluate<number>("window.__ws.length");
+        await openSocket();
+        await settle(2500); // past the first retry's 1.5 s
+        facts.movedOn = { socketsMoved, after: await evaluate<number>("window.__ws.length"), url: await evaluate<string>("window.__ws.at(-1).url") };
+        claims["the line: a pane that moved on doesn't retry the slot it left"] = await evaluate<number>("window.__ws.length") === socketsMoved
+          && await evaluate<boolean>("window.__ws.at(-1).url.includes('/ws/2')");
+        fx.secondSeat = false;
+        await evaluate("delete window.WebSocket.OPEN");
+      }
       results.push({ width, height, claims, facts });
     }
     return results;
@@ -13834,13 +14383,13 @@ class FetchProbe {
 }
 ${refresh.replace("export async", "async")}
 `);
-  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", "document", "MutationObserver", "setTimeout", "clearTimeout", "ta", "api", "plan", code + "\nreturn {start:perfStart,finish:perfFinish,ready:perfBoardReady,visibility:perfVisibility,refresh,probe:()=>new FetchProbe(),flush:flushPerf,records:perfBuffer};")(
+  const marks = new Function("performance", "isMobile", "dataSaver", "bundleV", "fleet", "requestAnimationFrame", "navigator", "PERF_BATCH_MAX", "location", "document", "MutationObserver", "setTimeout", "clearTimeout", "ta", "api", "plan", "line", code + "\nreturn {start:perfStart,finish:perfFinish,ready:perfBoardReady,visibility:perfVisibility,refresh,probe:()=>new FetchProbe(),flush:flushPerf,records:perfBuffer};")(
     { now: () => now, timeOrigin: 1000000, getEntriesByType: () => [], getEntriesByName: () => [] },
     () => false, false, 42, [{ cwd: "/fixture" }, { cwd: null }], (fn: () => void) => frames.push(fn),
     { sendBeacon: (path: string, blob: Blob) => { if (accepts) beacons.push({ path, blob }); return accepts; } }, PERF_BATCH_MAX,
     { href: "http://127.0.0.1/" }, doc, Observer,
     (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, (id: number) => timers.delete(id), input,
-    () => read(), () => ({ chatMs: 0 })) as Marks;
+    () => read(), () => ({ chatMs: 0 }), new Line()) as Marks;
   const paint = (): void => { while (frames.length) frames.shift()!(); };
   // t | event | exclusive owner: 100 start J1..J4 | 120 paint all four | 130 failed send.
   for (const j of ["J1", "J2", "J3", "J4"]) { const span = marks.start(j); marks.finish(span, true); marks.finish(span, true); }

@@ -10,6 +10,7 @@ fleet.json
 fleet.json.*
 fleet.pid
 audit.jsonl*
+send-names.jsonl*
 steward-journal.jsonl*
 lane-outcomes.jsonl*
 dispositions.jsonl*

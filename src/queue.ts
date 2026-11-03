@@ -1,4 +1,4 @@
-import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, labelled, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
+import { $, el, MOBILE_MQ, TaskInfo, agentHarnesses, api, autosOnSrv, baseName, chip, copyText, defaultModel, describeEntity, dispatch, entityKnown, fleet, fmtDur, fmtTs, harnesses, labelled, listsKnown, loadHarnesses, post, quietHoursSrv, refresh, serverNow, setDrawer, showSlot, tasksList, toast } from "./client";
 import { prefSet, prefText } from "./prefs";
 import { perfRebuild } from "./perfmarks";
 import { Shell, ShellRow, openShell } from "./shell";
@@ -4186,6 +4186,7 @@ export function paintQueueScope() {
     qLayoutBtn.title = asTree ? "fold the project tree into one picker in this line"
       : "show projects and their programs as a tree beside the list";
   }
+  if (!listsKnown) return; // no „All 0“ over tasks not read yet
   const open = tasksList.filter((t) => !qClosed(t));
   const repos = new Map<string, number>();
   for (const t of open) {
@@ -4405,7 +4406,7 @@ export function renderQueue() {
   // REBUILD ONLY ON CHANGE. Without this the 2 s poll would rebuild the list under the cursor and
   // reset the selection every two seconds — the same class of defect as the compose box above.
   const now = Date.now();
-  const key = JSON.stringify([qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available,
+  const key = JSON.stringify([listsKnown, qView, qPick, qQuery, qProgDone, dispatch.on, dispatch.available,
     Math.floor(now / 60000), qView === "waves" ? qWaveProjectionKey() : null,
     // the wave caveat's acknowledgment is a RENDER INPUT of this list, unlike qRawAck which lives
     // in the detail pane: without it here the checkbox flips, renderQueue is called, the key has
@@ -4426,6 +4427,14 @@ export function renderQueue() {
   if (key === qKey) return;
   qKey = key;
   paintQueueScope();
+
+  // Nothing read yet is not nothing there: no counts, no „Work is clear“. Programs and Konzepte have their own reads
+  if (!listsKnown && qView !== "programs" && qView !== "konzepte") {
+    shell.setSubtitle("");
+    shell.list.replaceChildren(el("div", "pknone", "Tasks not read yet"));
+    shell.setRows([]);
+    return;
+  }
 
   // Each primary view names only its own domain. Waves keeps its weaker advisory claim and counts
   // everything deliberately kept outside; Work's counts stay global while a search narrows rows.
@@ -4600,7 +4609,7 @@ export function renderQueue() {
         shell.list.appendChild(t);
       }
     }
-    if (!visibleRows && !progDone.length && programsRead !== "fail") shell.list.appendChild(el("div", "pknone",
+    if (!visibleRows && !progDone.length && programsRead === "ok") shell.list.appendChild(el("div", "pknone",
       qQuery ? "no programs match this search" : "no programs yet"));
   } else if (qView === "notes") {
     const notes = model.work.filter((t) => qGroupOf(t) === "notes");

@@ -576,7 +576,8 @@ function commandSwitch(slot: number, h: HarnessInfo): HTMLElement {
     row.title = c.confirm ? `${c.purpose} — asks first` : c.purpose;
     row.onclick = async () => {
       if (c.confirm && !(await confirmCommand(slot, c.name, c.purpose))) return;
-      if (await deliver(slot, c.name)) { optOpen = null; renderComposerOpts(true); }
+      // one try: a /clear two minutes late is worse than a toast
+      if (await deliver(slot, c.name, { stillWanted: () => false })) { optOpen = null; renderComposerOpts(true); }
     };
     list.appendChild(row);
   }

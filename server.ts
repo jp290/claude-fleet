@@ -223,11 +223,12 @@ import { configureTmuxWacht, pruefeTmux, tmuxVerloren, tmuxWachtTakt } from "./s
 import { SOCK, tmux, tmuxNewSession, TMUX_NEW_SESSION_TIMEOUT_MS, TmuxNewSessionUnavailable, type TmuxResult, type TmuxSlotObservation, type TmuxSlotObservations } from "./server/tmux";
 import type { PiZaiFenceInput } from "./server/pi-zai-fence";
 import { PRIVATE_SCAFFOLD, parsePiZaiDenyRoots, piHomeLockCleanup, piSessionSlug, piZaiBwrapArgs, piZaiFenceProfile, piZaiGitOf, piZaiTmpFor } from "./server/pi-zai-fence";
-import { STATIC, bundleV, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
+import { STATIC, bundleV, revalidatedJson, staticResponse, finishHttp, startHttpTiming, httpPhase, transportWs, transportSince, transportPeers, transportPaths } from "./server/transport";
 import { DIRS_CAP, FIND_MAX_DEPTH, FIND_MAX_VISIT, FIND_MAX_HITS, FIND_MAX_MS, FIND_FANOUT, FIND_MAX_SLOW,
   findSlow, knownSlow, readdirSoon, gitKind, subdirNames, DIRINFO_COMMITS, FILE_CAP, fileBody, editability,
   TREE_CAP, fileWritePath, dirEntries, type DirEntry } from "./server/dir-explorer";
 import { json, HOST, PORT } from "./server/http";
+import { keepSendNamesIn, repeatOf, sendOnce, validClientId } from "./server/send-once";
 import { byteLen, retainRunOutput, descendantPids, killProcessTree } from "./server/proc";
 import { tokenFrom, cookieToken, cookieName, secretEq, resolvePrincipal, resolveSelfPrincipal, actorFromPrincipal, setPrincipalState, commentStrike, failStrike, shareLocked, shareSource, strikesCleared,
   shareGate, closeShareClients, guard, type Principal } from "./server/auth";
@@ -5783,6 +5784,17 @@ function taskDigest(t: Task): TaskDigest {
     // rides this poll whole. Capped at five by the writer, so the size is bounded at the source.
     ...(t.touched?.length ? { touched: t.touched } : {}),
   };
+}
+
+// What the owner poll carries of the trail: the cut the ops panel can show, projected to what it prints.
+const pollEvents = () => fleetEvents.filter((e): e is Exclude<FleetEvent, StuckDeliveryFleetEvent> => e.kind !== "delivery-stuck")
+  .filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow);
+// The three lists the board reads apart from its poll (GET /api/sessions?lists=1), with their version: the hash of
+// what they are now, so it needs no bookkeeping and every device reads the same word. Costs what the poll paid
+// for them anyway, one stringify per look.
+function boardLists(): { body: string; tag: string } {
+  const body = JSON.stringify({ tasks: tasks.map(taskDigest), programs: programs.map(programDigest), events: pollEvents() });
+  return { body, tag: Bun.hash(body).toString(36) };
 }
 // THE STALENESS MACHINERY STOOD HERE until 2026-09-10 and went with the reader it served: a
 // per-repo integration-tip cache, the `git diff --name-only --no-renames` moved-surface reader with
@@ -49402,6 +49414,7 @@ if (import.meta.main) {
 // FLEET_STATE_DIR may name a directory that does not exist yet
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 await claimInstanceLock();
+keepSendNamesIn(`${STATE_DIR}/send-names.jsonl`); // after the lock: this directory is ours now
 // A SIGKILL can strand the unique temp between open and rename; with the directory lock held no
 // live peer can be writing one, and a credential-bearing temp must not be left lying around.
 for (const name of readdirSync(STATE_DIR)) {
@@ -55274,12 +55287,19 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         cols, rows, force, seed, push, ownerInput: { occupant, paneId: inputTarget.paneId } } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
+    if (url.pathname === "/api/board-lists" && req.method === "GET") {
+      const { body, tag } = boardLists();
+      return revalidatedJson(req, body, tag);
+    }
     if (url.pathname === "/api/sessions") {
       // ONE clock for the whole response: the slot rows below carry an age-derived fact
       // (`stalledSince`), and a row stamped against a later `Date.now()` than the `now` the reader
       // subtracts it from would hand back a negative age.
       const pollNow = Date.now();
       const chipLinks = instanceChipLinks();
+      // lists=1 is the board: tasks, programs and events are 81 % of this answer and hardly move, so it gets their
+      // version and reads them from GET /api/board-lists when that changes. Every other reader gets them all.
+      const lists = url.searchParams.get("lists") === "1" ? boardLists() : null;
       return json({
         now: pollNow,
         chips: CHIPS,
@@ -55331,8 +55351,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         // 182 857 B on the live fleet (2026-09-13) of which the board rendered none, and it made the
         // 14 KiB budget in e2e/tasks.ts a wager on fleet activity. Every row, including events whose
         // receiver has gone and that cannot appear in any current /api/self row: GET /api/events.
-        events: fleetEvents.filter((e): e is Exclude<FleetEvent, StuckDeliveryFleetEvent> => e.kind !== "delivery-stuck")
-          .filter((e) => e.kind !== "message").filter(opsPollVisible).map(opsPollRow),
+        ...(lists ? { listsV: lists.tag } : { events: pollEvents() }),
         // ONE NUMBER, on purpose: the attention inbox rides the app's most expensive path as the count of
         // rows that still want the owner; the bodies are behind GET /api/attention. OMITTED AT ZERO like
         // harness/effort: this payload is measured against a 12 KiB budget (e2e/tasks.ts, docs/data-saver.md
@@ -55370,11 +55389,11 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
           return awaiting > 0 ? { reportsAwaitingOwner: awaiting } : {};
         })(),
         // digests only — the prompt texts live behind GET /api/tasks (see TaskDigest)
-        tasks: tasks.map(taskDigest),
+        ...(lists ? {} : { tasks: tasks.map(taskDigest) }),
         // Program bodies are owner-decision documents and never ride the 2 s poll. This digest is
         // exactly the identity/status label needed to notice a change; full rows live only on the
         // two explicit Program GET routes.
-        programs: programs.map(programDigest),
+        ...(lists ? {} : { programs: programs.map(programDigest) }),
         // `maxLanes` is the EFFECTIVE cap for the dispatch repo, not the env constant: the board
         // renders it as "up to N lanes in <repo>", and after a per-repo entry the env number is no
         // longer what the tick counts against — a UI that keeps printing it states a budget nothing uses.
@@ -59073,6 +59092,18 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const body = await readJson(req);
       if (!body) return json({ error: "expected application/json" }, 400);
       const s = slotFrom(body.slot);
+      // THE NAME OF A MESSAGE (optional, server/send-once.ts): the board asks again under the same name when no answer
+      // came. A name already here answers first: a re-occupied or closed slot would say „nothing typed“ about a message
+      // its old occupant did get.
+      if (s && typeof body.text === "string" && validClientId(body.clientId)) {
+        const repeat = repeatOf(s.id, body.clientId, body.text, () => {
+          const sendId = randomBytes(12).toString("hex"), at = Date.now();
+          logPrompt(s, body.text as string, "owner", at, sendId, "uncertain");
+          return json({ error: "send outcome uncertain: the server stopped while typing it",
+            receipt: { sendId, at, delivery: "uncertain", receiver: { slot: s.id } } }, 409);
+        });
+        if (repeat) return repeat;
+      }
       if (!s || !s.cwd) return json({ error: "slot not active" }, 400);
       // the bound dates from when every accepted text was PASTED; above server.ts#PASTE_MAX_BYTES a
       // text is now stored whole and announced in one line (1e170a25 asks for 200 KB), so it is sized
@@ -59094,61 +59125,66 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (body.openedAt !== undefined && body.openedAt !== s.openedAt)
         return json({ error: `slot ${s.id} is held by a different occupant (openedAt ${s.openedAt}, not ${body.openedAt}) — nothing typed`,
           occupant: { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId, label: s.label, lane: s.worktree?.branch ?? null } }, 409);
-      // The owner has spoken to this pane, so an OWNER wait has arrived — it holds automation back, never
-      // the person it waits for. A "main" wait is a different debt (Program-MAIN's answer to a
-      // clarification) and stays: clearing it would re-open steward nudges (guard in handleStewardSend).
-      if (s.awaiting === "owner") s.awaiting = null;
-      // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes can carry
-      // the SAME id: the receipt the owner gets back and the journal line are joinable, and the
-      // receiver triple pins the send to the occupant that was in the row at this instant.
-      const sendId = randomBytes(12).toString("hex");
-      const submit = body.submit !== false;
-      const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
-      let acceptance: Acceptance;
-      try {
-        ({ acceptance } = await sendText(s, body.text, submit, { path: "owner", requireAgent: true, timing: (name, ms) => httpPhase(req, name, ms) }));
-      } catch (e) {
-        // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
-        // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor
-        // presented as uncertain.
-        if (e instanceof SendComposerOccupied && body.whenFree === true) {
+      if (body.clientId !== undefined && !validClientId(body.clientId)) return json({ error: "bad clientId" }, 400);
+      const t: string = body.text;
+      const typeIt = async (): Promise<Response> => {
+        // The owner has spoken to this pane, so an OWNER wait has arrived — it holds automation back, never
+        // the person it waits for. A "main" wait is a different debt (Program-MAIN's answer to a
+        // clarification) and stays: clearing it would re-open steward nudges (guard in handleStewardSend).
+        if (s.awaiting === "owner") s.awaiting = null;
+        // THE DELIVERY IDENTITY, minted before the transport is touched so both outcomes can carry
+        // the SAME id: the receipt the owner gets back and the journal line are joinable, and the
+        // receiver triple pins the send to the occupant that was in the row at this instant.
+        const sendId = randomBytes(12).toString("hex");
+        const submit = body.submit !== false;
+        const receiver = { slot: s.id, openedAt: s.openedAt, sessionId: s.sessionId };
+        let acceptance: Acceptance;
+        try {
+          ({ acceptance } = await sendText(s, t, submit, { path: "owner", requireAgent: true, timing: (name, ms) => httpPhase(req, name, ms) }));
+        } catch (e) {
+          // Nothing typed: an occupied composer (owner draft), or no live agent after the bounded boot
+          // wait, refuses before the paste. Plainly retryable, so it is neither journaled as a send nor
+          // presented as uncertain.
+          if (e instanceof SendComposerOccupied && body.whenFree === true) {
+            const at = Date.now();
+            const deadlineAt = at + (typeof body.whenFreeTtlSec === "number"
+              ? Math.round(body.whenFreeTtlSec * 1000) : PARKED_SEND_TTL_DEFAULT_MS);
+            const capped = parkSend(s, { sendId, receiver, text: t, submit, parkedAt: at, deadlineAt,
+              draftChars: e.chars });
+            if (capped) return json({ error: `${e.message}; not parked — ${capped}`,
+              receipt: { sendId, at, delivery: "refused", receiver } }, 409);
+            return json({ ok: true, receipt: parkedReceipt(sendId) }, 202);
+          }
+          if (e instanceof SendRefused || e instanceof DeliveryCancelled)
+            return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
+              receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
+          // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text
+          // after Enter (ACP-25) — so neither "failed" nor "delivered" is an observed fact. The journal write
+          // is MANDATORY: an unjournaled uncertain send is the silent loss this receipt exists to remove.
+          // History deliberately does NOT gain the entry (it feeds pane-recall, where an entry reads as "this
+          // text is in that pane"). No retry and no tick: the owner sees the 409.
           const at = Date.now();
-          const deadlineAt = at + (typeof body.whenFreeTtlSec === "number"
-            ? Math.round(body.whenFreeTtlSec * 1000) : PARKED_SEND_TTL_DEFAULT_MS);
-          const capped = parkSend(s, { sendId, receiver, text: body.text, submit, parkedAt: at, deadlineAt,
-            draftChars: e.chars });
-          if (capped) return json({ error: `${e.message}; not parked — ${capped}`,
-            receipt: { sendId, at, delivery: "refused", receiver } }, 409);
-          return json({ ok: true, receipt: parkedReceipt(sendId) }, 202);
+          logPrompt(s, t, "owner", at, sendId, "uncertain");
+          const acceptance = e instanceof SendNotAccepted ? e.acceptance : undefined;
+          return json({ error: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
+            receipt: { sendId, at, delivery: "uncertain", ...(acceptance ? { acceptance } : {}), receiver } }, 409);
         }
-        if (e instanceof SendRefused || e instanceof DeliveryCancelled)
-          return json({ error: e.message, ...(e instanceof SendAgentNotAlive ? { agent: e.agent } : {}),
-            receipt: { sendId, at: Date.now(), delivery: "refused", receiver } }, 409);
-        // tmux may have accepted part of the paste, or the composer was OBSERVED still holding the text
-        // after Enter (ACP-25) — so neither "failed" nor "delivered" is an observed fact. The journal write
-        // is MANDATORY: an unjournaled uncertain send is the silent loss this receipt exists to remove.
-        // History deliberately does NOT gain the entry (it feeds pane-recall, where an entry reads as "this
-        // text is in that pane"). No retry and no tick: the owner sees the 409.
-        const at = Date.now();
-        logPrompt(s, body.text, "owner", at, sendId, "uncertain");
-        const acceptance = e instanceof SendNotAccepted ? e.acceptance : undefined;
-        return json({ error: `send outcome uncertain: ${String(e instanceof Error ? e.message : e).slice(0, 160)}`,
-          receipt: { sendId, at, delivery: "uncertain", ...(acceptance ? { acceptance } : {}), receiver } }, 409);
-      }
-      const ts = Date.now();
-      s.history = [...s.history, { text: body.text, ts, source: body.text.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
-      saveHistory(s);
-      logPrompt(s, body.text, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
-      // THE BOARD IS THE OWNER (UI-MAIN-Befund 11.10.): a sentence typed into the board's composer
-      // reaches a lane as this POST under the owner COOKIE, and its pane line opens with the
-      // `[fleet-delivery · owner credential …]` head the harvester skips — so it reached neither the
-      // MAIN's inbox nor the successor's brief. The cookie is the browser; ctl.sh, the Orchestratorin
-      // and every MAIN send with the bearer and stay outside, as the harvester keeps them outside.
-      if (tokenChannel(req) === "cookie")
-        void recordOwnerLaneInput(s, body.text, ts).catch((e: unknown) => logError("recordOwnerLaneInput", e));
-      // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.
-      // `submitRequested` is that flag by its real name; `acceptance` is what the pane showed.
-      return json({ ok: true, receipt: { sendId, at: ts, submitRequested: submit, acceptance, receiver } });
+        const ts = Date.now();
+        s.history = [...s.history, { text: t, ts, source: t.startsWith("[fleet") ? "fleet" as const : "owner" as const }].slice(-MAX_HISTORY);
+        saveHistory(s);
+        logPrompt(s, t, "owner", ts, sendId, acceptance === "unobservable" ? "unobserved" : "sent");
+        // THE BOARD IS THE OWNER (UI-MAIN-Befund 11.10.): a sentence typed into the board's composer
+        // reaches a lane as this POST under the owner COOKIE, and its pane line opens with the
+        // `[fleet-delivery · owner credential …]` head the harvester skips — so it reached neither the
+        // MAIN's inbox nor the successor's brief. The cookie is the browser; ctl.sh, the Orchestratorin
+        // and every MAIN send with the bearer and stay outside, as the harvester keeps them outside.
+        if (tokenChannel(req) === "cookie")
+          void recordOwnerLaneInput(s, t, ts).catch((e: unknown) => logError("recordOwnerLaneInput", e));
+        // RECEIPT ANATOMY (ACP-25): `submitted` is gone because it only ever echoed the request flag.
+        // `submitRequested` is that flag by its real name; `acceptance` is what the pane showed.
+        return json({ ok: true, receipt: { sendId, at: ts, submitRequested: submit, acceptance, receiver } });
+      };
+      return validClientId(body.clientId) ? sendOnce(s.id, body.clientId, t, typeIt) : typeIt();
     }
     if (req.method === "POST" && url.pathname === "/resize") {
       const body = await readJson(req);

@@ -13,6 +13,10 @@ export const RECONNECT_MAX_MS = 15_000;
 // starts the schedule over at RECONNECT_FIRST_MS. Resetting on open alone would defeat the
 // whole point: open-then-drop IS the expensive loop, since each open pays for a seed.
 export const RECONNECT_SETTLED_MS = 30_000;
+// a seat came to the pane's slot: how long it may take to answer before the dot and the bar call the socket down, and how
+// soon after a refusal to ask again. Its row is written before its pane exists, so the first socket can be refused
+export const SEAT_SOCKET_MS = 3_000;
+export const SEAT_ASK_AGAIN_MS = 500;
 
 // attempt 0 is the first retry after a drop: 1.5s, 3s, 6s, 12s, then 15s forever
 export const reconnectDelay = (attempt: number): number =>

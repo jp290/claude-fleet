@@ -18,6 +18,8 @@ tmux-server.tmp
 .tmux-proc.*
 audit.jsonl
 audit.jsonl.1
+send-names.jsonl
+send-names.jsonl.*
 steward-journal.jsonl
 steward-journal.jsonl.1
 lane-outcomes.jsonl

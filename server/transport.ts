@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type { WSData } from "./types";
@@ -24,13 +24,34 @@ export const STATIC: Record<string, { path: string; type: string }> = {
   "/icon-180.png": { path: `${PUB}/public/icon-180.png`, type: "image/png" },
 };
 
+// THE VERSION IS THE CONTENT. It names what a page has to reload for, so it follows those files and not the moment
+// they were built: a deploy that changes no client keeps the URL, the page answers 304 and no phone reloads. The
+// page and its stylesheets belong to it, a change there has to reach an open tab as much as new code does. Hashed
+// once per stand of the files, never per request, so a rebuild beside a running server is seen at the next look.
+// A number, because the client and the field rows read it as one; 48 bits stay a safe integer. 0 = never built.
+let versionOf: { stand: string; v: number } | null = null;
 export function bundleV(): number {
+  const stand = VERSION_INPUTS.map((path) => {
+    try {
+      const st = statSync(path);
+      return `${st.mtimeMs}:${st.size}`;
+    } catch {
+      return "-";
+    }
+  }).join("|");
+  if (stand.startsWith("-")) return 0;
+  if (versionOf?.stand === stand) return versionOf.v;
+  const hash = new Bun.CryptoHasher("sha256");
   try {
-    return Math.trunc(statSync(`${PUB}/public/app.js`).mtimeMs);
+    for (const path of VERSION_INPUTS) if (existsSync(path)) hash.update(readFileSync(path));
   } catch {
     return 0;
   }
+  const v = hash.digest().subarray(0, 6).reduce((n, byte) => n * 256 + byte, 0);
+  versionOf = { stand, v };
+  return v;
 }
+const VERSION_INPUTS = ["app.js", "index.html", "sitzung.css", "k15.js", "k15.css"].map((name) => `${PUB}/public/${name}`);
 
 // --- TRANSPORT: compression and the byte ledger. ---------------------------------------------
 // Both live here because both wrap the SAME three places that actually put bytes on the wire —
@@ -189,9 +210,9 @@ export async function finishHttp(req: Request, addr: string, res: Response | und
 
 // app.js is ~590 KB and was served `no-store`, i.e. paid in full on every single page load. It
 // can be cached forever instead — but only because a new bundle is GUARANTEED to be fetched:
-// index.html stays `no-store`, and the <script src> it hands out carries ?v=<the bundle's mtime>,
+// index.html is asked for every time, and the <script src> it hands out carries ?v=<bundleV>,
 // the same number /api/sessions reports as `v` and the client already reloads itself on. New
-// bundle → new mtime → new URL → cache miss. A request whose ?v does not match the bundle on disk
+// bundle → new version → new URL → cache miss. A request whose ?v is not the current version
 // gets the current bytes with `no-store`, so a stale URL can never pin a client to a stale bundle.
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 interface BundleBytes { mtime: number; raw: Uint8Array<ArrayBuffer>; gz: Uint8Array<ArrayBuffer> }
@@ -216,6 +237,17 @@ async function bundleBytes(path: string): Promise<BundleBytes | null> {
     return entry;
   }
   return null;
+}
+
+// A list that rarely changes behind a poll that only names its version (GET /api/board-lists): every look asks,
+// and an unchanged list is a 304 of a few hundred bytes. Weak for the reason the page's tag is: gzip and plain
+// answers carry the same one. `tag` is the same word the poll carries, so a reader needs no state per device.
+export function revalidatedJson(req: Request, body: string, tag: string): Response {
+  const etag = `W/"${tag}"`;
+  const headers = { "content-type": "application/json", "cache-control": "no-cache", etag, vary: "accept-encoding" };
+  const asked = (req.headers.get("if-none-match") ?? "").split(",").map((t) => t.trim());
+  if (asked.includes(etag)) return new Response(null, { status: 304, headers });
+  return new Response(body, { headers });
 }
 
 export async function staticResponse(req: Request, url: URL, st: { path: string; type: string }): Promise<Response> {
@@ -243,7 +275,7 @@ export async function staticResponse(req: Request, url: URL, st: { path: string;
     // version. share.html is the public surface and helper.html is opened by hand on another
     // machine — both keep the unchanged no-store behaviour, so a redeploy is never one stale
     // bundle away from a portal that cannot claim
-    const versioned = url.pathname === "/app.js" && url.searchParams.get("v") === String(b.mtime);
+    const versioned = url.pathname === "/app.js" && url.searchParams.get("v") === String(bundleV());
     const gz = wantsGzip(req);
     const body = gz ? b.gz : b.raw;
     return new Response(body, {

@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { check, get, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
+import { check, get, H, post, restartSrv, stopSrv, afterTick, paneEnv, srvEnv, plantScreen, plogRead, tmuxOut, until, UntilTimeout, BASE, DISPATCH_TICK_MS, INSTANCE_NAME, REPO, REPO2, REPO3, ROOT } from "./harness";
 import { buildClarifyBrief } from "../clarify-prompt";
 import { buildCardPrompt, parseCardAnswer, parseFormattedCard, validateCard, declaresSymbol, cardUncheckedSymbols, cardAnswerForLedger, CARD_KEY, CARD_VALIDATOR_VERSION,
   buildNeighborIndex, renderNeighborLines, NEIGHBOR_MAX_PER_SIDE } from "../card-extract";
@@ -2257,6 +2257,34 @@ export async function run(ctx: Ctx): Promise<void> {
         && JSON.stringify(Object.keys(instanceLeaf)) === JSON.stringify(["name"]),
       JSON.stringify({ missing: preInstanceKeys.filter((k) => !(k in (instancePoll as unknown as Record<string, unknown>))),
         leaf: Object.keys(instanceLeaf) }));
+    // THE BOARD'S POLL (lists=1): tasks, programs and events only by version, the lists behind their own route. Every
+    // other reader keeps the whole answer (the checks above), so nothing about the lists moved for them.
+    type Lists = { tasks: { id: string; briefAt?: number }[]; programs: unknown[]; events: unknown[] };
+    const listsOf = async (headers: Record<string, string> = {}): Promise<Response> =>
+      fetch(`${BASE}/api/board-lists`, { headers: { ...H, ...headers } });
+    const leanPoll = async (): Promise<Record<string, unknown>> => (await (await get("/api/sessions?lists=1")).json()) as Record<string, unknown>;
+    const lean = await leanPoll();
+    check("the board's poll carries no lists, and their version instead",
+      !("tasks" in lean) && !("programs" in lean) && !("events" in lean) && typeof lean.listsV === "string",
+      JSON.stringify({ keys: Object.keys(lean).filter((k) => ["tasks", "programs", "events", "listsV"].includes(k)), listsV: lean.listsV }));
+    check("the board's poll keeps everything else a reader gets",
+      Object.keys(instancePoll).filter((k) => !["tasks", "programs", "events"].includes(k)).every((k) => k in lean),
+      JSON.stringify(Object.keys(instancePoll).filter((k) => !(k in lean))));
+    check("the version stands still while nothing changes", (await leanPoll()).listsV === lean.listsV);
+    const listsFirst = await listsOf();
+    const tagFirst = listsFirst.headers.get("etag") ?? "";
+    const listsBody = (await listsFirst.json()) as Lists;
+    const wholePoll = (await (await get("/api/sessions")).json()) as Lists;
+    check("the lists behind their route are what the whole poll carries",
+      JSON.stringify(listsBody.tasks) === JSON.stringify(wholePoll.tasks) && JSON.stringify(listsBody.programs) === JSON.stringify(wholePoll.programs)
+      && JSON.stringify(listsBody.events) === JSON.stringify(wholePoll.events), `${listsBody.tasks.length} tasks`);
+    check("the browser asks every time and may keep the answer",
+      listsFirst.headers.get("cache-control") === "no-cache" && tagFirst === `W/"${String(lean.listsV)}"`,
+      `${listsFirst.headers.get("cache-control")} · ${tagFirst}`);
+    const listsSame = await listsOf({ "if-none-match": tagFirst });
+    check("unchanged lists answer 304 without a body",
+      listsSame.status === 304 && (await listsSame.arrayBuffer()).byteLength === 0, String(listsSame.status));
+    check("the lists are the owner's", (await fetch(`${BASE}/api/board-lists`)).status === 401);
     const fullT = ((await (await get("/api/tasks")).json()) as { tasks: { id: string; text: string }[] })
       .tasks.find((t) => t.id === bigT.task.id);
     check("the full prompt text is reachable behind GET /api/tasks (what the queue overlay renders)",
@@ -2272,6 +2300,13 @@ export async function run(ctx: Ctx): Promise<void> {
     const pollAfterBrief = JSON.parse(rawAfterBrief) as
       { analysis?: unknown; tasks: BudgetDigest[] };
     const digAfterBrief = pollAfterBrief.tasks.find((t) => t.id === bigT.task.id);
+    // that write came from one device: another one's poll has a new version, and its old tag gets the new list
+    const leanAfterBrief = await leanPoll();
+    const listsAfterBrief = await listsOf({ "if-none-match": tagFirst });
+    const briefOnB = ((await listsAfterBrief.clone().json()) as Lists).tasks.find((t) => t.id === bigT.task.id)?.briefAt;
+    check("a task changed on one device moves the version, and another device's old tag gets the new list",
+      leanAfterBrief.listsV !== lean.listsV && listsAfterBrief.status === 200 && briefOnB === briefWriteJ.brief?.at,
+      JSON.stringify({ status: listsAfterBrief.status, briefOnB, at: briefWriteJ.brief?.at }));
     const fullAfterBrief = ((await (await get("/api/tasks")).json()) as
       { tasks: { id: string; analysis?: unknown; brief?: { text: string; at: number } }[] })
       .tasks.find((t) => t.id === bigT.task.id);

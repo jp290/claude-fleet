@@ -1,4 +1,4 @@
-import { $, el, RECENT_MS, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openSteine, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
+import { $, el, RECENT_MS, listsKnown, tasksList, SlotInfo, TEntry, WorktreeInfo, api, autosList, baseName, closeFxMenu, copyText, fleet, fmtDur, fmtTs, focused, fxAsked, fxGit, fxInputEl, fxMenu, fxOpenSet, fxQuery, fxRestoreAfterPaint, fxScroll, fxSearchInput, fxStartDrag, fxTree, fxTreeOf, fxView, instanceLinks, instanceName, isMobile, switchLinks, landsEnabled, laneBandNames, laneLabel, laneNameOfBranch, loadTree, openActivity, openAkte, openExplorer, openExportDlg, openMergeDiff, openPacks, openSetupFiles, openSteine, openReview, openShareDlg, paintTree, panes, post, refresh, rememberShas, renderDiffInto, reviewBody, serverNow, showSlot, slotState, slotsEl, stacksOf, startRename } from "./client";
 import { loadPrograms, openQueue, programsList, programsPoll, programsRead, qSelect } from "./queue";
 import { prefBool, prefJSON, prefNumber, prefSet, prefSetBool, prefText } from "./prefs";
 import { COLUMN_FULL, SIZE_SPEC, chatSize, onChatSize } from "./chatsize";
@@ -40,7 +40,7 @@ export function setInstanceSource(s: InstanceSource | null) { instanceSource = s
 
 // the rights block reads the queue's lists through the board, never by import (src/rights.ts#wireRights)
 wireRights({
-  tasks: () => tasksList, programs: () => programsList, programsPoll: () => programsPoll,
+  tasks: () => tasksList, listsKnown: () => listsKnown, programs: () => programsList, programsPoll: () => programsPoll,
   // the block's own read repaints the board when it moves the answer — loadPrograms repaints only the
   // queue, and "steht gleich hier" must not wait for the 3 s tick; unchanged (floored fail) paints nothing
   programsRead: () => programsRead, loadPrograms: () => { const was = programsRead; return loadPrograms().then(() => { if (programsRead !== was) repaintBoard(); }); },

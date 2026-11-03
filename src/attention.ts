@@ -197,6 +197,7 @@ function renderAttnDlg() {
 export let opsdlg: HTMLElement;
 let opspanel: HTMLElement, opsbtn: HTMLElement;
 export let opsRows: OpsPollRow[] = [];
+let opsKnown = true; // false until the board's first list has arrived: an empty list then says nothing
 let opsBusy = false;
 
 // --- the THIRD class in this panel, and the one whose rows are not events at all: worker reports
@@ -251,14 +252,16 @@ function renderOpsBtn() {
   const m = opsUnacked(opsRows, Date.now()).length;
   opsbtn.textContent = `📥${n > 0 ? n : ""}${m > 0 ? ` ⚠${m}` : ""}`;
   opsbtn.classList.toggle("hot", n > 0);
-  opsbtn.title = `${n} filed for you (${reportsAwaitingOwner} worker report(s) no session can judge)`
+  opsbtn.title = !opsKnown ? `${reportsAwaitingOwner} worker report(s) no session can judge · the rest not read yet`
+    : `${n} filed for you (${reportsAwaitingOwner} worker report(s) no session can judge)`
     + ` · ${m} pane event(s) sent without a session acknowledgement`;
   // same rule as 📣: no affordance while nothing is filed, so the icon means something when it appears
   opsbtn.style.display = n > 0 || m > 0 || opsdlg.style.display === "flex" ? "" : "none";
 }
 
-export function setOpsEvents(rows: OpsPollRow[]) {
+export function setOpsEvents(rows: OpsPollRow[], known = true) {
   opsRows = rows;
+  opsKnown = known;
   renderOpsBtn();
   if (opsdlg.style.display === "flex") renderOpsDlg();
 }
@@ -431,7 +434,7 @@ function renderOpsDlg() {
   const live = opsOpenNonReport(opsRows);
   const awaiting = ownerReportRows.filter(ownerReportAwaiting);
   if (!live.length && !awaiting.length && reportsAwaitingOwner === 0)
-    opspanel.appendChild(el("div", "hint shrhint", "Nothing is filed."));
+    opspanel.appendChild(el("div", "hint shrhint", opsKnown ? "Nothing is filed." : "Not read yet"));
   for (const e of live) opspanel.appendChild(opsRow(e));
   if (reportsAwaitingOwner > 0 || awaiting.length) {
     opspanel.appendChild(el("h2", "", "Worker reports no session can judge — your verdict"));

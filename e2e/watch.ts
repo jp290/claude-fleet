@@ -30,6 +30,7 @@ import { sendFailureMessage, sendFailureToastMs, VERTRAUEN_SEND } from "../src/p
 import { AUTOS_TICK_MS, BASE, INSTANCE_NAME, REPO, ROOT, TOKEN, check, fleetSeatDir, get, paneEnv, plantScreen, plogRead, post, restartSrv as restartSrvRaw, stopSrv as stopSrvRaw, srvEnv, tmuxOut, until, UntilTimeout } from "./harness";
 import { holdCeiling } from "./hold-ceiling";
 import { DELIVERY_HEADER_PREFIX } from "../src/delivery-format";
+import { newSendName, sendUntilAnswered } from "../src/send-once";
 
 // THE HEAD FLEET TYPES IN FRONT OF A DELIVERY (server.ts#deliveryHeader, quoted from DELIVERY_SOURCE and DELIVERY_MEANING as
 // e2e/delivery-class.ts quotes them): since W1 every adapter carries it, the pi stand-in too, so its composer holds the head, then the body.
@@ -2182,8 +2183,10 @@ export async function run(): Promise<void> {
         const notices: string[] = [];
         // every free name of the extracted deliver() comes in here; a rejection reads sendFailureToastMs too (437e457b)
         const deliver = new Function("post", "toast", "flashSendError", "sendFailureMessage", "sendFailureToastMs", "perfDeliveries",
+          "newSendName", "sendUntilAnswered", "fleet", "sendWaiting", "paintConn",
           `${compiled}; return deliver;`)(async () => { calls++; return response.clone(); },
-          (text: string) => notices.push(text), () => { flashes++; }, formatter, sendFailureToastMs, new WeakMap()) as
+          (text: string) => notices.push(text), () => { flashes++; }, formatter, sendFailureToastMs, new WeakMap(),
+          newSendName, sendUntilAnswered, [], 0, () => {}) as
           (slot: number, text: string) => Promise<boolean>;
         const outgoing = "local text retained on rejection";
         let localText = outgoing;
@@ -6713,7 +6716,9 @@ export async function run(): Promise<void> {
     && msg.includes(`[event ${eventA?.id}]`)
     && msg.includes(`POST /api/self/events/${eventA?.id}/ack`),
     msg.slice(0, 260));
-  const capA = await tmuxOut("capture-pane", "-t", `s${aId}`, "-p");
+  // joined, with the history: since the delivery head stands in front, this text no longer starts a line, so the pane's
+  // width can cut it in two, and on a short pane its row has scrolled off
+  const capA = await tmuxOut("capture-pane", "-t", `s${aId}`, "-p", "-J", "-S", "-");
   check("the notification is really in the receiving pane, not just the log",
     capA.out.includes("[fleet] lane "), capA.out.slice(-200));
 

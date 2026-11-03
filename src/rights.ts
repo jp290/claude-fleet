@@ -19,6 +19,7 @@ import type { ProgramDigest, ProgramInfo } from "./queue";
 // THE BOARD'S READS, handed in by src/board.ts (wireRights) instead of imported.
 export interface RightsBoard {
   tasks(): TaskInfo[];
+  listsKnown(): boolean; // false: tasks() and programsPoll() are empty because nothing was read yet
   programs(): ProgramInfo[];
   programsPoll(): ProgramDigest[];
   programsRead(): "unread" | "ok" | "fail";
@@ -27,7 +28,7 @@ export interface RightsBoard {
   openSheet(repo: string): void;
 }
 let board: RightsBoard = {
-  tasks: () => [], programs: () => [], programsPoll: () => [], programsRead: () => "unread",
+  tasks: () => [], listsKnown: () => true, programs: () => [], programsPoll: () => [], programsRead: () => "unread",
   loadPrograms: async () => {}, source: () => null, openSheet: () => {},
 };
 export function wireRights(b: RightsBoard) { board = b; }
@@ -69,6 +70,8 @@ function ownWork(row: SlotInfo): HTMLElement {
     } else if (wave.length) {
       v.append(el("span", "rgval", `${wave.length} ${wave.length === 1 ? "task" : "tasks"} of its wave`),
         sub("Status, sources, evidence, observations."));
+    } else if (!board.listsKnown()) {
+      v.append(el("span", "rgval", "Unknown"), sub("The tasks are not read yet."));
     } else {
       v.append(el("span", "rgmute", "No task"), sub("Founded by hand: it reads nothing until a task starts it."));
     }
@@ -77,8 +80,8 @@ function ownWork(row: SlotInfo): HTMLElement {
     if (prog) {
       const open = board.tasks().filter((t) => t.programId === prog.id && t.status !== "done" && t.status !== "archived").length;
       v.append(el("span", "rgval", `Its Program “${prog.title}”`),
-        sub(`${open} open ${open === 1 ? "task" : "tasks"} and their lanes: status, sources, evidence, observations.`));
-    } else if (board.programsRead() !== "ok" && board.programsPoll().some((x) => x.status === "active")) {
+        sub(`${board.listsKnown() ? `${open} open ${open === 1 ? "task" : "tasks"}` : "Its tasks"} and their lanes: status, sources, evidence, observations.`));
+    } else if (board.programsRead() !== "ok" && (!board.listsKnown() || board.programsPoll().some((x) => x.status === "active"))) {
       // the 2 s poll names the active Programs but not their MAIN binding; the full rows are read
       // on demand (a no-op inside loadPrograms' own floor) and the next paint has the answer
       void board.loadPrograms();

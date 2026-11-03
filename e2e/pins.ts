@@ -2185,6 +2185,9 @@ export default function (pi) {
   // .gitignore rather than `git check-ignore`, because the post-land audit runs from a git archive.
   const ignored = read(".gitignore").split("\n").some((l) => l.trim() === ".claude/settings.json");
   pin(`${RULE_HOOK} — .claude/settings.json is not gitignored (an ignored copy never reaches a lane)`, !ignored);
+  // The server keeps these beside its state, in the checkout on a machine that syncs: not ignored, fleet-sync.sh refuses the dirty tree
+  const ignoreLines = read(".gitignore").split("\n").map((l) => l.trim());
+  pin("send-names.jsonl and its temp files stay gitignored (a refused sync is what found it missing)", ignoreLines.includes("send-names.jsonl") && ignoreLines.includes("send-names.jsonl.*"));
   // NO GRAPHIFY HOOK (2026-10-09, row 4be5f0fa): the Bash|Grep hint fired once in one main-checkout
   // session five times, asked for the free-text `query` at the moment the session already knew its
   // symbol, and changed nothing; in a lane it never fired at all. The graph now reaches a lane as the

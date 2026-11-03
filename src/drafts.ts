@@ -34,6 +34,11 @@ export class DraftBook<A> {
     this.book.set(slot, d);
   }
 
+  // a send of this text answered after the focus moved on: the parked copy has gone out, an edited one has not
+  sent(slot: number, text: string): void {
+    if (this.book.get(slot)?.text.trim() === text) this.book.delete(slot);
+  }
+
   // what the book holds, for the page's storage (KEPT, below)
   entries(): [number, Parked<A>][] { return [...this.book]; }
   // a draft read back from that storage; a draft parked on this page load wins over it

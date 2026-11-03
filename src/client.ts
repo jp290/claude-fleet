@@ -30,8 +30,10 @@ import { closeEntityCard, entityCardOpen, hideEntityCard, showEntityCard } from 
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
-import { RECONNECT_SETTLED_MS, reconnectDelay } from "./backoff";
+import { RECONNECT_SETTLED_MS, SEAT_ASK_AGAIN_MS, SEAT_SOCKET_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
+import { Line, POLL_STALL_MS } from "./line";
+import { boxSendName, dropBoxSendName, newSendName, sendUntilAnswered } from "./send-once";
 import { liveLine, liveWord, paintLiveLine, type LiveState } from "./livestate";
 import { syncWichte } from "./wicht";
 import { recallButton, recallNotice, recalledBodies, recalledText, sendNowButton, type RecallKind, type RecallResult } from "./recall";
@@ -147,11 +149,41 @@ function termLinkLeave(): void {
 }
 
 let dataSaver = prefBool("fleet.datasaver");
-const plan = () => pollPlan(document.hidden, dataSaver);
+// a weak line takes the saver's pace by itself, until the poll is quick again (src/line.ts); the switch stays his
+const line = new Line();
+const plan = () => pollPlan(document.hidden, dataSaver || line.weak);
+const CHAT_SEED_LINES = 50; // the server's floor for a seed (server.ts, the /ws upgrade)
+const PUSH_CHECK_MS = 15_000; // how often a pushed chat still looks for itself (Pane#pollChat)
+const RELOAD_PROBE_MS = 3_000;
+const RELOAD_RETRY_MS = 5_000;
+let chatAtBoot: ((index: number, slot: number) => boolean) | null = null; // the pane's view before it has one (restoreView)
 
-const mdot = $("mdot"), mtitle = $("mtitle"), mreadTitle = $("mreadtitle");
+const mdot = $("mdot"), botdot = $("botdot"), mtitle = $("mtitle"), mreadTitle = $("mreadtitle");
+// green means connected: the focused pane's socket is up and the server has not gone silent (src/line.ts);
+// amber means connected on a weak line, where the polls keep the data saver's pace
+let socketUp = false;
+let sendWaiting = 0; // presses that have had no answer yet and are asking again (deliver)
+let listsBehind = false; // a list the poll named could not be read (readLists)
 function setConn(on: boolean) {
-  for (const d of [dot, mdot]) d.className = `dot ${on ? "on" : "off"}`;
+  socketUp = on;
+  paintConn();
+}
+const DOT_TITLE: Record<string, string> = { on: "Connected", weak: "Connected on a weak line: updates every 10 s", wait: "Not confirmed yet", off: "No connection" };
+function paintConn() {
+  const silent = line.silent();
+  // grey: back on a line nothing has confirmed yet, or a list the board can't read. Neither may stand behind green
+  const state = !socketUp || silent ? "off" : line.unconfirmed() || listsBehind ? "wait" : line.weak ? "weak" : "on";
+  const name = `dot ${state}`;
+  for (const d of [dot, mdot, botdot]) if (d.className !== name) { d.className = name; d.title = DOT_TITLE[state]!; }
+  // the phone's board has no #mdot on screen, its dot is the seat's in the top pill: that one must not stay green on a dead line
+  document.body.classList.toggle("lineoff", silent);
+  document.body.classList.toggle("lineweak", state === "weak");
+  document.body.classList.toggle("linewait", state === "wait");
+  // the sentence where he is looking: the line above the composer of the pane he is in. The dot alone is small and far
+  // about a waiting message only what is known: no answer. The server may have typed it long ago
+  const say = silent ? (sendWaiting ? "No connection · no answer yet" : "No connection")
+    : sendWaiting ? "No answer yet · trying again" : null;
+  panes.forEach((p, i) => p.paintLine(i === focused ? say : null));
 }
 
 export function setDrawer(open: boolean) {
@@ -516,15 +548,15 @@ initFieldPerf({ v: () => bundleV, sha: () => deployGapInfo?.bootHead ?? null }, 
 document.addEventListener("visibilitychange", perfVisibility);
 
 export async function api(path: string, init?: RequestInit): Promise<Response> {
-  const timed = path === "/api/sessions" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)(?:\?|$)/.test(path);
+  const timed = path === "/api/sessions" || path === "/api/sessions?lists=1" || path === "/send" || /^\/api\/slots\/\d+\/(transcript|brief)(?:\?|$)/.test(path);
   const start = timed ? performance.now() : 0;
   const res = await fetch(path, init);
   if (timed) perfRequests.set(res, { url: new URL(path, location.href).href, start });
   if (res.status === 401) showGate();
   return res;
 }
-export const post = (path: string, body: unknown) =>
-  api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+export const post = (path: string, body: unknown, signal?: AbortSignal) =>
+  api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
 
 // --- fleet state ---
 interface ShareInfo { id: string; password: string; created: number; guests: number; comments: number }
@@ -833,6 +865,7 @@ export function switchText(sw: ModelSwitch): string {
 
 export let autosList: AutoInfo[] = [];
 export let tasksList: TaskInfo[] = [];
+export let listsKnown = false; // a first list has arrived (readLists)
 export let dispatch: DispatchInfo = { available: false, on: false, maxLanes: 0, repo: "" };
 // the automation kill-switch and quiet hours, as the owner poll carries them. Read by the settings
 // window's "Fleet" rows only; null until the first poll (and on a server that predates the fields).
@@ -1245,10 +1278,11 @@ const chatStill = matchMedia("(prefers-reduced-motion: reduce)");
 // reload too), or this board just sent it and neither the queue nor the transcript has it yet;
 // "durch" = the transcript has it (the entry that retired the bubble). Nothing more is claimed: not
 // read, not answered.
-type SendState = "sending" | "wait" | "done";
-const SEND_WORD: Record<SendState, string> = { sending: "sending …", wait: "waiting", done: "arrived" };
+type SendState = "sending" | "retry" | "wait" | "done";
+const SEND_WORD: Record<SendState, string> = { sending: "sending …", retry: "no answer yet · trying again", wait: "waiting", done: "arrived" };
 const SEND_TITLE: Record<SendState, string> = {
   sending: "On its way to the session.",
+  retry: "The server hasn't answered yet.",
   wait: "Sent, but not in the session's history yet. If a step is running, the session takes the message after it.",
   done: "In the session's history. The session is working on it.",
 };
@@ -1478,6 +1512,7 @@ class Pane {
   // has delivered its seed (flushHeld); a slot change discards them (assign).
   private readonly downBar: HTMLElement;
   private readonly downMsg: HTMLElement;
+  private lineSay: string | null = null;
   private downTimer: ReturnType<typeof setInterval> | undefined;
   private retryAt = 0;
   private held = "";
@@ -1913,6 +1948,8 @@ class Pane {
     clearTimeout(this.chatTimer);
     if (v === "chat") { this.applyChatMemo(); void this.pollChat(); this.ensureLive(); }
     else { this.refit(); if (!booting) this.term.focus(); }
+    // the terminal's history is on demand: what shows stands until the first frame of the new socket replaces it
+    if (v === "term" && this.seedShort && this.slot) { this.gen++; this.ws?.close(); this.pinPending = true; this.connect(); }
   }
 
   // 💬 only where a conversation can actually be read. A harness that writes no claude transcript
@@ -2622,10 +2659,12 @@ class Pane {
     const slot = this.slot, gen = this.chatGen, askedAt = Date.now();
     const owns = () => this.slot === slot && this.chatGen === gen && this.pastN === null;
     this.liveBusy = true;
+    const guard = line.begin();
     try {
-      const res = await api(`/api/slots/${slot}/live`);
+      const res = await api(`/api/slots/${slot}/live`, { signal: guard.signal });
+      guard.life();
       if (!owns() || !res.ok) return;
-      const s = (await res.json()) as LiveState;
+      const s = await guard.json<LiveState>(res);
       if (!owns()) return;
       const was = this.live?.turn;
       this.live = s;
@@ -2646,6 +2685,7 @@ class Pane {
     } catch {
       // transient fetch error — next tick retries
     } finally {
+      guard.end();
       if (this.slot === slot && this.chatGen === gen) {
         this.liveBusy = false;
         const ms = plan().liveMs;
@@ -2708,20 +2748,22 @@ class Pane {
     this.chatBusy = true;
     this.chatAgain = false;
     let grew = false;
+    const guard = line.begin();
     try {
       const res = await api(past === null ? `/api/slots/${slot}/transcript?after=${this.chatTotal}`
-        : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`);
+        : `/api/slots/${slot}/succession/${past}/transcript?after=${this.chatTotal}`, { signal: guard.signal });
+      guard.life();
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during the fetch — stale
       if (!res.ok) {
         failPerf("http-error");
         return;
       }
-      const data = (await res.json()) as { entries: TEntry[]; total: number; source: string | null;
+      const data = await guard.json<{ entries: TEntry[]; total: number; source: string | null;
         cache?: { at: number; provider: string } | null; model?: string | null; ttlSec?: number;
         effort?: string | null;
         // the band's past session (GET /api/slots/:id/succession/:n/transcript)
         session?: number; startedAt?: number | null; handedAt?: number | null; assigned?: boolean;
-        reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null };
+        reason?: string; ctx?: { usedTokens: number; windowTokens: number; pct: number } | null }>(res);
       if (this.slot !== slot || this.pastN !== past || this.chatGen !== gen) return; // reassigned during json() — still stale
       grew = data.entries.length > 0;
       if (past !== null) {
@@ -2827,6 +2869,7 @@ class Pane {
       failPerf("fetch-error");
       // transient fetch error — next tick retries
     } finally {
+      guard.end();
       if (this.chatGen === gen) this.chatFresh = false; // an entry that threw must not leave the flag up
       // only the poll that still owns the current slot manages busy/timer state; a stale
       // (reassigned) poll must not reset the new slot's chatBusy or reschedule its timer.
@@ -2842,7 +2885,11 @@ class Pane {
         const pushed = past === null && this.pushLines !== null;
         if (this.view === "chat" && ms && pushed) {
           clearTimeout(this.chatTimer);
+          // a socket on a dead line never closes and never pushes, and the chat would stand with no word: it
+          // still looks now and then, and news the socket did not bring says the socket is deaf
+          if (grew) this.checkSocket();
           if (this.chatAgain) void this.pollChat();
+          else this.chatTimer = setTimeout(() => void this.pollChat(), PUSH_CHECK_MS);
         } else if (this.view === "chat" && ms && (past === null || grew)) {
           clearTimeout(this.chatTimer);
           this.chatTimer = setTimeout(() => void this.pollChat(), ms);
@@ -2877,6 +2924,45 @@ class Pane {
     this.ensureLive();
   }
 
+  // is this pane's way to the server up, as far as its socket can say; an empty pane has none to lose
+  // An empty slot has no socket to lose, so it says nothing about the line. A dead line still goes red through the server's own read (line.silent)
+  private slotEmpty(): boolean { const s = fleet[this.slot - 1]; return !!s && !s.cwd; }
+  socketUp(): boolean { return !this.slot || this.slotEmpty() || this.seatComing !== null || this.ws?.readyState === WebSocket.OPEN; }
+  // A seat came to this slot and the socket is down: take one now, not when the wait from the drop runs out (up to 15 s), and
+  // that socket isn't lost yet. Until the seat's first frame the dot stays, no bar stands and a refusal asks again, at most
+  // SEAT_SOCKET_MS. After that a socket not up is called down. Every poll calls this
+  readSeat(): void {
+    const row = fleet[this.slot - 1];
+    const seat = occupation(this.slot);
+    const was = this.seat;
+    this.seat = seat;
+    if (was === undefined || seat === was || !row?.cwd || this.ws?.readyState === WebSocket.OPEN) return;
+    this.retries = 0; // a new seat: the old one's backoff says nothing about it
+    this.hideDown();
+    this.seatSettled();
+    if ((this.ws?.readyState ?? 3) > 1) this.connect(); // a retry already on its way stays
+    this.seatComing = setTimeout(() => { this.seatComing = null; if (this.ws?.readyState !== WebSocket.OPEN) this.showDown(0); }, SEAT_SOCKET_MS);
+    if (focused === this.index) setConn(this.socketUp());
+  }
+  private seat: number | undefined;
+  private seatComing: ReturnType<typeof setTimeout> | null = null;
+  private seatSettled(): void { if (this.seatComing !== null) clearTimeout(this.seatComing); this.seatComing = null; }
+  // The line failed under a read, or a read found news no push announced. A socket with no frame in that long
+  // hears nothing either, and the browser would keep it for minutes: take a new one. It costs a seed; in the
+  // chat that is the short one.
+  checkSocket(): void {
+    if (!this.slot || !this.ws || Date.now() - this.frameAt < POLL_STALL_MS) return;
+    this.seatSettled();
+    this.gen++; // orphan it, its close handshake may never come
+    this.ws.close();
+    this.frameAt = Date.now(); // this new one gets as long as the last, and several reads failing at once change one socket
+    this.connect();
+    if (this.view === "chat" && this.pastN === null && plan().chatMs && !this.chatBusy) {
+      clearTimeout(this.chatTimer);
+      void this.pollChat();
+    }
+  }
+
   sendRaw(s: string) {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       // held for the next seed of this slot, as it was before the strip (the owner, 2026-09-27:
@@ -2891,6 +2977,8 @@ class Pane {
     for (let i = 0; i < bytes.length; i += MAX_CHUNK) this.ws.send(bytes.slice(i, i + MAX_CHUNK));
   }
 
+  private seedShort = false; // this socket's seed was the conversation view's, not the whole history
+  private frameAt = 0;
   private connect(force = false) {
     if (!this.slot) return;
     this.perfSeedReady = false;
@@ -2905,7 +2993,10 @@ class Pane {
     // seed = how many lines of scrollback we're willing to be handed on connect. Sent only
     // in data-saver mode; absent means the server's own SEED_LINES, i.e. today's behaviour.
     // Read at connect time, so flipping the switch takes effect on the NEXT reconnect.
-    const seed = plan().seed;
+    // The conversation view reads no scrollback, so it takes the server's smallest seed; going to the terminal
+    // connects again with the whole history (setView). The saver's own seed is his switch and not the line's.
+    this.seedShort = this.view === "chat" || !!chatAtBoot?.(this.index, this.slot);
+    const seed = this.seedShort ? CHAT_SEED_LINES : pollPlan(false, dataSaver).seed;
     this.pushLines = null;
     const ws = new WebSocket(
       `${proto}://${location.host}/ws/${this.slot}?cols=${this.term.cols}&rows=${this.term.rows}${force ? "&force=1" : ""}${seed ? `&seed=${seed}` : ""}&push=1`,
@@ -2917,11 +3008,13 @@ class Pane {
     ws.onopen = () => {
       if (g !== this.gen) { ws.close(); return; }
       openedAt = Date.now();
+      this.frameAt = openedAt;
       if (focused === this.index) setConn(true);
       this.hideDown();
       this.sendResize(true);
     };
     ws.onmessage = (e) => {
+      if (g === this.gen) { this.frameAt = Date.now(); this.seatSettled(); }
       // a text frame is the server talking to the chat (server/transcript-push.ts), never terminal bytes
       if (typeof e.data === "string") { if (g === this.gen) this.onPush(e.data); return; }
       const action = seedFramePlan(g, this.gen, firstFrame);
@@ -2952,16 +3045,22 @@ class Pane {
       this.pushLines = null;
       if (this.view === "chat" && this.pastN === null && plan().chatMs) void this.pollChat();
       perfFinish(this.perfSwitch, false); this.perfSwitch = null;
-      if (focused === this.index) setConn(false);
+      if (this.seatComing !== null) { setTimeout(() => { if (g === this.gen) this.connect(); }, SEAT_ASK_AGAIN_MS); return; }
+      if (focused === this.index) setConn(this.socketUp());
       // every successful open costs a scrollback seed, so a socket that keeps opening and
       // dropping is as expensive as one that never opens — only a socket that STAYED up
       // earns the fast first retry back (see src/backoff.ts)
       if (openedAt && Date.now() - openedAt >= RECONNECT_SETTLED_MS) this.retries = 0;
       const wait = reconnectDelay(this.retries++);
       this.showDown(wait);
-      setTimeout(() => {
-        if (g === this.gen && fleet[this.slot - 1]?.cwd) this.connect();
-      }, wait);
+      // A poll that read the slot between two seats says nothing about the next seat: no socket yet, but look again. One
+      // look and no more left the pane on „connecting“ with a red dot, on a healthy line, until someone pressed
+      const tryAgain = (): void => {
+        if (g !== this.gen) return;
+        if (fleet[this.slot - 1]?.cwd) this.connect();
+        else setTimeout(tryAgain, wait);
+      };
+      setTimeout(tryAgain, wait);
     };
   }
 
@@ -2980,6 +3079,8 @@ class Pane {
       if (cwd && !fxTree.has(cwd)) void loadTree(slot, cwd).then(() => this.refreshEntities());
     }
     this.retries = 0; // a different pane: the old one's backoff says nothing about this one
+    this.seat = undefined;
+    this.seatSettled();
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
     this.held = ""; // keys typed for the previous slot never reach this one
@@ -3196,6 +3297,7 @@ class Pane {
   reconnect() {
     if (!this.slot) return;
     this.retries = 0; // an explicit ask: honour it now, don't serve it out of the backoff
+    this.seatSettled();
     this.gen++; // orphan the old socket before close so its onclose can't reconnect
     this.ws?.close();
     this.retryAt = 0; // a strip already up now reads "verbinde…" until this socket opens or drops
@@ -3277,13 +3379,25 @@ class Pane {
     this.downTimer = setInterval(() => this.paintDown(), 1000);
   }
 
+  // The page's own word about the line (paintConn), in the terminal's bar and in the conversation, which has none of its
+  // own: it stands over the socket's retry count while it says something
+  paintLine(say: string | null): void {
+    if (this.lineSay === say) return;
+    this.lineSay = say;
+    this.root.classList.toggle("noline", say !== null);
+    if (say !== null) this.downMsg.textContent = say;
+    else this.paintDown();
+  }
+
   private paintDown() {
-    if (!this.root.classList.contains("down")) return;
+    if (this.lineSay !== null || !this.root.classList.contains("down")) return;
+    const empty = this.slotEmpty();
+    this.root.classList.toggle("slotempty", empty); // nothing to reconnect to
     const s = Math.ceil((this.retryAt - Date.now()) / 1000);
     const n = [...this.held].length;
     const wait = n ? ` · ${n} chars waiting, sent once connected` : "";
     const lost = this.dropped ? ` · ${this.dropped} chars dropped (over ${HELD_MAX_BYTES} B)` : "";
-    this.downMsg.textContent = `${s > 0 ? `disconnected — retrying in ${s} s` : "disconnected — connecting …"}${wait}${lost}`;
+    this.downMsg.textContent = `${empty ? "Slot empty" : s > 0 ? `disconnected — retrying in ${s} s` : "disconnected — connecting …"}${wait}${lost}`;
   }
 
   private hideDown() {
@@ -3371,6 +3485,7 @@ class Pane {
     // a layout rebuild disposes every pane and assigns the slots to new ones: through the shelf
     // each chat comes back where it was
     this.shelveChat();
+    this.seatSettled();
     this.gen++;
     this.ws?.close();
     clearInterval(this.downTimer);
@@ -8050,10 +8165,10 @@ let reloadArmed = false;
 function armReload() {
   if (reloadArmed) return;
   reloadArmed = true;
-  if (document.hidden) { location.reload(); return; }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) location.reload();
+    if (document.hidden) void reloadIfReachable();
   });
+  if (document.hidden) void reloadIfReachable();
   if (document.getElementById("newver")) return;
   const b = el("button", "", "a newer version is ready — reload");
   b.id = "newver";
@@ -8062,19 +8177,76 @@ function armReload() {
   document.body.appendChild(b);
 }
 
+// a reload in a dropout ends on the browser's error page. The old page stands instead and asks again while the tab
+// stays hidden, and the next time it goes hidden; still hidden, because this answer may be what wakes a frozen page
+let reloadProbing = false;
+async function reloadIfReachable(): Promise<void> {
+  if (reloadProbing) return;
+  reloadProbing = true;
+  const ctrl = new AbortController();
+  const limit = setTimeout(() => ctrl.abort(), RELOAD_PROBE_MS);
+  try {
+    const res = await fetch("/", { method: "HEAD", cache: "no-store", signal: ctrl.signal });
+    if (res.ok && document.hidden) { location.reload(); return; }
+  } catch {
+    // no answer: stay
+  } finally {
+    clearTimeout(limit);
+    reloadProbing = false;
+  }
+  if (document.hidden) setTimeout(() => { if (document.hidden) void reloadIfReachable(); }, RELOAD_RETRY_MS);
+}
+
 let chipCmds: string[] = [];
 let lastRender = "";
-export async function refresh() {
+// ONE READ AT A TIME. A caller after a write needs a read that began after its write, so it shares the one follow-up
+// instead of a read of its own; the timer skips a turn while a read is out (armPolls).
+export async function refresh(): Promise<void> {
+  if (sessionsRead) return sessionsNext ??= sessionsRead.then(() => { sessionsNext = null; return refresh(); });
+  sessionsRead = readSessions().finally(() => { sessionsRead = null; });
+  return sessionsRead;
+}
+let sessionsRead: Promise<void> | null = null;
+let sessionsNext: Promise<void> | null = null;
+// The tasks, programs and events the poll names by version (server.ts#boardLists), read when that word changes:
+// HTTP's own revalidation under a server that says no-cache. A poll with the lists in it is an older server's.
+let listsV: string | undefined;
+let lists: { tasks: TaskInfo[]; programs: ProgramDigest[]; events: OpsPollRow[] } = { tasks: [], programs: [], events: [] };
+// A list that fails never stops the poll: the slots go on, the word stays different, the next poll asks again, and
+// until then the dot isn't green. A slow read that answers changes nothing: the lists it replaces were confirmed.
+// Only the first has nothing behind it, and until it arrives an empty list means „not read“, never „none“ (listsKnown).
+async function readLists(version: string): Promise<void> {
+  if (version === listsV) return;
+  const guard = line.begin();
+  if (listsV === undefined) listsBehind = true;
+  try {
+    const res = await api("/api/board-lists", { signal: guard.signal });
+    guard.life();
+    if (!res.ok) { listsBehind = true; return; }
+    lists = await guard.json<typeof lists>(res);
+    listsV = version;
+    listsBehind = false;
+  } catch {
+    listsBehind = true; // no answer: the same
+  } finally {
+    guard.end();
+    paintConn();
+  }
+}
+async function readSessions(): Promise<void> {
   const boardPerf = !perfBoardStarted ? perfStart("J1", 0) : null;
   if (boardPerf) perfBoardStarted = true;
+  const guard = line.begin();
+  const askedAt = performance.now();
   try {
-    const res = await api("/api/sessions");
+    const res = await api("/api/sessions?lists=1", { signal: guard.signal });
+    guard.life();
     if (!res.ok) {
       if (boardPerf) { boardPerf.attrs.reason = "http-error"; perfFinish(boardPerf, false); }
       return;
     }
-    const data = (await res.json()) as { now: number; chips: string[]; shareBase?: string;
-      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo;
+    const data = await guard.json<{ now: number; chips: string[]; shareBase?: string;
+      v?: number; autos?: AutoInfo[]; slots: SlotInfo[]; tasks?: TaskInfo[]; dispatch?: DispatchInfo; listsV?: string;
       // WHICH FLEET ANSWERED — always sent since the dual-host cut, `{name:null}` when unnamed
       instance?: { name?: string | null; source?: InstanceSource };
       codexCli?: CodexCliSnapshot;
@@ -8100,12 +8272,16 @@ export async function refresh() {
       deployGap?: DeployGapInfo | null; bundleStale?: BundleStaleInfo | null;
       // omitted while the role address resolves (one holder) or nobody holds it — absent is no conflict
       roleConflict?: { address: "orchestrator"; slots: number[] };
-      autosOn?: boolean; quietHours?: { start: number; end: number } | null };
+      autosOn?: boolean; quietHours?: { start: number; end: number } | null }>(res);
+    line.read(performance.now() - askedAt);
+    if (data.listsV !== undefined) await readLists(data.listsV);
+    listsKnown = data.listsV === undefined || listsV !== undefined;
     if (data.v) {
       if (!bundleV) bundleV = data.v;
       else if (data.v !== bundleV) armReload();
     }
     fleet = data.slots;
+    for (const p of panes) p.readSeat();
     flotteNeu();
     restoreDrafts(); // the first read of the slot rows: a kept draft returns to its own occupation
     // a merge job that landed its lane leaves the slot inactive — release its panes
@@ -8116,8 +8292,8 @@ export async function refresh() {
       if (st && !st.cwd) for (const p of panes) if (p.slot === sl) p.assign(0);
     }
     autosList = data.autos ?? [];
-    tasksList = data.tasks ?? [];
-    setProgramsPoll(data.programs ?? []);
+    tasksList = data.tasks ?? lists.tasks;
+    setProgramsPoll(data.programs ?? lists.programs);
     dispatch = data.dispatch ?? { available: false, on: false, maxLanes: 0, repo: "" };
     landsEnabled = data.lands !== false;
     roleConflict = data.roleConflict ?? null;
@@ -8175,7 +8351,7 @@ export async function refresh() {
     setReportsAwaitingOwner(data.reportsAwaitingOwner ?? 0);
     // the operations inbox reads the events the poll already carries — no extra request, and the
     // 📥 badge counts only rows that were minted FOR it (delivery inbox, still awaiting the owner)
-    setOpsEvents(data.events ?? []);
+    setOpsEvents(data.events ?? lists.events, listsKnown);
     if (panes.some((pane) => pane.savedHover)) void loadEntityDetails();
     setDeployGapInfo(data.deployGap ?? null);
     setBundleStaleInfo(data.bundleStale ?? null);
@@ -8303,7 +8479,9 @@ export async function refresh() {
     }
   } catch {
     if (boardPerf) { boardPerf.attrs.reason = "fetch-error"; perfFinish(boardPerf, false); }
-    // server briefly unreachable — WS dot already shows disconnect
+    // server unreachable: the next turn asks again, and the dot says so once it has gone on (paintConn)
+  } finally {
+    guard.end();
   }
 }
 // --- the poll pump: every recurring fetch this page makes is armed HERE, so there is
@@ -8314,14 +8492,22 @@ export async function refresh() {
 // refresh() is a full-state read (the last one wins) and pollChat() is a delta read.
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let boardTimer: ReturnType<typeof setInterval> | undefined;
+let connTimer: ReturnType<typeof setInterval> | undefined;
 function armPolls() {
   clearInterval(pollTimer); pollTimer = undefined;
   clearInterval(boardTimer); boardTimer = undefined;
+  clearInterval(connTimer); connTimer = undefined;
   const p = plan();
-  if (p.pollMs) pollTimer = setInterval(() => void refresh(), p.pollMs);
+  if (p.pollMs) pollTimer = setInterval(() => { if (!sessionsRead) void refresh(); }, p.pollMs);
   if (p.boardMs) boardTimer = setInterval(() => void renderBoard(), p.boardMs);
+  // the dot has to turn while nothing arrives, which is the one moment no read paints it
+  if (p.pollMs) connTimer = setInterval(() => { socketUp = !!panes[focused]?.socketUp(); paintConn(); }, 1000);
 }
+line.onWeak = armPolls;
+line.onConfirmed = paintConn; // the answer turns it green, not the next tick
+line.onStall = () => { for (const p of panes) p.checkSocket(); };
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { line.back(); paintConn(); } // the dot says it the moment he is back, not on its next tick
   armPolls();
   for (const p of panes) p.chatPump(); // stops the chat chain on the way out, restarts it on the way back
   if (document.hidden) return;
@@ -11589,24 +11775,50 @@ function flashSendError() {
 // conversation view's own bar): same POST /send, same 409 reading, same failure sentence. The
 // second composer was the moment this had to stop being inline in doSend — two readings of a
 // three-shape 409 is one reading too many.
-export function deliver(slot: number, text: string): Promise<boolean> {
+export function deliver(slot: number, text: string, hooks: {
+  name?: { id: string; again: boolean; done(): void }; // the box's own; anything else is one press, one name
+  stillWanted?: () => boolean;
+  onRetry?: () => void;
+} = {}): Promise<boolean> {
   const measured: { response?: Response } = {};
+  // THE PIN: the occupant he pressed it for, read now. If the line returns to someone else in this slot, nothing is typed
+  const openedAt = fleet[slot - 1]?.openedAt;
+  const wanted = hooks.stillWanted ?? (() => true);
   const delivery = (async (): Promise<boolean> => {
+    const name = hooks.name ?? { id: newSendName(), again: false, done: () => {} };
+    let asked = false;
     try {
-      const res = await post("/send", { slot, text, submit: true });
+      const got = await sendUntilAnswered((signal) => post("/send", { slot, text, submit: true, clientId: name.id, openedAt }, signal), {
+        bytes: text.length,
+        stillWanted: wanted,
+        onRetry: () => {
+          if (!asked) { asked = true; sendWaiting++; paintConn(); }
+          hooks.onRetry?.();
+        },
+      });
+      if (got.kind === "not-known") {
+        // „pressing again“ only where a press asks about the same message: the box still holds that very text
+        toast(wanted() ? "No answer from the server. If it arrived, pressing again tells you." : "No answer from the server. It may have arrived.", 8000);
+        flashSendError(); // text stays in the box so nothing typed is silently lost
+        return false;
+      }
+      const res = got.res;
       measured.response = res;
       if (!res.ok) {
-        const body: unknown = await res.clone().json().catch(() => null);
+        const body = await res.clone().json().catch(() => null) as { receipt?: { delivery?: unknown } } | null;
+        // an answer ends the name, except „uncertain“: the server keeps that one, so a second press types nothing
+        if (body?.receipt?.delivery !== "uncertain") name.done();
         const message = sendFailureMessage(res.status, body);
         toast(message, sendFailureToastMs(message));
         flashSendError();
         return false;
       }
+      name.done();
+      // a second press, and the first had arrived after all: he should know why nothing new shows
+      if (name.again && !asked && res.headers.get("x-fleet-send-repeat")) toast("That message had already arrived. It wasn't sent twice.", 6000);
       return true;
-    } catch {
-      toast("send outcome unknown — check the pane; text kept, do not paste again");
-      flashSendError(); // text stays in the box so nothing typed is silently lost
-      return false;
+    } finally {
+      if (asked) { sendWaiting--; paintConn(); }
     }
   })();
   perfDeliveries.set(delivery, measured);
@@ -11636,12 +11848,22 @@ async function doSend(at = perfSendClickAt ?? performance.now()) {
   let sendOk = false;
   send.disabled = true;
   const pending = pane.addPending(outgoing);
+  const boxOutgoing = (): string => [ta.value.trim(), attachedText()].filter(Boolean).join("\n");
   if (pending) {
     perfPending.set(pending, { span });
     perfPaint(() => { span.attrs.bubbleMs = Math.max(0, performance.now() - span.start); });
   }
   try {
-    const delivery = deliver(slot, outgoing);
+    const delivery = deliver(slot, outgoing, {
+      name: { ...boxSendName(slot, outgoing, sessionStorage, { store: localStorage, untouched: !typedHere.has(slot) }), done: () => dropBoxSendName(slot, sessionStorage, localStorage) },
+      // he moved to another seat: the draft is parked and this one still goes out. He changed the text: no more tries
+      stillWanted: () => draftSlot !== slot || boxOutgoing() === outgoing,
+      onRetry: () => {
+        if (!pending || pending.querySelector(".msend.retry")) return;
+        pending.querySelector(".msend")?.replaceWith(sendState("retry"));
+        pending.querySelector(".mwho")?.replaceChildren("you");
+      },
+    });
     sendOk = await delivery;
     measuredResponse = perfDeliveries.get(delivery)?.response;
     span.attrs.responseMs = Math.max(0, performance.now() - span.start);
@@ -11651,12 +11873,15 @@ async function doSend(at = perfSendClickAt ?? performance.now()) {
     // the send IS the next turn: the counter restarts now, not one transcript poll later
     pane.lastTurnAt = Math.max(pane.lastTurnAt, serverClock());
     tickCacheAge();
-    ta.value = "";
-    clearAttachments();
-    renderAttachments();
-    growComposer();
-    cyc = null;
-    updateChips();
+    // the answer can come long after the press: only what went out leaves the box, never what he wrote or moved to since
+    if (draftSlot === slot && boxOutgoing() === outgoing) {
+      ta.value = "";
+      clearAttachments();
+      renderAttachments();
+      growComposer();
+      cyc = null;
+      updateChips();
+    } else if (draftSlot !== slot) drafts.sent(slot, text);
     keepDraftsNow(); // a sent draft is gone from the storage too, not one poll later
     pane.snapToBottom();
   } finally {
@@ -11671,6 +11896,9 @@ send.onclick = () => void doSend();
 // #bar — nothing was sent, and the keyboard left. iOS focuses no button on a tap; the desktop keeps
 // its own focus rules.
 send.addEventListener("pointerdown", (e) => { if (isMobile()) e.preventDefault(); });
+// whatever he types is typed anew, also the same words: only an untouched box keeps its name
+const typedHere = new Set<number>(); // this page has written in that slot's box: what stands there is no longer the draft another tab named
+ta.addEventListener("input", () => { typedHere.add(draftSlot); dropBoxSendName(draftSlot, sessionStorage, localStorage); });
 ta.addEventListener("keydown", (e) => {
   // desktop: Enter sends. mobile: Enter is a newline (messaging convention) — ➤ sends
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isMobile()) {
@@ -11773,6 +12001,8 @@ function syncBox(): boolean {
 export function boxOrphan(): boolean { return syncBox(); }
 export function adoptBox(): void {
   box.adopt(occupation(draftSlot));
+  // For the new seat it is a new message: the old name would answer „had already arrived“ about what this seat never got
+  dropBoxSendName(draftSlot, sessionStorage, localStorage);
   renderTarget();
   ta.focus();
 }
@@ -12112,10 +12342,13 @@ function restoreView(): void {
     const first = fleet.find((s) => s.cwd)?.id;
     if (first) assignments[0] = first;
   }
-  setLayout(n, assignments);
   // back into the conversation view only where the SAME slot sits in the same pane again
   // (syncHarnessAffordances sends a slot without one back to the terminal on its own)
-  panes.forEach((p, i) => { if (view.chats?.[i] && p.slot && p.slot === view.panes?.[i]) p.setView("chat"); });
+  const chatPane = (i: number, slot: number): boolean => !!view.chats?.[i] && !!slot && slot === view.panes?.[i];
+  chatAtBoot = chatPane; // the panes connect in setLayout, before they get their view: with the seed of that view
+  setLayout(n, assignments);
+  chatAtBoot = null;
+  panes.forEach((p, i) => { if (chatPane(i, p.slot)) p.setView("chat"); });
   focusPane(Math.min(view.focused ?? 0, n - 1));
 }
 

@@ -15,7 +15,7 @@ const IN_ID = "aaaa1111bbbb2222cccc3333", OUT_ID = "aaaa1111ffff0000ffff0000", N
 
 type Seen = { method: string; path: string; body: unknown };
 let seen: Seen[] = [];
-let refuseSend = false, replay = false, oddMerges = false;
+let refuseSend = false, replay = false, oddMerges = false, noFill = false;
 // eine wartende Prüfung und was sie hält: null = keine wartet; der Wert ist das `pending` von GET /api/post-land-audits
 let waitingHold: Record<string, unknown>[] | null = null;
 const now = Date.now();
@@ -40,7 +40,8 @@ const server = Bun.serve({
       ] });
       if (path === "/api/self/messages" && req.method === "POST")
         return refuseSend ? json({ error: "replyTo names no message addressed to this sender" }, 409)
-          : json({ ok: true, existing: replay, message: { id: NEW_ID }, holder: { slot: 2, openedAt: SESSION.openedAt } });
+          : json({ ok: true, existing: replay, message: { id: NEW_ID }, holder: { slot: 2, openedAt: SESSION.openedAt },
+            receiverFill: noFill ? null : { pct: 31.2, usedTokens: 312000, windowTokens: 1000000 } });
       if (/^\/api\/self\/messages\/[0-9a-f]{24}\/read$/.test(path)) return json({ ok: true });
       // die Übersicht (GET /api/self/overview): die Linie dieses Panes, ein Sitz des Owners nur mit Platz und Zustand
       if (path === "/api/self/overview") return json({ schema: "fleet.overview/v1", sources: {}, me: { slot: 6, scope: "fleet",
@@ -120,6 +121,28 @@ async function ctl(args: string[], opts: { owner?: boolean; self?: boolean; stdi
   return { out, err, code };
 }
 const posts = () => seen.filter((s) => s.method === "POST");
+
+// Auftrag 2, Punkt 7: wer einen Auftrag schickt, liest den Füllstand des Empfängers in der Antwort von ctl.sh, in Text und in --json
+describe("ctl.sh send zeigt den Füllstand des Empfängers", () => {
+  test("send --seat und send --orchestrator nennen ihn in der Zeile und in --json; ohne Halter fehlt er, nie 0", async () => {
+    const text = join(dir, "auftrag.txt");
+    writeFileSync(text, "Bitte bau das.");
+    const zeile = " — receiver at 31.2 % (312000 of 1000000 tokens)";
+    const seat = await ctl(["send", "--seat", "2", text]);
+    expect([seat.code, seat.out.trim()]).toEqual([0, `send --seat slot 2: 200 message ${NEW_ID}${zeile}`]);
+    const orch = await ctl(["send", "--orchestrator", text]);
+    expect([orch.code, orch.out.trim()]).toEqual([0, `send --orchestrator: 200 message ${NEW_ID}${zeile}`]);
+    const json1 = JSON.parse((await ctl(["send", "--seat", "2", text, "--json"])).out);
+    const json2 = JSON.parse((await ctl(["send", "--orchestrator", text, "--json"])).out);
+    expect([json1.receiverFill, json2.receiverFill]).toEqual([{ pct: 31.2, usedTokens: 312000, windowTokens: 1000000 }, { pct: 31.2, usedTokens: 312000, windowTokens: 1000000 }]);
+    noFill = true;
+    try {
+      const keiner = await ctl(["send", "--seat", "2", text]);
+      expect(keiner.out.trim()).toBe(`send --seat slot 2: 200 message ${NEW_ID}`);
+      expect(JSON.parse((await ctl(["send", "--seat", "2", text, "--json"])).out).receiverFill).toBeNull();
+    } finally { noFill = false; }
+  });
+});
 
 describe("ctl.sh reply", () => {
   test("antwortet dem Absender mit seinem Pin und der Antwortkante, quittiert danach und schreibt eine Zeile ins Protokoll", async () => {

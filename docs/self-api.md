@@ -3824,8 +3824,32 @@ und **tippt weiterhin nichts**. Nimmt die Pane die Nachricht jetzt nicht an, tr�
 {"ok":true,"existing":false,"message":{…},
  "delivery":{"state":"not-delivered","gate":"not-alive","tor":"alive","slot":6,"at":1790000000000,
    "reason":"not delivered to slot 6 — no agent is running in its pane (gate not-alive, alive); the message stays unread in the Postfach and is typed as soon as that gate opens"},
- "holder":{"slot":6,"openedAt":1790000000000},"note":null,"escalatedTo":null}
+ "holder":{"slot":6,"openedAt":1790000000000},
+ "receiverFill":{"pct":31.2,"usedTokens":312000,"windowTokens":1000000},"note":null,"escalatedTo":null}
 ```
+
+`receiverFill` ist der Füllstand des Sitzes, der die Nachricht hält (`null` ohne Halter oder ohne messbaren Füllstand, nie 0). Er steht auch in
+der Antwort eines Replays (`existing: true`), dort der Stand, den der Halter jetzt hat. Bei Post an einen Sitz einer anderen Fleet (Fernpost)
+ist er immer `null`: die Antwort der Nachbarin nennt den Halter und sonst nichts. Die Antwort kommt nach dem Senden. Wer vorher messen will,
+liest `./ctl.sh ctx <slot>` oder `ctxPct` im Sitz von `GET /api/self/overview`; `./ctl.sh send --seat` und `--orchestrator` zeigen den Stand
+in ihrer Zeile und in `--json` als `receiverFill`.
+
+Ab 25 % und 100k Tokens trägt eine Nachricht von einem anderen Sitz im Kopf der Zustellung eine Zeile (`server/succession.ts#betweenOrdersLine`):
+Übergabe schreiben, bevor du anfängst, mit der Tür (`$FLEET_SELF_URL`, Header `x-fleet-self-token`, Feld `intent`) und der Bitte, in `intent`
+zu schreiben, was die Nachricht verlangt, nicht nur ihre Kennung. Höchstens einmal je Besatzer (Audit `between_orders_line`), und gebucht wird sie
+nur, wenn sie im Feld des Sitzes blieb (ein zurückgerollter Paste zählt nicht). Wer sie bekam, bekommt den Hinweis an der Basis nicht zusätzlich;
+am fälligen Schritt (Obergrenze, kühlender Cache) kommt er, und Fleets eigene Handlung dort bleibt. Die Zeile kommt nicht
+bei einem Wort des Owners, nicht bei Fleets eigenen Notizen (ein Kantensatz, die Warte-Notiz), nicht zu einer Lane, einem MAIN, einem Sitz mit
+eigener Schwelle oder der Wahl Compact und nicht, wenn der Hinweis für den Sitz aus ist.
+
+Jeder Brief der Nachfolgerin gibt gleich unter dem Kopf die Tür: `$FLEET_SELF_URL` und den Header `x-fleet-self-token: $FLEET_SELF_TOKEN`; sein
+erster Schritt liest `GET $FLEET_SELF_URL/api/self`. Er nennt außerdem Post, die sie sonst nicht fände, mit Absender, Zeit, Anfang des Textes und
+der Tür, an der der ganze Text liegt (`GET $FLEET_SELF_URL/api/self/messages`, gelesene und ungelesene): (1) was die Vorgängerin nach ihrer stehenden
+Übergabe gelesen oder in ihre Pane getippt bekam, ohne dass es quittiert wurde (die meisten Zustellungen sind unbeobachtet; das Ende der Besetzung
+stempelt sie sonst als von ihr gelesen); (2) wo es keine stehende Übergabe gibt (`succeed` mit `intent` im Body), dasselbe für die letzten zehn Minuten; gibt es eine, bleibt sie der Bezug, auch wenn der Body (`intent`, `carry`) den Kanal nennt, denn die Worte des Bodys gelten für den Kanal, nicht für die Zeit;
+(3) was die Übergabe mit der Kennung nennt. Der Brief sagt, was er weiß: gelesen oder getippt, ob erledigt ist unbekannt, prüfe am Stand, bevor du
+etwas wiederholst. Eine genannte Kennung hat immer eine Zeile; vom Übrigen zeigt er die fünf neuesten und sagt, wie viele er ausließ. Was zwischen
+dem Lesen des Briefs und dem Ende der Vorgängerin in ihre Pane getippt wurde, bleibt ungelesen und kommt zur Nachfolgerin, auch wenn Fleet den Paste beobachtete (die Quittung wartet dann; bleibt die Vorgängerin stehen, weil die Besitzer-Tür vor dem Kill ablehnt, gilt sie sofort).
 
 `gate` ist das Wort von `canDeliver` (`kill-switch`, `harness`, `not-alive`, `blocked-screen`,
 `quiet-hours`, `busy`), `tor` das Owner-Wort (`alive`, `idle`, `quiet-hours`, `kill-switch`,

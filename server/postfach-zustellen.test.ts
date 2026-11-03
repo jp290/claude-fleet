@@ -2,7 +2,7 @@
 // kommt, wann sie fällig ist und was quittiert wird. Kein Server, keine Pane, keine Uhr.
 import { describe, expect, test } from "bun:test";
 import {
-  POSTFACH_BODY_PREFIX, isDirectPostfachTarget, planPostfachDelivery, postfachEntryText,
+  POSTFACH_BODY_PREFIX, isDirectPostfachTarget, planPostfachDelivery, postfachEntryText, postfachFleetNoteKey, postfachFromSeat,
   postfachReceiptIds, type PostfachEntry, type PostfachTarget,
 } from "./postfach-zustellen";
 
@@ -85,5 +85,35 @@ describe("Postfach-Zustellung: die Quittung", () => {
     expect(postfachReceiptIds(entries, "unobservable")).toEqual([]);
     expect(postfachReceiptIds(entries, "not-observed")).toEqual([]);
     expect(postfachReceiptIds(entries, "not-applicable")).toEqual([]);
+  });
+});
+
+// Auftrag 2, Punkt 4: wessen Nachricht die Zeile zwischen zwei Aufträgen bringt. Nur Arbeit von einem anderen Sitz; ein Wort des Owners
+// und Fleets eigene Notizen (Kantensatz, Warte-Notiz) tragen keine.
+describe("Postfach-Zustellung: von einem Sitz, nicht vom Owner und nicht von Fleets eigenen Notizen", () => {
+  const text = (id: string, von: string) => postfachEntryText(entry(id, 1, "text", undefined, von));
+  const note = new Set(["note1", "note2"]);
+  test("die Schlüssel, unter denen Fleet seine Notizen schreibt, und kein anderer", () => {
+    expect(postfachFleetNoteKey("kante:0123456789abcdef:auf:4")).toBe(true);
+    expect(postfachFleetNoteKey("kante:0123456789abcdef:zu:12")).toBe(true);
+    expect(postfachFleetNoteKey("warte-hinweis:5:1791100005:1791100000")).toBe(true);
+    for (const k of ["ctl-seat-ab12", "kante:", "kante:x:auf:4:5", "warte-hinweis:5:6", "xkante:a:b:1", "warte-hinweis:a:b:c", "kante:x:auf:4\nx"])
+      expect({ k, note: postfachFleetNoteKey(k) }).toEqual({ k, note: false });
+  });
+  test("ein Auftrag von einem Sitz ist von einem Sitz; Owner und Notizen allein sind es nicht, ein Auftrag neben ihnen schon", () => {
+    const istNote = (id: string) => note.has(id);
+    const faelle = [
+      { fall: "Sitz", an: postfachFromSeat(text("a1", "Session Slot 3"), istNote), soll: true },
+      { fall: "Orchestratorin", an: postfachFromSeat(text("a1", "Orchestrator"), istNote), soll: true },
+      { fall: "Program", an: postfachFromSeat(text("a1", "Program abc"), istNote), soll: true },
+      { fall: "Owner", an: postfachFromSeat(text("a1", "Owner"), istNote), soll: false },
+      { fall: "Notiz der Orchestratorin", an: postfachFromSeat(text("note1", "Orchestrator"), istNote), soll: false },
+      { fall: "Notiz eines Sitzes", an: postfachFromSeat(text("note2", "Session Slot 5"), istNote), soll: false },
+      { fall: "Owner und Notiz", an: postfachFromSeat(`${text("a1", "Owner")}\n\n${text("note1", "Orchestrator")}`, istNote), soll: false },
+      { fall: "Notiz und Auftrag", an: postfachFromSeat(`${text("note1", "Orchestrator")}\n\n${text("a1", "Session Slot 3")}`, istNote), soll: true },
+      { fall: "ohne Kopf: die alte Seite", an: postfachFromSeat("freier Text", istNote), soll: true },
+      { fall: "ohne Notiz-Frage: jede Marke zählt", an: postfachFromSeat(text("note1", "Orchestrator")), soll: true },
+    ];
+    expect(faelle.map(({ fall, an }) => ({ fall, an }))).toEqual(faelle.map(({ fall, soll }) => ({ fall, an: soll })));
   });
 });

@@ -61,6 +61,12 @@ It never says how to do the work.
 - Say what it does after its report. If the work ends there, write "then stop and wait"; a seat that isn't told
   goes looking for more. Never forbid a handover: when Fleet says its context is due, it hands over its open work,
   and a seat that may not runs full.
+- A seat that starts outside the repo, in its own setup, gets no hint from Fleet's context threshold until you give it
+  one. What it does get since 3.11.: a mailbox message from another seat that reaches it at 25 % of its window or more
+  (and at least 100k tokens) carries one line, once per occupant, that names the door (`$FLEET_SELF_URL`, the header
+  `x-fleet-self-token`, the body field `intent`) and asks it to hand over before it starts on the message, with what the
+  message asks for in the handover. The owner's own words bring no line, Fleet's own notes bring none, and a MAIN gets none.
+  So tell such a seat when to hand over, or give it a threshold; the line alone is a nudge at the next order, not a brake.
 - Say in one sentence when it stops and reports instead of searching on, for example "If the test only turns green
   with a change to server.ts, stop and report." A stop turns a failure into a planned outcome.
 

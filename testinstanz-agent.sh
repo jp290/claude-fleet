@@ -126,8 +126,8 @@ ti_real_wrapper() {
   {
     echo '#!/bin/sh'
     echo '# test-instance REAL claude (testinstanz.sh#ti_real_wrapper, up --real-seats) — generated, not tracked'
-    printf "TI_D='%s' TI_REAL_CLAUDE='%s' TI_OWNER_HOME='%s' TI_SEATS='%s' TI_SEAT_CAP=%s TI_EXPIRES=%s\n" \
-      "$DIR" "$TI_RC" "$HOME" "$TI_SEATS" "$TI_SEAT_CAP" "$TI_EXP"
+    printf "TI_D='%s' TI_REAL_CLAUDE='%s' TI_OWNER_HOME='%s' TI_OWNER_USER='%s' TI_SEATS='%s' TI_SEAT_CAP=%s TI_EXPIRES=%s\n" \
+      "$DIR" "$TI_RC" "$HOME" "${USER:-$(id -un)}" "$TI_SEATS" "$TI_SEAT_CAP" "$TI_EXP"
     cat "$SRC/testinstanz-claude.sh"
   } > "$DIR/bin/claude"
   chmod +x "$DIR/bin/claude"

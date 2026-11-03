@@ -5,6 +5,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { postfachFleetNoteKey } from "./postfach-zustellen";
 import { kanteGeben, kantenGeladen, kantenWunsch, lebendeKante, beendeteKante } from "./kanten";
 import { branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, type Answer, type Fixture } from "./branches-testkit";
 
@@ -64,6 +65,12 @@ describe("Kanten: zwei Sessions schreiben sich direkt, auf Zeit, mit Freigabe de
     expect(rows.find((r) => r.id === A)?.kanten?.map((x) => x.slot)).toEqual([B]);
     expect(rows.find((r) => r.id === B)?.kanten?.map((x) => x.slot)).toEqual([A]);
     expect(rows.find((r) => r.id === ORCH)?.kanten).toBeUndefined();
+    // Auftrag 2, Punkt 4: die zwei Sätze an die Enden stehen unter dem Schlüssel, an dem die Zeile zwischen zwei Aufträgen Fleets Notiz erkennt;
+    // die Nachrichten der Sitze selbst nicht
+    const post_ = (persisted(f).messages as { entries: { idempotencyKey: string; payload: { text: string } }[] }).entries;
+    expect(post_.filter((m) => postfachFleetNoteKey(m.idempotencyKey)).map((m) => m.payload.text.startsWith("You can write to slot ")))
+      .toEqual([true, true]);
+    expect(post_.filter((m) => !postfachFleetNoteKey(m.idempotencyKey)).length).toBe(post_.length - 2);
     // ein Satz an jedes Ende
     expect(texte(inboxA).some((t) => t.startsWith(`You can write to slot ${B} directly until `) && t.includes("Chat-Ansicht"))).toBe(true);
 

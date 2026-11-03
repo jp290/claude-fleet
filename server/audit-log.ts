@@ -337,6 +337,9 @@ type AuditEvent =
   // a full-window main session spent its bounded three-attempt handoff budget. The detail says
   // "gave up" so exhaustion is visible rather than indistinguishable from a disabled tick.
   | "migrate_gave_up"
+  // THE BETWEEN-ORDERS LINE WAS TYPED into a seat (server/succession.ts#betweenOrdersLine, server.ts#zwischenZeileBuchen): at most once per
+  // conversation. The detail names the conversation, the path and the fill. The line stands in the paste, not in the slot history.
+  | "between_orders_line"
   // FLEET ACTED AT A SESSION'S THRESHOLD (K9 S3b, server.ts#tickMigrate): its choice was Compact or a new
   // session, the action was due, and the session rested. The detail names the act, the conversation, the
   // fill against base and cap, and what came of it.

@@ -1587,9 +1587,11 @@ const key = "ctl-seat-" + require("node:crypto").randomBytes(12).toString("hex")
 const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "session", slot }, payload: { kind: "text", text }, idempotencyKey: key }) });
 const error = r.ok ? null : selfError(r, "send --seat");
+const fill = r.body?.receiverFill ?? null;
+const fillText = fill ? ` — receiver at ${fill.pct} % (${fill.usedTokens} of ${fill.windowTokens} tokens)` : "";
 out({ ok: r.ok, sent: r.ok, slot, status: r.status, message: r.body?.message ?? null, holder: r.body?.holder ?? null,
-  delivery: r.body?.delivery ?? null, error },
-  [`send --seat slot ${slot}: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}${r.body?.delivery ? ` — stored, not typed yet: ${r.body.delivery.reason ?? "see delivery"}` : ""}` : error}`]);
+  delivery: r.body?.delivery ?? null, receiverFill: fill, error },
+  [`send --seat slot ${slot}: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}${r.body?.delivery ? ` — stored, not typed yet: ${r.body.delivery.reason ?? "see delivery"}` : ""}${fillText}` : error}`]);
 process.exit(r.ok ? 0 : 1);
 EOF
     js_run
@@ -1607,10 +1609,12 @@ const r = await api("/api/self/messages", { method: "POST", headers: selfH(),
   body: JSON.stringify({ to: { kind: "role", role: "orchestrator" },
     payload: { kind: "text", text }, idempotencyKey: key, ...(chosenProgram ? { programId: chosenProgram } : {}) }) });
 const error = r.ok ? null : selfError(r, "send --orchestrator");
+const fill = r.body?.receiverFill ?? null;
+const fillText = fill ? ` — receiver at ${fill.pct} % (${fill.usedTokens} of ${fill.windowTokens} tokens)` : "";
 out({ ok: r.ok, sent: r.ok, status: r.status, message: r.body?.message ?? null,
-  holder: r.body?.holder ?? null, escalatedTo: r.body?.escalatedTo ?? null,
+  holder: r.body?.holder ?? null, escalatedTo: r.body?.escalatedTo ?? null, receiverFill: fill,
   error },
-  [`send --orchestrator: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}` : error}`]);
+  [`send --orchestrator: ${r.status} ${r.ok ? `message ${r.body?.message?.id ?? "?"}${fillText}` : error}`]);
 process.exit(r.ok ? 0 : 1);
 EOF
     js_run

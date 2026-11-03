@@ -2491,6 +2491,8 @@ export async function run(ctx: Ctx): Promise<void> {
         slotWakeInflight: new Set<number>(),
         harnessOf: () => ({ composer: { kind: "rules" }, bootSettleMs: 0 }), commsFor: () => [],
         deliveryHeader: () => `${DELIVERY_HEADER_PREFIX}probe] `, DEFAULT_BOOT_SETTLE_MS: 0,
+        // the between-orders line (server.ts#typedDelivery asks it, sendText books it): this fixture sends no mailbox message from a seat
+        deliveryBetween: () => null, zwischenZeileBuchen: () => {}, lineStaysInField: () => false,
         wakeSlot: async () => ({ ok: true }), sameSlotStreamOccupant: () => true,
         existingTmuxTarget: async () => ({ paneId: "%1" }), sess: () => "s1",
         readComposer: async () => reads.length ? reads.shift()! : before, sameBoundPane: () => true,

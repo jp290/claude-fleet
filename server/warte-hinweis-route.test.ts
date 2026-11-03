@@ -6,6 +6,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { postfachFleetNoteKey } from "./postfach-zustellen";
 import { branchTestkit, get, LIFE_DEADLINE_MS, persisted, post, type Answer, type Fixture } from "./branches-testkit";
 import { BASH_FRAGE, LEERLAUF } from "./warte-hinweis.fixtures";
 
@@ -20,7 +21,7 @@ while :; do cur=$(cat "$f" 2>/dev/null); if [ "$cur" != "$last" ]; then printf '
 `, { mode: 0o755 });
 
 const W = 180_000; // FLEET_WARTE_HINWEIS_SEC ungesetzt: drei Minuten
-type Msg = { from: { kind: string; slot?: number; openedAt?: number }; to: { kind: string; slot?: number; openedAt?: number; role?: string }; payload: { text: string } };
+type Msg = { idempotencyKey: string; from: { kind: string; slot?: number; openedAt?: number }; to: { kind: string; slot?: number; openedAt?: number; role?: string }; payload: { text: string } };
 const tokenOf = (f: Fixture, slot: number): string => {
   const t = (persisted(f).slots as Record<string, { selfToken?: string }> | undefined)?.[String(slot)]?.selfToken;
   if (!t) throw new Error(`kein Self-Token für Slot ${slot} in fleet.json`);
@@ -66,6 +67,8 @@ describe("Warte-Hinweis: ein Sitz an der Rechte-Frage erreicht seinen Öffner", 
     const all = alle.filter((m) => m.to.kind === "session");
     expect(all.length).toBe(2);
     for (const m of all) {
+      // Auftrag 2, Punkt 4: unter dem Schlüssel, an dem die Zeile zwischen zwei Aufträgen Fleets eigene Notiz erkennt
+      expect({ key: m.idempotencyKey, notiz: postfachFleetNoteKey(m.idempotencyKey) }).toEqual({ key: m.idempotencyKey, notiz: true });
       expect(m.from).toEqual({ kind: "session", slot: S.slot, openedAt: S.openedAt });
       expect(m.to).toEqual({ kind: "session", slot: L.slot, openedAt: L.openedAt });
     }

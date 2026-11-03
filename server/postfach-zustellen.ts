@@ -46,6 +46,24 @@ export interface PostfachPlan {
 }
 
 export const POSTFACH_BODY_PREFIX = "[fleet message]";
+// The label postfachEntryText writes for the owner's own word (server.ts#postfachSenderLabel); every other label is a seat, a role or a Program.
+export const POSTFACH_OWNER_LABEL = "Owner";
+
+// Fleet's own notes in the mailbox, the ones that carry no work, by the idempotency key Fleet writes them under: the edge sentences the granter
+// speaks to both ends (server.ts#kantenTuer, `kante:<edge>:<tag>:<slot>`, from the Orchestratorin's role address or the granting seat) and the
+// notice that a seat stands at a question (server.ts#tickWarte, `warte-hinweis:<slot>:<openedAt>:<since>`, from that seat's own address).
+// Neither asks the reader to do an order, so neither brings the between-orders line.
+export const postfachFleetNoteKey = (key: string): boolean => /^kante:[^:]+:[^:]+:\d+$/.test(key) || /^warte-hinweis:\d+:\d+:\d+$/.test(key);
+
+// Does a typed mailbox text carry a message from ANOTHER SEAT, not only the owner's words and not only Fleet's own notes? The head of the delivery
+// asks it (server.ts#deliveryHeader): the between-orders line belongs to work that comes from a seat. Read with the grammar postfachEntryText
+// writes: `[fleet message] <id> from <label>` at the start of a line; `isNote` says by the id whether Fleet wrote the entry itself. A text that
+// holds no such head at all counts as from a seat (the safe side for a delivery of unknown shape is the old one: the line came for every
+// mailbox message).
+export function postfachFromSeat(text: string, isNote: (id: string) => boolean = () => false): boolean {
+  const heads = [...text.matchAll(/^\[fleet message\] (\S+) from (.+)$/gm)].map((m) => ({ id: m[1]!, label: m[2]!.trim() }));
+  return heads.length === 0 || heads.some((h) => h.label !== POSTFACH_OWNER_LABEL && !isNote(h.id));
+}
 
 // A role is a session-side principal (the Orchestratorin) just as a session and a lane are. A Program
 // address is NOT: it belongs to the Program's record, and its announcement keeps riding the bundle.

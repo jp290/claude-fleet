@@ -2,7 +2,7 @@
 // against a fake real claude that records what it was started with, so no model is ever reached.
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { branchTestkit, get, post } from "./branches-testkit";
 import { REAL_SEAT_WAIT_MS, liveRealSeats, psLstart, realSeatGateFrom, realSeatRefusal, type RealSeatGate } from "./echte-sitze";
@@ -23,7 +23,7 @@ function rig(o: { armed?: boolean; standIns?: string[]; cap?: number; expiresIn?
   for (const d of [join(dir, "bin"), seats, owner, log]) mkdirSync(d, { recursive: true });
   // the fake real claude: writes its HOME and argv, then stays as the same pid (exec) like the real one does
   const fake = join(base, "fake-claude");
-  writeFileSync(fake, `#!/bin/sh\n{ echo "HOME=$HOME"; for a in "$@"; do echo "$a"; done; } > '${log}'/$$\nexec /bin/sleep 30\n`, { mode: 0o755 });
+  writeFileSync(fake, `#!/bin/sh\n{ echo "HOME=$HOME"; for a in "$@"; do echo "$a"; done; echo "USER=\${USER-unset}"; } > '${log}'/$$\nexec /bin/sleep 30\n`, { mode: 0o755 });
   // the idle stand-in the wrapper execs for a fixture seat
   writeFileSync(join(dir, "bin", "claude-agent"), `#!/bin/sh\necho idle > '${log}'/idle-$$\n`, { mode: 0o755 });
   if (o.armed ?? true) writeFileSync(join(dir, "bin", ".real-armed"), "");
@@ -60,6 +60,23 @@ describe("a seat opened on an armed instance is a real claude in auto, under the
     const reg = readFileSync(join(r.seats, `${pid}.seat`), "utf8");
     expect(reg).toContain(`pid=${pid}\n`);
     expect(reg).toContain(`where=${r.dir} Slot 13\n`);
+  });
+
+  // the instance starts with `env -i`: no USER in a pane. Claude Code picks its keychain entry by USER, so a seat without it reads another login than
+  // the owner's (one that ends within a day). The mutant: the exec line without USER= prints "USER=unset" here.
+  test("the real claude gets the owner's USER even when the instance's environment has none", async () => {
+    const r = rig();
+    expect(r.env.USER).toBeUndefined();
+    const pid = await seat(r, "tok-u", "13");
+    const log = readFileSync(join(r.log, String(pid)), "utf8").split("\n");
+    expect(log).toContain(`USER=${userInfo().username}`);
+  });
+
+  test("the owner's USER the instance recorded at `up` wins over this process's login name", async () => {
+    const r = rig();
+    r.env.TI_OWNER_USER = "der-owner";
+    const pid = await seat(r, "tok-v", "13");
+    expect(readFileSync(join(r.log, String(pid)), "utf8").split("\n")).toContain("USER=der-owner");
   });
 
   test("its transcript is linked into the instance's HOME under the name the board reads", async () => {

@@ -16,8 +16,16 @@ Ask in this order and take the first that fits.
    guess.
 3. **Can you answer it in a few calls from where you stand?** What runs, a short lookup, why something is red. Do it:
    a handoff costs more than the answer. A change that must land is not this step, even when you found the cause.
-4. **Does it fit the work of a running seat?** Send it there. That seat has the context and often a warm cache; a fresh
-   seat pays a whole start before it reads your first line.
+4. **Does it fit the work of a running seat?** Measure before you send: `./ctl.sh ctx <slot>`, or `ctxPct` of that seat in
+   `GET /api/self/overview`. (The send door answers with `receiverFill` too, but only after the sending, so it tells you what
+   happened, not what to do.) Under 25 % the seat has the context and often a warm cache; a fresh seat pays a whole start
+   before it reads your first line. From 25 % with at least 100k tokens, your message from a seat reaches it with one line
+   from Fleet: hand over first, then start on the message. Then the order lands on its successor, who reads the seat's
+   handover and not your message, so write it so it can be taken from the text alone, with what is to be done and not
+   only a message id. The line comes at most once per occupant, and a seat that got it is not asked again by the threshold hint at its base (the hint at the cap
+   stays). It does not come to a lane, a seat with its own threshold
+   or the choice Compact, a seat with the hint switched off, or a MAIN (a MAIN reads through its Program address); it does not come for
+   the owner's own words, nor for Fleet's own notes (an edge sentence, the notice that a seat stands at a question).
 5. **Is it breadth you won't need again?** Many reads, one answer, nothing that must outlive you: a subagent through
    your harness's own agent tool, which hands you only the answer.
 6. **Otherwise open a seat,** when the work needs another model, an independent check, other rights, more time than

@@ -195,8 +195,8 @@ unter ihrem eigenen HOME ist `claude` nirgends angemeldet. Mit dem Schalter:
 - **Was echt wird.** Jeder Sitz, der nach `up` geöffnet wird, im Fenster, über die Owner-Tür oder über
   die Self-Tür einer Session der Instanz. Seine Pane fährt die claude-Zeile, die der Server der Instanz
   baut (`server.ts#agentCmd`), und davor steht `$DIR/bin/claude` (`testinstanz-claude.sh`). Der
-  startet den echten `claude` mit genau dieser Zeile, aber unter dem HOME des Owners, wo er angemeldet
-  ist. Das Transkript wird in das HOME der Instanz verlinkt, damit das Board Kontext und
+  startet den echten `claude` mit genau dieser Zeile, aber unter dem HOME und dem USER des Owners, wo er angemeldet
+  ist (die Instanz startet mit `env -i`, und Claude Code wählt seinen Schlüsselbund-Eintrag nach USER; ohne ihn liest ein Sitz ein anderes Login, das binnen eines Tages abläuft). Das Transkript wird in das HOME der Instanz verlinkt, damit das Board Kontext und
   Permission-Mode liest wie live. Die Fixture-Sitze der Demo bleiben Stand-ins: `up` hält ihre
   Self-Tokens fest (`bin/.stand-ins`, sha256), bevor es scharf schaltet (`bin/.real-armed`).
 - **Nie Bypass.** Der Server läuft mit `FLEET_NO_BYPASS=1`, damit startet jede Rolle in auto, auch die

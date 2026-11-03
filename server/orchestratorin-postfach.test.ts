@@ -124,7 +124,9 @@ describe("Postfach: ein Sitz antwortet der Orchestratorin, die ihn geöffnet hat
     const typed = existsSync(getippt) ? readFileSync(getippt, "utf8") : "";
     const msg = ((persisted(f).messages as { entries?: (Entry & { readBy: { slot: number; openedAt: number } | null })[] } | undefined)?.entries ?? [])
       .find((m) => m.payload.text === text);
-    expect({ getippt: typed.split(text).length - 1, gelesenVon: msg?.readBy ? { slot: msg.readBy.slot, openedAt: msg.readBy.openedAt } : null })
-      .toEqual({ getippt: 1, gelesenVon: { slot: sitz, openedAt: vorher.openedAt } });
+    // a delivery carries the "[fleet message]" head; the successor's brief names the same mail in a row of its own, on purpose, and that is no second typing
+    const brief = typed.slice(typed.indexOf("[fleet succession]"));
+    expect({ getippt: typed.split("[fleet message]").length - 1, imBrief: brief.split(text).length - 1, gelesenVon: msg?.readBy ? { slot: msg.readBy.slot, openedAt: msg.readBy.openedAt } : null })
+      .toEqual({ getippt: 1, imBrief: 1, gelesenVon: { slot: sitz, openedAt: vorher.openedAt } });
   }, LIFE_DEADLINE_MS * 4);
 });

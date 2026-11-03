@@ -39,7 +39,7 @@ import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } 
 import type { CcAnatomie } from "./src/k15-anatomie";
 import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
 import type { SubscriptionUsage } from "./src/protocol";
-import { DELIVERY_HEADER_PREFIX, bundleHoldsPath, deliveryBundleText, deliveryHeaderPrefixOf, fleetEventBundleText } from "./src/delivery-format";
+import { DELIVERY_HEADER_PREFIX, bundleTextsOnPath, deliveryBundleText, deliveryHeaderPrefixOf, fleetEventBundleText } from "./src/delivery-format";
 import { isInterruptMark } from "./src/pendingsend";
 import { stat, rm, readdir, appendFile, mkdtemp, access, readlink } from "node:fs/promises";
 import { constants as fsConstants, appendFileSync, existsSync, statSync, statfsSync, fstatSync, lstatSync, mkdirSync, chmodSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, writeSync, fsyncSync, closeSync, renameSync, copyFileSync, symlinkSync, utimesSync, rmSync, rmdirSync, unlinkSync, realpathSync } from "node:fs";
@@ -241,7 +241,7 @@ import { createTranscriptPush } from "./server/transcript-push";
 import { RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
 import { ladeNachbarn } from "./server/nachbarn";
 import { sendeAnNachbar, nimmNachbarAn, fehlversuchZaehler, type EinDeps } from "./server/nachbar-tuer";
-import { isDirectPostfachTarget, planPostfachDelivery, postfachReceiptIds,
+import { POSTFACH_OWNER_LABEL, isDirectPostfachTarget, planPostfachDelivery, postfachFleetNoteKey, postfachFromSeat, postfachReceiptIds,
   type PostfachEntry, type PostfachPlan } from "./server/postfach-zustellen";
 import { PostfachFehlerbremse, PostfachVersuche, postfachFehlerSignatur, postfachFehlerVergleich,
   postfachNichtsGetippt, postfachVersuchSignatur,
@@ -265,7 +265,7 @@ import { landedIn, tickRounds, type RoundDeps } from "./server/runde";
 import { instanceDirOf, lastLook, lookHolds, SEEN_FILE } from "./server/instanz-blick";
 import { actDecision, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES, onHandoverBand, orchestratorContextLine, ownSetting,
   rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf, thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput,
-  betweenOrdersLine, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
+  betweenOrdersLine, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, BRIEF_MAIL_WINDOW_MS, DOOR_LINE, lineStaysInField, type BriefMail, type BriefMailFacts, type CacheView, type HandoverFacts, type HintFacts, type LaneNow, type SessionKind, type Threshold, type ThresholdChoice, type ThresholdOff, type WarmDecision } from "./server/succession";
 import { briefRoom, freshSuccessionAppendix, FRESH_TAIL_MAX, type FreshTail } from "./server/brief-platz";
 import { readCodexRollout, readCodexFirstTurnEvidence, readPiSession, nativeAsk, nativeAnswer, transcriptBinding, askTerminal, ASK_TOOL, CONTINUED_IN_MARK, continuedInTarget, type Binding, type CodexFirstTurnEvidence,
   type ConversationRead, type NativeTranscript, type Occupant, type ReadSeat, type TBlock, type TEntry, type TranscriptOrigin } from "./server/conversation-read";
@@ -12807,7 +12807,7 @@ const headsDelivery = (): boolean => !DECLARED_HARNESS;
 // An undeclared stand-in (`true`) takes it too, which is what lets the suites see the form.
 // `text` is what is typed after the head; `given` is the caller's text, which differs from it only over PASTE_MAX_BYTES, where the
 // pane-inbox line stands for it (server.ts#typedDelivery). What the delivery CARRIES is read from `given`, what the composer gets from `text`.
-function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot, given = text): string | null {
+function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot, given = text, line?: string | null): string | null {
   const source = DELIVERY_SOURCE[path];
   if (!source || unheadedPath(path) || !headsDelivery()
     || (path === "owner" && text.trimStart().startsWith("/"))) return null;
@@ -12818,12 +12818,47 @@ function deliveryHeader(path: SendPath, slot: number, text: string, s: Slot, giv
   // lives only in a bundle mark, where an owner send shares a paste with waiting deliveries.
   if (path === "owner") return `${DELIVERY_HEADER_PREFIX}${source} · Slot ${slot}] `;
   const head = `${DELIVERY_HEADER_PREFIX}${source} · path=${path} · Slot ${slot} · ${deliveryMeaning(path, s)}] `;
-  // between two orders (server/succession.ts#betweenOrdersLine): a mailbox message to a seat at or above the mark brings one line after the
-  // head, so the head itself stays what src/pendingsend.ts#splitDeliveryHeader cuts at "] "
+  // between two orders (server/succession.ts#betweenOrdersLine): a mailbox message FROM ANOTHER SEAT to a seat at or above the mark brings
+  // one line after the head, so the head itself stays what src/pendingsend.ts#splitDeliveryHeader cuts at "] ". The owner's own word
+  // through the mailbox (sender label Owner) brings none (Owner 03.11.).
   // ...und ebenso, wenn die Postfach-Nachricht in einem Bündel reist (W3 Auftrag 17): ein Sitz mit gebündelter Zustellung, oder ein
   // sofortiger Paste, der wartende Einträge mitnimmt (flushDeliveryBundle), trägt den Kopf path=bundle und darin die Marke des Teils
-  const between = path === "postfach" || (path === "bundle" && bundleHoldsPath(given, "postfach")) ? betweenOrdersLineFor(s) : null;
+  const between = line === undefined ? deliveryBetween(path, given, s) : line;
   return between ? `${head}${between}\n\n` : head;
+}
+// The between-orders line a delivery on `path` carries, or null. Asked read-only (the head is also read for tests and previews);
+// sendText books it as given (zwischenZeileGegeben) once it was typed. Three questions: is the mailbox part from another seat and not
+// Fleet's own note (server/postfach-zustellen.ts#postfachFromSeat), is this seat one the line reaches at this fill
+// (server/succession.ts#betweenOrdersLine), and did this occupant not get it yet (at most once, like the threshold hint).
+function deliveryBetween(path: SendPath, given: string, s: Slot): string | null {
+  const mailbox = path === "postfach" ? [given] : path === "bundle" ? bundleTextsOnPath(given, "postfach") : [];
+  if (!mailbox.some((t) => postfachFromSeat(t, postfachFleetNote))) return null;
+  return zwischenZeileGegeben(s) ? null : betweenOrdersLineFor(s);
+}
+// AT MOST ONCE PER OCCUPANT (Owner 16.10.: „[Zitat entfernt]“, server/succession.ts#MAX_NUDGES):
+// the slot -> conversation that already got the line, process-local like the hint ledger. A seat that got Fleet's hint or its resting line
+// was asked already, so the line stays out as well. A new conversation (succession, /clear) starts at nothing.
+const zwischenZeileBuch = new Map<number, string>();
+function zwischenZeileBuchen(s: Slot, path: SendPath): void {
+  if (!s.sessionId) return;
+  zwischenZeileBuch.set(s.id, s.sessionId);
+  audit("between_orders_line", s.id, `session=${s.sessionId} path=${path} fill=${contextFill(s)?.pct ?? "?"}`);
+}
+function zwischenZeileGegeben(s: Slot): boolean {
+  if (!s.sessionId) return false;
+  return zwischenZeileErhalten(s) || (hintLedger.of(s.id, s.sessionId)?.nudges ?? 0) >= 1;
+}
+// Only the line itself (not the hint): a seat that got it is not asked again at the base by the threshold hint (tickMigrate), the owner's word on
+// „[Zitat entfernt]“ (server/succession.ts#MAX_NUDGES). The hint at the due step (the cap, a cooling cache) and Fleet's own act there stay.
+function zwischenZeileErhalten(s: Slot): boolean {
+  return !!s.sessionId && zwischenZeileBuch.get(s.id) === s.sessionId;
+}
+// Fleet's own notes in the mailbox that carry no work: the edge sentences written under the granter's address (kantenTuer, key kante:<edge>:...)
+// and the notice that a seat stands at a question (tickWarte, key warte-hinweis:<slot>:<openedAt>:...), which is written under that seat's own
+// address. A message by its id: the typed text names ids, not keys.
+function postfachFleetNote(id: string): boolean {
+  const m = messages.entries.find((x) => x.id === id);
+  return !!m && postfachFleetNoteKey(m.idempotencyKey);
 }
 // the head a delivery on `path` to slot `id` would carry now (server/load.test.ts reads the between-orders line through it)
 const deliveryHeaderFor = (path: SendPath, id: number, text: string): string | null => {
@@ -12837,8 +12872,9 @@ const typedDeliveryFor = (path: SendPath, id: number, given: string): { header: 
 };
 function betweenOrdersLineFor(s: Slot): string | null {
   const t = thresholdFor(s);
-  return betweenOrdersLine({ fillPct: contextFill(s)?.pct ?? null, threshold: t, choice: thresholdChoiceOf(s, t.kind),
-    off: successionThresholdOff(s, t), nudge: handoverNudgeOn(s) });
+  const fill = contextFill(s);
+  return betweenOrdersLine({ fillPct: fill?.pct ?? null, usedTokens: fill?.usedTokens ?? null, threshold: t,
+    choice: thresholdChoiceOf(s, t.kind), off: successionThresholdOff(s, t), nudge: handoverNudgeOn(s) });
 }
 // The per-slot, per-DAY counter /api/sessions serves. Kept in memory and SEEDED from the ledger at
 // boot — the opposite choice from stewardRecentSends one region up, and for the reason that
@@ -13678,9 +13714,12 @@ async function flushDeliveryBundle(key: string, immediate?: ImmediateDelivery): 
 // What a send types: over PASTE_MAX_BYTES the one pane-inbox line that stands for the stored text, else the text itself, and the head
 // in front of it. The head reads what the delivery carries from `given`: a large bundle with a mailbox part still brings the
 // between-orders line, although its typed text is the pane-inbox line (queue f0bde8c4, checker R2-1 on W3 Auftrag 17).
-function typedDelivery(s: Slot, given: string, path: SendPath, notice?: string): { text: string; header: string | null } {
+function typedDelivery(s: Slot, given: string, path: SendPath, notice?: string): { text: string; header: string | null; between: boolean } {
   const text = Buffer.byteLength(given, "utf8") > PASTE_MAX_BYTES ? storePaneInboxText(s, given, path, notice) : given;
-  return { text, header: deliveryHeader(path, s.id, text, s, given) };
+  // the line is asked ONCE: the head carries what is booked as given
+  const line = deliveryBetween(path, given, s);
+  const header = deliveryHeader(path, s.id, text, s, given, line);
+  return { text, header, between: header !== null && line !== null };
 }
 async function sendText(s: Slot, given: string, submit: boolean, options: SendTextOptions): Promise<{ acceptance: Acceptance }> {
   if (SNAPSHOT_MIRROR) throw new DeliveryCancelled("snapshot-mirrored-read-only: Pane-Zustellung in einer Spiegel-Instanz");
@@ -13741,7 +13780,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   }
   }
   // from here on `text` is what is TYPED: the caller's text, or the one line that stands for it, behind its head
-  const { text, header } = typedDelivery(s, given, options.path, options.paneInboxNotice);
+  const { text, header, between } = typedDelivery(s, given, options.path, options.paneInboxNotice);
   const occupant = slotStreamOccupant(s);
   if (!occupant || slotTeardownInflight.has(s.id)) throw new SendRefused("slot unavailable for send — nothing typed");
   const harnessName = s.harness ?? "default";
@@ -13984,6 +14023,7 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
   // neighbours, so it can neither delay nor fail the send it records.
   try {
     const result = await task;
+    if (between && lineStaysInField(pasted, null)) zwischenZeileBuchen(s, options.path);
     if (result.acceptance === "unobservable" && deliveryRead.pane?.composer && pasted > 0 && submit)
       void observeStuckDelivery(s, deliveryRead.pane, probeId, options.path, composed, deliveryRead.collapsedDisplay, options.senders ?? []);
     else if (stuckDeliveryProbes.get(s.id) === probeId) stuckDeliveryProbes.delete(s.id);
@@ -13991,6 +14031,9 @@ async function sendText(s: Slot, given: string, submit: boolean, options: SendTe
       options.inboxId, options.programEventId);
     return result;
   } catch (e) {
+    // typed into the composer although not accepted: the line stands in the field and is submitted with its rest, so it counts as given.
+    // NOT when the rollback emptied the field ("cleared"): then nothing of it stayed, the seat never saw the line and gets it with the next delivery
+    if (between && lineStaysInField(pasted, e instanceof SendNotAccepted ? e : null)) zwischenZeileBuchen(s, options.path);
     if (deliveryRead.pane?.composer && pasted > 0 && submit)
       void observeStuckDelivery(s, deliveryRead.pane, probeId, options.path, composed, deliveryRead.collapsedDisplay, options.senders ?? []);
     else if (stuckDeliveryProbes.get(s.id) === probeId) stuckDeliveryProbes.delete(s.id);
@@ -15089,7 +15132,7 @@ function successionScopeError(s: Slot, opts: { lane: "refuse" | "own-rail" }): R
 const SUCCESSION_INIT_PATH = ".fleet/init.md";
 const SUCCESSION_INIT_MAX = 2000;
 const SUCCESSION_NEUTRAL_STEPS = [
-  "1. Lies GET /api/self → `lineage.record` — das ist deine Übergabe.",
+  "1. Lies GET $FLEET_SELF_URL/api/self (Header x-fleet-self-token: $FLEET_SELF_TOKEN) → `lineage.record` — das ist deine Übergabe.",
   "2. Lies den obersten Abschnitt von HANDOFF.md, falls vorhanden: Historie, kein Übergabekanal.",
   "3. Lies README.md bzw. AGENTS.md, falls vorhanden, und gründe dich auf git (HEAD, Branch, Arbeitsbaum).",
 ];
@@ -15122,8 +15165,40 @@ const laneNow: LaneNow = (slot) => {
   const t = slotFrom(slot);
   return t?.cwd && t.worktree ? { cwd: t.cwd, branch: t.worktree.branch } : null;
 };
-const handoverFactsOf = (draft: LineageHandover, carry: string | null): HandoverFacts => ({ obligations: draft.obligations,
-  intent: draft.intent, pointer: draft.pointer, carry: carry !== null, now: Date.now(), laneNow });
+const handoverFactsOf = (draft: LineageHandover, carry: string | null, mail: readonly BriefMail[] = [], mailFacts?: BriefMailFacts): HandoverFacts => ({ obligations: draft.obligations,
+  intent: draft.intent, pointer: draft.pointer, carry: carry !== null, now: Date.now(), laneNow, mail, ...(mailFacts ? { mailFacts } : {}) });
+// THE POST A SUCCESSOR WOULD MISS (server/succession.ts#BriefMail), read while the predecessor still stands. Three kinds, all only its own inbound
+// mail, by the addresses the successor reads anyway (messageAddressesFor, Mangel 79):
+//  - READ by its occupant at or after `since` (the receipt of an observed delivery, or its own read of the list);
+//  - TYPED into its pane at or after `since` and never receipted (most deliveries: the paste cannot be observed). Such a mail still reads as
+//    unread here, and the end of the occupant stamps it read by the occupant, so it would stand in no list of the successor;
+//  - NAMED by the handover by id: always a row, whatever the cap.
+// `since` is the standing handover, or, for a succeed that carries its intent in the body (no standing handover), BRIEF_MAIL_WINDOW_MS before the
+// call. Whether the predecessor DID the mail is not known: it may have kept its handover current, so the brief says "read, done or not unknown".
+// A text marked personal never enters the brief (the successor may run on another harness, server/datengrenze.ts): its row names id, sender and time only.
+const BRIEF_MAIL_MAX = 5;
+// the window of a succeed without a standing handover; a test shortens it to seconds (FLEET_TEST_BRIEF_MAIL_WINDOW_MS), nothing else reads this
+const briefMailWindowMs = (): number => Number(process.env.FLEET_TEST_BRIEF_MAIL_WINDOW_MS) || BRIEF_MAIL_WINDOW_MS;
+function briefMailFor(s: Slot, intent: string | null, standingAt: number | null, now = Date.now()): { mail: BriefMail[]; facts: BriefMailFacts } {
+  const since = standingAt ?? now - briefMailWindowMs();
+  const facts = { since, standing: standingAt !== null, omitted: 0 };
+  const mine = messageAddressesFor(s);
+  if (!mine.length) return { mail: [], facts };
+  const typedIds = postfachAttempted.get(s.id);
+  const typedHere = typedIds && typedIds.openedAt === s.openedAt ? typedIds.stand : null;
+  const rows = messages.entries.filter((m) => messageInboundFor(s, m, mine)).flatMap((m): BriefMail[] => {
+    const readAt = m.readBy?.slot === s.id && m.readBy.openedAt === s.openedAt && m.readAt !== null && m.readAt >= since ? m.readAt : null;
+    const typedAt = m.readBy === null && typedHere?.has(m.id) ? postfachTypedAt.get(m.id) ?? null : null;
+    const lateAt = readAt ?? (typedAt !== null && typedAt >= since ? typedAt : null);
+    const named = !!intent && intent.includes(m.id);
+    return lateAt !== null || named ? [{ id: m.id, from: postfachSenderLabel(m.from), at: lateAt ?? m.at,
+      text: m.personal === true || m.payload.kind !== "text" ? "" : m.payload.text, late: lateAt !== null, named }] : [];
+  }).sort((a, b) => a.at - b.at);
+  const named = rows.filter((m) => m.named), rest = rows.filter((m) => !m.named);
+  const kept = rest.slice(-BRIEF_MAIL_MAX);
+  facts.omitted = rest.length - kept.length;
+  return { mail: [...named, ...kept], facts };
+}
 
 // THE CHANNEL, parsed from the succeed body: `intent` (prose, capped) OR `pointer` (a committed,
 // dated section, `path.md#anchor`), never both, and neither beside `carry` — one handover channel,
@@ -16046,7 +16121,8 @@ async function handleSelfSucceed(s: Slot, req: Request): Promise<Response> {
     }
     return await succeedGeneric(s, { label, carry, channel: lineChannel, spawn, predecessorIdentity,
       appendix: standing ? `--- Der Übergabetext oben ist die stehende Übergabe deiner Vorgängerin vom ${new Date(standing.at).toISOString()} (POST /api/self/handover) ---` : null,
-      beforeKill: null });
+      // the mail reference is the LIVE standing handover even when the body names its own channel: the words win for the channel, not for the time
+      standingAt: bound.length === 0 ? liveStandingHandover(s)?.at ?? null : null, beforeKill: null });
   } finally {
     successionInflight.delete(identity);
   }
@@ -16088,6 +16164,9 @@ interface GenericSuccession {
   // the owner door's standing-handover age and transcript rest; null on the self door. A function gets the bytes the brief has
   // left behind the ritual (server/brief-platz.ts#briefRoom) and cuts the rest to them.
   appendix: string | ((room: number) => string) | null;
+  // the standing handover's time when the channel IS the standing handover (null: the body named it, or none exists); the brief's mail
+  // reference (briefMailFor)
+  standingAt: number | null;
   // the owner door's LAST question before the kill, asked after every await of the brief build: a
   // turn that started while the brief was built keeps its pane (null on the self door — its caller
   // is the predecessor itself, mid-turn by definition)
@@ -16109,7 +16188,11 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   // EVERYTHING THE BRIEF READS IS READ WHILE THE PREDECESSOR STILL STANDS (respawnInPlace): the
   // cwd, the draft and the successor's label. A git read that fails here refuses nothing and ends
   // nobody; the same read after the kill would be a handover built on a slot already emptied.
-  const lineageFacts = handoverFactsOf(draft, carry);
+  // ...and the moment it was read: a mail typed to the pane after this and before the kill is not in the brief, so the end must not take it from the
+  // successor (endePostfachVersuch leaves it unread)
+  const briefMail = briefMailFor(s, draft.intent, opts.standingAt);
+  successionBriefAt.set(s.id, { openedAt: predecessorIdentity.openedAt, at: Date.now(), held: new Set() });
+  const lineageFacts = handoverFactsOf(draft, carry, briefMail.mail, briefMail.facts);
   // THE ORCHESTRATOR TWIN of this founding: same rail, same gate, same record — one extra text
   // and one receipt. Decided on the SUCCESSOR'S label, never the predecessor's: `label` above is
   // verbatim inheritance unless the body renamed the role, and an owner who renames it at
@@ -16171,7 +16254,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const planned = await carrySlotPlan(s.plan, { harness, model: opts.spawn.model, effort: opts.spawn.effort }, "Nachfolge");
   if (opts.beforeKill) {
     const refused = await opts.beforeKill();
-    if (refused) return refused;
+    if (refused) { dropBriefMark(s); return refused; }
   }
   laneSpawn.add(s.id); // the slot is empty between the kill and the open — see laneSpawn
   const transit = holdSuccessionPaths([predecessor.cwd]); // ...and so is its worktree: no landed branch ends under it
@@ -16184,7 +16267,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
         undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, carriedBoardBranch, carriedRolle, carriedLinie, null, carriedGrenze),
       async () => {}));
-    if (!respawned.ok) return respawned.response;
+    if (!respawned.ok) { dropBriefMark(s); return respawned.response; }
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
     // would leave the successor's GET /api/self without its handover on every delivery failure.
     const openedAt = s.openedAt;
@@ -16451,7 +16534,8 @@ async function handleOwnerSucceed(s: Slot, stillWanted: (() => string | null) | 
         channel: { intent: standing?.intent ?? null, pointer: standing?.pointer ?? null },
         spawn: pick ? { model: pick.model, effort: pick.effort, permissions: pick.permissions, harness: pick.harness }
           : { model: s.model, effort: s.effort, permissions: pe.permissions }, predecessorIdentity,
-        appendix: (room) => freshSuccessionAppendix(standing, tail, now, "generic", summary, stillWanted ? "threshold" : "owner", room), beforeKill });
+        appendix: (room) => freshSuccessionAppendix(standing, tail, now, "generic", summary, stillWanted ? "threshold" : "owner", room),
+        standingAt: standing?.at ?? null, beforeKill });
     return done;
   } finally {
     successionInflight.delete(identity);
@@ -19478,8 +19562,10 @@ async function sendRemoteMessage(s: Slot, from: MessageAddress, to: MessageAddre
   if (!sent.ok) return json({ error: sent.error, ...(sent.neighbour ? { neighbour: sent.neighbour } : {}) }, sent.status);
   const entry = appendMessage(from, to, payload, key, replyTo);
   await saveStateNow();
+  // receiverFill is null on purpose: a seat of another fleet is measured by that fleet only, and its answer (server/nachbar-tuer.ts) names
+  // the holder and nothing about its fill
   return json({ ok: true, existing: false, message: entry, holder: sent.holder === null ? null : { fleet: to.fleet, slot: sent.holder },
-    note: null, escalatedTo: null });
+    receiverFill: null, note: null, escalatedTo: null });
 }
 // FERNPOST · the receiving half: who may write whom is decided here and only here (nimmNachbarAn)
 const nachbarFehlversuch = fehlversuchZaehler();
@@ -19568,8 +19654,12 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
       return json({ error: `idempotencyKey ${key} was already used by this sender for a different message (${prior.id}) — one key names one act` }, 409);
     // EIN REPLAY ANTWORTET WIE DAS ERSTE MAL, und dazu gehört, was damals über die Zustellung
     // gesagt wurde: sonst verschwände der Grund genau dann, wenn jemand ihn nachliest.
+    // ...und der Füllstand dessen, der die Nachricht JETZT hält (nicht der damalige): wer sie erneut schickt, misst auch dann
+    const held = to.kind === "remote" ? null : resolveMessageAddress(to);
+    const heldFill = held?.ok && held.holder ? contextFill(held.holder) : null;
     return json({ ok: true, existing: true, message: prior,
-      ...(prior.delivery ? { delivery: prior.delivery } : {}) });
+      ...(prior.delivery ? { delivery: prior.delivery } : {}),
+      receiverFill: heldFill ? { pct: heldFill.pct, usedTokens: heldFill.usedTokens, windowTokens: heldFill.windowTokens } : null });
   }
 
   // FERNPOST: a seat of ANOTHER fleet is written through the neighbour door; the receiving fleet checks who may write whom.
@@ -19659,9 +19749,14 @@ async function sendMessageFor(s: Slot, body: Record<string, unknown> | null): Pr
   } else hindernis = null;
   // A MESSAGE CONFERS NOTHING. It is text addressed to a principal: no owner right, no release,
   // land or deploy authority travels with it, and no route reads it as an instruction.
+  // DER FÜLLSTAND DES EMPFÄNGERS (Owner 03.11.): wer einen Auftrag gibt, misst vorher, ob der Sitz ihn noch nehmen soll
+  // (operating-a-constellation, Schritt 4). `receiverFill` ist null, wo kein Sitz die Nachricht hält oder sein Füllstand nicht
+  // messbar ist; nie 0.
+  const receiverFill = resolved.holder ? contextFill(resolved.holder) : null;
   return json({ ok: true, existing: false, message: entry,
     ...(hindernis ? { delivery: hindernis } : {}),
     holder: resolved.holder ? { slot: resolved.holder.id, openedAt: resolved.holder.openedAt } : null,
+    receiverFill: receiverFill ? { pct: receiverFill.pct, usedTokens: receiverFill.usedTokens, windowTokens: receiverFill.windowTokens } : null,
     note: resolved.note, escalatedTo: resolved.escalatedTo });
 }
 
@@ -29513,6 +29608,32 @@ async function tickMessageNudge(): Promise<void> {
 // Program-inbox hints. The window here is about a minute, so several messages that arrive together are
 // typed together. An occupied composer parks the paste (parkFleetSend) instead of dropping it.
 const postfachAttempted = new Map<number, PostfachVersuchMapRow>();
+// WHEN a message was typed into its receiver's pane (message id -> time), process-local like the attempt map beside it. The attempt row keeps no time per
+// id; the succession brief needs it to tell a mail typed after the handover from one the occupant had long before (briefMailFor). A restart forgets
+// it, and then such a mail is named by neither list: the same limit as "at most once" (the hint's model).
+const postfachTypedAt = new Map<string, number>();
+const POSTFACH_TYPED_AT_MAX = 2000;
+// The moment a succession read the mail for its brief (slot -> occupant and time). A mail typed into the leaving pane after it is in no brief, so
+// the end of the occupant must not stamp it read: it stays unread and the successor gets it (endePostfachVersuch).
+// `held`: ids of mail the pane took and Fleet OBSERVED after the mark; their receipt waits (see holdReceiptDuringBrief) so the successor still gets them.
+const successionBriefAt = new Map<number, { openedAt: number; at: number; held: Set<string> }>();
+const SUCCESSION_BRIEF_AT_TTL_MS = 5 * 60_000;
+const liveBriefMark = (s: Slot) => {
+  const mark = successionBriefAt.get(s.id);
+  return mark && mark.openedAt === s.openedAt && Date.now() - mark.at < SUCCESSION_BRIEF_AT_TTL_MS ? mark : null;
+};
+// A SUCCESSION THAT DID NOT END THE OCCUPANT gives its mark back: what the pane took meanwhile is receipted now, as it would have been without the mark.
+function dropBriefMark(s: Slot): void {
+  const mark = successionBriefAt.get(s.id);
+  successionBriefAt.delete(s.id);
+  if (!mark || mark.openedAt !== s.openedAt) return;
+  let stamped = false;
+  for (const id of mark.held) {
+    const entry = messages.entries.find((m) => m.id === id && m.readBy === null);
+    if (entry && stampMessageRead(entry, s)) stamped = true;
+  }
+  if (stamped) void saveStateNow().catch((e: unknown) => logError("postfachBriefMark", e));
+}
 // MESSAGES THAT WAIT IN THE BUNDLE ARE OFFERED NO MORE. They are not typed yet, so they are not an
 // "attempt" either: this row is released when the send lands, is refused for good, or is parked;
 // until then the next tick must not queue the same text a second time.
@@ -29527,7 +29648,7 @@ const postfachVersuche = new PostfachVersuche(POSTFACH_TICK_MS);
 
 function postfachSenderLabel(a: MessageAddress): string {
   if (a.kind === "program") return `Program ${a.id}`;
-  if (a.kind === "role") return a.role === "owner" ? "Owner"
+  if (a.kind === "role") return a.role === "owner" ? POSTFACH_OWNER_LABEL
     : a.role === "orchestrator" ? "Orchestrator" : `Role ${a.role}`;
   if (a.kind === "remote") return `Fleet ${a.fleet} Slot ${a.slot}`;
   return `${a.kind === "lane" ? "Lane" : "Session"} Slot ${a.slot}`;
@@ -29593,6 +29714,8 @@ function vergissPostfachHindernisse(ids: readonly string[]): boolean {
 // `stand`: der Paste kam ohne Wurf zurück und steht in der Pane (W16-4); nur das gibt eine beendete Besetzung als gelesen weiter
 const rememberPostfachAttempt = (s: Slot, ids: readonly string[], stand = false): void => {
   const session = backlogSessionKey(s);
+  if (stand) for (const id of ids) { postfachTypedAt.delete(id); postfachTypedAt.set(id, Date.now()); }
+  while (postfachTypedAt.size > POSTFACH_TYPED_AT_MAX) postfachTypedAt.delete(postfachTypedAt.keys().next().value!);
   const row = postfachVersuchRow(s.id, s.openedAt, session, ids, Date.now(), stand);
   if (!row) return;
   const verdraengt = rememberPostfachVersuch(postfachAttempted, row);
@@ -29611,9 +29734,17 @@ const rememberPostfachAttempt = (s: Slot, ids: readonly string[], stand = false)
 // EINE BESETZUNG, DIE JETZT ABGEBAUT WIRD (W3 Auftrag 21, Queue 672d48ec): die Nachfolge löschte ihre Versuchszeile, bevor der Takt sie
 // stempeln konnte, und der Takt tippte der Nachfolgerin, was in der Pane der Vorgängerin stand (d50df5ad am 01.11., erst der nächste Neustart
 // stempelte es aus dem Ledger). Was stand, gilt hier als von ihr gelesen; ein Vielleicht geht, wie im Takt, an die Nachfolgerin.
+// WAS NACH DEM LESEN DES BRIEFS GETIPPT WURDE, bekommt die Nachfolgerin (Auftrag 3, Punkt 1): der Brief wird gelesen, solange die Vorgängerin steht;
+// was danach und vor dem Ende in ihre Pane kam, steht in keiner Zeile des Briefs und bliebe, als von ihr gelesen gestempelt, in keiner Liste der
+// Nachfolgerin. Das bleibt ungelesen und kommt mit dem Takt zu ihr (die Besetzung ist weg, ihre Versuchszeile auch).
 function endePostfachVersuch(slot: number): void {
   const b = verlasseVersuch(postfachAttempted, slot);
-  if (b && erledigeGetipptes([b])) void saveStateNow().catch((e) => logError("postfachNachfolge", e));
+  const brief = successionBriefAt.get(slot);
+  successionBriefAt.delete(slot);
+  const nachBrief = b && brief && brief.openedAt === b.openedAt && Date.now() - brief.at < SUCCESSION_BRIEF_AT_TTL_MS
+    ? (id: string): boolean => brief.held.has(id) || (postfachTypedAt.get(id) ?? 0) > brief.at : () => false;
+  const stempeln = b ? { ...b, ids: b.ids.filter((id) => !nachBrief(id)) } : null;
+  if (stempeln && erledigeGetipptes([stempeln])) void saveStateNow().catch((e) => logError("postfachNachfolge", e));
 }
 function erledigeGetipptes(beendet: readonly BeendeterVersuch[]): boolean {
   let stamped = 0;
@@ -29623,6 +29754,15 @@ function erledigeGetipptes(beendet: readonly BeendeterVersuch[]): boolean {
   }
   if (stamped) console.log(`postfach: ${stamped} Nachrichten, die in die Pane einer beendeten Besetzung getippt waren, gelten als von ihr gelesen`);
   return stamped > 0;
+}
+// A PASTE THE PANE TOOK AFTER A SUCCESSION READ ITS BRIEF is in no row of the brief. Its receipt would say "read by the occupant", and the end of the
+// occupant would leave it in no list of the successor; so while the mark stands the receipt waits (dropBriefMark gives it back when the occupant stays,
+// endePostfachVersuch leaves it unread when it ends). The attempt row still keeps the same words from being typed to this occupant twice.
+function holdReceiptDuringBrief(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
+  const mark = liveBriefMark(current);
+  if (!mark) return false;
+  for (const id of postfachReceiptIds(entries, acceptance)) mark.held.add(id);
+  return true;
 }
 function acknowledgePostfach(current: Slot, entries: readonly PostfachEntry[], acceptance: Acceptance): boolean {
   let stamped = false;
@@ -29686,7 +29826,7 @@ function postfachHandlers(s: Slot, plan: PostfachPlan, session: string, openedAt
     postfachVersuche.vergessen(current.id);
     forgetPostfachQueued(current, ids);
     rememberPostfachAttempt(current, ids, true);
-    const receipted = acknowledgePostfach(current, plan.entries, acceptance);
+    const receipted = holdReceiptDuringBrief(current, plan.entries, acceptance) ? false : acknowledgePostfach(current, plan.entries, acceptance);
     const cleared = vergissPostfachHindernisse(ids);
     current.history = [...current.history, { text, ts: sentAt, source: "fleet" as const }].slice(-MAX_HISTORY);
     saveHistory(current);
@@ -30559,7 +30699,7 @@ async function tickMigrate(): Promise<void> {
       if (threshold.kind === "lane" || fill.pct < ZWISCHEN_AUFTRAEGEN_PCT || !handoverNudgeOn(s)) continue;
       const cache = cacheStateOf(s, now);
       const choice = thresholdChoiceOf(s, threshold.kind);
-      const ruhend = restingHandoverLine({ fillPct: fill.pct, threshold, choice,
+      const ruhend = restingHandoverLine({ fillPct: fill.pct, usedTokens: fill.usedTokens, threshold, choice,
         cooling: !keepCacheOn(s) && cacheCooling(cache, now) });
       if (ruhend && hintLedger.due(s.id, s.sessionId, "due", now, cache.state))
         due.push({ s, sessionId: s.sessionId, lane: false, ruhend, facts: { fillPct: fill.pct, usedTokens: fill.usedTokens,
@@ -30574,7 +30714,8 @@ async function tickMigrate(): Promise<void> {
     const facts: HintFacts = { fillPct: fill.pct, usedTokens: fill.usedTokens, windowTokens: fill.windowTokens, threshold, step,
       cache: cache.state, choice, ...(harnessOf(s.harness).id === "claude" ? {} : { agent: "Pi" }) };
     // a session the owner switched the hint off for gets none (Slot.handover); its act still comes
-    if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now, cache.state))
+    // ...and a seat that already got the between-orders line is not asked a second time at the base (step "hint"); at the due step the hint stays
+    if (handoverNudgeOn(s) && hintLedger.due(s.id, s.sessionId, step, now, cache.state) && !(step === "hint" && zwischenZeileErhalten(s)))
       due.push({ s, sessionId: s.sessionId, lane: threshold.kind === "lane", facts });
     const acted = thresholdActOf(s);
     // cold under the cap is no act but the owner's offer (actDecision „[Zitat entfernt]“): no rest probe for it
@@ -46873,7 +47014,7 @@ function buildOrchestratorSuccessionBrief(start: OrchestratorStartTeile, lineage
   const head = `[fleet Orchestrator succession] Du bist die FORTGESETZTE Orchestratorin dieses Fleets; die Vorgängerin ist auf diesem Slot beendet; die Übergabe ist der Linien-Record ${lineageId} (GET /api/self, Feld \`lineage\`).`;
   const next = carry ? [`Das Erste, was die Vorgängerin als Nächstes täte (max. ${MAX_SUCCESSION_CARRY} Zeichen):`, carry] : [];
   // the same position-bound reader pointer as the opening: succession is still a start
-  return [head, ...handoverLines(lineage), ...next, imSystemprompt ? ORCHESTRATOR_START_IM_PROMPT : renderOrchestratorStartParts(start),
+  return [head, DOOR_LINE, ...handoverLines(lineage), ...next, imSystemprompt ? ORCHESTRATOR_START_IM_PROMPT : renderOrchestratorStartParts(start),
     ownerKorrekturenPointer()].join("\n\n");
 }
 

@@ -118,8 +118,20 @@ export function rearmStepOf(o: LineageObligationRef, now: number, laneNow: LaneN
 // keine ihrer Zeilen wie ein Schritt „1. …“ aussieht. Gebaut, solange die Vorgängerin noch steht
 // (server.ts#succeedGeneric), aus denselben Schritten, die das Binden danach ausführt. Eine abgelaufene Erinnerung
 // ist keine Pflicht mehr und steht nicht im Brief, nur im Record.
+// POST, DIE DIE NACHFOLGERIN NICHT SELBST FINDET (Owner 03.11., Auftrag 2 Punkt 2): eine Nachricht, die ihre Vorgängerin nach ihrer Übergabe
+// bekam (getippt in den Sekunden zwischen Übergabe und Ende, von der Vorgängerin quittiert, darum in keiner Liste Ungelesener), und eine
+// Nachricht, die die Übergabe nur bei ihrer Kennung nennt. Der Brief nennt beide mit Absender, Zeit und Anfang des Textes und sagt, wo der
+// ganze Text liegt. Es ist keine Post, die die Nachfolgerin nicht schon lesen dürfte: die Adressen der Vorgängerin sind ihre (Mangel 79).
+// `late`: after the reference time (read by the predecessor, or typed into its pane and never receipted); `named`: its handover names the id.
+// A mail it names always has a row. The reference time is its standing handover, or, when it handed over in the body of the succeed call
+// (no standing handover), the last BRIEF_MAIL_WINDOW_MS before the call.
+export interface BriefMail { id: string; from: string; at: number; text: string; late: boolean; named?: boolean }
+export interface BriefMailFacts { since: number; standing: boolean; omitted: number }
+export const BRIEF_MAIL_WINDOW_MS = 10 * 60_000;
 export interface HandoverFacts {
   obligations: readonly LineageObligationRef[];
+  mail?: readonly BriefMail[];
+  mailFacts?: BriefMailFacts;
   intent: string | null;
   pointer: string | null;
   carry: boolean;
@@ -132,9 +144,10 @@ const durationText = (sec: number): string => {
   const min = Math.round(sec / 60);
   return min < 120 ? `${min} min` : `${Math.round(min / 60)} h`;
 };
+// 80 characters, counted as characters: a cut never splits a pair of UTF-16 units (an emoji at the cut stays whole or goes whole)
 const autoPreview = (text: string): string => {
-  const one = text.replace(/\s+/g, " ").trim();
-  return one.length > 80 ? `${one.slice(0, 80)}…` : one;
+  const one = [...text.replace(/\s+/g, " ").trim()];
+  return one.length > 80 ? `${one.slice(0, 80).join("")}…` : one.join("");
 };
 function obligationLabel(o: LineageObligationRef, now: number): string {
   const t = o.target;
@@ -156,6 +169,28 @@ function obligationLabel(o: LineageObligationRef, now: number): string {
 const listed = (rows: string[]): string[] => rows.length <= BRIEF_LIST_MAX ? rows
   : [...rows.slice(0, BRIEF_LIST_MAX), `- … und ${rows.length - BRIEF_LIST_MAX} weitere (GET /api/self, lineage.record)`];
 const countText = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+const clock = (at: number): string => `${new Date(at).toISOString().slice(11, 16)} UTC`;
+// Die Tür steht in jedem Brief mit Adresse und Header: ohne sie schickte eine Nachfolgerin im eigenen Setup ihr Token an eine geratene Adresse
+// (`GET /api/self` allein hat keine) und fand die Nachricht nicht, die ihre Übergabe nur bei der Kennung nannte.
+export const DOOR_LINE = "Deine Tür zu Fleet: $FLEET_SELF_URL (die Adresse) und der Header x-fleet-self-token: $FLEET_SELF_TOKEN; beide stehen in deiner "
+  + "Shell-Umgebung. Rate keine Adresse und schicke das Token nirgends sonst hin.";
+export function mailLines(mail: readonly BriefMail[], facts?: BriefMailFacts): string[] {
+  const omitted = facts?.omitted ?? 0;
+  if (!mail.length && !omitted) return [];
+  const row = (m: BriefMail): string => `- ${m.id} von ${m.from} um ${clock(m.at)}${m.text === "" ? "" : `: „${autoPreview(m.text)}“`}`;
+  const named = mail.filter((m) => m.named === true || !m.late), after = mail.filter((m) => m.late && m.named !== true);
+  const since = facts ? clock(facts.since) : null;
+  const whenText = facts?.standing === false ? `In den letzten ${Math.round(BRIEF_MAIL_WINDOW_MS / 60_000)} Minuten vor ihrer Übergabe`
+    : since ? `Nach ihrer stehenden Übergabe von ${since}` : "Nach ihrer stehenden Übergabe";
+  return [
+    ...(named.length ? ["Ihre Übergabe nennt diese Post:", ...named.map(row)] : []),
+    ...(after.length ? [`${whenText} hat sie diese Post gelesen oder in ihre Pane getippt bekommen. Ob sie erledigt ist, ist nicht bekannt `
+      + "(eine Vorgängerin, die ihre Übergabe laufend hält, hat vieles davon schon getan): prüfe am Stand, bevor du etwas wiederholst.", ...after.map(row)] : []),
+    ...(omitted ? [`- … und ${omitted} weitere ließ ich hier aus (der Brief zeigt die neuesten); alle stehen, gelesen und ungelesen, in GET $FLEET_SELF_URL/api/self/messages`] : []),
+    "Den ganzen Text liest du an der Tür: GET $FLEET_SELF_URL/api/self/messages mit dem Header x-fleet-self-token: $FLEET_SELF_TOKEN; die Nachricht steht in dieser Liste, "
+      + "gelesen oder nicht.",
+  ];
+}
 export function handoverLines(f: HandoverFacts): string[] {
   const armed: string[] = [];
   const lost: string[] = [];
@@ -175,6 +210,7 @@ export function handoverLines(f: HandoverFacts): string[] {
     ...(lost.length ? ["Nicht wieder scharf:", ...listed(lost)] : []),
     ...(open ? [events + reports === 1 ? `Ungelesen geblieben ist ${open} an sie; die Kennung steht in GET /api/self, lineage.record.`
       : `Ungelesen geblieben sind ${open} an sie; die Kennungen stehen in GET /api/self, lineage.record.`] : []),
+    ...mailLines(f.mail ?? [], f.mailFacts),
     ...(f.intent ? ["Was sie vorhatte und was als Nächstes kommt, hat sie dir aufgeschrieben:", ...f.intent.split("\n").map((l) => `  ${l}`)]
       : [f.pointer ? `Was sie vorhatte und was als Nächstes kommt, steht in ${f.pointer}.`
       : f.carry ? "Was sie als Erstes täte, steht am Ende dieses Briefs."
@@ -184,6 +220,7 @@ export function handoverLines(f: HandoverFacts): string[] {
 export function successionBriefText(steps: readonly string[], carry: string | null, f: HandoverFacts): string {
   return [
     "[fleet succession] Die Vorgängerin ist auf diesem Slot beendet; du übernimmst ihre Arbeit.",
+    DOOR_LINE,
     ...handoverLines(f),
     "Beginne exakt in dieser Reihenfolge:",
     ...steps,
@@ -304,7 +341,9 @@ export function warmTextInput(v: unknown, fleetText: string, credentials: readon
 // Owner-Wort ist jünger als der Env-Wert 40); der eigene Wert einer Session ist ihre Basis; die Obergrenze
 // liegt immer CAP_GAP_PCT darüber.
 export type SessionKind = "orchestrator" | "program-main" | "bau" | "lane" | "session";
-const FLEET_BASE_PCT: Record<SessionKind, number> = { orchestrator: 45, "program-main": 40, bau: 40, lane: 37, session: 40 };
+// Owner 03.11.: „[Zitat entfernt]“; ein Bauer und ein freier Sitz haben 30, die
+// Obergrenze liegt wie immer 5 darüber (ein Bauer auf Fleets Tabelle bekommt bei 35 % die fällige Handlung, nicht erst bei 45).
+const FLEET_BASE_PCT: Record<SessionKind, number> = { orchestrator: 45, "program-main": 40, bau: 30, lane: 37, session: 30 };
 export const CAP_GAP_PCT = 5;
 export interface Threshold { kind: SessionKind; basePct: number; capPct: number; from: "session" | "env" | "fleet" | "setup" }
 // DIE HARNESSES AUF FLEETS ÜBERGABE-BAND (S3): Claude und die pi-Adapter. Beide messen ihren Füllstand durch
@@ -511,27 +550,55 @@ export function hintText(f: HintFacts): string {
 // DER NATÜRLICHE PUNKT (Owner 01.11.: „[Zitat entfernt]“): früh und an einer Pause, nie durch Weiterlaufen bis zur Obergrenze.
 const NATURAL_BREAK = "at your next natural break (when your current order is reported, or at a finished, committed step inside the work)";
 
-// ZWISCHEN ZWEI AUFTRÄGEN (Owner 22.10.: „[Zitat entfernt]“, 01.11. wie oben): kommt eine Postfach-Nachricht zu einem Sitz, dessen Kontext an
-// oder über dieser Marke steht, nennt der Kopf der Zustellung eine Zeile dazu: Übergabe schreiben und weitergeben, bevor er die Nachricht
-// anfängt, damit eine frische Nachfolgerin sie nimmt. Nicht für eine Lane (sie gibt mit ihrem handoff-Report weiter), nicht für einen Sitz,
-// an dem keine Schwelle feuert (off: eigenes Setup, thresholdPct 0, Steward, Harness außerhalb des Bands …), nicht, wenn der Owner den
-// Hinweis für diese Session ausschaltete, und nicht ohne messbaren Füllstand. Kein Apostroph, kein Anführungszeichen: die Zeile wird getippt.
+// ZWISCHEN ZWEI AUFTRÄGEN (Owner 22.10.: „[Zitat entfernt]“, 01.11. wie oben, 03.11.: „[Zitat entfernt]“, „[Zitat entfernt]“): kommt eine Postfach-Nachricht VON EINEM ANDEREN SITZ zu einem Sitz, dessen
+// Kontext an oder über dieser Marke steht, nennt der Kopf der Zustellung eine Zeile dazu: Übergabe schreiben und weitergeben, bevor er die
+// Nachricht anfängt, damit eine frische Nachfolgerin sie nimmt. Sie erreicht den Bauer, den freien Sitz, die Orchestratorin und einen Sitz im
+// eigenen Setup (dort feuert sonst nichts, das Board zeigt weiter nur seine Kosten). Nicht für einen MAIN (er ruht in der heutigen Richtung
+// und liest über seine Program-Adresse, nicht über das Postfach; Entscheid der Orchestratorin 03.11.), nicht für ein Wort des Owners
+// (der Kopf prüft den Absender, server.ts#deliveryHeader), nicht für eine Notiz, die Fleet selbst schrieb und die keine Arbeit trägt
+// (server/postfach-zustellen.ts#postfachFleetNotiz), nicht für eine Lane (sie gibt mit ihrem handoff-Report weiter), nicht für einen Sitz
+// mit eigener Schwelle des Owners oder mit der Wahl Compact, nicht für einen Sitz, an dem ein anderer Grund die Übergabe ausschaltet
+// (Steward, Warten auf den Owner, Harness außerhalb des Bands, Schiene aus, Env 0), nicht, wenn der Owner den Hinweis für diese Session
+// ausschaltete, nicht ohne messbaren Füllstand und nicht unter ZWISCHEN_AUFTRAEGEN_MIN_TOKENS: die Marke bleibt Prozent, aber ein kleines
+// Fenster schickt seinen Sitz nicht gleich beim Start zur Übergabe. Höchstens EINMAL je Besatzer (server.ts#zwischenZeileGegeben, wie der
+// Schwellen-Hinweis; Owner 16.10.: „[Zitat entfernt]“).
+// Kein Apostroph, kein Anführungszeichen: die Zeile wird getippt.
 export const ZWISCHEN_AUFTRAEGEN_PCT = 25;
-// NUR AUF FLEETS EIGENER BASIS EINES BAUERS (W3 Auftrag 17, W16-2; Entscheid der Orchestratorin 01.11.): die Marke gilt für einen Bauer
-// oder freien Sitz, dessen Basis Fleets Wert ist (Env oder Fleet), mit einer Wahl, die übergibt. Eine eigene Schwelle des Owners
-// (thresholdPct), seine Wahl Compact und eine Rolle mit höherer Basis (Orchestratorin 45, MAIN) behalten ihren Hinweis und ihre
-// Handlung wie bisher und bekommen keine der zwei Zeilen: sonst läse die Orchestratorin ab 25 % auf jeder Nachricht „hand over“,
-// 20 Punkte vor ihrer eigenen Karte.
+export const ZWISCHEN_AUFTRAEGEN_MIN_TOKENS = 100_000;
+// FLEETS BASIS EINES BAUERS (W3 Auftrag 17, W16-2; Entscheid der Orchestratorin 01.11.): ein Bauer oder ein freier Sitz, dessen Basis
+// Fleets Wert ist (Env oder Fleet), mit einer Wahl, die übergibt. Das gilt NUR NOCH für die ruhende Zeile unten (Owner 03.11.: ruhende
+// Sitzungen und Warmhalten bleiben, wie sie sind). Die Zeile zwischen zwei Aufträgen nimmt seit 03.11. alle Arten außer der Lane,
+// siehe zwischenAuftraegenSitz.
 export function aufFleetsBauerBasis(t: Threshold, choice: ThresholdChoice): boolean {
   return (t.kind === "bau" || t.kind === "session") && (t.from === "env" || t.from === "fleet") && t.basePct > 0 && choice !== "compact";
 }
-export function betweenOrdersLine(f: { fillPct: number | null; threshold: Threshold; choice: ThresholdChoice; off: ThresholdOff | null;
-  nudge: boolean }): string | null {
-  if (!aufFleetsBauerBasis(f.threshold, f.choice) || f.off !== null || !f.nudge || f.fillPct === null
-    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT) return null;
-  return `[fleet] Your context is at ${f.fillPct} %, at or above the between-orders mark of ${ZWISCHEN_AUFTRAEGEN_PCT} %. `
-    + "Before you start on this message, write your handover (POST /api/self/handover) naming this message, "
-    + "and call POST /api/self/succeed, so a fresh successor takes it.";
+// DER SITZ DER ZEILE ZWISCHEN ZWEI AUFTRÄGEN (Owner 03.11., siehe oben): jede Art außer der Lane, ohne eigene Schwelle des Owners, nicht
+// Compact, und ohne Abschaltgrund bis auf das eigene Setup (dort ist die Schwelle aus, bis die Tür eine wählt, die Zeile trifft ihn trotzdem).
+// Die Orchestratorin las sie früher nicht (ihre Basis 45 lag 20 Punkte über der Marke); jetzt ist die Marke der Owner-Wille für jeden
+// Sitz, der Arbeit von einem anderen Sitz bekommt. Ein MAIN bleibt draußen (siehe oben).
+export function zwischenAuftraegenSitz(t: Threshold, choice: ThresholdChoice, off: ThresholdOff | null): boolean {
+  return t.kind !== "lane" && t.kind !== "program-main" && t.from !== "session" && choice !== "compact" && (off === null || off === "setup");
+}
+// DIE ZEILE ZÄHLT ALS GEGEBEN, wenn sie im Feld des Sitzes blieb: etwas wurde getippt (`pasted`), und das Zurückrollen nach einem nicht angenommenen Paste
+// hat das Feld nicht geleert. Nach „cleared“ hat der Sitz sie nie gesehen und bekommt sie mit der nächsten Zustellung.
+export const lineStaysInField = (pasted: number, failure: { rollback: string | null } | null): boolean => pasted > 0 && failure?.rollback !== "cleared";
+export function betweenOrdersLine(f: { fillPct: number | null; usedTokens: number | null; threshold: Threshold; choice: ThresholdChoice;
+  off: ThresholdOff | null; nudge: boolean }): string | null {
+  if (!zwischenAuftraegenSitz(f.threshold, f.choice, f.off) || !f.nudge || f.fillPct === null
+    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT || f.usedTokens === null || f.usedTokens < ZWISCHEN_AUFTRAEGEN_MIN_TOKENS) return null;
+  return betweenOrdersText(f.fillPct);
+}
+// DER TEXT DER ZEILE (getippt: kein Anführungszeichen, kein Apostroph). Er sagt, wie die Tür erreicht wird, denn ein Sitz im eigenen
+// Setup oder eine Orchestratorin kennt die Form der Tür nicht von selbst (zwei Prüfer, 03.11.: wer sie kannte, übergab; wer nicht, tat es
+// nicht): Adresse $FLEET_SELF_URL, Header x-fleet-self-token mit $FLEET_SELF_TOKEN, Feld intent. Und er verlangt, dass die Übergabe trägt,
+// was die Nachricht verlangt, nicht nur ihre Kennung: die Nachfolgerin liest die Nachricht nicht selbst.
+export function betweenOrdersText(fillPct: number): string {
+  return `[fleet] Your context is at ${fillPct} %, at or above the between-orders mark of ${ZWISCHEN_AUFTRAEGEN_PCT} %. `
+    + "Before you start on this message, hand over, so a fresh successor takes it. "
+    + `First POST $FLEET_SELF_URL/api/self/handover with the header x-fleet-self-token: $FLEET_SELF_TOKEN and the body field intent. `
+    + "Write into intent what this message asks for, in your own words, together with its id and the sender: not the id alone, "
+    + "your successor reads your intent and not this message. "
+    + `Then POST $FLEET_SELF_URL/api/self/succeed with the same header and no body.`;
 }
 
 // RUHEND ÜBER DER MARKE, DER CACHE KÜHLT (W3 Auftrag 16, Punkt 5): Slot 1 wurde am 01.11. um 06:57 bei 349k Tokens im Ruhezustand
@@ -539,9 +606,17 @@ export function betweenOrdersLine(f: { fillPct: number | null; threshold: Thresh
 // Basis (cacheCooling, KURZ VOR KALT oben), nur ab der Marke zwischen zwei Aufträgen: der ruhende Sitz bekommt die Übergabe-Zeile, solange
 // eine Übergabe noch den warmen Cache liest. Nur die Zeile, nie eine Handlung: Fleets Compact oder neue Session bleiben an der Basis.
 // Nur auf Fleets eigener Basis eines Bauers (aufFleetsBauerBasis, W16-2): keine Lane, keine eigene Schwelle, nicht Compact, keine Rolle.
-export function restingHandoverLine(f: { fillPct: number; threshold: Threshold; cooling: boolean; choice: ThresholdChoice }): string | null {
+// DIE OBERE KANTE DES RUHE-BANDES bleibt, wo sie war (Owner 03.11.: ruhende Sitzungen bleiben, wie sie sind). Für einen Bauer und einen freien
+// Sitz auf Fleets Tabelle reichte das Band bis zur Basis, die die Tabelle VOR dem 03.11. gab (40); seit die Tabelle 30 gibt, endete es bei 30.
+// Ein Env-Wert, eine Orchestratorin, ein MAIN und eine Lane behalten ihre Basis als Kante, wie auf main.
+export const RUHEND_OBEN_FLEET_PCT = 40;
+export const ruhendOben = (t: Threshold): number =>
+  (t.kind === "bau" || t.kind === "session") && t.from === "fleet" ? Math.max(t.basePct, RUHEND_OBEN_FLEET_PCT) : t.basePct;
+export function restingHandoverLine(f: { fillPct: number; usedTokens: number; threshold: Threshold; cooling: boolean;
+  choice: ThresholdChoice }): string | null {
   if (!aufFleetsBauerBasis(f.threshold, f.choice) || !f.cooling
-    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT || f.fillPct >= f.threshold.basePct) return null;
+    || f.fillPct < ZWISCHEN_AUFTRAEGEN_PCT || f.fillPct >= ruhendOben(f.threshold)
+    || f.usedTokens < ZWISCHEN_AUFTRAEGEN_MIN_TOKENS) return null;
   return `[fleet] Your context is at ${f.fillPct} %, at or above the between-orders mark of ${ZWISCHEN_AUFTRAEGEN_PCT} %, `
     + "you are resting, and your cache goes cold in a few minutes. Rather than let this conversation be compacted while idle, "
     + "write your handover now (POST /api/self/handover) and call POST /api/self/succeed, so a fresh successor takes the next order. "

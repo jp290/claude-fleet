@@ -1196,17 +1196,20 @@ describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen S
     if (window === null) throw new Error(`${model}: kein Fenster`);
     process.env.FLEET_CLAUDE_PROJECTS_DIR = join(dir, "projects");
     const at = 1_791_100_000_000;
-    const sitz = (id: number, pct: number, extra: Record<string, unknown> = {}) => {
+    const sitz = (id: number, pct: number, extra: Record<string, unknown> = {}, modell = model) => {
+      const fenster = contextWindowFor(modell) ?? window;
       const cwd = join(dir, `sitz-${id}`);
       mkdirSync(cwd, { recursive: true });
       const sessionId = crypto.randomUUID();
       const proj = join(dir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
       mkdirSync(proj, { recursive: true });
       writeFileSync(join(proj, `${sessionId}.jsonl`), `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T15:00:00.000Z",
-        message: { model, content: [{ type: "text", text: "ok" }], usage: { input_tokens: Math.round((window * pct) / 100),
+        message: { model: modell, content: [{ type: "text", text: "ok" }], usage: { input_tokens: Math.round((fenster * pct) / 100),
           cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })}\n`);
-      return { cwd, label: `Sitz ${id}`, openedAt: at + id, sessionId, model, ...extra };
+      return { cwd, label: `Sitz ${id}`, openedAt: at + id, sessionId, model: modell, ...extra };
     };
+    const notiz = (id: string, idempotencyKey: string, from: Record<string, unknown>) => ({ id: id.padStart(24, "0"), from,
+      to: { kind: "session", slot: 4, openedAt: at + 4 }, at, payload: { kind: "text", text: "x" }, idempotencyKey, replyTo: null, readBy: null, readAt: null });
     const aus = { thresholdPct: 0, nudge: true, keepCache: null, keepCacheText: null, atThreshold: null, setAt: at, occupant: { slot: 7, openedAt: at + 7 } };
     try {
       await Bun.write(join(dir, "fleet.json"), JSON.stringify({ token: `zwischen-${process.pid}`, slots: {
@@ -1216,15 +1219,27 @@ describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen S
         "9": sitz(9, 30, { label: "🎛 Orchestratorin" }),
         "10": sitz(10, 30, { handover: { ...aus, thresholdPct: 60, occupant: { slot: 10, openedAt: at + 10 } } }),
         "11": sitz(11, 30, { handover: { ...aus, thresholdPct: null, atThreshold: "compact", occupant: { slot: 11, openedAt: at + 11 } } }),
-      } }));
+        // Owner 03.11.: auch ein Sitz im eigenen Setup (seine Schwelle ist aus) bekommt die Zeile; und die Marke bleibt Prozent,
+        // aber unter 100k Tokens feuert sie nicht: Haiku 4.5 hat 200k, 30 % sind 60k, 55 % sind 110k
+        "12": sitz(12, 30, { spawn: { role: "generic", openedAt: at + 12, eigen: true } }),
+        "13": sitz(13, 30, {}, "claude-haiku-4-5"), "14": sitz(14, 55, {}, "claude-haiku-4-5"),
+      }, messages: { v: 1, dropped: 0, entries: [
+        // Fleets eigene Notizen (Auftrag 2, Punkt 4): ein Kantensatz unter der Adresse der Orchestratorin, die Warte-Notiz unter der Adresse des
+        // wartenden Sitzes; daneben ein Auftrag mit gewöhnlichem Schlüssel
+        notiz("a1", "kante:0123456789abcdef:auf:4", { kind: "role", role: "orchestrator" }),
+        notiz("a2", "warte-hinweis:5:1791100005:1791100000", { kind: "session", slot: 5, openedAt: at + 5 }),
+        notiz("a3", "ctl-seat-77", { kind: "session", slot: 5, openedAt: at + 5 }),
+      ] } }));
       delete process.env.FLEET_TOKEN;
       await loadPersistedState(join(dir, "fleet.json"));
       adoptTokens();
-      const kopf = (id: number, path: "postfach" | "owner" = "postfach") => deliveryHeaderFor(path, id, "[fleet message] abc from Orchestrator") ?? "";
+      const kopf = (id: number, path: "postfach" | "owner" = "postfach", von = "Orchestrator") =>
+        deliveryHeaderFor(path, id, `[fleet message] abc from ${von}\n\nder Auftrag`) ?? "";
       const zeile = "\n\n";
       expect(kopf(4)).toContain("· path=postfach · Slot 4 · next step: read the message and answer if needed · limit: no new authority] ");
       expect(kopf(4)).toContain("[fleet] Your context is at 30 %, at or above the between-orders mark of 25 %. Before you start on this message, "
-        + "write your handover (POST /api/self/handover) naming this message, and call POST /api/self/succeed, so a fresh successor takes it.");
+        + "hand over, so a fresh successor takes it. First POST $FLEET_SELF_URL/api/self/handover with the header x-fleet-self-token: "
+        + "$FLEET_SELF_TOKEN and the body field intent.");
       expect(kopf(4).endsWith(zeile)).toBe(true);
       expect(kopf(8)).toContain("[fleet] Your context is at 25 %, at or above the between-orders mark of 25 %.");
       // der Kopf selbst bleibt, was die Leser an „] “ schneiden: die Zeile ist die erste des Körpers
@@ -1232,16 +1247,35 @@ describe("zwischen zwei Aufträgen: der Kopf einer Postfach-Nachricht an einen S
       for (const [id, warum] of [[5, "unter 25 %"], [6, "eine Lane"], [7, "Übergabe aus (thresholdPct 0)"]] as const)
         expect({ id, warum, zeile: kopf(id).includes("between-orders") }).toEqual({ id, warum, zeile: false });
       expect(kopf(4, "owner")).not.toContain("between-orders");
+      // Owner 03.11.: ein Wort des Owners durchs Postfach (Absender Owner) bringt die Zeile nicht, eine Nachricht von einem Sitz bringt sie
+      expect({ owner: kopf(4, "postfach", "Owner").includes("between-orders"), sitz: kopf(4, "postfach", "Session Slot 3").includes("between-orders"),
+        programm: kopf(4, "postfach", "Program abc").includes("between-orders") }).toEqual({ owner: false, sitz: true, programm: true });
+      // Auftrag 2, Punkt 4: Fleets eigene Notizen tragen keine Arbeit und bringen die Zeile nicht; ein Auftrag neben ihnen bringt sie
+      const id = (n: string) => n.padStart(24, "0");
+      const von = (n: string, wer: string) => `[fleet message] ${id(n)} from ${wer}\n\ntext`;
+      const notizFaelle = [
+        { fall: "Kantensatz der Orchestratorin", kopf: deliveryHeaderFor("postfach", 4, von("a1", "Orchestrator")), zeile: false },
+        { fall: "Warte-Notiz des wartenden Sitzes", kopf: deliveryHeaderFor("postfach", 4, von("a2", "Session Slot 5")), zeile: false },
+        { fall: "beide Notizen in einer Zustellung", kopf: deliveryHeaderFor("postfach", 4, `${von("a1", "Orchestrator")}\n\n${von("a2", "Session Slot 5")}`), zeile: false },
+        { fall: "ein Auftrag desselben Sitzes", kopf: deliveryHeaderFor("postfach", 4, von("a3", "Session Slot 5")), zeile: true },
+        { fall: "Notiz und Auftrag zusammen", kopf: deliveryHeaderFor("postfach", 4, `${von("a1", "Orchestrator")}\n\n${von("a3", "Session Slot 5")}`), zeile: true },
+      ];
+      expect(notizFaelle.map(({ fall, kopf: k }) => ({ fall, zeile: (k ?? "").includes("between-orders mark of 25 %") })))
+        .toEqual(notizFaelle.map(({ fall, zeile }) => ({ fall, zeile })));
       // W16-2: nur auf Fleets eigener Basis eines Bauers. DAS BÜNDEL (Auftrag 17): reist die Postfach-Nachricht mit anderen Einträgen,
       // trägt der Kopf path=bundle die Zeile ebenso. Ein Vergleich über alle Fälle, damit ein roter Lauf jeden einzeln zeigt.
-      const buendel = (pfad: string) => deliveryHeaderFor("bundle", 4, `[fleet-buendel 1/2 · path=fleet-event · x]\nein Ereignis\n\n`
-        + `[fleet-buendel 2/2 · path=${pfad} · y]\n[fleet message] abc from Orchestrator\n\nder Auftrag`) ?? "";
+      const buendel = (pfad: string, von = "Orchestrator") => deliveryHeaderFor("bundle", 4, `[fleet-buendel 1/2 · path=fleet-event · x]\nein Ereignis\n\n`
+        + `[fleet-buendel 2/2 · path=${pfad} · y]\n[fleet message] abc from ${von}\n\nder Auftrag`) ?? "";
       const faelle = [
-        { fall: "9: die Orchestratorin, Basis 45", kopf: kopf(9), zeile: false },
+        { fall: "9: die Orchestratorin, Basis 45 (seit 03.11. auch sie)", kopf: kopf(9), zeile: true },
         { fall: "10: eigene Schwelle 60 des Owners", kopf: kopf(10), zeile: false },
         { fall: "11: Wahl Compact", kopf: kopf(11), zeile: false },
+        { fall: "12: ein Sitz im eigenen Setup, Schwelle aus", kopf: kopf(12), zeile: true },
+        { fall: "13: kleines Fenster, 30 % sind 60k Tokens", kopf: kopf(13), zeile: false },
+        { fall: "14: kleines Fenster, 55 % sind 110k Tokens", kopf: kopf(14), zeile: true },
         { fall: "4: Bündel mit einer Postfach-Nachricht", kopf: buendel("postfach"), zeile: true },
         { fall: "4: Bündel ohne Postfach-Nachricht", kopf: buendel("fleet-report"), zeile: false },
+        { fall: "4: Bündel, dessen Postfach-Teil ein Wort des Owners ist", kopf: buendel("postfach", "Owner"), zeile: false },
       ];
       expect(faelle.map(({ fall, kopf: k }) => ({ fall, zeile: k.includes("between-orders mark of 25 %") })))
         .toEqual(faelle.map(({ fall, zeile }) => ({ fall, zeile })));

@@ -8,7 +8,7 @@
 //  und
 // „wieder mit Hinweisen arbeiten“: Schwelle je Art, der Hinweis an der Basis, die Handlung an der Obergrenze.
 import { describe, expect, test } from "bun:test";
-import { actDecision, agoText, betweenOrdersLine, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
+import { actDecision, agoText, betweenOrdersLine, DOOR_LINE, lineStaysInField, restingHandoverLine, ZWISCHEN_AUFTRAEGEN_PCT, ZWISCHEN_AUFTRAEGEN_MIN_TOKENS, autoCompactOff, cacheCooling, cacheView, choiceInput, choicesFor, fleetChoiceOf, handoverLines, HintLedger, hintText, MAX_NUDGES,
   onHandoverBand, orchestratorContextLine, ownSetting, REARM_SPENT, rearmStepOf, settingForSuccessor, successionBriefText, successorSentence, successorSpawnOf,
   thresholdOf, thresholdOffOf, thresholdStep, warmDecision, warmTextInput, type ActFacts, type HandoverFacts, type LaneNow, type SucceedPreviewFacts,
   type ThresholdChoice, type WarmFacts } from "./succession";
@@ -164,11 +164,12 @@ describe("der Text des Warm-Turns", () => {
 });
 
 describe("die Schwelle je Art", () => {
-  test("die Tabelle ab Werk: Orchestratorin 45/50, Program-MAIN und Bau-Session 40/45, Lane 37/42", () => {
+  // Owner 03.11.: „[Zitat entfernt]“ — nur Bauer und freier Sitz wandern (40 -> 30)
+  test("die Tabelle ab Werk: Orchestratorin 45/50, Program-MAIN 40/45, Bau-Session und freier Sitz 30/35, Lane 37/42", () => {
     const rows = (["orchestrator", "program-main", "bau", "session", "lane"] as const)
       .map((k) => [k, thresholdOf(k, null, null)] as const)
       .map(([k, t]) => `${k} ${t.basePct}/${t.capPct} ${t.from}`);
-    expect(rows).toEqual(["orchestrator 45/50 fleet", "program-main 40/45 fleet", "bau 40/45 fleet", "session 40/45 fleet",
+    expect(rows).toEqual(["orchestrator 45/50 fleet", "program-main 40/45 fleet", "bau 30/35 fleet", "session 30/35 fleet",
       "lane 37/42 fleet"]);
   });
   test("die Env verschiebt die Basis ihrer Schiene, die Obergrenze bleibt 5 darüber; die Orchestratorin behält ihre Zeile", () => {
@@ -378,26 +379,161 @@ describe("der Hinweis", () => {
     expect(hintText(facts("session", 46, "warm", "compact"))).not.toContain(punkt);
   });
   test("die Zeile zwischen zwei Aufträgen: ab der Marke, nie für eine Lane, nie ohne Schwelle, nie mit ausgeschaltetem Hinweis, nie ohne Füllstand", () => {
-    const an = { fillPct: ZWISCHEN_AUFTRAEGEN_PCT, threshold: thresholdOf("bau", 35, null), choice: "hint" as const, off: null, nudge: true };
+    const an = { fillPct: ZWISCHEN_AUFTRAEGEN_PCT, usedTokens: 250_000, threshold: thresholdOf("bau", 35, null), choice: "hint" as const,
+      off: null, nudge: true };
     expect(ZWISCHEN_AUFTRAEGEN_PCT).toBe(25);
     expect(betweenOrdersLine(an)).toContain("Your context is at 25 %, at or above the between-orders mark of 25 %.");
     expect(betweenOrdersLine({ ...an, threshold: thresholdOf("session", null, null) })).not.toBeNull(); // ein freier Sitz auf Fleets Basis
     expect(betweenOrdersLine({ ...an, choice: "succeed" })).not.toBeNull();
     expect(betweenOrdersLine({ ...an, fillPct: 24.9 })).toBeNull();
     expect(betweenOrdersLine({ ...an, fillPct: null })).toBeNull();
+    expect(betweenOrdersLine({ ...an, usedTokens: null })).toBeNull();
     expect(betweenOrdersLine({ ...an, threshold: thresholdOf("lane", 35, null) })).toBeNull();
-    expect(betweenOrdersLine({ ...an, off: "setup" })).toBeNull();
     expect(betweenOrdersLine({ ...an, off: "session" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, off: "rail" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, off: "steward" })).toBeNull();
     expect(betweenOrdersLine({ ...an, nudge: false })).toBeNull();
-    // W16-2: nur auf Fleets eigener Basis eines Bauers; eine eigene Schwelle, Compact und eine Rolle mit höherer Basis behalten ihren Hinweis
+    // eine eigene Schwelle des Owners (auch 0) und die Wahl Compact behalten ihren Hinweis und bekommen die Zeile nicht
     expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("bau", 35, 60) })).toBeNull();
+    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("bau", 35, 0), off: "session" })).toBeNull();
     expect(betweenOrdersLine({ ...an, fillPct: 30, choice: "compact" })).toBeNull();
-    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("orchestrator", 35, null) })).toBeNull();
-    expect(betweenOrdersLine({ ...an, fillPct: 30, threshold: thresholdOf("program-main", 35, null) })).toBeNull();
     expect(betweenOrdersLine(an)).not.toMatch(/['"]/);
   });
+  // Owner 03.11.: die Marke gilt für jeden Sitz, der Arbeit von einem anderen Sitz bekommt (Punkt 2)
+  test("die Zeile erreicht auch die Orchestratorin und einen Sitz im eigenen Setup, dessen Schwelle aus ist; ein MAIN bleibt draußen", () => {
+    const an = { fillPct: 30, usedTokens: 300_000, choice: "hint" as const, nudge: true };
+    // Auftrag 2, Punkt 5 (Entscheid der Orchestratorin 03.11.): ein MAIN ruht in der heutigen Richtung und liest über seine Program-Adresse
+    for (const [kind, zeile] of [["orchestrator", true], ["program-main", false], ["bau", true], ["session", true], ["lane", false]] as const)
+      expect({ kind, zeile: betweenOrdersLine({ ...an, threshold: thresholdOf(kind, 35, null), off: null }) !== null }).toEqual({ kind, zeile });
+    const eigenes = thresholdOf("session", null, null, true);
+    expect(eigenes).toMatchObject({ basePct: 0, from: "setup" });
+    expect(betweenOrdersLine({ ...an, threshold: eigenes, off: "setup" })).not.toBeNull();
+    expect(betweenOrdersLine({ ...an, threshold: thresholdOf("bau", null, null, true), off: "setup" })).not.toBeNull();
+    // ...aber nur, solange nichts anderes die Übergabe ausschaltet
+    expect(betweenOrdersLine({ ...an, threshold: eigenes, off: "harness" })).toBeNull();
+    expect(betweenOrdersLine({ ...an, threshold: eigenes, off: "waiting" })).toBeNull();
+    // und eine Lane nie, auch nicht mit der Marke weit überschritten
+    expect(betweenOrdersLine({ ...an, fillPct: 60, threshold: thresholdOf("lane", null, null), off: null })).toBeNull();
+  });
+  // Auftrag 2, Punkt 1: die Zeile lässt sich ausführen. Ein Sitz im eigenen Setup, den nichts über die Form der Tür belehrt, und eine Prüferin
+  // ohne Kenntnis von Fleet übergaben nicht; wer die Tür kannte, übergab. Die Zeile nennt Adresse, Header, Feld und was die Übergabe tragen muss.
+  test("die Zeile nennt die Tür (Adresse, Header, Feld intent), verlangt den Inhalt der Nachricht in der Übergabe und bleibt getippt", () => {
+    const zeile = betweenOrdersLine({ fillPct: 30, usedTokens: 300_000, threshold: thresholdOf("session", null, null), choice: "hint", off: null, nudge: true })!;
+    expect(zeile).toContain("POST $FLEET_SELF_URL/api/self/handover");
+    expect(zeile).toContain("the header x-fleet-self-token: $FLEET_SELF_TOKEN");
+    expect(zeile).toContain("the body field intent");
+    expect(zeile).toContain("POST $FLEET_SELF_URL/api/self/succeed");
+    expect(zeile).toContain("what this message asks for");
+    expect(zeile).toContain("not the id alone");
+    expect(zeile).not.toMatch(/['"`]/);
+    expect(zeile).not.toContain("\n");
+  });
+  // Auftrag 2, Punkt 6: das Ruhe-Band bleibt, wo es auf main war. Verglichen wird mit dem alten Verhalten, nachgebaut aus dem Text von main:
+  // 25 % bis unter die Basis, die die Tabelle damals gab (40 für einen Bauer und einen freien Sitz) oder der Env-Wert. Beide Tabellen, alle Füllstände.
+  test("die ruhende Zeile feuert bei jedem Füllstand genau dort, wo sie auf main feuerte, bei beiden Tabellen und beim Env-Wert", () => {
+    const altOben = (kind: string, env: number | null): number => env ?? (kind === "orchestrator" ? 45 : kind === "lane" ? 37 : 40);
+    const alt = (fill: number, kind: "bau" | "session" | "lane" | "orchestrator" | "program-main", env: number | null): boolean =>
+      (kind === "bau" || kind === "session") && fill >= 25 && fill < altOben(kind, env);
+    const zeilen: string[] = [];
+    for (const kind of ["bau", "session", "lane", "orchestrator", "program-main"] as const)
+      for (const env of [null, 35, 30]) {
+        const t = thresholdOf(kind, env, null);
+        for (let fill = 0; fill <= 100; fill += 0.5) {
+          const neu = restingHandoverLine({ fillPct: fill, usedTokens: 300_000, threshold: t, cooling: true, choice: "succeed" }) !== null;
+          if (neu !== alt(fill, kind, env)) zeilen.push(`${kind} env=${env} fill=${fill}: alt ${alt(fill, kind, env)} neu ${neu}`);
+        }
+      }
+    expect(zeilen).toEqual([]);
+    // der Fall, den der erste Entwurf verlor: ein Bauer auf Fleets Tabelle (Basis jetzt 30) bleibt bis 40 im Band
+    const bau = thresholdOf("bau", null, null);
+    expect(bau.basePct).toBe(30);
+    expect(restingHandoverLine({ fillPct: 39.5, usedTokens: 300_000, threshold: bau, cooling: true, choice: "succeed" })).not.toBeNull();
+    expect(restingHandoverLine({ fillPct: 40, usedTokens: 300_000, threshold: bau, cooling: true, choice: "succeed" })).toBeNull();
+  });
+  // Auftrag 2, Punkt 2 (geändert in Auftrag 3, Punkt 2: kein „kam nach der Übergabe an“ mehr, sondern „gelesen oder getippt, Ausgang offen“)
+  test("der Brief nennt die Post mit dem, was er weiß: gelesen oder getippt nach der stehenden Übergabe, ob erledigt unbekannt; die genannte Kennung zuerst", () => {
+    const basis: HandoverFacts = { obligations: [], intent: "nimm die Nachricht 0123456789abcdef01234567", pointer: null, carry: false, now: 0, laneNow: () => null };
+    expect(handoverLines(basis).join("\n")).not.toContain("$FLEET_SELF_URL");
+    const spaet = { id: "aaaaaaaaaaaaaaaaaaaaaaaa", from: "Session Slot 3", at: Date.UTC(2026, 10, 3, 12, 34), text: "bitte stoppe den Lauf\nund melde dich", late: true };
+    const genannt = { id: "0123456789abcdef01234567", from: "Orchestrator", at: Date.UTC(2026, 10, 3, 12, 0), text: "der eigentliche Auftrag", late: false, named: true };
+    const stehend = { since: Date.UTC(2026, 10, 3, 11, 0), standing: true, omitted: 0 };
+    const text = handoverLines({ ...basis, mail: [spaet, genannt], mailFacts: stehend }).join("\n");
+    expect(text).toContain("Nach ihrer stehenden Übergabe von 11:00 UTC hat sie diese Post gelesen oder in ihre Pane getippt bekommen. Ob sie erledigt ist, ist nicht bekannt");
+    expect(text).toContain("prüfe am Stand, bevor du etwas wiederholst");
+    expect(text).not.toContain("kam noch an");
+    expect(text).not.toContain("in keiner Liste Ungelesener");
+    expect(text).toContain("- aaaaaaaaaaaaaaaaaaaaaaaa von Session Slot 3 um 12:34 UTC: „bitte stoppe den Lauf und melde dich“");
+    expect(text).toContain("Ihre Übergabe nennt diese Post:\n- 0123456789abcdef01234567 von Orchestrator um 12:00 UTC");
+    expect(text).toContain("GET $FLEET_SELF_URL/api/self/messages mit dem Header x-fleet-self-token: $FLEET_SELF_TOKEN");
+    // die Post steht vor dem, was die Vorgängerin vorhatte; die genannte vor der übrigen
+    expect(text.indexOf("Nach ihrer stehenden")).toBeLessThan(text.indexOf("Was sie vorhatte"));
+    expect(text.indexOf("Ihre Übergabe nennt")).toBeLessThan(text.indexOf("Nach ihrer stehenden"));
+    // eine Kennung, die die Übergabe nennt UND die danach gelesen wurde, steht einmal, unter dem Genannten
+    const beides = { ...spaet, named: true };
+    const einmal = handoverLines({ ...basis, mail: [beides], mailFacts: stehend }).join("\n");
+    expect(einmal.split("\n").filter((l) => l.startsWith("- aaaaaaaaaaaaaaaaaaaaaaaa"))).toHaveLength(1);
+    expect(einmal).toContain("Ihre Übergabe nennt diese Post:");
+    expect(einmal).not.toContain("hat sie diese Post gelesen");
+    // ohne stehende Übergabe (Succeed mit `intent` im Body) das Zeitfenster
+    expect(handoverLines({ ...basis, mail: [spaet], mailFacts: { since: 0, standing: false, omitted: 0 } }).join("\n"))
+      .toContain("In den letzten 10 Minuten vor ihrer Übergabe hat sie diese Post gelesen oder in ihre Pane getippt bekommen");
+    // ein Text ohne Anfang (persönlich markiert) steht nur mit Kennung, Absender und Zeit
+    expect(handoverLines({ ...basis, mail: [{ ...spaet, text: "" }], mailFacts: stehend }).join("\n")).toContain("- aaaaaaaaaaaaaaaaaaaaaaaa von Session Slot 3 um 12:34 UTC\n");
+  });
+  test("der Deckel sagt, wie viele Zeilen er ausließ und wo sie stehen; auch wenn nur Ausgelassenes bleibt", () => {
+    const basis: HandoverFacts = { obligations: [], intent: "x", pointer: null, carry: false, now: 0, laneNow: () => null };
+    const mail = [{ id: "a".repeat(24), from: "Session Slot 3", at: 0, text: "eins", late: true }];
+    const mit = handoverLines({ ...basis, mail, mailFacts: { since: 0, standing: true, omitted: 3 } }).join("\n");
+    expect(mit).toContain("- … und 3 weitere ließ ich hier aus (der Brief zeigt die neuesten); alle stehen, gelesen und ungelesen, in GET $FLEET_SELF_URL/api/self/messages");
+    expect(handoverLines({ ...basis, mail: [], mailFacts: { since: 0, standing: true, omitted: 2 } }).join("\n")).toContain("… und 2 weitere ließ ich hier aus");
+    expect(handoverLines({ ...basis, mail, mailFacts: { since: 0, standing: true, omitted: 0 } }).join("\n")).not.toContain("ließ ich hier aus");
+  });
+  // Auftrag 3, Punkt 3: jeder Brief gibt Adresse und Header der Tür, auch ohne Post-Zeilen und auch dort, wo ein Repo seine eigenen Schritte setzt
+  test("jeder Brief der Nachfolge gibt $FLEET_SELF_URL und den Header, mit und ohne Post-Zeilen, bei eigenen Schritten des Repos", () => {
+    const basis: HandoverFacts = { obligations: [], intent: "x", pointer: null, carry: false, now: 0, laneNow: () => null };
+    const post = { id: "a".repeat(24), from: "Session Slot 3", at: 0, text: "eins", late: true };
+    for (const f of [basis, { ...basis, mail: [post] }, { ...basis, intent: null, carry: true }]) {
+      const brief = successionBriefText(["1. Lies das Handbuch des Repos."], null, f);
+      expect(brief).toContain(DOOR_LINE);
+      expect(brief).toContain("$FLEET_SELF_URL");
+      expect(brief).toContain("x-fleet-self-token: $FLEET_SELF_TOKEN");
+      expect(brief.indexOf(DOOR_LINE)).toBeLessThan(brief.indexOf("Beginne exakt in dieser Reihenfolge"));
+    }
+    expect(DOOR_LINE).not.toMatch(/['"]/);
+  });
+  // Auftrag 3, Punkt 5: eine Vorschau von 80 Zeichen teilt kein Zeichen
+  test("die Vorschau einer Post bei 80 Zeichen teilt kein Zeichen (ein Emoji an der Schnittstelle bleibt ganz oder geht ganz)", () => {
+    const basis: HandoverFacts = { obligations: [], intent: "x", pointer: null, carry: false, now: 0, laneNow: () => null };
+    const row = (text: string): string => handoverLines({ ...basis, mail: [{ id: "b".repeat(24), from: "Session Slot 3", at: 0, text, late: true }],
+      mailFacts: { since: 0, standing: true, omitted: 0 } }).join("\n");
+    for (const kopf of [79, 80, 81]) {
+      const text = row("x".repeat(kopf) + "😀tail");
+      expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text)).toBe(false);
+    }
+    expect(row("x".repeat(79) + "😀tail")).toContain(`„${"x".repeat(79)}😀…“`);
+    expect(row("x".repeat(80) + "ab")).toContain(`„${"x".repeat(80)}…“`);
+    expect(row("😀".repeat(80))).toContain(`„${"😀".repeat(80)}“`);
+    expect(row("😀".repeat(81))).toContain(`„${"😀".repeat(80)}…“`);
+  });
+  // Auftrag 3, Punkt 5, zweiter Satz: gebucht wird die Zeile nur, wenn sie im Feld blieb
+  test("die Zeile gilt als gegeben, wenn getippt wurde und das Zurückrollen das Feld nicht leerte", () => {
+    expect(lineStaysInField(120, null)).toBe(true);
+    expect(lineStaysInField(0, null)).toBe(false);
+    expect(lineStaysInField(120, { rollback: "cleared" })).toBe(false);
+    for (const rollback of [null, "residue", "kept:differs", "kept:identity-changed"]) expect({ rollback, bleibt: lineStaysInField(120, { rollback }) }).toEqual({ rollback, bleibt: true });
+  });
+  // Punkt 6: die Marke bleibt Prozent, unter 100k Tokens feuert keine der zwei Zeilen
+  test("unter 100k Tokens feuert weder die Zeile zwischen zwei Aufträgen noch die ruhende, auf einem kleinen Fenster auch bei 30 %", () => {
+    expect(ZWISCHEN_AUFTRAEGEN_MIN_TOKENS).toBe(100_000);
+    const an = { fillPct: 30, threshold: thresholdOf("bau", null, null), choice: "hint" as const, off: null, nudge: true };
+    expect(betweenOrdersLine({ ...an, usedTokens: 99_999 })).toBeNull();
+    expect(betweenOrdersLine({ ...an, usedTokens: 100_000 })).not.toBeNull();
+    const ruh = { fillPct: 27, threshold: thresholdOf("bau", null, null), cooling: true, choice: "succeed" as const };
+    expect(restingHandoverLine({ ...ruh, usedTokens: 99_999 })).toBeNull();
+    expect(restingHandoverLine({ ...ruh, usedTokens: 100_000 })).not.toBeNull();
+  });
   test("die ruhende Übergabe-Zeile (Auftrag 16, Punkt 5): ab der Marke bis unter die Basis, nur bei kühlendem Cache, nie für eine Lane, nie bei Compact, nie ohne Schwelle", () => {
-    const an = { fillPct: 30, threshold: thresholdOf("bau", 35, null), cooling: true, choice: "succeed" as const };
+    const an = { fillPct: 30, usedTokens: 300_000, threshold: thresholdOf("bau", 35, null), cooling: true, choice: "succeed" as const };
     expect(restingHandoverLine(an)).toContain("Your context is at 30 %, at or above the between-orders mark of 25 %, you are resting");
     expect(restingHandoverLine({ ...an, choice: "hint" })).not.toBeNull();
     expect(restingHandoverLine({ ...an, fillPct: ZWISCHEN_AUFTRAEGEN_PCT })).not.toBeNull();
@@ -620,8 +756,10 @@ describe("der Brief sagt in Worten, was scharf ist und was als Nächstes kommt",
   test("keine Maschinenwörter; die Wache steht mit ihrem Ziel drin; fehlt die Absicht, sagt es ein Satz", () => {
     const text = successionBriefText(STEPS, null, facts([auditWatch,
       { kind: "inbox", id: "e1", owedBy, reArm: null }, { kind: "report", id: "r1", owedBy, reArm: null }, { kind: "report", id: "r2", owedBy, reArm: null }]));
-    expect(text.split("\n").slice(0, 3)).toEqual([
+    // seit Auftrag 3 steht die Tür (Adresse und Header) gleich unter dem Kopf, in jedem Brief
+    expect(text.split("\n").slice(0, 4)).toEqual([
       "[fleet succession] Die Vorgängerin ist auf diesem Slot beendet; du übernimmst ihre Arbeit.",
+      DOOR_LINE,
       "Fleet stellt für dich wieder scharf:",
       "- Wache: Audit von main 816923e6 in claude-fleet"]);
     expect(text).toContain("Ungelesen geblieben sind 1 Ereignis und 2 Berichte an sie;");

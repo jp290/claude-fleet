@@ -101,6 +101,35 @@ const auditZeile = (f: ReturnType<typeof fixture>, slot: number, event: string):
   return r ? String(r.detail) : null;
 };
 
+// Owner 03.11. (Auftrag früh übergeben, Punkt 1): wer schreibt, erfährt mit der Antwort den Füllstand des Empfängers und misst vor einem
+// Auftrag, ob der Sitz ihn noch nehmen soll (operating-a-constellation, Schritt 4)
+describe("die Antwort von POST /api/self/messages nennt den Füllstand des Empfängers", () => {
+  test("ein Sitz schreibt der Orchestratorin und liest ihren Füllstand; ohne Halter ist er null, nie 0", async () => {
+    const f = fixture();
+    const srv = await serve(f, { FLEET_MIGRATE_PCT: "35" });
+    try {
+      const absender = await sitzAufFleetsBasis(srv, f, 1, "absender");
+      const orch = await sitzAufFleetsBasis(srv, f, 2, "🎛 Orchestratorin");
+      gespraech(orch.cwd, orch.sessionId, 0.31, 60_000);
+      const schick = (key: string, to: unknown) => srv.call("/api/self/messages", { self: absender.token,
+        body: { to, payload: { kind: "text", text: "ein Auftrag" }, idempotencyKey: key } });
+      const an = await schick("fuell-1", { kind: "role", role: "orchestrator" });
+      expect({ status: an.status, holder: (an.body.holder as { slot: number } | null)?.slot, fill: an.body.receiverFill })
+        .toEqual({ status: 200, holder: 2, fill: { pct: 31, usedTokens: Math.round(contextWindowFor(MODEL)! * 0.31), windowTokens: contextWindowFor(MODEL) } });
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 2);
+  test("ohne Halter der Adresse (keine lebende Orchestratorin) ist der Füllstand null", async () => {
+    const f = fixture();
+    const srv = await serve(f, { FLEET_MIGRATE_PCT: "35" });
+    try {
+      const absender = await sitzAufFleetsBasis(srv, f, 1, "allein");
+      const an = await srv.call("/api/self/messages", { self: absender.token,
+        body: { to: { kind: "role", role: "orchestrator" }, payload: { kind: "text", text: "wer liest das" }, idempotencyKey: "fuell-2" } });
+      expect({ status: an.status, holder: an.body.holder, fill: an.body.receiverFill }).toEqual({ status: 200, holder: null, fill: null });
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 2);
+});
+
 describe("der Hinweis an der Basis", () => {
   test("ein Sitz über der Basis und unter der Obergrenze bekommt ihn, auch wenn er gerade eine stehende Übergabe schrieb", async () => {
     const f = fixture();
@@ -214,4 +243,138 @@ describe("der Hinweis an der Basis", () => {
       expect({ gehend: auditZeile(f, 1, "migrate_gave_up"), getippt: getippt(f, 1) }).toEqual({ gehend: null, getippt: [] });
     } finally { tuer?.destroy(); await srv.stop(); }
   }, LIFE_DEADLINE_MS * 4);
+});
+
+// Auftrag 2 (früh übergeben, zweite Runde): die Zeile kommt höchstens einmal je Besatzer, die Antwort eines Replays nennt den Füllstand, und
+// ein Nachfolger erfährt, was zwischen Übergabe und Ende ankam. Alles durch einen echten Server in eigenem Prozess; die Pane ist ein Ersatz,
+// was Fleet in sie tippte, steht im Verlauf (getippt).
+const SCHNELL = { FLEET_MIGRATE_PCT: "35", FLEET_INBOX_NUDGE_MS: "1000", FLEET_POSTFACH_FENSTER_SEC: "0", FLEET_POSTFACH_MS: "250" };
+// die Zeile, die Fleet in die Pane tippte, steht nicht im Verlauf (er hält den Text ohne Kopf), aber im Audit (server.ts#zwischenZeileBuchen)
+const mitZeile = (f: ReturnType<typeof fixture>, slot: number): string[] => {
+  const audit = join(f.state, "audit.jsonl");
+  return !existsSync(audit) ? [] : readFileSync(audit, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { event: string; slot?: number; detail?: string })
+    .filter((x) => x.event === "between_orders_line" && x.slot === slot).map((x) => String(x.detail));
+};
+const nachricht = (srv: Awaited<ReturnType<typeof serve>>, self: string, to: unknown, key: string, text = "ein Auftrag") =>
+  srv.call("/api/self/messages", { self, body: { to, payload: { kind: "text", text }, idempotencyKey: key } });
+
+describe("Auftrag 2: die Zeile zwischen zwei Aufträgen, einmal je Besatzer", () => {
+  test("zwei Aufträge nacheinander an einen Sitz bei 31 %: nur der erste trägt die Zeile", async () => {
+    const f = fixture();
+    const srv = await serve(f, SCHNELL);
+    try {
+      const absender = await sitzAufFleetsBasis(srv, f, 1, "absender");
+      const orch = await sitzAufFleetsBasis(srv, f, 2, "🎛 Orchestratorin");
+      gespraech(orch.cwd, orch.sessionId, 0.31, 60_000);
+      await nachricht(srv, absender.token, { kind: "role", role: "orchestrator" }, "einmal-1", "erster Auftrag");
+      expect((await warte(() => getippt(f, 2).find((t) => t.includes("erster Auftrag")) ?? null, 10_000)) !== null).toBe(true);
+      await nachricht(srv, absender.token, { kind: "role", role: "orchestrator" }, "einmal-2", "zweiter Auftrag");
+      expect((await warte(() => getippt(f, 2).find((t) => t.includes("zweiter Auftrag")) ?? null, 10_000)) !== null).toBe(true);
+      expect(mitZeile(f, 2).map((z) => z.replace(/session=\S+ /, ""))).toEqual(["path=postfach fill=31"]);
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 3);
+});
+
+// Der Ersatz-claude zeigt keine Bereitschaftsmarke: die Nachfolge steht dann auf dem Slot, ihr Brief liegt als Schuld da (Antwort 500), und dort
+// ist er im Klartext zu lesen. Das ist der Brief, den eine echte Nachfolgerin als Erstes bekäme.
+async function briefDerNachfolge(srv: Awaited<ReturnType<typeof serve>>, self: string, body: unknown = {}): Promise<{ status: number; brief: string }> {
+  const nf = await srv.call("/api/self/succeed", { self, body });
+  const debts = await srv.call("/api/succession-debts");
+  const rows = (debts.body.debts ?? []) as { id: string; brief: string }[];
+  return { status: nf.status, brief: rows.find((d) => d.id === nf.body.debt)?.brief ?? "" };
+}
+
+describe("Auftrag 2: ein Nachfolger erfährt, was zwischen Übergabe und Ende ankam", () => {
+  // Der Stand-in der Orchestratorin: Post getippt, sofort Übergabe und Nachfolge. Die Vorgängerin quittiert die Post (wie jede getippte
+  // Zustellung: GET ...?unread=1&read=1 schreibt dieselbe Quittung), die Nachfolgerin sieht sie in keiner Liste Ungelesener.
+  test("Post nach der Übergabe, von der Vorgängerin quittiert: der Brief nennt sie, mit Absender, Anfang des Textes und der Tür", async () => {
+    const f = fixture();
+    const srv = await serve(f, SCHNELL);
+    try {
+      const a = await sitzAufFleetsBasis(srv, f, 1, "vorgaenger");
+      const orch = await sitzAufFleetsBasis(srv, f, 2, "🎛 Orchestratorin");
+      expect((await srv.call("/api/self/handover", { self: a.token, body: { intent: "Stand: alles fertig, nichts offen" } })).status).toBe(200);
+      const m = await nachricht(srv, orch.token, { kind: "session", slot: 1 }, "spaet-1", "bitte stoppe den Lauf und melde dich");
+      expect(m.status).toBe(200);
+      const id = (m.body.message as { id: string }).id;
+      // vor der Quittung steht sie in der Liste Ungelesener, nach ihr in keiner
+      expect(((await srv.call("/api/self/messages?unread=1", { self: a.token })).body.entries as unknown[]).length).toBe(1);
+      expect((await srv.call("/api/self/messages?unread=1&read=1", { self: a.token })).status).toBe(200);
+      expect(((await srv.call("/api/self/messages?unread=1", { self: a.token })).body.entries as unknown[]).length).toBe(0);
+      // ein als persönlich markierter Text kommt nie in den Brief (die Nachfolgerin kann auf einer anderen Harness laufen): Kennung, Absender, Zeit
+      const privat = await srv.call("/api/self/messages", { self: orch.token, body: { to: { kind: "session", slot: 1 }, personal: true,
+        payload: { kind: "text", text: "nur für Anthropic-Sitze" }, idempotencyKey: "spaet-privat" } });
+      expect(privat.status).toBe(200);
+      expect((await srv.call("/api/self/messages?unread=1&read=1", { self: a.token })).status).toBe(200);
+      const { brief } = await briefDerNachfolge(srv, a.token);
+      expect(brief).toContain(`- ${(privat.body.message as { id: string }).id} von Orchestrator um `);
+      expect(brief).not.toContain("nur für Anthropic-Sitze");
+      // Auftrag 3, Punkt 2: der Brief sagt, was er weiß (gelesen oder getippt nach der stehenden Übergabe, Ausgang offen), nicht „kam nach der Übergabe an“
+      expect(brief).toContain("hat sie diese Post gelesen oder in ihre Pane getippt bekommen. Ob sie erledigt ist, ist nicht bekannt");
+      expect(brief).toContain(`- ${id} von Orchestrator um `);
+      expect(brief).toContain("„bitte stoppe den Lauf und melde dich“");
+      expect(brief).toContain("GET $FLEET_SELF_URL/api/self/messages mit dem Header x-fleet-self-token: $FLEET_SELF_TOKEN");
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 3);
+  test("Post, die vor der Übergabe quittiert wurde, steht nicht als nachgekommen im Brief; die Kennung in der Übergabe bringt Zeile und Tür", async () => {
+    const f = fixture();
+    const srv = await serve(f, SCHNELL);
+    try {
+      const a = await sitzAufFleetsBasis(srv, f, 1, "vorgaenger");
+      const orch = await sitzAufFleetsBasis(srv, f, 2, "🎛 Orchestratorin");
+      const alt = await nachricht(srv, orch.token, { kind: "session", slot: 1 }, "alt-1", "ein älterer Auftrag");
+      expect((await srv.call("/api/self/messages?unread=1&read=1", { self: a.token })).status).toBe(200);
+      await Bun.sleep(30);
+      const genannt = await nachricht(srv, orch.token, { kind: "session", slot: 1 }, "genannt-1", "der Auftrag, den die Übergabe nur nennt");
+      const idGenannt = (genannt.body.message as { id: string }).id;
+      expect((await srv.call("/api/self/messages?unread=1&read=1", { self: a.token })).status).toBe(200);
+      // nur die Kennung, kein Wort dazu: so übergab eine Vorgängerin, die die Tür nicht kannte (zweiter Prüfer, 03.11.)
+      expect((await srv.call("/api/self/handover", { self: a.token, body: { intent: `nimm die Nachricht ${idGenannt}` } })).status).toBe(200);
+      const { brief } = await briefDerNachfolge(srv, a.token);
+      expect(brief).not.toContain("hat sie diese Post gelesen");
+      expect(brief).not.toContain((alt.body.message as { id: string }).id);
+      expect(brief).toContain("Ihre Übergabe nennt diese Post:");
+      expect(brief).toContain(`- ${idGenannt} von Orchestrator um `);
+      expect(brief).toContain("„der Auftrag, den die Übergabe nur nennt“");
+      expect(brief).toContain("GET $FLEET_SELF_URL/api/self/messages");
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 3);
+  test("ohne Post kein Zusatz im Brief", async () => {
+    const f = fixture();
+    const srv = await serve(f, SCHNELL);
+    try {
+      const a = await sitzAufFleetsBasis(srv, f, 1, "leer");
+      expect((await srv.call("/api/self/handover", { self: a.token, body: { intent: "Stand: nichts offen" } })).status).toBe(200);
+      const { brief } = await briefDerNachfolge(srv, a.token);
+      expect(brief).toContain("Stand: nichts offen");
+      // keine Post-Zeile; die Tür (Auftrag 3, Punkt 3) steht in jedem Brief, auch in diesem
+      expect(brief).not.toContain("Ihre Übergabe nennt");
+      expect(brief).not.toContain("hat sie diese Post gelesen");
+      expect(brief).not.toContain("/api/self/messages");
+      expect(brief).toContain("Deine Tür zu Fleet: $FLEET_SELF_URL");
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 3);
+});
+
+// Auftrag 2, Punkt 7: auch der Replay (existing: true) nennt den Füllstand, den der Halter JETZT hat; der Fernpfad hat keinen und sagt null
+describe("Auftrag 2: der Replay einer Nachricht nennt den Füllstand des Empfängers", () => {
+  test("dieselbe Sendung noch einmal: existing true und receiverFill wie beim ersten Mal; nach einem Wachsen der neue Stand", async () => {
+    const f = fixture();
+    const srv = await serve(f, { FLEET_MIGRATE_PCT: "35" });
+    try {
+      const absender = await sitzAufFleetsBasis(srv, f, 1, "absender");
+      const orch = await sitzAufFleetsBasis(srv, f, 2, "🎛 Orchestratorin");
+      gespraech(orch.cwd, orch.sessionId, 0.31, 60_000);
+      const an = { kind: "role", role: "orchestrator" };
+      const erste = await nachricht(srv, absender.token, an, "replay-1");
+      const noch = await nachricht(srv, absender.token, an, "replay-1");
+      const fenster = contextWindowFor(MODEL)!;
+      const stand = (pct: number) => ({ pct, usedTokens: Math.round(fenster * pct / 100), windowTokens: fenster });
+      expect({ erste: [erste.body.existing, erste.body.receiverFill], noch: [noch.body.existing, noch.body.receiverFill] })
+        .toEqual({ erste: [false, stand(31)], noch: [true, stand(31)] });
+      gespraech(orch.cwd, orch.sessionId, 0.33, 30_000);
+      const spaeter = await nachricht(srv, absender.token, an, "replay-1");
+      expect([spaeter.body.existing, spaeter.body.receiverFill]).toEqual([true, stand(33)]);
+    } finally { await srv.stop(); }
+  }, LIFE_DEADLINE_MS * 2);
 });

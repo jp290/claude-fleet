@@ -2145,6 +2145,9 @@ interface Slot {
   // choice, the role's mode in Fleet's repo and the user's own default in its own setup. claude only; carried by a generic succession;
   // persisted; cleared on open/kill.
   permissionMode: import("./eigenes-setup").PermissionModeWahl | null;
+  // what the door's rule read: the opener's mode and the import mark (server/sitz-reise.ts#modusGrenzeVon). A later start with an empty line goes through the same rule again
+  // (server.ts#ensureSlot), so it is never wider than the first start. null = no limit; carried by a generic succession; persisted; cleared on open/kill.
+  modusGrenze: import("./sitz-reise").ModusGrenze | null;
   // what of the user's ~/.claude this start leaves out (door field `weglassen`, server/eigenes-setup.ts#weglassenDerTuer; the seat's own
   // POST /api/self/weglassen): null = nothing. claude only; carried by a generic succession; persisted; cleared on open/kill.
   weglassen: import("./weglassen").Weglassen | null;

@@ -9,9 +9,14 @@
 // name the left side gives it (a pack its title, never its path); the path stays in `datei`.
 import { agentWort } from "./k15-agent";
 import { KORREKTUR_STEIN_KOPF } from "../server/korrektur-stein";
+import { nurBeiPfaden } from "../server/regel-pfade";
+
+export { nurBeiPfaden };
 
 export interface Datei { pfad: string; bytes: number; eigentum?: string }
-export interface Abschnitt { id: string; quelle?: string | null; bytes?: number | string; text?: string | null; grund?: string | null; dateien?: Datei[] | null }
+export interface Abschnitt { id: string; quelle?: string | null; bytes?: number | string; text?: string | null; grund?: string | null; dateien?: Datei[] | null;
+  /** rule files with `paths:` in a folder with no file at the start: Claude Code reads them with a matching file (server.ts#fassungProjektregelnAus) */
+  nachgeladen?: { pfad: string; text: string; eigentum?: string }[] | null }
 export interface Fassung { teile: { id: string; abschnitte: Abschnitt[] }[] }
 
 export type Herkunft = "cc" | "fleet" | "du";
@@ -114,7 +119,7 @@ function vergleiche(b: Omit<Block, "diff" | "zeichen" | "bytes" | "text">, neu: 
 
 // THE RULE FILES of liest.projektregeln: one text with markers „--- i/n NAME ---“, the paths in `dateien`
 export function regelDateien(a: Abschnitt | undefined): { pfad: string; text: string; eigentum?: string }[] {
-  if (!a?.text) return [];
+  if (!a?.text || (a.bytes === 0 && !a.dateien?.length)) return a?.nachgeladen ?? []; // the server's placeholder for a folder without rules at the start is a sentence, no file
   const t = a.text.split(/^--- (\d+)\/\d+ .+ ---$/m);
   if (t.length < 3) { const d = a.dateien?.[0]; return [{ pfad: d?.pfad ?? "rules", text: a.text, ...(d?.eigentum ? { eigentum: d.eigentum } : {}) }]; }
   const out: { pfad: string; text: string; eigentum?: string }[] = [];
@@ -148,8 +153,6 @@ const PACK_SATZ: Readonly<Record<string, string>> = {
   "how-fleet-remembers": "where a lesson goes, so the next session has it", "made-with-love": "the critical look at visible work",
   "building-an-agent": "how it shapes a better agent with you, one stone at a time",
 };
-// a rule file with `paths:` in its head loads only when Claude reads a matching file (code.claude.com/docs/en/memory)
-export const nurBeiPfaden = (text: string): boolean => /^---\n[\s\S]*?^paths:/m.test(text);
 // whose rule file: the owner's own (eigentum), the repo's (under the repo), or one that lies above the folder
 function regelWer(pfad: string, eigentum: string | undefined, repo: string): { wer: string; satz: string } {
   if (eigentum === "owner") return { wer: "Yours", satz: "your rules, in every project" };

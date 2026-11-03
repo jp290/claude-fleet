@@ -204,15 +204,15 @@ describe("Fleets eigene Zeilen in der Fassung", () => {
       expect(abschnitt(frei, "darf", "mcp")?.text).toContain("--strict-mcp-config nein");
       expect(abschnitt(lane, "darf", "werkzeuge")?.text).not.toBe(abschnitt(orch, "darf", "werkzeuge")?.text);
       expect(new Set([lane.hash, orch.hash, frei.hash, eigen.hash]).size).toBe(4);
-      // DAS EIGENE SETUP: kein Modus auf der Zeile, kein Schnitt, nur die Zeile der Server-Rechte am Systemprompt, kein Modell von Fleet; die Ansicht
+      // DAS EIGENE SETUP: kein Modus auf der Zeile, kein Schnitt, nichts am Systemprompt, kein Modell von Fleet; die Ansicht
       // nennt, was Fleet dazulegt, und als Modus den, den Claude Code dann wählt (W3 Auftrag 21/22, server/fassung-umfeld.ts#eigenerStartModus);
       // ohne Einstellung in der Fixture ist das Claude Codes eingebaute Voreinstellung auto
       expect(abschnitt(eigen, "darf", "modus")?.text).toBe(got.claudeWaehlt);
       expect(abschnitt(eigen, "darf", "modus")?.quelle).toBe("server/fassung-umfeld.ts#eigenerStartModus");
       expect(abschnitt(eigen, "darf", "werkzeuge")?.text).toBe("--tools alle eingebauten\n--disallowedTools keine");
       expect(abschnitt(eigen, "darf", "einstellungen")?.text).toBe("{}");
-      // ...nur die eine Zeile, was sein Self-Token an Fleets Türen öffnet (F3, Ziel 2)
-      expect(abschnitt(eigen, "liest", "systemzusatz")?.text).toStartWith("FLEET SERVER RIGHTS (checked at Fleet's doors):");
+      // ...und auch die Zeile der Server-Rechte nicht: das einfache Claude Code im eigenen Ordner bekommt nichts von Fleet, bis es angeschaltet wird (Owner 1.11.)
+      expect(abschnitt(eigen, "liest", "systemzusatz")?.text ?? "").toBe("");
       expect(abschnitt(eigen, "wer", "modell")?.text).toContain("deins aus den Claude-Code-Einstellungen");
       const minimum = abschnitt(eigen, "darf", "eigenes-setup")?.text ?? "";
       for (const teil of ["--session-id", "FLEET_SELF_TOKEN", "PATH"]) expect(minimum).toContain(teil);

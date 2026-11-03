@@ -123,6 +123,18 @@ describe("ein Slot öffnet aus einem Agenten", () => {
       ]);
       ok(made); ok(ersterSitz);
       const gezeigt = ok(vorschau).fassung as Record<string, any>;
+      // die Rolle hat schon einen Träger: ein zweiter Start durch einen Agenten kommt nicht durch (Orchestratorin, Auftrag 7, D1); server/start-tueren.test.ts hält den Träger
+      if (laeuftSchon) {
+        const [zweiter] = await life(f, [post("/api/slots/2/open", { cwd: zwei(f), agent: "orch-eigen", fassung: gezeigt.hash })]);
+        expect({ status: zweiter?.status, error: zweiter?.body.error }).toEqual({ status: 409, error: "The role Orchestrator is held by the seat in slot 1; end that seat first." });
+        // an der Tür mit dem Label bleibt der zweite Sitz möglich (server.ts#roleConflictFor): seine Vorschau rechnet ihn als zweiten Träger, also als freien Sitz (server.ts#wuerdeOrchestratorin), Hash der Vorschau = Hash des Sitzes
+        const [plan] = await life(f, [get(`/api/founding-plan?repo=${encodeURIComponent(zwei(f))}&role=orchestratorin&anlass=neu`)]);
+        const gesehen = ok(plan) as { plan: { planHash: string }; fassung: { hash: string } };
+        const [label, lauf] = await life(f, [post("/api/slots/2/open", { cwd: zwei(f), label: "Orchestrator", plan: { hash: gesehen.plan.planHash, role: "orchestratorin" } }), get("/api/slots/2/fassung?anlass=laufend")]);
+        expect({ status: label?.status, error: label?.body.error }).toEqual({ status: 200, error: undefined });
+        expect(ok(lauf).hash).toBe(gesehen.fassung.hash);
+        return;
+      }
       const [offen, laufend] = await life(f, [
         post(`/api/slots/${laeuftSchon ? 2 : 1}/open`, { cwd: zwei(f), agent: "orch-eigen", fassung: gezeigt.hash }),
         get(`/api/slots/${laeuftSchon ? 2 : 1}/fassung?anlass=laufend`),
@@ -279,8 +291,8 @@ describe("was das Startfenster liest", () => {
     // ändert sich sein Hash (dass der Hash am Inhalt hängt, hält server/fassung.test.ts fest)
     const liest = (x: Record<string, any>) => (x.teile as { id: string; abschnitte: { id: string; quelle: string | null; grund?: string }[] }[])
       .find((t) => t.id === "liest")!.abschnitte;
-    // (drei „wissen“: seit dem Zug zeigt die Fassung die Tür-Packs und die Bibliothek je als eigenen Abschnitt — gemessen auch ohne diese Änderung)
-    expect(liest(ok(fa)).map((a) => a.id)).toEqual(["rolle", "systemzusatz", "projektregeln", "wissen", "wissen", "wissen", "gedaechtnis", "eigenes"]);
+    // (ein „wissen“: ein einfacher Start vom Owner bekommt keine Tür-Packs, server.ts#tuerenZeile)
+    expect(liest(ok(fa)).map((a) => a.id)).toEqual(["rolle", "systemzusatz", "projektregeln", "wissen", "gedaechtnis", "eigenes"]);
     expect(liest(ok(fa))[0]).toMatchObject({ id: "rolle", grund: "keine stehende Rolle — eine freie Session startet ohne Rollenkarte" });
     expect(liest(ok(fa)).map((a) => a.id)).toEqual(liest(ok(fb)).map((a) => a.id));
   }, LIFE_DEADLINE_MS * 2);

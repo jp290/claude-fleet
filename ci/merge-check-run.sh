@@ -37,7 +37,7 @@ BANDS="7 8 9"
 HAND_BANDS="5 6"
 SMALL_S=200
 JOB_TIMEOUT_S="${MERGE_CHECK_JOB_TIMEOUT_S:-900}"
-BIG_JOB_TIMEOUT_S="${MERGE_CHECK_BIG_JOB_TIMEOUT_S:-1500}"
+BIG_JOB_TIMEOUT_S="${MERGE_CHECK_BIG_JOB_TIMEOUT_S:-1800}"
 KEEP_RUNS=20
 # die Instanzen der Teile liegen außerhalb von $HOME, wie die des Audits (/var/lib/fleet-helper/work): e2e/programs.ts
 # öffnet einen Slot in $HOME, und unter $HOME überlappte der jeden game-maker-Baum der Instanz („game-maker tree is

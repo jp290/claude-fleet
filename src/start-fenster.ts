@@ -24,7 +24,7 @@ import { anatomieVon } from "./k15-anatomie";
 export interface AgentZeile {
   id: string; name: string; wahlen: Record<string, unknown>; agentMd: { titel: string; text: string; profil: string } | null;
   art: string; aenderbar: boolean; quelle: string; hash: string; kopieVon?: { id: string; name: string; hash: string };
-  abgeleitetVon?: string; importiert?: true; zuletzt?: number | null;
+  abgeleitetVon?: string; importiert?: true; vonSitz?: number; zuletzt?: number | null;
 }
 type Liste = AgentZeile[] | "laedt" | { fehler: string };
 export interface FensterStand {
@@ -148,6 +148,8 @@ const hookSkripte = (f: Fassung | null): string[] => zeilen(abschnitt(f, "darf",
 // what holds when the window sets nothing: the model and the permission mode the Fassung names (Fleet's repo and a role set their own)
 const wirkModell = (f: Fassung | null): string | null => { const t = abschnitt(f, "wer", "modell"); return t && /^[\w.-]+(\[1m\])?$/.test(t) ? t : null; };
 const wirkModus = (f: Fassung | null): string | null => { const t = abschnitt(f, "darf", "modus"); return t && MODI.some((m) => m.id === t) ? t : null; };
+// ...and on its own branch what holds is the branch's mode, not this checkout's, which is all the plain preview reads
+const modusOhneWahl = (z: St["sitz"], f: Fassung | null): string | null => (z.wahl.branch !== null ? z.letzte?.a.modusImBranch : undefined) ?? wirkModus(f);
 const notizen = (f: Fassung | null): number => zeilen(abschnitt(f, "liest", "gedaechtnis") ?? "").filter((z) => z.startsWith("- [")).length;
 // „Only this repo's“ leaves out your ~/.claude rules; a rule file in a folder above the repo (your ~/AGENTS.md) still comes in
 function nurRepoSatz(f: Fassung | null, repo: string): string {
@@ -212,7 +214,7 @@ function agentName(a: AgentZeile): string {
   if (rolleVon(a)) return "Orchestrator";
   return a.name;
 }
-function agentSatz(a: AgentZeile): string {
+function agentSatz(a: AgentZeile, imMenue = false): string {
   if (a.id === "repo") return "Claude Code as you would start it here yourself";
   const { wahl, fremd } = wahlAus(a.wahlen);
   if (rolleVon(a)) return "a role of Fleet's: plans the work, opens the branches, brings back the results";
@@ -221,8 +223,8 @@ function agentSatz(a: AgentZeile): string {
   if (fremd.includes("profil") || fremd.includes("sitz")) return "from the old start window";
   // its packs as one count: their names are in the window once it is open
   const d = abweichungen(wahl, modelName).filter((x) => !x.id.startsWith("pack:")).map((x) => x.wort);
-  if (wahl.packs) d.push(wahl.packs.length ? mehrzahl(wahl.packs.length, "context pack") : "No context packs");
-  return [...(a.agentMd ? [a.agentMd.titel] : []), ...d].join(" · ") || "your normal Claude Code, saved with a name";
+  if (wahl.packs && !imMenue) d.push(wahl.packs.length ? mehrzahl(wahl.packs.length, "context pack") : "No context packs");
+  return [...(a.agentMd ? [a.agentMd.titel] : []), ...d].join(" · ") || (imMenue ? "" : "your normal Claude Code, saved with a name");
 }
 function agentHer(a: AgentZeile): string {
   if (a.id === "repo") return "from the repo";
@@ -249,6 +251,9 @@ function zurueck(s: St): void {
 }
 // starts as the saved agent, by its id: it carries what the window can't set, or nothing was changed on it
 const alsAgent = (z: FensterStand): boolean => !!z.agent && z.agent.id !== "repo" && (z.fremd.length > 0 || gleich(z.wahl, z.basis));
+// ...and one from a file or a session stays that when a choice changes: the door hears where the choices came from (server.ts#ausFremdemAgenten), in the preview too
+const herkunft = (z: FensterStand): { ausAgent?: string } =>
+  z.agent && !alsAgent(z) && (z.agent.importiert || typeof z.agent.vonSitz === "number") ? { ausAgent: z.agent.id } : {};
 // a saved agent with a choice changed in the window
 const ungesichert = (z: FensterStand): boolean => !z.fremd.length && !istRepo(z.agent) && !gleich(z.wahl, z.basis);
 
@@ -257,7 +262,9 @@ function urls(s: St): { n: string; a: string } | null {
   if (!s.repo) return null;
   const z = s.sitz, n = planUrl(s.repo, "nur-ordner", {}), rolle = rolleVon(z.agent);
   if (rolle) return { n, a: planUrl(s.repo, rolle, {}) };
-  const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id } : vorschau(z.wahl)).toString();
+  // ...on its own branch it reads the mode as its worktree will: the branch it starts from, not this checkout's files (server.ts#modusImBranch)
+  const ab: Record<string, string> = z.wahl.branch !== null ? { ab: abzweig(s)?.branch ?? "" } : {};
+  const q = new URLSearchParams(alsAgent(z) ? { agent: z.agent!.id, ...ab } : { ...vorschau(z.wahl), ...herkunft(z), ...ab }).toString();
   return { n, a: q ? `${n}&${q}` : n };
 }
 function plaene(s: St): { a: Answer | null; n: Answer | null; fehler: string | null; laedt: boolean } {
@@ -383,7 +390,7 @@ function vorlagen(s: St): VorlageZeile[] {
 function bereit(s: St, l: AgentZeile[]): Bereit[] {
   const out: Bereit[] = [];
   const repoAg = l.find((a) => a.id === "repo");
-  if (repoAg) out.push({ key: "repo", name: "Claude Code", satz: "As you would start it here yourself.", her: "", agent: repoAg });
+  if (repoAg) out.push({ key: "repo", name: "Claude Code", satz: "As it is", her: "", agent: repoAg });
   const genommen = new Set<string>();
   for (const v of vorlagen(s)) {
     // a template already imported once is that agent; starting it again starts the same one
@@ -395,7 +402,7 @@ function bereit(s: St, l: AgentZeile[]): Bereit[] {
   // the seats and profiles of a constellation are its own: they show in the constellation view, not as agents to start
   const rest = l.filter((a) => a.id !== "repo" && !genommen.has(a.id) && !a.id.startsWith("sitz:") && !a.id.startsWith("profil:"));
   const hier = rest.filter((a) => a.zuletzt).sort((a, b) => (b.zuletzt ?? 0) - (a.zuletzt ?? 0));
-  for (const a of [...hier, ...rest.filter((a) => !a.zuletzt)]) out.push({ key: `agent:${a.id}`, name: agentName(a), satz: agentSatz(a), her: agentHer(a), agent: a });
+  for (const a of [...hier, ...rest.filter((a) => !a.zuletzt)]) out.push({ key: `agent:${a.id}`, name: agentName(a), satz: agentSatz(a, true), her: agentHer(a), agent: a });
   return out;
 }
 function bereitZeile(s: St, b: Bereit): HTMLElement {
@@ -408,7 +415,7 @@ function bereitZeile(s: St, b: Bereit): HTMLElement {
     zeile.onclick = () => void gestalte(s, b);
   }
   const t = el("span", "sfagt");
-  t.append(el("div", "sfagn", b.name), el("div", "sfagf", b.satz));
+  t.append(el("div", "sfagn", b.name), ...(b.satz ? [el("div", "sfagf", b.satz)] : []));
   const meldet = z.startet === b.key;
   const go = knopf("sfstart", [meldet ? "Starting …" : "Start"], (e) => { e.stopPropagation(); void startDirekt(s, b); },
     s.repo ? `Starts ${b.name} in ${baseName(s.repo)}` : "Choose where it works first");
@@ -419,32 +426,29 @@ function bereitZeile(s: St, b: Bereit): HTMLElement {
 function spalteAgenten(s: St): HTMLElement {
   const z = s.sitz, col = el("div", "sfcol sfagenten");
   const karte = el("div", "sfkarte");
-  const h = el("div", "sfah");
-  h.append("Start an agent ", el("span", "", s.repo ? `in ${baseName(s.repo)}` : ""));
   const liste = el("div", "sfaliste");
   liste.dataset.scroll = "agenten";
   const l = agenten(s);
   if (l === "laedt") liste.append(el("div", "sfleer", "Reading the agents …"));
   else if (!Array.isArray(l)) liste.append(el("div", "sfleer", `The agents are not readable: ${l.fehler}`));
-  else if (!s.repo) liste.append(el("div", "sfleer", "Choose the folder your agent should work in, then start it here."));
+  else if (!s.repo) liste.append(el("div", "sfleer", "Choose a folder"));
   else {
     const alle = bereit(s, l);
     liste.classList.toggle("sfweg", z.liste !== "agenten");
-    liste.append(el("div", "sfsub sfsub1", "Start right away"));
     for (const b of z.alle ? alle : alle.slice(0, BEREIT_ZUERST)) liste.append(bereitZeile(s, b));
     if (alle.length > BEREIT_ZUERST) {
       const mehr = knopf("sfmehr", [z.alle ? "Show fewer" : `Show ${alle.length - BEREIT_ZUERST} more`], () => { z.alle = !z.alle; render(); });
       liste.append(mehr);
     }
     if (z.liste === "gestalten") {
-      liste.append(el("div", "sfsub", "Design which one? Its blocks open in the form; start it from there."));
+      liste.append(el("div", "sfsub", "Change which one?"));
       // an agent of several seats is a constellation: its seats are designed in the constellation view, not in this form
       for (const b of alle.filter((x) => !(x.vorlage && x.vorlage.sitze > 1))) {
         const k = knopf("sfag", [], () => void gestalte(s, b));
         k.dataset.gestalten = b.key;
         const tt = el("span", "sfagt");
         const kopie = b.agent && b.agent.id !== "repo" && !b.agent.aenderbar;
-        tt.append(el("div", "sfagn", b.name), el("div", "sfagf", kopie ? `${b.satz} · opens your own copy` : b.satz));
+        tt.append(el("div", "sfagn", b.name), ...(kopie ? [el("div", "sfagf", "as a copy")] : []));
         k.append(el("span", "sfav", b.name.charAt(0).toUpperCase()), tt, el("span", "sfagher", b.her));
         liste.append(k);
       }
@@ -454,15 +458,15 @@ function spalteAgenten(s: St): HTMLElement {
   if (z.fehler) liste.append(el("div", "sffehler", z.fehler));
   const knoepfe = el("div", "sfbtns");
   const an = (id: FensterStand["liste"]) => () => { z.liste = z.liste === id ? "agenten" : id; z.fehler = null; render(); };
-  const weg = (verb: string, satz: string, tu: () => void, gedrueckt: boolean): HTMLButtonElement => {
-    const k = knopf("", [el("b", "", verb), el("span", "", satz)], tu);
+  const weg = (verb: string, tu: () => void, gedrueckt: boolean): HTMLButtonElement => {
+    const k = knopf("", [el("b", "", verb)], tu);
     k.setAttribute("aria-pressed", String(gedrueckt));
     return k;
   };
-  knoepfe.append(weg("Set up", "a new agent from scratch", () => oeffne(s, null), false),
-    weg("Design", "change the blocks of one you have", an("gestalten"), z.liste === "gestalten"),
-    weg("Import", "an agent from a file", an("import"), z.liste === "import"));
-  karte.append(h, liste, knoepfe);
+  knoepfe.append(weg("New agent", () => oeffne(s, null), false),
+    weg("Change an agent", an("gestalten"), z.liste === "gestalten"),
+    weg("Import", an("import"), z.liste === "import"));
+  karte.append(liste, knoepfe);
   col.append(karte);
   return col;
 }
@@ -518,14 +522,15 @@ async function startDirekt(s: St, b: Bereit): Promise<void> {
   if (slot === null) return fehl("No free slot in the bar.");
   const r: Antwort = await starte({ tuer: "open", cwd: repo, slot, dreier: {}, plan: p.a.start.startbar ? { hash: p.a.plan.planHash, role: "nur-ordner" } : null,
     ...(p.a.fassungsHash ? { fassung: p.a.fassungsHash } : {}), wahl: {}, ...(agent ? { agent: agent.id } : {}), ...(sitz ? { sitz } : {}),
-    // the bar names the agent, not only the folder (Claude Code as it is keeps the folder's name, as every plain start does)
-    ...(b.key === "repo" ? {} : { label: b.name }) });
+    // the bar names the agent, not only the folder (Claude Code as it is keeps the folder's name, as every plain start does);
+    // a role and a copy of it keep the role's label, the door writes it and refuses any other (server/agenten.ts#agentAnDerTuer)
+    ...(b.key === "repo" || agent?.wahlen.rolle !== undefined ? {} : { label: b.name }) });
   if (S !== s) return;
   z.busy = false; z.startet = null;
   if (r.ok) {
     s.shell.close();
     zeigeSlot(r.slot);
-    if (r.hinweis) meldung(`The session is on slot ${r.slot}. ${r.hinweis}`);
+    if (r.hinweis) meldung(r.hinweis);
     return;
   }
   z.fehler = r.fehler;
@@ -541,8 +546,7 @@ function einwurf(s: St): HTMLElement {
   inp.accept = ".json,application/json";
   inp.hidden = true;
   inp.onchange = (e) => { const f = (e.currentTarget as HTMLInputElement).files?.[0]; if (f) void importiere(s, f); };
-  box.append(el("b", "", "Drop its file here, or choose one…"),
-    el("span", "", "It brings its choices: model, guides, how it asks, and rights up to Builds. A guide it carries is read from the file, in any folder. It runs on your own Claude Code, with your rules, skills and connectors. A file that asks for No limits is refused; a role in it waits for your word."), inp);
+  box.append(el("b", "", "Drop a file here or click"), inp);
   box.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).classList.add("ueber"); };
   box.ondragleave = (e) => (e.currentTarget as HTMLElement).classList.remove("ueber");
   box.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).classList.remove("ueber"); const f = e.dataTransfer?.files[0]; if (f) void importiere(s, f); };
@@ -575,7 +579,7 @@ async function importiere(s: St, f: File): Promise<void> {
   }
   // a file of several seats: each seat shows under the agents of every repo
   Object.assign(s.sitz, { liste: "agenten", fehler: null });
-  meldung(`Imported „${j.konstellation!.name}“ with ${mehrzahl(j.konstellation!.seats, "seat")}. They show under the agents of every repo.${weg}`);
+  meldung(`Imported „${j.konstellation!.name}“ with ${mehrzahl(j.konstellation!.seats, "seat")}.${weg}`);
   render();
 }
 async function kopiere(s: St, a: AgentZeile): Promise<void> {
@@ -593,7 +597,7 @@ function spalteSitzung(s: St, p: ReturnType<typeof plaene>): HTMLElement {
   const b = banner(s, fj);
   if (b) inn.append(b);
   if (!p.a || !fj) inn.append(el("div", "sfleer", p.fehler ? `The preview is not readable: ${p.fehler}` : "Reading what this session gets …"));
-  else inn.append(zoneCC(s, fj, fn), zoneFleet(s, fj, fn));
+  else inn.append(zoneTeile(s, fj, fn));
   col.classList.toggle("laedt", p.laedt);
   col.append(inn);
   return col;
@@ -605,8 +609,8 @@ function held(s: St, p: ReturnType<typeof plaene>): HTMLElement {
   const a = z.agent, repo = s.repo ? baseName(s.repo) : "";
   // under the name only what the agent is for; whether it starts as your normal Claude Code is the banner's to say, its parts the tiles'
   const wozu = rolleVon(a ?? null) ? "Plans the work, opens the branches and brings back the results." : a?.agentMd?.titel ?? null;
-  links.append(el("div", "sfpurpose", wozu ?? (z.wahl.harness === null ? "Your Claude Code with what Fleet adds on top."
-    : `${agentWort(z.wahl.harness)} with what Fleet adds on top.`)));
+  links.append(el("div", "sfpurpose", wozu ?? (istRepo(a) && eigenesSetup(fassungVon(z.letzte?.a)) ? "Nothing from Fleet unless you switch it on."
+    : z.wahl.harness === null ? "Your Claude Code with what Fleet adds on top." : `${agentWort(z.wahl.harness)} with what Fleet adds on top.`)));
   const her = a?.importiert || a?.abgeleitetVon ? `Imported from a file · derived from ${(a.abgeleitetVon ?? a.hash).slice(0, 12)}. It brings its choices; your rules, skills and connectors stay yours.`
     : a?.kopieVon ? `Copy of ${a.kopieVon.name === "Agent des Repos" || a.kopieVon.name === "Repo agent" ? "the repo's agent" : a.kopieVon.name} · ${a.hash.slice(0, 12)}` : null;
   const offen = ungesichert(z);
@@ -881,7 +885,7 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
   const wahl = (id: string, opts: [string | null, string][], jetzt: string | null, setze: (v: string | null) => void, zeig?: string): Node =>
     gehalten ? fest(zeig ?? opts.find(([v]) => v === jetzt)?.[1] ?? String(jetzt)) : waehler(id, opts, jetzt, (v) => { setze(v); aendere(s, [id]); }, zeig);
   // YOUR CLAUDE CODE OR THE HARNESS THAT TOOK ITS PLACE; where the window sets nothing, what holds here (fn: this place without a choice)
-  const wm = wirkModell(fj), wmn = wirkModell(fn), wp = wirkModus(fj), wpn = wirkModus(fn);
+  const wm = wirkModell(fj), wmn = wirkModell(fn), wp = wirkModus(fj), wpn = modusOhneWahl(z, fn);
   const std = s.katalog ? standardAgent(s.katalog) : null, gewaehlt = w.harness ?? std ?? "claude", istStd = w.harness === null;
   const agent = s.katalog ? agentVon(s.katalog, gewaehlt) : undefined;
   // THE HARNESS ITSELF (owner 26.10.: the start window offers Claude Code, pi-deepseek, pi-zai and the others GET /api/harnesses lists):
@@ -928,9 +932,11 @@ function kacheln(s: St, fj: Fassung, fn: Fassung | null): Map<string, Kachel> {
     : { id: "connectors", name: NAME.connectors, icon: ICON.connectors, wert: fest("Your claude.ai account's"), satz: "Your claude.ai connectors and your plugins' servers." });
   // ASKS YOU: four choices, and what holds without one says its level (cold read 26.10.: „[Zitat entfernt]“ said nothing)
   // what holds without a choice is the mode the start brief names (src/start-wahl.ts#ohneWahl)
-  const hier = ohneWahl(wpn), gilt = MODI.find((m) => m.id !== null && m.id === (w.permissionMode ?? wp)) ?? hier;
+  // ...an agent from a file or a session that would inherit bypass starts in another mode than your setting (server.ts#modusDerOeffnung): the tile names that one, and not as your setting
+  const stattBypass = w.permissionMode === null && wpn === "bypassPermissions" && wp !== null && wp !== wpn;
+  const hier = ohneWahl(stattBypass ? wp : wpn), gilt = MODI.find((m) => m.id !== null && m.id === (w.permissionMode ?? wp)) ?? hier;
   K.set("permissions", { id: "permissions", name: NAME.permissions, icon: ICON.permissions, gehalten, satz: GIBT.permissions, war: neben(!!w.permissionMode, `normally ${hier.wort}`),
-    wert: wahl("permissions", [[null, hier.label], ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
+    wert: wahl("permissions", [[null, stattBypass ? hier.wort : hier.label], ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
       .map((m): [string, string] => [m.id!, m.wort])], w.permissionMode, (v) => { w.permissionMode = v; }, gehalten ? gilt.wort : w.permissionMode === null ? hier.wort : undefined) });
   const i = infoDa(s);
   if (w.branch !== null) K.set("workplace", { id: "workplace", name: NAME.workplace, icon: ICON.workplace, leise: true, wert: fest("Replaced by its own branch"), satz: "Its own branch takes its place." });
@@ -1023,7 +1029,8 @@ function kachelEl(s: St, k: Kachel): HTMLElement {
     t.append(n);
   }
   if (k.wert) t.append(k.wert);
-  if (k.satz) t.append(el("span", "sfts", k.satz));
+  // what a tile gives: on hover; the open block says the rest, one step away
+  if (k.satz) t.title = k.satz;
   if (k.koerper) t.append(k.koerper);
   if (k.war) t.append(el("span", "sfwas", k.war));
   if (k.schalter) {
@@ -1053,64 +1060,58 @@ function teil(s: St, wort: string, inhalt: Node[], ids: string[], K: Map<string,
   if (z.offen && ids.includes(z.offen)) p.append(lade(s, z.offen, K.get(z.offen), fj, fn));
   return p;
 }
-const reihe = (s: St, K: Map<string, Kachel>, ids: string[]): HTMLElement => { const t = el("div", "sftiles"); for (const id of ids) { const k = K.get(id); if (k) t.append(kachelEl(s, k)); } return t; };
+const reihe = (s: St, K: Map<string, Kachel>, ids: string[], fleet = false): HTMLElement => { const t = el("div", fleet ? "sftiles fl" : "sftiles"); for (const id of ids) { const k = K.get(id); if (k) t.append(kachelEl(s, k)); } return t; };
 // a kind of stone inside a row: its name and the sentence of what it is (owner 24.10.: each kind its name and one visible sentence)
 const art = (name: string, satz: string): HTMLElement => { const a = el("div", "sfart"); a.append(el("b", "", name), satz); return a; };
 
-function zoneCC(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
-  const K = kacheln(s, fj, fn), zone = el("div", "sfzone cc"), zh = el("div", "sfzh"), h = el("h3", "");
-  const w = s.sitz.wahl, std = s.katalog ? standardAgent(s.katalog) : null, claude = w.harness === null;
-  h.append(el("span", "sfmk cc"), claude ? "Your Claude Code" : agentWort(w.harness ?? std ?? "claude"));
-  // the trust sentence once, here (Soll 3 and 7)
-  zh.append(h, el("span", "", "What it already has. A choice here changes only this start, never your files."));
-  zone.append(zh);
-  // only Claude Code reads your rule files, skills, connectors, hooks and permission modes; another harness brings its own program, and
-  // the window offers what it really takes (model and effort from the catalogue) instead of switches the door would refuse
-  const TEILE: [string, string[]][] = claude
-    ? [["Who it is", ["harness", "model"]], ["What it knows", ["memory", "rules"]], ["What it may do", ["skills", "connectors", "permissions"]],
-      ["How it works", ["workplace", "plan", "hooks"]]]
-    : [["Who it is", ["harness", "model"]], ["How it works", ["workplace"]]];
-  for (const [wort, ids] of TEILE) zone.append(teil(s, wort, [reihe(s, K, ids)], ids, K, fj, fn));
-  return zone;
-}
-// FLEET ON TOP in the same four questions as Your Claude Code above it (das Ganze, 25.10.): what it knows — context packs, its notebook,
-// concepts, and the thought behind them —, what it may do — Fleet's skills and rights —, and how it works
-function zoneFleet(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
+// THE PAGE IN THE FIVE PARTS EVERY SEAT HAS (docs/start/system-concept.md; owner 1.11.: „[Zitat entfernt]“):
+// who it is, how it starts, what it reads, what it may do, who and what it works with. Each part shows what Claude Code has of its own (●) and the stones
+// Fleet puts on top (▲, dashed while off), side by side in the part they belong to.
+function zoneTeile(s: St, fj: Fassung, fn: Fassung | null): HTMLElement {
   const z = s.sitz, K = kacheln(s, fj, fn), i = infoDa(s);
   const { katalog } = bibliothekVon(z.letzte?.n);
   const packs = [...K.keys()].filter((id) => id.startsWith("pack:")), von = (id: string) => katalog.find((x) => `pack:${x.id}` === id);
   // a skill Fleet gives is a tool it runs when you ask, not knowledge (owner 25.10.: „[Zitat entfernt]“)
   const wissen = packs.filter((id) => !von(id)?.konzept && !von(id)?.werkzeug), konzepte = packs.filter((id) => von(id)?.konzept), werkzeuge = packs.filter((id) => von(id)?.werkzeug);
   // an agent that starts whole shows only what it carries, and takes a task beside it (a role none); a branch needs git and a repo the
-  // branch doors take; rights, its own notebook and the succession band are Claude Code's alone (server/rechte.ts#rechteDerTuer,
-  // server.ts#setSchwelle)
+  // branch doors take; rights, its own notebook and the succession band are Claude Code's alone
   const claude = z.wahl.harness === null;
   const da = (id: string) => (!z.fremd.length || K.get(id)?.schalter?.an || (id === "task" && !rolleVon(z.agent)))
     && (branchGeht(i) || (id !== "branch" && id !== "notebook")) && (claude || !["rights", "notebook", "succession"].includes(id));
-  const zone = el("div", "sfzone fl"), zh = el("div", "sfzh"), h = el("h3", "");
-  h.append(el("span", "sfmk fl"), "Fleet on top");
-  zh.append(h, el("span", "", "What Fleet adds. Switch on what helps."));
-  zone.append(zh);
-  const weiss: Node[] = [];
-  if (wissen.length) weiss.push(art("Context packs", "how-tos Fleet wrote, next to your rule files"), reihe(s, K, wissen));
+  const zone = el("div", "sfzone");
+  const leg = el("div", "sfleg");
+  leg.append(el("span", "sfmk cc"), "Yours", el("span", "sfmk fl"), "Fleet");
+  zone.append(leg);
+  // one part: its Claude Code tiles, then Fleet's stones, one row each
+  const teilAus = (wort: string, cc: string[], fleet: Node[], fleetIds: string[]): void => {
+    const inhalt: Node[] = [];
+    const ccDa = cc.filter((id) => K.has(id));
+    if (ccDa.length) inhalt.push(reihe(s, K, ccDa));
+    inhalt.push(...fleet);
+    if (inhalt.length) zone.append(teil(s, wort, inhalt, [...ccDa, ...fleetIds], K, fj, fn));
+  };
+  const fl = (ids: string[]): Node[] => { const ids2 = ids.filter((id) => K.has(id)); return ids2.length ? [reihe(s, K, ids2, true)] : []; };
+  teilAus("Who", ["harness", "model"], [], []);
+  const start = ["task"].filter(da);
+  teilAus("Start", [], fl(start), start);
+  const liest: Node[] = [];
+  if (wissen.length) liest.push(art("Context packs", "how-tos Fleet wrote"), reihe(s, K, wissen, true));
   const paar = el("div", "sfpaar");
-  if (da("notebook")) { const b = el("div", ""); b.append(art("Notebook", ""), reihe(s, K, ["notebook"])); paar.append(b); }
-  if (konzepte.length) { const b = el("div", ""); b.append(art("Concepts", ""), reihe(s, K, konzepte)); paar.append(b); }
-  if (paar.childElementCount) weiss.push(paar);
-  // the thought behind the kinds, once (owner 25.10. 19:50; the system concept's words)
-  if (weiss.length) weiss.push(el("div", "sfgedanke", "What a session learns goes into its notebook. What should hold for every session moves into a context pack or a concept, where everyone can see it."));
-  if (weiss.length) zone.append(teil(s, "What it knows", weiss, [...wissen, "notebook", ...konzepte], K, fj, fn));
+  if (da("notebook")) { const b = el("div", ""); b.append(art("Notebook", ""), reihe(s, K, ["notebook"], true)); paar.append(b); }
+  if (konzepte.length) { const b = el("div", ""); b.append(art("Concepts", ""), reihe(s, K, konzepte, true)); paar.append(b); }
+  if (paar.childElementCount) liest.push(paar);
+  teilAus("Reads", claude ? ["memory", "rules", "skills"] : [], liest, [...wissen, ...(da("notebook") ? ["notebook"] : []), ...konzepte]);
   const darf = [...werkzeuge, ...(da("rights") ? ["rights"] : [])];
-  if (darf.length) zone.append(teil(s, "What it may do", [reihe(s, K, darf)], darf, K, fj, fn));
-  const wie = ["branch", "task", "succession"].filter(da);
-  if (wie.length) zone.append(teil(s, "How it works", [reihe(s, K, wie)], wie, K, fj, fn));
+  teilAus("May", claude ? ["permissions", "plan", "connectors", "hooks"] : [], fl(darf), darf);
+  const mit = ["branch", "succession"].filter(da);
+  teilAus("Works with", ["workplace"], fl(mit), mit);
   return zone;
 }
 
 // AN OPEN BLOCK: how it works in Claude Code and what you can set; its words are on the right
 function lade(s: St, id: string, k: Kachel | undefined, fj: Fassung, fn: Fassung | null): HTMLElement {
   const z = s.sitz, w = z.wahl, frei = !z.fremd.length;
-  const d = el("div", "sfdrawer");
+  const d = el("div", k?.stein ? "sfdrawer fl" : "sfdrawer");
   d.setAttribute("role", "region");
   d.setAttribute("aria-label", k?.name ?? NAME[id] ?? id);
   // its name and the one sentence of what it is; the controls follow, and the arrow points at its place in the start brief
@@ -1143,8 +1144,8 @@ function lade(s: St, id: string, k: Kachel | undefined, fj: Fassung, fn: Fassung
   }
   if (frei && id === "rules" && eigenesSetup(fj)) d.append(opts([{ v: "ja", wort: "Yours + this repo's", satz: "Your rules for every project, and this repo's own." },
     { v: "nein", wort: "Only this repo's", satz: nurRepoSatz(fn ?? fj, s.repo ?? "") }], w.eigeneRegeln ? "ja" : "nein", (v) => { w.eigeneRegeln = v === "ja"; aendere(s, ["rules"]); }));
-  if (frei && id === "permissions") { const hier = ohneWahl(wirkModus(fn ?? fj));
-    d.append(opts([{ v: null, wort: hier.label, satz: hier.satz }, ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
+  if (frei && id === "permissions") { const wn = modusOhneWahl(z, fn ?? fj), wj = wirkModus(fj), statt = w.permissionMode === null && wn === "bypassPermissions" && wj !== null && wj !== wn, hier = ohneWahl(statt ? wj : wn);
+    d.append(opts([{ v: null, wort: statt ? hier.wort : hier.label, satz: hier.satz }, ...MODI.filter((m) => m.id !== null && (FRAGT.includes(m.id) || m.id === w.permissionMode))
       .map((m) => ({ v: m.id, wort: m.wort, satz: m.satz }))], w.permissionMode, (v) => { w.permissionMode = v; aendere(s, ["permissions"]); })); }
   if (frei && id === "rights") d.append(opts(STUFEN.map((x) => ({ v: x.id, wort: x.wort, satz: x.satz })), w.rechte, (v) => { w.rechte = v as Wahl["rechte"]; aendere(s, ["rights"]); }));
   if (frei && id === "succession" && w.schwelle !== null) d.append(opts(SCHWELLEN.map((n) => ({ v: String(n), wort: `At ${n} %` })), String(w.schwelle), (v) => { w.schwelle = Number(v); aendere(s, ["succession"]); }));
@@ -1380,7 +1381,7 @@ function pfeil(s: St): void {
     }
     const o = svg.getBoundingClientRect(), kopf = (dr.querySelector(".sfdh") ?? dr).getBoundingClientRect(), da = dr.getBoundingClientRect();
     const sh = sheet.getBoundingClientRect(), hr = hb.getBoundingClientRect(), y0 = kopf.top + kopf.height / 2;
-    const fl = !!dr.closest(".sfzone.fl");
+    const fl = dr.classList.contains("fl");
     // A TILE THAT LISTS ITS FILES draws one line from each file to its entry (cold read 25.10.: the arrow met one of three files), each
     // leaving the zone at its own x so the lines stay apart
     const tile = d.querySelector<HTMLElement>(".sftile.open"), reihen = [...(tile?.querySelectorAll<HTMLElement>("[data-ziel]") ?? [])];
@@ -1430,7 +1431,9 @@ async function speichere(s: St, name: string): Promise<void> {
   const aendern = !!z.agent?.aenderbar;
   const a = await agentAntwort(s, await post(aendern ? `/api/agenten/${encodeURIComponent(z.agent!.id)}` : "/api/agenten", { name: n, wahlen: wahlenVon(z.wahl) }, aendern ? "PUT" : "POST"));
   if (!a) return;
-  Object.assign(z, { agent: a, name: a.name, basis: structuredClone(z.wahl), speichern: false, nameEntwurf: null, fehler: null });
+  // what the preview said of it before this save is over: the tile says what the agent does now, and a start takes the hash of now (the owner's rule at server/agenten.ts takes the mark with the change)
+  s.plaene.clear();
+  Object.assign(z, { agent: a, name: a.name, basis: structuredClone(z.wahl), speichern: false, nameEntwurf: null, fehler: null, letzte: null });
   meldung(`Saved as „${a.name}“. It shows under the agents of every repo.`);
   render();
 }
@@ -1473,7 +1476,7 @@ async function los(s: St): Promise<void> {
   render();
   const ganz = alsAgent(z), ziel = w.aufgabe?.trim() ?? "", rolle = rolleVon(z.agent);
   const { goal: _g, ...felder } = tuer(w);
-  const wahl = ganz ? {} : felder;
+  const wahl = ganz ? {} : { ...felder, ...herkunft(z) };
   const dreierWahl = ganz ? {} : dreier(w);
   const agent = ganz ? { agent: z.agent!.id } : {};
   const slot = freierPlatz(s);
@@ -1483,8 +1486,8 @@ async function los(s: St): Promise<void> {
     : await starte({ tuer: "open", cwd: s.repo, slot, dreier: dreierWahl, plan: a.start.startbar ? { hash: a.plan.planHash, role: rolle ?? "nur-ordner" } : null,
       // a role's door writes its label and card itself: its Fassung is not the preview's of its plan, so it carries no hash to check
       ...(a.fassungsHash && !rolle ? { fassung: a.fassungsHash } : {}), wahl: { ...wahl, ...(ziel ? { goal: ziel } : {}) }, ...agent,
-      // a saved agent starting whole names its slot, as the menu's Start does
-      ...(ganz && !rolle ? { label: z.name } : {}) });
+      // a saved agent starting whole names its slot, as the menu's Start does; a copy of a role keeps the role's label, and the door refuses any other (server/agenten.ts#agentAnDerTuer)
+      ...(ganz && !rolle && z.agent?.wahlen.rolle === undefined ? { label: z.name } : {}) });
   if (S !== s) return;
   z.busy = false;
   if (r.ok) {

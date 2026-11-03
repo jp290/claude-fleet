@@ -197,6 +197,15 @@ describe("der Bestand wird zu Agenten, ohne dass sich ein Start ändert", () => 
     const r = agentAnDerTuer({ cwd: "/r", agent: "orchestratorin" }, EINGEBAUTE, ALLE);
     expect(r.ok && r.tuer.body).toEqual({ cwd: "/r", label: "Orchestrator" });
   });
+  test("die Kopie der Orchestratorin startet in ihrer Rolle: die Tür schreibt das Label, ein anderes lehnt sie ab", () => {
+    const k = kopie(EINGEBAUTE[1]!, {}, gut, [], 1);
+    if (typeof k === "string") throw new Error(k);
+    const v = eigeneAnsicht(k);
+    const r = agentAnDerTuer({ cwd: "/r", agent: v.id }, [v], ALLE);
+    expect(r.ok && r.tuer.body).toEqual({ cwd: "/r", label: "Orchestrator" });
+    const fremd = agentAnDerTuer({ cwd: "/r", agent: v.id, label: v.name }, [v], ALLE);
+    expect(fremd.ok ? "" : fremd.error).toContain("its label is „Orchestrator“");
+  });
 });
 
 describe("die Tür nimmt den Agenten ganz", () => {
@@ -277,6 +286,7 @@ describe("teilen", () => {
     expect(agentAusDatei({ format: "fleet-agent/1", name: "x", wahlen: { permissionMode: "bypassPermissions" }, abgeleitetVon: "a".repeat(64) }, {}, gut, []))
       .toContain("never starts in bypass");
     const gefaelscht = { ...orig, wahlen: { permissionMode: "bypassPermissions" }, importiert: true as const };
+    expect(agentAnDerTuer({ agent: "pruefer" }, [{ ...gefaelscht, wahlen: {} }], ALLE)).toMatchObject({ ok: true, tuer: { fremd: true } });
     const r = agentAnDerTuer({ agent: "pruefer" }, [gefaelscht], ALLE);
     expect(r.ok ? "" : r.error).toContain("never starts in bypass");
   });

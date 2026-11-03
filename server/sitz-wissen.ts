@@ -293,7 +293,8 @@ export function bibliothekGewaehlt(k: SeatKnowledge, wahl: BibliothekWahl | null
 /** DIE TÜREN DES SELF-TOKENS FÜR JEDEN FREMDEN SITZ (F3, Owner 24.10.: „[Zitat entfernt]“): ein Sitz außerhalb von Fleets Repo hält `FLEET_SELF_TOKEN` und `FLEET_SELF_URL`, und ohne diese Zeile weiß er nicht, was sie
  *  öffnen und wie er andere Sitze aufsetzt und führt. Beide Packs kommen als SKILL (im Kontext nur ihre useWhen-Zeile, der Text erst beim Aufruf),
  *  damit ein schlanker Agent schlank bleibt. Die Zeile gehört dem Token, den der Sitz hält, nicht seiner Bibliothekswahl: sie kommt auch bei einer
- *  Liste ohne die Packs, bei `bibliothek: false` und bei einem Sitz aus einer Datei (`sitz`). Gewählt (`bibliothek: [ids]` mit ihnen) stehen sie
+ *  Liste ohne die Packs, bei `bibliothek: false` und bei einem Sitz aus einer Datei (`sitz`). Ausnahme (Owner 1.11.): das einfache Claude Code, das der Owner selbst
+ *  öffnet (keine Öffnerin, keine Datei, kein Agent), bekommt sie nicht, bis er die Bibliothek anschaltet (server.ts#tuerenZeile). Gewählt (`bibliothek: [ids]` mit ihnen) stehen sie
  *  wörtlich im Start wie bisher und werden nicht doppelt. `register`: das Wissen, aus dem die Packs kommen (bei einem Sitz aus einer Datei das
  *  Register des Ordners, nicht das, was die Datei mitbrachte). Rein. */
 export const TUEREN_PACKS: readonly string[] = ["fleet-doors", "setting-up-agents"];

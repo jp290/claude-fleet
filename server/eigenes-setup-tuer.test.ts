@@ -48,6 +48,19 @@ describe("der Berechtigungsmodus ist eine Wahl an der Tür", () => {
     expect(falsch?.status).toBe(400);
     expect(String(falsch?.body.error)).toContain("permissionMode must be one of");
   }, LIFE_DEADLINE_MS * 3);
+
+  // DAS STARTFENSTER BIETET „NO LIMITS“ AN (Owner 1.11.): an der Tür des Owners startet der Sitz wirklich in bypassPermissions und die Fassung nennt es;
+  // ohne Wahl bleibt es aus, und an der Selbst-Tür gilt die Sperre unverändert (Test „[Zitat entfernt]“)
+  test("bypassPermissions gewählt: die Zeile trägt es und die Fassung nennt es; ohne Wahl trägt keine Zeile einen Modus", async () => {
+    const f = fixture();
+    const [mit, ohne, fassung] = await life(f, [post("/api/slots/1/open", { cwd: zwei(f), permissionMode: "bypassPermissions" }),
+      post("/api/slots/2/open", { cwd: f.repo }), get("/api/slots/1/fassung?anlass=laufend")]);
+    offen(mit);
+    offen(ohne);
+    expect(startzeile(f, zwei(f))).toContain("--permission-mode 'bypassPermissions'");
+    expect(startzeile(f, f.repo)).not.toContain("--permission-mode");
+    expect(darf(fassung, "mitgegeben")).toBe("permissionMode: bypassPermissions");
+  }, LIFE_DEADLINE_MS * 3);
 });
 
 describe("ein Sitz von vor dem eigenen Setup startet weiter wie heute", () => {

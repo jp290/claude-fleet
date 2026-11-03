@@ -62,7 +62,7 @@ async function tuer(url: string, body: Record<string, unknown>, platz?: number):
   const res = await post(url, body);
   const j = rec(await res.json().catch(() => null));
   if (res.status === 409 && typeof j?.staleHash === "string")
-    return { ok: false, fehler: "Der Plan hat sich seit der Vorschau bewegt — nichts gestartet. Das Fenster zeigt jetzt den Plan von jetzt; Starten nimmt ihn.", bewegt: j };
+    return { ok: false, fehler: "The plan moved since the preview, so nothing started. The window now shows the plan as it stands; Start takes that one.", bewegt: j };
   if (!res.ok) return { ok: false, fehler: typeof j?.error === "string" ? j.error : `Der Server antwortete ${res.status}.` };
   const slot = typeof j?.slot === "number" ? j.slot : platz;
   // die Session steht; dass ihre Packs nicht ankamen, bleibt sichtbar

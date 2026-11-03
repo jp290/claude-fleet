@@ -66,8 +66,9 @@ export function ohneWahl(wirk: string | null): { id: string | null; wort: string
   const m = MODI.find((x) => x.id !== null && x.id === wirk) ?? MODI[0]!;
   return { ...m, label: m.id === null ? m.wort : `${m.wort} · your setting` };
 }
-// ASKS YOU OFFERS FOUR (owner 25.10. 19:50): when it stops to ask; planning is „[Zitat entfernt]“, and No limits stays a mode an agent may carry
-export const FRAGT: readonly string[] = ["manual", "acceptEdits", "auto", "dontAsk"];
+// ASKS YOU OFFERS FOUR (owner 25.10. 19:50): when it stops to ask; planning is „[Zitat entfernt]“. No limits is a fifth, only as a choice and never as a default
+// (owner 1.11.: „[Zitat entfernt]“)
+export const FRAGT: readonly string[] = ["manual", "acceptEdits", "auto", "dontAsk", "bypassPermissions"];
 
 function weglassen(w: Wahl): Record<string, unknown> | null {
   const o: Record<string, unknown> = {};

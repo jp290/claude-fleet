@@ -159,23 +159,20 @@ describe("Fleets Bibliothek erreicht Sitze ohne stehende Rolle", () => {
     // ein Sitz in Fleets Repo ohne Board-Branch und ohne Wahl behält das geteilte Gedächtnis: das Branch-Notizbuch ohne Board-Branch
     // gibt es nur auf die Wahl `notizbuch: "branch"` (server.ts#notizbuchBranchOhneBoard)
     expect(readFileSync(join(ARGV, "slot-13"), "utf8")).not.toContain("/notizbuecher/branch-");
-    // im fremden Repo ohne Wahl: nur die zwei Tür-Zeilen als Skill (der Text erst beim Aufruf), sonst nichts — ein schlanker Agent bleibt schlank
+    // im fremden Repo ohne Wahl, vom Owner geöffnet (keine Öffnerin, keine Datei, kein Agent): nichts von Fleets Bibliothek, auch die zwei Tür-Zeilen nicht
+    // (Owner 1.11.: der eigene Repo-Agent bekommt standardmäßig nichts von Fleet); mit der ganzen Bibliothek (Slot 12) kommen sie, und ein Sitz, den eine Session
+    // öffnet, trägt sie immer (die Selbst-Tür unten)
     const ohneWahl = await startOf(14);
-    expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([true, [ordnerOf(f, 14)], true]);
-    expect([...skillsIn(ohneWahl.addDirs).keys()].sort()).toEqual(["fleet-doors", "setting-up-agents"]);
+    expect([ohneWahl.appended.includes(SEAT_START_HEAD), ohneWahl.addDirs, existsSync(ordnerOf(f, 14))]).toEqual([false, [], false]);
     // ...und das Fenster zeigt den Schalter an, ausgeschaltet beide aus
     type PlanZeile = { id: string; zustand: string; schaltbar: { ja: boolean } };
     const zeileIn = (a: Answer | undefined, id: string) => (a?.body.plan as { bausteine: PlanZeile[] } | undefined)?.bausteine.find((z) => z.id === id);
     expect(zeileIn(planVor, "bibliothek")).toMatchObject({ zustand: "aus", schaltbar: { ja: true } });
-    // im anderen Repo ist die Bibliothek ohne Wahl aus; ihre Skills (your-seat-in-fleet) folgen ihr, aber die zwei Tür-Zeilen kommen trotzdem —
-    // das Fenster nennt sie, denn die Vorschau ist der Start (ohne Schalter für die Skills: sie folgen dem der Bibliothek)
+    // im anderen Repo ist die Bibliothek ohne Wahl aus, und ihre Skills samt den zwei Tür-Zeilen folgen ihr: das Fenster, dessen Start dieser Plan ist, startet
+    // ein einfaches Claude Code ohne etwas von Fleet (Owner 1.11.); ein Sitz, den eine Session, eine Datei oder ein Agent öffnet, behält die Tür-Zeilen
+    // (der Start ohne Plan oben, unten die Selbst-Tür)
     expect(skills(false).length).toBeGreaterThan(0);
-    type TuerZeile = PlanZeile & { bytes: number; details?: { text?: string; packs?: string[] } };
-    for (const plan of [planVor, planAus]) {
-      const sk = zeileIn(plan, "bibliothek-skills") as TuerZeile | undefined;
-      expect(sk).toMatchObject({ zustand: "an", schaltbar: { ja: false }, details: { packs: ["fleet-doors", "setting-up-agents"] } });
-      expect(sk!.details!.text!.split("\n").map((z) => z.split(":")[0])).toEqual(["- fleet-doors", "- setting-up-agents"]);
-    }
+    for (const plan of [planVor, planAus]) expect(zeileIn(plan, "bibliothek-skills")).toMatchObject({ zustand: "aus", schaltbar: { ja: false } });
     expect(zeileIn(planAus, "bibliothek")).toMatchObject({ zustand: "aus" });
 
     // JE BELEGUNG EIN ORDNER (Abnahme 22.10., FIX): kein Sitz teilt seinen Skill-Ordner, auch nicht bei gleichem Inhalt

@@ -87,8 +87,8 @@ describe("das Wissen, das jeder Ordner wählen kann", () => {
     const start = await startOf(10);
     expect(start.appended).toContain(textOf("setting-up-agents"));
     expect(start.appended).toContain(textOf("system-concept"));
-    // ausgewählt heißt: diese Packs wörtlich im Start; die Tür-Zeile, die er nicht gewählt hat, kommt als Skill dazu
-    expect([...skillsIn(start.addDirs).keys()]).toEqual(["fleet-doors"]);
+    // ausgewählt heißt: diese Packs wörtlich im Start, und bei einem einfachen Start vom Owner nichts sonst (server.ts#tuerenZeile); die Tür-Zeile kommt bei einem Sitz, den eine Session öffnet (unten)
+    expect([...skillsIn(start.addDirs).keys()]).toEqual([]);
     // in Fleets Repo kommen beide ohne Wahl als Skill, wie bisher — seat-choice nimmt sie dort nicht aus der Voreinstellung
     expect(imFleet?.status).toBe(200);
     const imFleetSkills = skillsIn((await startOf(12)).addDirs);
@@ -100,13 +100,31 @@ describe("das Wissen, das jeder Ordner wählen kann", () => {
 });
 
 
-describe("jeder Sitz mit Self-Token außerhalb von Fleets Repo bekommt die Tür-Zeile", () => {
+describe("ein Sitz, den eine Session, eine Datei oder ein Agent öffnet, bekommt außerhalb von Fleets Repo die Tür-Zeile", () => {
+  test("ein einfacher Start vom Owner bekommt nichts; ein Agent des Owners bekommt sie, und „Claude Code wie es ist“ bei seiner Kennung bleibt der einfache Start", async () => {
+    const f = fixture();
+    const fremder = fremd("einfach-ordner");
+    const [plain, repo, gemacht, agent] = await life(f, [post("/api/slots/10/open", { cwd: fremder }), post("/api/slots/11/open", { cwd: fremder, agent: "repo" }),
+      post("/api/agenten", { id: "mein", name: "Mein", wahlen: { effort: "low" } }), post("/api/slots/12/open", { cwd: fremder, agent: "mein" }), "save"]);
+    expect([plain?.status, repo?.status, gemacht?.status, agent?.status]).toEqual([200, 200, 201, 200]);
+    for (const slot of [10, 11]) {
+      const s = await startOf(slot);
+      expect([s.appended, [...skillsIn(s.addDirs).keys()]]).toEqual(["", []]);
+    }
+    const s12 = await startOf(12);
+    expect(s12.appended).toContain(SEAT_START_HEAD);
+    expect([...skillsIn(s12.addDirs).keys()].sort()).toEqual(["fleet-doors", "setting-up-agents"]);
+  }, LIFE_DEADLINE_MS * 2);
   test("ohne Wahl: eine Skill-Zeile, der Text erst beim Aufruf; mit Wahl von fleet-doors im Start; mit einer anderen Liste oder false trotzdem beide Zeilen: sie gehören dem Token, nicht der Wahl", async () => {
     const f = fixture();
     const fremder = fremd("tueren-ordner");
-    const [ohne, gewaehlt, liste, aus] = await life(f, [post("/api/slots/10/open", { cwd: fremder }),
-      post("/api/slots/11/open", { cwd: fremder, bibliothek: ["fleet-doors"] }),
-      post("/api/slots/12/open", { cwd: fremder, bibliothek: ["setting-up-agents"] }), post("/api/slots/13/open", { cwd: fremder, bibliothek: false }),
+    // die Öffnerin: ihr Pass reitet neben dem Bearer des Owners mit (server.ts#openerOf), wie an der Tür einer Session
+    const [oeffnerin] = await life(f, [post("/api/slots/9/open", { cwd: fremd("oeffnerin-ordner") }), "save"]);
+    expect(oeffnerin?.status).toBe(200);
+    const self = tokenOf(f, 9);
+    const [ohne, gewaehlt, liste, aus] = await life(f, [{ ...post("/api/slots/10/open", { cwd: fremder }), self },
+      { ...post("/api/slots/11/open", { cwd: fremder, bibliothek: ["fleet-doors"] }), self },
+      { ...post("/api/slots/12/open", { cwd: fremder, bibliothek: ["setting-up-agents"] }), self }, { ...post("/api/slots/13/open", { cwd: fremder, bibliothek: false }), self },
       "save"]);
     expect([ohne?.status, gewaehlt?.status, liste?.status, aus?.status]).toEqual([200, 200, 200, 200]);
     const [s10, s11, s12, s13] = [await startOf(10), await startOf(11), await startOf(12), await startOf(13)];
@@ -144,7 +162,7 @@ describe("jeder Sitz mit Self-Token außerhalb von Fleets Repo bekommt die Tür-
 });
 
 describe("der Start nennt die Server-Rechte des Sitzes", () => {
-  test("die Zeile FLEET SERVER RIGHTS steht im Start jedes Sitzes ohne stehende Rolle, im fremden Ordner wie in Fleets Repo, und ist die der Fassung", async () => {
+  test("die Zeile FLEET SERVER RIGHTS steht in Fleets Repo und im fremden Ordner bei einem Recht, das der Owner an der Tür gibt, und ist die der Fassung; ein einfacher Sitz ohne Recht bekommt nichts", async () => {
     const f = fixture();
     const fremder = fremd("rechte-ordner");
     const [frei, mit, imFleet, ohneBib] = await life(f, [post("/api/slots/10/open", { cwd: fremder }),
@@ -158,15 +176,14 @@ describe("der Start nennt die Server-Rechte des Sitzes", () => {
       expect(darf).toStartWith("FLEET SERVER RIGHTS (checked at Fleet's doors):");
       return darf;
     };
-    // jeder Start trägt genau die Zeile, die die Fassung nennt — auch ohne Bibliothek (ein Sitz mit bibliothek:false liest sie trotzdem)
-    for (const [slot, fassung] of [[10, fassung10], [11, fassung11]] as const) {
-      const start = await startOf(slot);
-      expect(start.appended).toContain(zeileDerFassung(fassung));
-    }
+    // der Start mit einem Recht trägt genau die Zeile, die die Fassung nennt; „plus what you switch on“
+    expect((await startOf(11)).appended).toContain(zeileDerFassung(fassung11));
     expect((await startOf(11)).appended).toContain("role.form — ");
-    expect((await startOf(10)).appended).not.toContain("role.form — ");
+    // ein einfacher Sitz mit nichts angeschaltet: kein Text von Fleet, die Fassung nennt seine Rechte trotzdem
+    zeileDerFassung(fassung10);
+    expect((await startOf(10)).appended).not.toContain("FLEET SERVER RIGHTS");
+    expect((await startOf(13)).appended).not.toContain("FLEET SERVER RIGHTS");
     expect((await startOf(12)).appended).toContain("FLEET SERVER RIGHTS (checked at Fleet's doors):");
-    expect((await startOf(13)).appended).toContain("FLEET SERVER RIGHTS (checked at Fleet's doors):");
     // der Zaun gehört nicht in den Start: er ist die Auskunft der Fassung, was Fleet NICHT setzt
     expect((await startOf(10)).appended).not.toContain("FLEET'S FENCE");
   }, LIFE_DEADLINE_MS * 3);
@@ -206,4 +223,33 @@ describe("ein Sitz mit seat.open öffnet ein Kind und gibt ihm genau ein Pack un
     const vor = await startOf(Number(voreinstellung?.body.slot));
     expect([...skillsIn(vor.addDirs).keys()].sort()).toEqual(["fleet-doors", "setting-up-agents"]);
   }, LIFE_DEADLINE_MS * 5);
+  test("ein Kind in Fleets Baum trägt auf seiner Zeile den Modus der Rolle, nicht den seines Ordners: unter einer engeren Öffnerin startet es in ihrem, auch wenn der Ordner enger aussieht (Auftrag 8, B5)", async () => {
+    const f = fixture();
+    const env = { FLEET_SELF_SEAT_ROOT: join(FLEET_WT, "..") };
+    mkdirSync(join(FLEET_WT, ".claude"), { recursive: true });
+    const einstellung = join(FLEET_WT, ".claude/settings.local.json");
+    writeFileSync(einstellung, JSON.stringify({ permissions: { defaultMode: "plan" } }));
+    try {
+      const [eltern] = await life(f, [post("/api/slots/1/open", { cwd: fremd("b5-fleet-eltern"), permissionMode: "dontAsk" }), "save"], env);
+      expect(eltern?.status).toBe(200);
+      const [kind] = await life(f, [{ ...post("/api/self/seats/open", { cwd: FLEET_WT, goal: "Lies." }), token: null, self: tokenOf(f, 1) }, "save"], env);
+      expect([kind?.status, kind?.body.error]).toEqual([200, undefined]);
+      expect((persisted(f).slots as Record<string, { permissionMode?: string | null }>)[String(kind?.body.slot)]?.permissionMode).toBe("dontAsk");
+      // an der Branch-Tür ebenso: das Kind öffnet in seinem Repo, Fleets Baum, einen Branch, und auch dessen eigener Ordner sieht enger aus
+      const zweig = `test/tueren-wissen-kind-${process.pid}`;
+      const baum = join(FLEET_WT, "..", "kind-im-baum");
+      sh(FLEET_WT, "worktree", "add", "-q", "-b", zweig, baum, "HEAD");
+      try {
+        writeFileSync(join(baum, ".claude/settings.local.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
+        const [neu] = await life(f, [post("/api/branches", { repo: FLEET_WT, name: "Kind im Baum", branch: zweig }), "save"], env);
+        expect([neu?.status, neu?.body.error]).toEqual([200, undefined]);
+        const [imZweig] = await life(f, [{ ...post("/api/self/branches/open", { branch: zweig, goal: "Lies." }), token: null, self: tokenOf(f, Number(kind?.body.slot)) }, "save"], env);
+        expect([imZweig?.status, imZweig?.body.error]).toEqual([200, undefined]);
+        expect((persisted(f).slots as Record<string, { permissionMode?: string | null }>)[String(imZweig?.body.slot)]?.permissionMode).toBe("dontAsk");
+      } finally {
+        Bun.spawnSync(["git", "-C", ROOT, "worktree", "remove", "--force", baum]);
+        Bun.spawnSync(["git", "-C", ROOT, "branch", "-D", zweig]);
+      }
+    } finally { rmSync(einstellung, { force: true }); }
+  }, LIFE_DEADLINE_MS * 4);
 });

@@ -361,12 +361,26 @@ function eigenesAbschnitt(e: Eigenes, regelnAus: string | null): FassungAbschnit
  *  `modell` = das Modell auf der Zeile; null = keins, dann das `model` der Einstellungen, sonst Claude Codes Voreinstellung. */
 export function eigenerStartModus(repo: string, claudeDir: string, verwaltet: string | null = VERWALTETE_EINSTELLUNGEN,
   modell: string | null = null): { modus: string; quelle: string } {
+  return startModusLesen(repo, claudeDir, verwaltet, modell).start;
+}
+/** EIN AGENT, DER NICHT VOM OWNER KOMMT, ERBT KEIN BYPASS (server/agenten.ts#nichtVomOwner; Orchestratorin, Auftrag 7, B6): stünde sonst bypass aus den Einstellungen des Nutzers an, nennt
+ *  dies den Modus für seine Zeile, wie ein Sitz aus einer Position ihn trägt: auto, oder Manual, wo es auto nicht gibt. null: er erbt kein bypass, seine Zeile bleibt ohne Modus. */
+export function modusStattGeerbtemBypass(repo: string, claudeDir: string, verwaltet: string | null = VERWALTETE_EINSTELLUNGEN,
+  modell: string | null = null, projektText?: string | null): "auto" | "manual" | null {
+  const { start, ohneBypass } = startModusLesen(repo, claudeDir, verwaltet, modell, projektText);
+  return start.modus === "bypassPermissions" ? ohneBypass : null;
+}
+// where a repo keeps the project settings, for the caller who reads them from a branch's tree (server.ts#modusImBranch)
+export const PROJEKT_EINSTELLUNG = ".claude/settings.json";
+// `projektText`: what `.claude/settings.json` holds where the folder doesn't stand yet (server.ts#modusImBranch); null = no such file, undefined = read it from the folder
+export function startModusLesen(repo: string, claudeDir: string, verwaltet: string | null, modell: string | null, projektText?: string | null): { start: { modus: string; quelle: string }; ohneBypass: "auto" | "manual" } {
   const wurzel = lokaleWurzel(repo);
   const lokal = [...(wurzel && wurzel !== repo ? [wurzel] : []), repo].map((d) => ({ pfad: `${d}/.claude/settings.local.json`, voll: false }));
+  const projekt = `${repo}/.claude/settings.json`;
   const dateien = [...(verwaltet ? [{ pfad: verwaltet, voll: true }] : []), ...lokal,
-    { pfad: `${repo}/.claude/settings.json`, voll: false }, { pfad: `${claudeDir}/settings.json`, voll: true }];
+    { pfad: projekt, voll: false }, { pfad: `${claudeDir}/settings.json`, voll: true }];
   const gelesen = dateien.map((d) => {
-    try { return { ...d, p: (JSON.parse(readFileSync(d.pfad, "utf8")) as { permissions?: Record<string, unknown>; disableAutoMode?: unknown; model?: unknown }) }; }
+    try { return { ...d, p: (JSON.parse(d.pfad === projekt && projektText !== undefined ? projektText ?? "" : readFileSync(d.pfad, "utf8")) as { permissions?: Record<string, unknown>; disableAutoMode?: unknown; model?: unknown }) }; }
     catch { return { ...d, p: null }; } // keine oder keine lesbare Datei: die nächste
   });
   const ohneAuto = gelesen.some((d) => d.p?.permissions?.disableAutoMode === "disable" || d.p?.disableAutoMode === "disable");
@@ -374,15 +388,16 @@ export function eigenerStartModus(repo: string, claudeDir: string, verwaltet: st
   const modellOhne = lauftAuf !== null && modellOhneAuto(lauftAuf);
   const auto = (quelle: string) => ohneAuto ? { modus: "manual", quelle: `${quelle}; disableAutoMode "disable" in den Einstellungen: Manual` }
     : modellOhne ? { modus: "manual", quelle: `${quelle}; auf ${lauftAuf} gibt es auto nicht: Manual` } : { modus: "auto", quelle };
+  const ohneBypass = ohneAuto || modellOhne ? "manual" as const : "auto" as const;
   for (const d of gelesen) {
     const m = d.p?.permissions?.defaultMode;
     if (typeof m !== "string" || !m) continue;
-    if (!d.voll && m === "auto") return auto(`Claude Codes eingebaute Voreinstellung (auto in ${d.pfad} gilt aus dieser Datei nicht)`);
-    if (!d.voll && m === "bypassPermissions") return { modus: "manual", quelle: `bypassPermissions in ${d.pfad} gilt aus dieser Datei nicht; Claude Code startet dann in Manual` };
+    if (!d.voll && m === "auto") return { start: auto(`Claude Codes eingebaute Voreinstellung (auto in ${d.pfad} gilt aus dieser Datei nicht)`), ohneBypass };
+    if (!d.voll && m === "bypassPermissions") return { start: { modus: "manual", quelle: `bypassPermissions in ${d.pfad} gilt aus dieser Datei nicht; Claude Code startet dann in Manual` }, ohneBypass };
     const modus = m === "default" ? "manual" : m;
-    return modus === "auto" ? auto(`permissions.defaultMode in ${d.pfad}`) : { modus, quelle: `permissions.defaultMode in ${d.pfad}` };
+    return { start: modus === "auto" ? auto(`permissions.defaultMode in ${d.pfad}`) : { modus, quelle: `permissions.defaultMode in ${d.pfad}` }, ohneBypass };
   }
-  return auto("Claude Codes eingebaute Voreinstellung im Terminal (ab v2.1.283), keine Einstellung nennt einen Modus");
+  return { start: auto("Claude Codes eingebaute Voreinstellung im Terminal (ab v2.1.283), keine Einstellung nennt einen Modus"), ohneBypass };
 }
 /** Ein Modell, auf dem es auto nicht gibt (code.claude.com/docs/en/permission-modes, „Eliminate prompts with auto mode“, Model): über die
  *  Anthropic-API nur Opus ab 4.6, Sonnet ab 4.6, Haiku 5.5 und Fable; „Older models, including Sonnet 4.5, Opus 4.5, Haiku 4.5, and claude-3

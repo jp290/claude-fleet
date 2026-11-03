@@ -23,9 +23,9 @@ export const LEAD_WITH_BUILDERS = "lead-with-builders";
 export const SUPER_FLEETBOT = "super-fleetbot";
 export const VORLAGEN: readonly Vorlage[] = [
   { id: SUPER_FLEETBOT, name: "Super FleetBot", spitze: "fleetbot", sitze: 1,
-    satz: "The agent you talk to: keeps the overview, thinks along, and sends each piece of work to the seat that fits it." },
+    satz: "Keeps the overview, sends work on" },
   { id: LEAD_WITH_BUILDERS, name: "Lead with builders", spitze: "lead", sitze: 3,
-    satz: "A lead opens a builder and a checker, gives each a checkable goal, judges their reports; both report to it." },
+    satz: "Lead, builder, checker" },
 ];
 
 /** Was die Leitung erbittet, damit sie ihr Team als Setup bilden, speichern und teilen kann, und das „passt“ auf die Spitze ihrer Kinder (W3b),

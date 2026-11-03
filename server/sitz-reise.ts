@@ -242,6 +242,32 @@ export function modusAnDerTuer(tuer: PermissionModeWahl | null, position: Permis
   return o === null || MODUS_RANG.indexOf(position) <= MODUS_RANG.indexOf(o) ? position : o;
 }
 
+// EIN KIND OHNE MODUS IST NIE WEITER ALS SEINE ÖFFNERIN (Orchestratorin, Auftrag 8, B5), was immer unter ihm steht: `start` ist der Modus, in dem es ohne Modus auf der Zeile
+// startete. Nach MODUS_RANG weiter (oder ein Modus, den der Rang nicht kennt): es startet in ihrem, und wo sie auto hat, in `ohneBypass` (auto, oder Manual, wo das Modell oder die
+// Einstellungen kein auto kennen). Nicht weiter: null, die Zeile bleibt leer, und eine engere Einstellung im Ordner bleibt eng. Eine Öffnerin ohne vergleichbaren Modus (null: ein
+// anderer Harness) gibt nie bypass. `undefined` ist die Tür des Owners, dort gibt es keine Öffnerin. Ein Sitz aus einer Position mit einem Modus hat seine eigene Regel (modusAnDerTuer) und kommt gar nicht bis hier.
+export function modusUnterOeffnerin(oeffnerin: string | null | undefined, start: string, ohneBypass: "auto" | "manual"): PermissionModeWahl | null {
+  if (oeffnerin === undefined) return null;
+  const o = MODUS_RANG.find((m) => m === oeffnerin);
+  if (!o) return start === "bypassPermissions" ? ohneBypass : null;
+  const r = MODUS_RANG.findIndex((m) => m === start);
+  if (r >= 0 && r <= MODUS_RANG.indexOf(o)) return null;
+  return o === "auto" ? ohneBypass : o;
+}
+
+// WAS DIE TÜR GELESEN HAT, FÜR JEDEN SPÄTEREN START DIESES PLATZES (Orchestratorin, Auftrag 9; server.ts#ensureSlot): der Modus der Öffnerin (`undefined`: die Tür des Owners, dort gibt es keine; null: sie hat keinen
+// vergleichbaren) und die Marke „nicht vom Owner“. Ein Text, kein Verweis auf ihren Slot: sie darf längst beendet sein. Ohne beides gibt es nichts zu merken: null.
+export interface ModusGrenze { oeffnerin?: string | null; fremd: boolean }
+export function modusGrenzeVon(oeffnerin: string | null | undefined, fremd: boolean): ModusGrenze | null {
+  return oeffnerin === undefined && !fremd ? null : { ...(oeffnerin === undefined ? {} : { oeffnerin }), fremd };
+}
+export function modusGrenzeGeladen(raw: unknown): ModusGrenze | null {
+  const r = rec(raw);
+  if (!r || typeof r.fremd !== "boolean") return null;
+  const o = r.oeffnerin;
+  return o === undefined || o === null || typeof o === "string" ? modusGrenzeVon(o as string | null | undefined, r.fremd) : null;
+}
+
 // IST EIN MODUS AN DER SELBST-TÜR NICHT WEITER ALS DER DER ÖFFNERIN (Orchestratorin, Auftrag 20, Queue 96220964): nach MODUS_RANG, derselben Ordnung wie
 // modusAnDerTuer. Eine Leitung in bypass, die einen Sitz für fremde Eingaben öffnet, gibt ihm auto, acceptEdits oder dontAsk, statt ihm bypass geben zu
 // müssen. manual und plan fragen mehr und gehen wie bisher an jeder Öffnerin, ihr eigener Modus auch; sonst nur ein Modus unter ihrem. Eine Öffnerin ohne

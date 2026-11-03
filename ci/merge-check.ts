@@ -407,7 +407,8 @@ export async function mergeCheck(a: CheckAsk): Promise<{ code: number; row: Reco
       const seen = new Map<string, string[]>();
       proof = repairProofOf({ row: state.red ? state.row : null, diff: diffPaths(mainSha, cand.sha, repo),
         namesIn: (needle) => { const hit = seen.get(needle) ?? namesInTree(cand.sha, needle, repo); seen.set(needle, hit); return hit; } });
-      Object.assign(row, { repair: proof.ok, repairWhy: proof.why, ...(proof.checks.length ? { repairProof: {
+      // WELCHER BELEG GEURTEILT HAT: gestartet wird dieser Check aus einem Baum, und ein Branch, der diese Dateien ändert, urteilt aus seinem eigenen
+      Object.assign(row, { repair: proof.ok, repairWhy: proof.why, repairRunner: git(["rev-parse", "HEAD"], undefined, REPO_DIR).out, ...(proof.checks.length ? { repairProof: {
         red: proof.red, files: proof.files,
         needles: [...new Map(proof.checks.map((c) => [c.needle, c])).values()].map((c) => ({ text: c.needle.slice(0, 160), files: c.files, touched: c.touched })) } } : {}) });
     }

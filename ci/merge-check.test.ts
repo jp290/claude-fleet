@@ -818,6 +818,37 @@ describe("die Reparatur eines roten main: belegt oder nicht", () => {
     expect(r.row.repairProof).toMatchObject({ red: 1, needles: [{ touched: false }] });
   }, 60_000);
 
+  // DIE LÖSCHUNG (Prüfung 4, 3.11.): ein Satz, der nur noch in main steht, ist kein Beleg, und nichts Späteres würde es merken
+  test("der Branch löscht die Zeile der roten Prüfung oder ihre ganze Datei, oder schreibt den Satz um: kein repair", async () => {
+    const wege: [string, (p: ReturnType<typeof repo>) => void][] = [
+      ["zeile", (p) => writeFileSync(join(p.dir, "e2e/probe.ts"), "check(\"another\", ok);\n")],
+      ["datei", (p) => p.g("rm", "-q", "e2e/probe.ts")],
+      ["umgeschrieben", (p) => writeFileSync(join(p.dir, "e2e/probe.ts"), "check(\"rewritten to say nothing\", true);\n")],
+    ];
+    for (const [art, baue] of wege) {
+      const p = repo();
+      p.g("checkout", "-q", "-b", "bau/weg");
+      baue(p);
+      p.g("add", "-u"); // nicht -A: ctl.sh und die Audits des Tests bleiben ungetrackt (siehe repo())
+      p.g("commit", "-q", "-m", art);
+      p.g("checkout", "-q", "main");
+      const r = await mergeCheck({ repo: p.dir, branch: "bau/weg", base: "main", repair: true, runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+      expect(r.code).toBe(2);
+      expect(r.row).toMatchObject({ mergeable: false, repair: false, repairAsked: true });
+      expect(String(r.row.repairWhy)).toContain("kein Quelltext nennt diese Prüfung");
+    }
+  }, 120_000);
+
+  test("die Zeile eines Reparatur-Checks nennt den Commit, aus dem sein Beleg kam: den Baum des Runners, nicht den des Kandidaten", async () => {
+    const hier = Bun.spawnSync(["git", "-C", import.meta.dir, "rev-parse", "HEAD"]).stdout.toString().trim();
+    const p = repo();
+    const mit = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", repair: true, runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(mit.row.repairRunner).toBe(hier);
+    expect(mit.row.repairRunner).not.toBe(p.g("rev-parse", "bau/repariert"));
+    const ohne = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });
+    expect(ohne.row.repairRunner).toBeUndefined();
+  }, 120_000);
+
   test("ohne --repair bleibt es beim alten Nein, auch für den Branch, der die Datei ändert", async () => {
     const p = repo();
     const r = await mergeCheck({ repo: p.dir, branch: "bau/repariert", base: "main", runner: p.runner, env: { CI_HOME: join(p.dir, "ci") } });

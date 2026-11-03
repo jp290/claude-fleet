@@ -636,6 +636,8 @@ export async function checkCodexSpawnFixtures(source: string,
           carriedSelbst: null,
           // ...and the role it was opened in and the board branch it stands on (the generic closure reads both before the kill)
           carriedRolle: null, carriedBoardBranch: null,
+          // ...and the limit its door remembered (server/sitz-reise.ts#modusGrenzeVon); a fixture slot was opened under none
+          carriedGrenze: null,
           // the owner's setting rides on in respawnInPlace (server/succession.ts); these slots carry none
           ownSetting: () => null,
         });

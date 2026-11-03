@@ -23,7 +23,7 @@ import { eigenerPackDerTuer, liesEigenePacks, schreibEigenenPack } from "./serve
 import { fernpostAbgelehnt, istAnthropic, persoenlichAbgelehnt, weggelassenZeile, wissenFuerSitz } from "./server/datengrenze";
 import { modellVerlauf } from "./src/modell-verlauf";
 import { fassungAufgabeAusSitz, ordnerFehlt, ordnerSatz, ordnerVorschlag, sitzAnsicht, zielAusPosition, zielNachricht } from "./server/position-start";
-import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, MODUS_RANG, modusAnDerTuer, modusNichtWeiter, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
+import { dateiFuer, geschwister, leererPlatzZeilen, liesNotizbuch, mitSitzWerten, MODUS_RANG, modusAnDerTuer, modusNichtWeiter, modusUnterOeffnerin, modusGrenzeGeladen, modusGrenzeVon, type ModusGrenze, ordnerDerPosition, rechteAnDerTuer, saeNotizbuch, sitzDerTuer, sitzRolleDerDatei, sitzStartGeladen, sitzWissen, type SitzRolleRef, type SitzStart } from "./server/sitz-reise";
 import { notizbuchDerTuer, notizbuchFuer, notizbuchSettings, type Notizbuch, type NotizbuchWahl } from "./server/notizbuch";
 import { postfachZustellart, zustellungAbschnitt, zustellungDerTuer, zustellungFuerSlot, zustellungGeladen,
   type Zustellung } from "./server/zustellung";
@@ -278,7 +278,8 @@ import { LANE_ROLE_CARD, MAIN_ROLE_CARD, ORCHESTRATOR_CONTEXT_LINE, ORCHESTRATOR
 import { baueFassung, fuehreNach, textAbschnitt, unknownAbschnitt, type Fassung, type FassungAbschnittEingang,
   type FassungAnlass } from "./server/fassung";
 import { claudeJsonPfad, vertraueOrdner, vertraueOrdnerPi, vertrauenJetzt, vertrauenJetztPi, vertrauenMerkenIn, vertrauenText, vertrauenTextPi, vertrauenUmDenStart } from "./server/claude-vertrauen";
-import { eigenerModus, eigenerStartModus, leseUmfeld, schwelleAbschnitt, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
+import { nurBeiPfaden } from "./server/regel-pfade";
+import { eigenerModus, eigenerStartModus, leseUmfeld, modusStattGeerbtemBypass, PROJEKT_EINSTELLUNG, schwelleAbschnitt, startModusLesen, schwelleAus, umfeldAbschnitte, umfeldOhneClaude, VERWALTETE_EINSTELLUNGEN, warmhaltenAbschnitt } from "./server/fassung-umfeld";
 import { ORCHESTRATOR_DIRECTION_PATH, ORCHESTRATOR_PACK_PATHS, ORCHESTRATOR_ROLE_PATH, ORCHESTRATOR_START_PATH,
   orchestratorRoleSentence, orchestratorStartDateien, orchestratorWorkEnds, readOrchestratorStartParts,
   renderOrchestratorStartParts, type OrchestratorStartDatei, type OrchestratorStartTeile } from "./server/orchestrator-start";
@@ -290,7 +291,7 @@ import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
 import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, liesAgenten, type AgentBezug, type Wahlen as AgentWahlen,
-  type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
+  nichtVomOwner, type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { RICHTUNG_PLATZ, SETUP_ROUTE, hashText, liesKonzept, liesShelf, roleStein, setupAusRolle, setupRoute, startBlockAusSteinen, steineFuerAgentWahl, tuerPackId, type SetupServer } from "./server/setup-datei";
 import { selfAgentenTuer, selfSetupTuer } from "./server/setup-tueren";
 import { konstellationDerTuer, type SitzBild } from "./server/konstellation-aus-sitzen";
@@ -3153,6 +3154,7 @@ const slots: Slot[] = Array.from({ length: SNAPSHOT_MIRROR ? Math.max(MAX_SLOTS,
   weglassen: null,
   autoModeEnvironment: null,
   tools: null,
+  modusGrenze: null,
   selbst: null,
   agent: null,
   rolleStein: null,
@@ -6463,7 +6465,7 @@ function stateSnapshot(): string {
   // the box is written RAW (the slot's own null, not boxFor's resolution): persisting the resolved
   // pair would freeze today's env default into the state file, and a slot that never chose a box
   // would stop following a changed FLEET_CONTAINER after one restart
-  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, ...(s.boardBranch ? { boardBranch: s.boardBranch } : {}), model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.rolleStein ? { rolleStein: s.rolleStein } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, ...(s.linie ? { linie: s.linie } : {}), selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
+  for (const s of slots) if (s.cwd) active[s.id] = { cwd: s.cwd, label: s.label, openedAt: s.openedAt, successionRetirement: s.successionRetirement, mission: s.mission, awaiting: s.awaiting, sessionId: s.sessionId, sessionIdLearned: s.sessionIdLearned, codexPaneSpawnedAt: s.codexPaneSpawnedAt, codexRecoveryState: s.codexRecoveryState, codexDisconnectSeenAt: s.codexDisconnectSeenAt, worktree: s.worktree, ...(s.boardBranch ? { boardBranch: s.boardBranch } : {}), model: s.model, harness: s.harness, effort: s.effort, ...(s.browser ? { browser: true as const } : {}), ...(s.webSearch ? { webSearch: true as const } : {}), ...(s.remote ? { remote: true as const } : {}), ...(s.rechte ? { rechte: s.rechte } : {}), ...(s.agentMd ? { agentMd: { profil: s.agentMd.profil, titel: s.agentMd.titel, text: s.agentMd.text, ...(s.agentMd.name ? { name: s.agentMd.name } : {}), ...(s.agentMd.getippt ? { getippt: true } : {}) } } : {}), ...(s.sitz ? { sitz: s.sitz } : {}), ...(s.zustellung ? { zustellung: s.zustellung } : {}), ...(s.bibliothek !== null ? { bibliothek: s.bibliothek } : {}), ...(s.notizbuchWahl ? { notizbuchWahl: s.notizbuchWahl } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}), ...(s.weglassen ? { weglassen: s.weglassen } : {}), ...(s.autoModeEnvironment !== null ? { autoModeEnvironment: s.autoModeEnvironment } : {}), ...(s.tools ? { tools: s.tools } : {}), ...(s.modusGrenze ? { modusGrenze: s.modusGrenze } : {}), ...(s.selbst ? { selbst: s.selbst } : {}), ...(s.agent ? { agent: s.agent } : {}), ...(s.rolleStein ? { rolleStein: s.rolleStein } : {}), ...(s.openedBy ? { openedBy: s.openedBy } : {}), ...(s.lauf ? { lauf: s.lauf } : {}), ...(s.packMcp.length ? { packMcp: s.packMcp } : {}), ...(s.context ? { context: s.context } : {}), ...(s.permissions ? { permissions: s.permissions } : {}), container: s.container, containerContext: s.containerContext, taskId: s.taskId, originId: s.originId, programId: s.programId, releasedBy: s.releasedBy, laneSuccessions: s.laneSuccessions, ...(s.laneSeats.length ? { laneSeats: s.laneSeats } : {}), lineageId: s.lineageId, ...(s.linie ? { linie: s.linie } : {}), selfToken: s.selfToken, ...(s.sleeping ? { sleeping: s.sleeping } : {}), ...(s.standingHandover ? { standingHandover: s.standingHandover } : {}), ...(s.compaction ? { compaction: s.compaction } : {}), ...(s.startCompact ? { startCompact: s.startCompact } : {}), ...(s.spawn ? { spawn: s.spawn } : {}), ...(s.laneStandNudged ? { laneStandNudged: s.laneStandNudged } : {}), ...(s.plan ? { plan: s.plan } : {}), ...(s.handover ? { handover: s.handover } : {}) };
   // comments must not outlive their share — every share-removal path funnels through here
   for (const k of Object.keys(shareComments)) if (!shares.some((sh) => sh.id === k)) delete shareComments[k];
   // `sock` first: the file says which tmux socket its slot rows live on (server/persist.ts#foreignStateOwner)
@@ -9075,6 +9077,12 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > MAX_LABEL))
     return json({ error: `label must be a string of at most ${MAX_LABEL} chars` }, 400);
   const label = typeof body.label === "string" ? body.label.trim() || null : null;
+  // EINE ROLLE HAT EINEN TRÄGER (Orchestratorin, Auftrag 7, D1): ein zweiter Start durch einen Agenten oder seine Kopie nähme dem laufenden Sitz seine Rechte (die Rollen-Adresse löste sich zu niemandem auf).
+  // Er kommt nicht durch. Die Owner-Tür mit dem Label allein bleibt, wie sie ist (roleConflictFor); Nachfolge und Heilung gehen nicht durch diese Tür.
+  if (ag.tuer.agent && isOrchestratorLabel(label)) {
+    const traeger = orchestratorLabelHolders().find((x) => x !== s);
+    if (traeger) return json({ error: `The role ${label} is held by the seat in slot ${traeger.id}; end that seat first.` }, 409);
+  }
   // AN DER SELBST-TÜR GIBT EIN LABEL KEINE ROLLE (Urteil Runde 2): ein Label, das isOrchestratorLabel oder die Steward-Prüfung als Fleets
   // Rolle läse, gäbe dem Kind deren Bundel und Start; und ein Plan gründet eine Rolle, die der Owner im Fenster wählt
   if (opener === "self" && label && roleLabelOf(label))
@@ -9128,7 +9136,12 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   if (opener === "self" && sd.sitz && pm.wahl === "bypassPermissions")
     return json({ error: "a seat from a position never starts in bypass at the self door — only the owner can choose bypassPermissions for an imported seat, at his own door; open it without permissionMode or with auto" }, 409);
   // ohne Modus im Body gilt der der Position, an der Selbst-Tür nie weiter als der der Öffnerin (server/sitz-reise.ts#modusAnDerTuer)
-  const modus = modusAnDerTuer(pm.wahl, sd.modus, opener === "self" && by ? by.permissionMode ?? oeffnerinOf(by).modus : undefined);
+  const fremdeHerkunft = ag.tuer.fremd === true || await ausFremdemAgenten(body.ausAgent);
+  const kindImFleetBaum = opener === "self" && (await fleetBaumVon(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")))) !== null;
+  guard();
+  const oeffnerinModus = opener === "self" && by ? by.permissionMode ?? oeffnerinOf(by).modus : undefined;
+  const modus = modusDerOeffnung({ wahl: pm.wahl, position: sd.modus, oeffnerin: oeffnerinModus,
+    fremd: fremdeHerkunft, harness: ho.harness, ordner: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), modell: mo.model, fleetRepo: kindImFleetBaum });
   const wg = weglassenDerTuer(body.weglassen);
   if (!wg.ok) return json({ error: wg.error }, 400);
   const um = umgebungDerTuer(body.autoModeEnvironment);
@@ -9141,10 +9154,12 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
   // ein Start, der schon eine erste Nachricht bringt (die Rollenkarte der Orchestratorin, die Packs eines Plans), nimmt keine zweite daneben
   if (zi.ziel && !sitzAuftrag && (isOrchestratorLabel(label) || acc || founding))
     return json({ error: `goal and ${isOrchestratorLabel(label) ? "the Orchestratorin's role card" : "the packs of a plan"} would be two first messages — send the goal after the start` }, 400);
+  // who opens it, known before the spawn: the session whose pass rode with the request, or the caller of the self door
+  const oeffnerVorab = opener === "self" && by && by.cwd && by !== s ? openerAus({ ...by, cwd: by.cwd }) : openerOf(req, s);
   const eingang: OeffnungEingang = { cwd: resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), label,
     harness: ho.harness, model: mo.model, effort: eo.effort, rechte: wr.rechte, agentMd, bibliothek: erbe.bibliothek, packMcp,
     sitz: sd.sitz, notizbuch: sd.notizbuch, schwelle: sw.schwelle, notizbuchWahl: nb.wahl, permissionMode: modus, weglassen: wg.wahl,
-    autoModeEnvironment: um.wahl, tools: tw.wahl, agent: ag.tuer.agent, remote: ro.remote, rolleStein };
+    autoModeEnvironment: um.wahl, tools: tw.wahl, agent: ag.tuer.agent, remote: ro.remote, rolleStein, oeffner: oeffnerVorab };
   // single rule files left out: each one a file this start reads, carried with the loader's path (weglassenDateienDesStarts)
   const wd = await weglassenDateienDesStarts(fassungSlotDerOeffnung(s, eingang));
   guard();
@@ -9161,7 +9176,7 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
     if (sd.notizbuch) await saeSitzNotizbuch(resolve(expandCwd(typeof body.cwd === "string" ? body.cwd : "~")), agentMd, sd.notizbuch);
     const opened = await openSlot(s, typeof body.cwd === "string" ? body.cwd : "~", null, mo.model, label, ho.harness, eo.effort, bo.box,
       null, false, co.context, ro.remote, pe.permissions, false, null, undefined, undefined, undefined,
-      packMcp, undefined, wr.rechte, agentMd, null, erbe.bibliothek, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz, sw.schwelle, nb.wahl, modus, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, erbe.selbst, null, rolleStein);
+      packMcp, undefined, wr.rechte, agentMd, null, erbe.bibliothek, typeof body.fassung === "string" ? body.fassung : undefined, sd.sitz, sw.schwelle, nb.wahl, modus, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, erbe.selbst, null, rolleStein, null, oeffnerVorab, modusGrenzeVon(oeffnerinModus, fremdeHerkunft));
     if (opened.superseded || s.cwd !== opened.occupant.cwd || s.openedAt !== opened.occupant.openedAt
       || s.selfToken !== opened.occupant.selfToken) throw new Error("slot occupant changed during owner open");
     modelSupport = opened.modelSupport;
@@ -9171,7 +9186,7 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
       if (fort) { s.linie = fort; linieLebtWieder(fort); saveState(); }
     }
     if (acc) s.plan = acc.request;
-    s.openedBy = opener === "self" && by && by.cwd && by !== s ? openerAus({ ...by, cwd: by.cwd }) : openerOf(req, s);
+    s.openedBy = oeffnerVorab;
     if (s.openedBy) { saveState(); await merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
     if (zi.ziel && !sitzAuftrag) await merkeNachtrag(s.id, s.openedAt, { goal: zi.ziel, ...(zi.aufgabe ? { aufgabe: zi.aufgabe } : {}) }, STATE_DIR);
   } catch (e) {
@@ -9538,6 +9553,39 @@ async function selfBranchRequest(s: Slot, body: Record<string, unknown> | null):
 // the self door's answer to a mode wider than the opener's: hers, and the order it is read in
 const modusZuWeit = (wahl: PermissionModeWahl, eigen: string | null | undefined): string =>
   `permissionMode ${wahl} is wider than the opener's own (${eigen ?? "none"}) — at the self door only her mode, manual, plan or one below hers in ${MODUS_RANG.join(" < ")}`;
+// THE MODE A START CARRIES ON ITS LINE, at every door that opens a seat and in its preview: the body's, a position's (modusAnDerTuer); with none of them Claude Code picks,
+// except a child that would start wider than its opener (modusUnterOeffnerin) and an agent not from the owner that would inherit bypass (modusStattGeerbtemBypass).
+// `fleetRepo`: the child sits in Fleet's repo, so its line carries the role's mode instead of leaving the choice to Claude Code (server.ts#startMode)
+function modusDerOeffnung(o: { wahl: PermissionModeWahl | null; position: PermissionModeWahl | null; oeffnerin?: string | null; fremd: boolean; harness: string | null; ordner: string; modell: string | null; fleetRepo?: boolean; projektText?: string | null }): PermissionModeWahl | null {
+  const m = modusAnDerTuer(o.wahl, o.position, o.oeffnerin);
+  if (m || harnessFamilie(o.harness ?? "claude") !== "claude") return m;
+  if (o.oeffnerin !== undefined) {
+    const { start, ohneBypass } = startModusLesen(o.ordner, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, o.modell, o.projektText);
+    const unter = modusUnterOeffnerin(o.oeffnerin, o.fleetRepo ? PERMISSION_MODE.generic : start.modus, ohneBypass);
+    if (unter) return unter;
+  }
+  const statt = o.fremd ? modusStattGeerbtemBypass(o.ordner, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, o.modell, o.projektText) : null;
+  return statt ? modusAnDerTuer(null, statt, o.oeffnerin) : null;
+}
+// THE MODE A BRANCH START WOULD GET, for its preview: the branch's worktree where it stands, else the branch's tree (`git show`), because the worktree comes only with the start. Its
+// `.claude/settings.local.json` is read from the checkout either way: Claude Code reads the main checkout's in a worktree (server/fassung-umfeld.ts#lokaleWurzel), and laneScaffoldFor copies it.
+async function modusImBranch(repo: string, branch: string | null, ab: string | null, modell: string | null): Promise<{ ordner?: string; projektText?: string | null; startModus: StartModus } | null> {
+  if (branch === null && ab === null) return null;
+  const steht = branch ? (await listWorktrees(repo)).find((w) => w.branch === branch)?.path ?? null : null;
+  if (steht) return { ordner: steht, startModus: eigenerStartModus(steht, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, modell) };
+  const ref = branch || ab || await integrationBranch(repo).catch(() => null) || "HEAD";
+  if (ref.startsWith("-")) return null;
+  const datei = await gitRead(repo, "show", `${ref}:${PROJEKT_EINSTELLUNG}`);
+  const projektText = datei.code === 0 ? datei.out : null;
+  return { projektText, startModus: startModusLesen(repo, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, modell, projektText).start };
+}
+// EINE UNGESICHERTE ÄNDERUNG AN EINEM AGENTEN BLEIBT SEIN START (Orchestratorin, Auftrag 8, B6): das Fenster schickt dann seine Wahlen statt seiner Kennung und nennt in `ausAgent`, von welchem Agenten sie stammen.
+// Einer, der nicht vom Owner kommt, erbt auch so kein bypass (modusDerOeffnung). Nur der Modus hört darauf: das Feld gibt nichts und nimmt nur etwas, was der Start sonst erbte.
+async function ausFremdemAgenten(id: unknown): Promise<boolean> {
+  if (typeof id !== "string" || !id) return false;
+  const a = agentenKatalog(STATE_DIR, await k15Gespeichert()).find((x) => x.id === id);
+  return !!a && nichtVomOwner(a);
+}
 // what the opener has, read off her slot: the mode of her last claude spawn (or the one her position would get now)
 function oeffnerinOf(s: Slot): Oeffnerin {
   const harness = harnessOf(s.harness).id;
@@ -9821,7 +9869,8 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
   if (opener === "self" && sd.sitz && pm.wahl === "bypassPermissions")
     return json({ error: "a seat from a position never starts in bypass at the self door — only the owner can choose bypassPermissions for an imported seat, at his own door; open it without permissionMode or with auto" }, 409);
   // ohne Modus im Body gilt der der Position, an der Selbst-Tür nie weiter als der der Öffnerin (server/sitz-reise.ts#modusAnDerTuer)
-  const modus = modusAnDerTuer(pm.wahl, sd.modus, opener === "self" && by ? by.permissionMode ?? oeffnerinOf(by).modus : undefined);
+  const oeffnerinModus = opener === "self" && by ? by.permissionMode ?? oeffnerinOf(by).modus : undefined;
+  const fremdeHerkunft = ag.tuer.fremd === true || await ausFremdemAgenten(body.ausAgent);
   const wg = weglassenDerTuer(body.weglassen);
   if (!wg.ok) return json({ error: wg.error }, 400);
   const um = umgebungDerTuer(body.autoModeEnvironment);
@@ -9850,14 +9899,18 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
     // single rule files left out: each one a file a start in this worktree reads (weglassenDateienDesStarts)
     const wd = await weglassenDateienDesStarts({ ...free, cwd: path, label: record.name, harness: ho.harness, worktree: null, programId: null, weglassen: wg.wahl });
     if (!wd.ok) return json({ error: wd.error }, 400);
+    // the mode is read from the worktree, the folder the child runs in, not from the checkout: a file only the checkout has says nothing about it (Orchestratorin, Auftrag 9)
+    const modus = modusDerOeffnung({ wahl: pm.wahl, position: sd.modus, oeffnerin: oeffnerinModus, fremd: fremdeHerkunft, harness: ho.harness, ordner: path, modell: mo.model,
+      fleetRepo: opener === "self" && (await fleetBaumVon(path)) !== null });
     attachBusy.add(path);
     try {
       const resumeId = body.fresh === true ? null : lastConversationIn(path);
       if (sd.notizbuch) await saeSitzNotizbuch(path, agentMd, sd.notizbuch);
+      const oeffnerVorab = by?.cwd && by !== free ? openerAus({ ...by, cwd: by.cwd }) : null;
       const opened = await openSlot(free, path, null, mo.model, record.name, ho.harness, eo.effort, NO_BOX, null, false,
         null, rc.remote, pe.permissions, false, null, undefined, undefined, undefined, undefined, resumeId ?? undefined, wr.rechte, agentMd,
         null, erbe.bibliothek, undefined, sd.sitz, sw.schwelle, nb.wahl, modus, wd.wahl, um.wahl, tw.wahl, ag.tuer.agent, erbe.selbst,
-        { repo: ro.repo, branch: body.branch }, rolleDerPosition(sd.sitz?.rolle, STATE_DIR));
+        { repo: ro.repo, branch: body.branch }, rolleDerPosition(sd.sitz?.rolle, STATE_DIR), null, oeffnerVorab, modusGrenzeVon(oeffnerinModus, fremdeHerkunft));
       if (opened.superseded || free.cwd !== opened.occupant.cwd || free.openedAt !== opened.occupant.openedAt)
         throw new Error("slot occupant changed during branch open");
       // AN OWNER OPEN THAT RESUMES AN ENDED OCCUPANT'S CONVERSATION continues its line (server/opener.ts): what it opened is its own again
@@ -9868,7 +9921,7 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
       // K13: the opener — the session that sent its self token beside the owner bearer, or the caller of the self
       // door — is recorded, and the two may write each other in the postfach. Set before the first await below, so a
       // kill and reopen of this slot during a history write cannot stamp the opener on the next occupant.
-      const oeffner = by?.cwd && by !== free ? openerAus({ ...by, cwd: by.cwd }) : null;
+      const oeffner = oeffnerVorab;
       if (oeffner) {
         branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: oeffner.slot, cwd: oeffner.cwd, ...(oeffner.linie ? { linie: oeffner.linie } : {}), at: Date.now() }).book;
         free.openedBy = oeffner;
@@ -11404,6 +11457,18 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
       if (!current()) return;
       // claude only, and short-circuited: a foreign harness never reaches the module (fleet-e2e-harness.ts runs this body in a stub scope)
       const eigen = h.id === "claude" && eigenesSetup({ claude: true, role: listRole, fleetRepo });
+      // EVERY LATER START GOES THROUGH THE DOOR'S RULE (Orchestratorin, Auftrag 9): an empty line takes what the settings say by then, so a successor or a rebuilt pane would start
+      // wider than the first start did. It reads the folder now, against the opener's mode and the import mark the door remembered; the opener need not be alive. Settings wider
+      // than the limit: the line carries the limit, from then on like any line. Narrower: the line stays empty and they hold. A role's seat and a seat with a line never come here.
+      if (s.modusGrenze && eigen && listRole === "generic" && !occupant.permissionMode && !NO_BYPASS) {
+        const m = modusDerOeffnung({ wahl: null, position: null, oeffnerin: s.modusGrenze.oeffnerin, fremd: s.modusGrenze.fremd, harness: occupant.harness, ordner: occupant.cwd, modell: occupant.model });
+        if (m) {
+          s.permissionMode = m; occupant = { ...occupant, permissionMode: m };
+          // the Fassung the open held before this spawn named the empty line: this start holds what it runs
+          await halteStart(s, "laufend");
+          if (!current()) return;
+        }
+      }
       // the setup's notebook (server/notizbuch.ts) — the same answer the Fassung shows under „Liest“; in its own setup only a profile's
       const notizbuch = h.id === "claude" ? await notizbuchFuerStart(occupant.cwd, listRole, occupant.agentMd?.profil || null, eigen, occupant.notizbuchWahl) : null;
       if (!current()) return;
@@ -11419,16 +11484,17 @@ async function ensureSlot(s: Slot, cause: "open" | "heal" | "restart" | "wake" =
           const an = seatLibraryOn(occupant.bibliothek, eigen, !!occupant.sitz), dazu = occupant.selbst?.jetzt.packs ?? [];
           // a pi seat is called on every spawn even with the library off: its skill folder belongs to its adapter, and the
           // spawn is where the skills of an earlier spawn go away (server/sitz-skills.ts#piSkillsWrite)
-          // ...and a seat in its own setup always gets the doors lines, whatever it chose (server/sitz-wissen.ts#mitTuerenSkill)
+          // ...and a seat in its own setup gets the doors lines, whatever it chose, when a session or a file or an agent opened it (tuerenZeile)
           if (an || dazu.length || pi || eigen) {
-            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an, occupant.model, packHashesDesAgenten(s.agent), rollenPacksVon(s));
+            const start = await seatStartFor(occupant.cwd, occupant.harness, { slot: occupant.slot, openedAt: occupant.openedAt }, true, occupant.sitz, occupant.bibliothek, dazu, an, occupant.model, packHashesDesAgenten(s.agent), rollenPacksVon(s), tuerenZeile(s));
             seat = { text: start.text, skillsDir: start.skillsDir };
           }
         } catch (e) { logError("ensureSlot:seat-library", e); }
         if (!current()) return;
       }
       // ...and the line naming its server rights: Claude Code on the appended system prompt beside the four-switch sentence (agentCmd), pi in its start file
-      const serverRechte = isSeat(s) && (h.id === "claude" && listRole === "generic" || pi) ? serverRechteZeile(s.rechte, rechteRollen(s), h.id) : null;
+      // ...the plain Claude Code the owner starts in his own folder gets no appended text either (tuerenZeile): the line names doors it has no pack for
+      const serverRechte = isSeat(s) && (h.id === "claude" && listRole === "generic" || pi) && (!eigen || tuerenZeile(s) || rechtAnDerTuer(s.rechte)) ? serverRechteZeile(s.rechte, rechteRollen(s), h.id) : null;
       if (serverRechte && h.id === "claude") seat = { text: seat?.text ?? "", skillsDir: seat?.skillsDir ?? null, rechte: serverRechte };
       // EIN EIGENER AGENT, DER EINE ROLLE UND KONZEPTE WÄHLT, trägt sie als Steine in seinen Start — auch außerhalb von
       // Fleets Repo. Fleet's eigener Orchestratorin-Start bleibt unberührt: in Fleet's Repo und für ihre eingebaute Rolle
@@ -11670,7 +11736,11 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   rolleStein: RolleBezug | null = null,
   // THE LINE A SUCCESSION CARRIES (server/opener.ts#getrageneLinie): the predecessor's line, and its opener when the successor opens on the
   // same folder. Set here, before the first save, so a server that stops before the open returns finds them (R3-1); null = a new line
-  getragen: GetrageneLinie | null = null): Promise<SlotOpenResult> {
+  getragen: GetrageneLinie | null = null,
+  // the session that opens it, known before the first spawn (the door stamps it again right after): tuerenZeile reads it at that spawn
+  oeffner: Opener | null = null,
+  // what the door's rule read (server/sitz-reise.ts#modusGrenzeVon); a later start with an empty line goes through it again (ensureSlot); null = no limit
+  modusGrenze: ModusGrenze | null = null): Promise<SlotOpenResult> {
   const h = harnessOf(harness);
   const po = permissionsOf(permissions === undefined || permissions === null && !h.permissions ? null : { permissions }, h);
   if (!po.ok) throw new Error(po.error);
@@ -11805,11 +11875,12 @@ async function openSlot(s: Slot, cwdRaw: string, worktree: LaneRef | null = null
   s.weglassen = h.id === "claude" ? weglassen : null; // ...nor what it left out of ~/.claude
   s.autoModeEnvironment = h.id === "claude" ? autoModeEnvironment : null; // ...nor its choice of the classifier's environment
   s.tools = h.id === "claude" ? tools : null; // ...nor its choice of built-in tools
+  s.modusGrenze = modusGrenze; // ...nor the limit its door remembered
   s.selbst = selbst; // ...nor what the previous occupant gave itself (a non-Claude successor reads it in its brief)
   s.agent = agent; // ...nor the agent it was opened from
   s.rolleStein = rolleStein; // ...nor the formed role it was opened in (its rights came as grants, additive like every role)
   s.zustellung = zustellung; // ...nor how its Postfach arrived (the door or a successor names it)
-  s.openedBy = getragen && getragen.cwd === cwd ? getragen.openedBy : null; // ...nor its opener: the door that opened THIS one stamps it right after
+  s.openedBy = getragen && getragen.cwd === cwd ? getragen.openedBy : oeffner; // ...nor its opener: the door that opened THIS one stamps it right after
   s.lauf = null; // ...nor its run: the window binds THIS one after the start (server/laeufe.ts)
   // ...nor a pane the previous occupant's MCP servers: only THIS founding's plan names them, claude only
   s.packMcp = h.id === "claude" ? [...(packMcp ?? (foundingPlan ? acceptedPlanMcp(foundingPlan) : []))] : [];
@@ -12095,6 +12166,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.weglassen = null;
   s.autoModeEnvironment = null;
   s.tools = null;
+  s.modusGrenze = null;
   s.selbst = null;
   s.agent = null;
   s.rolleStein = null;
@@ -16072,6 +16144,8 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
   const carriedWeglassen = harnessOf(harness).id === "claude" ? s.weglassen : null;
   const carriedUmgebung = harnessOf(harness).id === "claude" ? s.autoModeEnvironment : null;
   const carriedTools = harnessOf(harness).id === "claude" ? s.tools : null;
+  // ...and the limit its door remembered, on every harness: the opener's mode and the import mark don't change with the agent
+  const carriedGrenze = s.modusGrenze;
   // ...and the agent it was opened from, while the successor runs what that agent chose (a switch of harness, model or effort is another setup)
   const carriedAgent = harnessOf(harness).id === harnessOf(s.harness).id && spawn.model === s.model && spawn.effort === s.effort ? s.agent : null;
   // ...and how its Postfach arrives, on every harness: the setting is no agent rule
@@ -16096,7 +16170,7 @@ async function succeedGeneric(s: Slot, opts: GenericSuccession): Promise<Respons
       { cwd: predecessor.cwd, model: spawn.model, harness },
       (preObservedSupport, onCandidate) => openSlot(s, predecessor.cwd, null, spawn.model, label, harness, spawn.effort, box,
         null, false, null, false, spawn.permissions, false, preObservedSupport, onCandidate, undefined, undefined, carriedMcp,
-        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, carriedBoardBranch, carriedRolle, carriedLinie),
+        undefined, carriedRechte, carriedAgentMd, carriedZustellung, carriedBibliothek, undefined, carriedSitz, null, carriedNotizbuch, carriedPermissionMode, carriedWeglassen, carriedUmgebung, carriedTools, carriedAgent, carriedSelbst, carriedBoardBranch, carriedRolle, carriedLinie, null, carriedGrenze),
       async () => {}));
     if (!respawned.ok) return respawned.response;
     // THE LINE MOVES WITH THE OPEN. The predecessor is gone, so a record that waited for the brief
@@ -22745,6 +22819,8 @@ function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: bo
   if ("grund" in geladen) return [unknownAbschnitt("projektregeln", geladen.grund)];
   const loaded = ohneRules ? { ...geladen, dateien: geladen.dateien.filter((datei) => !resolve(datei.pfad).startsWith(regelnDir)) } : geladen;
   const weg = [...(fleetRepo ? [] : [ohneMd ? "~/.claude/CLAUDE.md" : null, ohneRules ? "~/.claude/rules/**" : null]), ...ohneDateien.map(tildePfad)].filter(Boolean);
+  const spaeterGeladen = (pfade: readonly string[], aus: ReadonlySet<string>) => pfade.filter((pfad) => !aus.has(resolve(pfad)) && !(ohneRules && resolve(pfad).startsWith(regelnDir))).flatMap((pfad) => {
+    try { return [{ pfad, text: readFileSync(pfad, "utf8") }]; } catch { return []; } });
   const eigeneGrund = [fleetRepo && claude ? EIGENE_REGELN_AUS : null, weg.length ? `beim Öffnen weggelassen (weglassen): ${weg.join(" und ")}` : null]
     .filter(Boolean).join(" · ") || null;
   // DIE ORCHESTRATORIN LÄDT NUR DIE GLOBALEN REGELN: der Projekt-
@@ -22752,9 +22828,12 @@ function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: bo
   if (orchestrator) {
     const excludes = fassungClaudeMdExcludes(cwd);
     const global = loaded.dateien.filter((datei) => !excludes.has(resolve(datei.pfad)));
-    if (!global.length)
-      return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`,
-        "(keine globalen Projektregeln geladen — der Projekt-Monolith bleibt für die Orchestratorin aus)", false, 0, undefined, eigeneGrund ?? undefined)];
+    if (!global.length) {
+      // eine Regeldatei mit `paths:` schließt ihre Zeile nicht aus: sie lädt auch bei ihr, wenn eine passende Datei gelesen wird, und das Fenster nennt sie, wie an einem freien Sitz
+      const spaeter = spaeterGeladen(geladen.nachgeladen, excludes);
+      return [{ ...textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`,
+        "(keine globalen Projektregeln geladen — der Projekt-Monolith bleibt für die Orchestratorin aus)", false, 0, undefined, eigeneGrund ?? undefined), ...(spaeter.length ? { nachgeladen: spaeter } : {}) }];
+    }
     const gelesen = fassungDateiText(global);
     if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
     return [{ id: "projektregeln", quelle: global.map((datei) => datei.pfad).join("\n"), aenderbar: true,
@@ -22770,8 +22849,11 @@ function fassungProjektregelnAus(cwd: string, harness: string, fleetCheckout: bo
   const grund = [basis, checkout.size && existsSync(`${cwd}/CLAUDE.md`) ? "das CLAUDE.md des Server-Checkouts bleibt ausgeschlossen; Fleet rendert kein Regelbuch mehr (server.ts#agentCmd)" : null,
     dateien.length < loaded.dateien.length ? `~/AGENTS.md ist für einen Sitz, ${fleetRepo ? "in Fleets Repo" : "der baut"}, ausgeschlossen (server.ts#startExcludes)` : null, eigeneGrund]
     .filter(Boolean).join(" · ") || undefined;
-  if (!dateien.length)
-    return [textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund)];
+  if (!dateien.length) {
+    // no file at the start, but one with `paths:` that loads with a matching file: the window names it ("read with a matching file"), and the hash stays that of a folder without rules
+    const nachgeladen = spaeterGeladen(geladen.nachgeladen, aus);
+    return [{ ...textAbschnitt("projektregeln", `nativeLoaderBytes(${cwd}, ${harness})`, "(keine Projektregeln geladen)", false, 0, undefined, grund), ...(nachgeladen.length ? { nachgeladen } : {}) }];
+  }
   const gelesen = fassungDateiText(dateien);
   if (!gelesen.ok) return [unknownAbschnitt("projektregeln", gelesen.grund)];
   return [textAbschnitt("projektregeln", dateien.map((datei) => datei.pfad).join("\n"),
@@ -22838,8 +22920,14 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
   if (s.label === STEWARD_LABEL) return [unknownAbschnitt("wissen", "der Steward hat keinen Kontextplan")];
   return fassungSeatWissen(cwd, s.harness ?? null, s.bibliothek, { slot: s.id, openedAt: s.openedAt,
     spawn: s.spawn?.openedAt === s.openedAt ? s.spawn.bibliothek ?? null : null, compactionAt: s.compaction?.at ?? null }, s.sitz, eigen,
-    s.selbst?.jetzt.packs ?? [], s.model, packHashesDesAgenten(s.agent), rollenPacksVon(s));
+    s.selbst?.jetzt.packs ?? [], s.model, packHashesDesAgenten(s.agent), rollenPacksVon(s), tuerenZeile(s));
 }
+// WHO GETS THE DOOR LINES OUTSIDE FLEET'S REPO (server/sitz-wissen.ts#mitTuerenSkill): a seat a session opened (it holds a pass), a seat from a file and one of the
+// owner's agents. The plain Claude Code the owner starts from his window or the board gets nothing from Fleet's library until it is switched on (owner 1.11.: the own repo agent gets nothing from Fleet by default).
+// „[Zitat entfernt]“ called by its id (agent "repo") is that same plain start.
+const tuerenZeile = (s: Pick<Slot, "openedBy" | "sitz" | "agent" | "harness">): boolean => !!s.sitz || (!!s.agent && s.agent.id !== "repo") || s.openedBy !== null || harnessFamilie(s.harness ?? "claude") !== "claude";
+// A RIGHT SWITCHED ON AT THE DOOR ARRIVES WITH ITS LINE ("plus what you switch on"): a plain seat with nothing switched on has no line, one the owner gave a right to does
+const rechtAnDerTuer = (r: Rechte | null | undefined): boolean => (r?.recht?.length ?? 0) > 0;
 // the hashes an own agent from a file keeps for its packs (server/agenten.ts#Agent.packHashes); null = the ids alone decide
 function packHashesDesAgenten(agent: AgentBezug | null | undefined): Readonly<Record<string, string>> | null {
   return agent ? liesAgenten(STATE_DIR).find((a) => a.id === agent.id)?.packHashes ?? null : null;
@@ -22852,7 +22940,7 @@ function packHashesDesAgenten(agent: AgentBezug | null | undefined): Readonly<Re
 async function fassungSeatWissen(cwd: string, harness: string | null, wahl: BibliothekWahl | null,
   laufend?: { slot: number; openedAt: number; spawn: SpawnBibliothek | null; compactionAt: number | null }, sitz: SitzStart | null = null,
   eigen = false, dazu: readonly string[] = [], model: string | null = null, hashes: Readonly<Record<string, string>> | null = null,
-  rollenPacks: readonly { id: string; text: string }[] = []): Promise<FassungAbschnittEingang[]> {
+  rollenPacks: readonly { id: string; text: string }[] = [], tueren = true): Promise<FassungAbschnittEingang[]> {
   try {
     const claude = harnessFamilie(harness ?? "claude") === "claude";
     const pi = harnessFamilie(harness ?? "claude") === "pi";
@@ -22864,7 +22952,7 @@ async function fassungSeatWissen(cwd: string, harness: string | null, wahl: Bibl
     if (aus && !((claude || pi) && eigen))
       return [unknownAbschnitt("wissen", eigen ? "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst"
         : "Fleets Bibliothek ist für diese Session ausgeschaltet (beim Öffnen gewählt)")];
-    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an, model, hashes, rollenPacks);
+    const start = await seatStartFor(cwd, harness, laufend ?? null, false, sitz, wahl, dazu, an, model, hashes, rollenPacks, tueren);
     if (aus && !start.knowledge.packs.length)
       return [unknownAbschnitt("wissen", "eigenes Setup: Fleets Bibliothek kommt nur dazu, wenn du sie beim Öffnen wählst")];
     // the block the conversation reads: the one of its first request until a compaction after the newest spawn (Claude Code);
@@ -22888,7 +22976,8 @@ async function fassungWissenFuerPlan(rolle: FassungRolle, repoRoot: string, harn
     return [unknownAbschnitt("wissen", "die Lane hat vor dem Start keinen Worktree — ihr Kontextplan entsteht erst beim Anlegen")];
   if (rolle === "program-main")
     return [unknownAbschnitt("wissen", "vor dem Start ist kein Program an diese MAIN gebunden — der Kontextplan entsteht beim Start")];
-  return fassungSeatWissen(repoRoot, harness, null, undefined, null, eigen);
+  // a plain start from the window (no agent, no file): no door lines unless it is switched on
+  return fassungSeatWissen(repoRoot, harness, null, undefined, null, eigen, [], null, null, [], rolle !== "generic" || harnessFamilie(harness) !== "claude");
 }
 
 function fassungRolleKarte(rolle: FassungRolle, repoRoot: string): FassungAbschnittEingang[] {
@@ -23047,8 +23136,7 @@ async function fassungFuerNeuenPlan(o: { rolle: FassungRolle; harness: string; m
   const fleet = fassungFleetStart(fassungNeueListRolle(o.rolle, o.harness), null, { browserMcp: o.rolle !== "lane", packMcp: [] }, false, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: o.modell, effort: o.effort, permissionMode: null, rechte: null, profil: null, bibliothek: false, notizbuch: null, remote: false, packMcp: [],
       autoModeEnvironment: false, tools: null }), null, null, false, null, o.rolle !== "lane" && fassungImFleetCheckout(o.repoRoot, null), o.harness,
-    o.rolle !== "lane" && o.rolle !== "orchestrator" && o.rolle !== "program-main" && (fassungNeueListRolle(o.rolle, o.harness) === "generic" || harnessFamilie(o.harness) === "pi")
-      ? serverRechteZeile(o.rechte ?? null, ["generic"], o.harness) : null, realpathLoose(o.repoRoot), o.modell);
+    null, realpathLoose(o.repoRoot), o.modell);
   const umfeld = fassungUmfeld(realpathLoose(o.repoRoot), o.harness, fleetBaum !== null);
   const art: SessionKind = o.rolle === "lane" ? "lane" : o.rolle === "orchestrator" ? "orchestrator" : o.rolle === "program-main" ? "program-main" : "session";
   return baueFassung({
@@ -23171,7 +23259,9 @@ const fassungUmfeld = (cwd: string, harness: string, fleetRepo = false): ReturnT
 // ist Anzeige. Das Notizbuch unter ~/.claude/projects nicht: es gehört dem Setup und teilt nach seiner eigenen Regel (src/sitz.ts#NOTIZ_TEILBAR).
 const markiereEigenes = (liest: FassungAbschnittEingang[]): FassungAbschnittEingang[] => {
   const config = `${claudeConfigDir()}/`;
-  return liest.map((a) => a.id === "projektregeln" && a.dateien?.some((datei) => datei.pfad.startsWith(config))
+  return liest.map((a) => a.id === "projektregeln" && a.nachgeladen?.some((datei) => datei.pfad.startsWith(config))
+    ? { ...a, nachgeladen: a.nachgeladen.map((datei) => datei.pfad.startsWith(config) ? { ...datei, eigentum: "owner" as const } : datei) }
+    : a.id === "projektregeln" && a.dateien?.some((datei) => datei.pfad.startsWith(config))
     ? { ...a, dateien: a.dateien.map((datei) => datei.pfad.startsWith(config) ? { ...datei, eigentum: "owner" as const } : datei) } : a);
 };
 
@@ -23314,7 +23404,7 @@ async function vertrauenNachgefuehrt(s: Slot, f: Fassung): Promise<{ fassung: Fa
 }
 const VERTRAUEN_QUELLE = "server/claude-vertrauen.ts#vertraueOrdner (projects[…].hasTrustDialogAccepted in ~/.claude.json)";
 const VERTRAUEN_QUELLE_PI = "server/claude-vertrauen.ts#vertraueOrdnerPi (trust.json in Fleet's pi agent home)";
-async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null): Promise<Fassung> {
+async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./src/sitz").SitzNotizbuch | null = null, modusVorab: StartModus | null = null): Promise<Fassung> {
   const nachfolge = anlass === "nachfolge";
   const { rolle, spawnPick, cwd, spawnRolle, fleetBaum, eigen, bau } = await startLageVon(s);
   const repoRoot = realpathLoose(s.worktree?.repo ?? s.cwd!);
@@ -23338,8 +23428,8 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
       rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
       remote: !!s.remote, packMcp: s.packMcp.map((m) => m.name), autoModeEnvironment: s.autoModeEnvironment === true, tools: s.tools }), s.permissionMode,
     s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree), spawnPick.harness,
-    isSeat(s) && (spawnRolle === "generic" && !pi || pi) ? serverRechteZeile(s.rechte, rechteRollen(s), spawnPick.harness) : null, cwd,
-    spawnPick.model ?? null, s.spawn?.openedAt === s.openedAt ? s.spawn.startModus ?? null : null);
+    isSeat(s) && (spawnRolle === "generic" && !pi || pi) && (!eigen || tuerenZeile(s) || rechtAnDerTuer(s.rechte)) ? serverRechteZeile(s.rechte, rechteRollen(s), spawnPick.harness) : null, cwd,
+    spawnPick.model ?? null, modusVorab ?? (s.spawn?.openedAt === s.openedAt ? s.spawn.startModus ?? null : null));
   const liest: FassungAbschnittEingang[] = [
     ...(steine?.role ? [textAbschnitt("rolle", "server/setup-datei.ts#steineFuerAgentWahl (role stone)", steine.block ?? "", false),
       textAbschnitt("richtung", "server/setup-datei.ts#RICHTUNG_PLATZ", RICHTUNG_PLATZ, false)]
@@ -23429,6 +23519,8 @@ async function halteStart(s: Slot, anlass: FassungAnlass): Promise<Fassung | nul
 // bis „s.packMcp“). Die Vorschau (`/api/founding-plan?anlass=neu`) und die Tür rechnen beide so; stimmt der gestempelte Slot nicht mit dem
 // echten, hält openSlot den echten Hash fest und bricht bei einem anderen gezeigten ab (FassungBewegt). Nichts davon wird gespeichert.
 interface OeffnungEingang {
+  /** the session that opens it (its self token rode beside the owner bearer, or it called the self door): whoever opened it holds a pass and gets the door lines (tuerenZeile) */
+  oeffner?: Opener | null;
   // die gebildete Rolle, in der die Selbst-Tür öffnet (server/selbst-sitze.ts): ihr Starttext steht schon in der Vorschau
   readonly rolleStein?: RolleBezug | null;
   readonly cwd: string; readonly label: string | null; readonly harness: string | null; readonly model: string | null; readonly effort: string | null;
@@ -23443,6 +23535,8 @@ interface OeffnungEingang {
   readonly notizbuchWahl?: NotizbuchWahl | null;
   // der Berechtigungsmodus, den die Tür gewählt hat (permissionModeDerTuer)
   readonly permissionMode?: PermissionModeWahl | null;
+  // a preview of a branch start: the mode its worktree would start in, read from the branch's tree (modusImBranch); a door reads the folder itself
+  readonly startModus?: StartModus | null;
   // was die Tür aus ~/.claude weglässt (weglassenDerTuer) und ob Fleets Umgebung für den Klassifizierer mitkommt
   readonly weglassen?: Weglassen | null; readonly autoModeEnvironment?: boolean | null;
   // die eingebauten Werkzeuge, die die Tür gewählt hat (toolsDerTuer)
@@ -23469,14 +23563,14 @@ const fassungSlotDerOeffnung = (basis: Slot, eingang: OeffnungEingang): Slot => 
     // Server-Rechte gelten auf JEDEM Harness; Agent-MD und Bibliothek tragen Claude und pi, die übrigen
     // Setup-Wahlen fallen auf einem anderen Harness weg (Owner 2026-10-26).
     rechte: eingang.rechte, agentMd: claude || pi ? eingang.agentMd : null, sitz: claude ? eingang.sitz ?? null : null, bibliothek: claude || pi ? eingang.bibliothek : null, notizbuchWahl: claude ? eingang.notizbuchWahl ?? null : null, permissionMode: claude ? eingang.permissionMode ?? null : null, weglassen: claude ? eingang.weglassen ?? null : null,
-    autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, rolleStein: eingang.rolleStein ?? null, zustellung: null, lauf: null,
+    autoModeEnvironment: claude ? eingang.autoModeEnvironment ?? null : null, tools: claude ? eingang.tools ?? null : null, agent: eingang.agent ?? null, rolleStein: eingang.rolleStein ?? null, zustellung: null, lauf: null, openedBy: eingang.oeffner ?? null,
     packMcp: claude ? [...eingang.packMcp] : [], permissions: null, context: null, container: null, containerContext: null, taskId: null, originId: null,
     programId: null, releasedBy: null, lineageId: null, linie: null,
     handover: claude && eingang.schwelle != null ? schwelleAmStart(basis.id, openedAt, eingang.schwelle) : null, laneSuccessions: 0, laneSeats: [], plan: null, sessionId: null,
     sessionIdLearned: null, sleeping: null, standingHandover: null, compaction: null, spawn: null, startCompact: null, laneStandNudged: null, history: [] };
 };
 const fassungDerOeffnung = (basis: Slot, o: OeffnungEingang): Promise<Fassung> =>
-  fassungFuerSlot(fassungSlotDerOeffnung(basis, o), "laufend", harnessOf(o.harness).id === "claude" ? o.notizbuch ?? null : null);
+  fassungFuerSlot(fassungSlotDerOeffnung(basis, o), "laufend", harnessOf(o.harness).id === "claude" ? o.notizbuch ?? null : null, o.startModus ?? null);
 // the free slot a preview computes over: an open stamps every field the Fassung reads, so which free slot it is does not matter
 const freierSlotFuerVorschau = (): Slot => slots.find((x) => !x.cwd) ?? slots[0]!;
 
@@ -44261,7 +44355,7 @@ const programMainContextFacts = (frame: ProgramMainFrame, harness: string | null
 
 // A source file Fleet will not read whole cannot have its anchor checked, so the pack that names
 // it is reported as a manifest defect rather than delivered on an unverified pointer.
-const CONTEXT_MANIFEST_MAX_SOURCE_BYTES = 4_194_304;
+const CONTEXT_MANIFEST_MAX_SOURCE_BYTES = 8_388_608; // server.ts itself passed 4 MiB: under that limit a card naming it got no excerpt
 
 // Read one blob AT A COMMIT, size-bounded. `git show <head>:<path>` is the ONLY way this seam ever
 // obtains repo content: the receipt asserts `head`, so a working-tree read could receipt an anchor
@@ -44610,7 +44704,7 @@ function packsNachHash(k: SeatKnowledge, wahl: BibliothekWahl | null, hashes: Re
 // `dazu`: the packs the seat gave itself (Slot.selbst, server/selbst-einrichten.ts), always added; `an` false = its library is off, then only those
 async function seatStartFor(cwd: string, harness: string | null, belegung: { slot: number; openedAt: number } | null, write: boolean,
   sitz: SitzStart | null = null, wahl: BibliothekWahl | null = null, dazu: readonly string[] = [], an = true, model: string | null = null,
-  hashes: Readonly<Record<string, string>> | null = null, rollenPacks: readonly { id: string; text: string }[] = []): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
+  hashes: Readonly<Record<string, string>> | null = null, rollenPacks: readonly { id: string; text: string }[] = [], tueren = true): Promise<{ knowledge: SeatKnowledge; text: string; files: { pfad: string; text: string }[]; skillsDir: string | null;
     skillOrt: SkillOrt | null; zurWahl: SeatKnowledge["packs"]; voll: SeatKnowledge["packs"]; leer: string[]; weggelassen: string[] }> {
   // a list at the door keeps only its packs, in the block and among the skills alike (server/sitz-wissen.ts#bibliothekGewaehlt)
   // a carried seat may start without a readable library; its own block still gives sitzWissen the carried packs
@@ -44628,7 +44722,8 @@ async function seatStartFor(cwd: string, harness: string | null, belegung: { slo
   // gebildeten Rolle wie bei einem Sitz aus einer Position, der die Packs seiner Rolle zusätzlich unter `liest` hat (server/setup-datei.ts#sitzAusSetup)
   const ohneRolle = (k: SeatKnowledge): SeatKnowledge => rollenPacks.length
     ? { ...k, packs: k.packs.filter((pack) => !rollenPacks.some((r) => r.id === pack.id && r.text === pack.text)) } : k;
-  const gewaehlt = ohneRolle(mitTuerenSkill(bibliothekGewaehlt(voll, wahl, dazu, an), register));
+  // `tueren` false: a plain Claude Code the owner starts in his own folder gets no Fleet pack at all, not even the door lines; they come with the whole library switched on
+  const gewaehlt = ohneRolle(tueren || wahl === true ? mitTuerenSkill(bibliothekGewaehlt(voll, wahl, dazu, an), register) : bibliothekGewaehlt(voll, wahl, dazu, an));
   // ...and the packs of the repo it works in, as a lane reads them, whatever its library choice (projektPacksFor): through the same data boundary as the
   // library, and never under an id of Fleet's — chosen or not, Fleet's register, the seat's library and the door lines keep their names
   const projekt = await projektPacksFor(cwd, harness).catch((e) => { logError("seatStartFor:projekt-register", e); return { packs: [] as SeatPack[], zeilen: [] as string[] }; });
@@ -44969,8 +45064,7 @@ function nativeLoaderBytes(dir: string, harness: string, aus: ReadonlySet<string
         const read = readPresent(pfad);
         if (!read.ok) return unreadable(pfad);
         if (!read.bytes || seen.has(pfad) || aus.has(resolve(pfad))) continue;
-        const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(read.bytes.toString("utf8"));
-        if (front && /^paths\s*:/m.test(front[1]!)) { nachgeladen.push(pfad); continue; }
+        if (nurBeiPfaden(read.bytes.toString("utf8"))) { nachgeladen.push(pfad); continue; }
         seen.add(pfad);
         dateien.push({ pfad, bytes: read.bytes.length });
       }
@@ -45110,12 +45204,6 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     ? await seatStartFor(fp.repoRoot, o.harness, null, false).then((start) => ({ start, ...seatPacks(start.knowledge) }),
       (e: unknown) => ({ grund: `seatKnowledgeFor: ${e instanceof Error ? e.message : String(e)}` }))
     : null;
-  // WHAT THE START GIVES WITH THE LIBRARY OFF: outside Fleet's repo a seat with a self token still gets the two door lines as skills
-  // (server/sitz-wissen.ts#mitTuerenSkill), so the skills row is "an" with exactly those while the switch is off, and the whole list when on
-  const tueren = bibliothek && "start" in bibliothek && (familie === "claude" || familie === "pi") && (await fleetBaumVon(fp.repoRoot)) === null
-    ? await seatStartFor(fp.repoRoot, o.harness, null, false, null, false, [], false).then((start) => ({ start, ...seatPacks(start.knowledge) }),
-      () => null)
-    : null;
   const getragen = new Set(bibliothek && "start" in bibliothek ? [...bibliothek.box, ...bibliothek.skills] : []);
   const packs: PlanPackInstanz[] = [];
   for (const id of [...fp.plan.selected.map((pack) => pack.id), ...fp.plan.omitted.map((entry) => entry.id), ...forced]) {
@@ -45158,7 +45246,7 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
     schalter,
     // on in Fleet's repo, off in a seat's own setup (seatLibraryOn); the skills follow the library's switch
     ...(bibliothek && "start" in bibliothek ? { voreinstellung: { ...(eigenPlan ? { bibliothek: "aus" as const } : {}),
-      "bibliothek-skills": (o.schalter.bibliothek === "aus" || eigenPlan && o.schalter.bibliothek !== "an") && !tueren?.skills.length ? "aus" as const : "an" as const } } : {}),
+      "bibliothek-skills": o.schalter.bibliothek === "aus" || eigenPlan && o.schalter.bibliothek !== "an" ? "aus" as const : "an" as const } } : {}),
   }, (zustand) => {
     const bytes: Record<string, PlanBytes> = {};
     const enthaltenIn: Record<string, string> = { "commit-expectation": "lane-footer" };
@@ -45183,10 +45271,8 @@ async function foundingSessionPlan(fp: FoundingPlan, o: { rolle: SessionRole; or
           return { id: pack.id, titel: titel(pack), useWhen: pack.useWhen ?? "", bytes: Buffer.byteLength(pack.text ?? ""),
             ...(pack.statt ? { statt: pack.statt, stattTitel: statt ? titel(statt) : pack.statt } : {}) };
         }) };
-      // the library off: only the door lines come, and with them the head of the start block (its skill sentence) that stands in no other row
-      const nurTueren = tueren !== null && zustand.get("bibliothek") !== "an";
-      bytes["bibliothek-skills"] = nurTueren ? Buffer.byteLength(tueren.start.text) + Buffer.byteLength(tueren.skillListe) : Buffer.byteLength(bibliothek.skillListe);
-      details["bibliothek-skills"] = nurTueren ? { text: tueren.skillListe, packs: tueren.skills } : { text: bibliothek.skillListe, packs: bibliothek.skills };
+      bytes["bibliothek-skills"] = Buffer.byteLength(bibliothek.skillListe);
+      details["bibliothek-skills"] = { text: bibliothek.skillListe, packs: bibliothek.skills };
     } else if (bibliothek) details.bibliothek = details["bibliothek-skills"] = { grund: bibliothek.grund };
     if (!input) return { bytes, enthaltenIn, details };
     // the window's file is the one a planned spawn writes (plannedFileRows): the same rows, the same
@@ -45395,6 +45481,10 @@ type FoundingPlanQuery = { readonly repo: string; readonly role: string | null; 
   readonly anlass?: string | null;
   /** what the open door would also read from its body (rechte, profil, bibliothek): the Fassung of THAT start, not of a bare one */
   readonly start?: Record<string, unknown>;
+  /** the agent is not from the owner's hand (server/agenten.ts#nichtVomOwner): the preview counts its mode as its door does (modusDerOeffnung) */
+  agentFremd?: boolean;
+  /** a branch start: the mode is read as its worktree will (modusImBranch): `branch` an existing branch, `ab` the ref a new one starts from, "" the repo's integration branch */
+  readonly branch?: string | null; readonly ab?: string | null;
   /** the agent the start comes from and its Agent-MD (server/agenten.ts#agentAnDerTuer), already folded into `start` */
   readonly agent?: AgentBezug | null; readonly agentMd?: AgentMd | null };
 type FoundingPlanAnswer = { readonly ok: false; readonly status: number; readonly error: string }
@@ -45510,6 +45600,8 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   // Die Türen /open (nur-ordner, Orchestratorin) rechnen mit den Eingaben, die der Start liest (Rechte, Profil, Bibliothek, Ordner, MCP der
   // Packs), über den Slot, den die Öffnung stempelt: so zeigt die Vorschau den Hash, der läuft. Lane und MAIN haben vor dem Start keinen Slot.
   let fassung: Fassung | null = null;
+  // a branch start's mode without a choice, for the window's Asks you: with a choice made, the Fassung names only that one
+  let modusOhneWahlImBranch: string | null = null;
   if (q.anlass === "neu" || rolle === "orchestratorin") {
     if (rolle === "nur-ordner" || rolle === "orchestratorin") {
       const startBody = q.start ?? {};
@@ -45548,10 +45640,14 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
       const rc = remoteOf(startBody, hh);
       if (!rc.ok) return refuse(rc.error);
       // `anlass` ist kein Teil des Hashes (fassungsHash zählt nur die Teile): die Vorschau nennt sich, was sie ist
+      const imBranch = await modusImBranch(resolve(expandCwd(repo)), q.branch ?? null, q.ab ?? null, mo.model);
+      modusOhneWahlImBranch = imBranch?.startModus.modus ?? null;
       const eingang: OeffnungEingang = { cwd: resolve(expandCwd(repo)),
         label: rolle === "orchestratorin" ? "Orchestrator" : typeof startBody.label === "string" ? startBody.label : null, harness: ho.harness, model: mo.model, effort: eo.effort,
         rechte: wr.rechte, agentMd: am.agentMd ?? q.agentMd ?? sd.agentMd, bibliothek: bib.wahl, packMcp, sitz: sd.sitz, notizbuch: sd.notizbuch,
-        schwelle: sw.schwelle, notizbuchWahl: nb.wahl, permissionMode: modusAnDerTuer(pm.wahl, sd.modus),
+        schwelle: sw.schwelle, notizbuchWahl: nb.wahl,
+        permissionMode: modusDerOeffnung({ wahl: pm.wahl, position: sd.modus, fremd: q.agentFremd === true, harness: ho.harness, ordner: imBranch?.ordner ?? resolve(expandCwd(repo)), modell: mo.model, projektText: imBranch?.projektText }),
+        startModus: imBranch?.startModus ?? null,
         weglassen: wg.wahl, autoModeEnvironment: um.wahl, tools: tw.wahl, agent: q.agent ?? null, remote: rc.remote,
         // die Rolle der Position trägt der Sitz (openSeatInFolder): die Vorschau rechnet sie mit, sonst zeigte sie einen Hash, der nicht läuft
         rolleStein: rolleDerPosition(sd.sitz?.rolle, STATE_DIR) };
@@ -45572,7 +45668,7 @@ async function foundingPlanAnswer(q: FoundingPlanQuery): Promise<FoundingPlanAns
   const claudeStart = harnessFamilie(resolveContextHarness(ho.harness)) === "claude";
   const modus = eigenesSetup({ claude: claudeStart, role: fassungNeueListRolle(fassungRolleVon(rolle), resolveContextHarness(ho.harness)),
     fleetRepo: claudeStart && (await fleetBaumVon(fp.value.repoRoot)) !== null }) ? "eigenes-setup" as const : "fleet-sitz" as const;
-  return { ok: true, body: { ...body, modus, start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
+  return { ok: true, body: { ...body, modus, ...(claudeStart && modus === "eigenes-setup" && modusOhneWahlImBranch ? { modusImBranch: modusOhneWahlImBranch } : {}), start: { tuer, startbar: verdict.refusals.length === 0, refusals: verdict.refusals },
     lieferung: { tuer: rolle === "main" ? "main" : tuer, geliefert: lieferung.geliefert, ausgelassen: lieferung.ausgelassen },
     claudeCode, startSumme: startSumme(resolved.plan, lieferung, claudeCode),
     ...(fassung ? { fassung, fassungsHash: fassung.hash } : {}) },
@@ -49023,6 +49119,7 @@ if (existsSync(file)) {
         s.autoModeEnvironment = typeof ame === "boolean" && hOf.id === "claude" ? ame : null;
         const tls = toolsDerTuer((v as { tools?: unknown }).tools);
         s.tools = tls.ok && hOf.id === "claude" ? tls.wahl : null;
+        s.modusGrenze = modusGrenzeGeladen((v as { modusGrenze?: unknown }).modusGrenze);
         // ...and the agent it was opened from (server/agenten.ts), only a whole reference
         s.agent = agentBezugGeladen((v as { agent?: unknown }).agent);
         // ...and the formed role it was opened in (server/selbst-sitze.ts), only a whole reference
@@ -57620,7 +57717,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       const answer = await foundingPlanAnswer({ repo: q.get("repo") ?? "", role: q.get("role"), ort: q.get("ort"),
         mode: q.get("mode"), harness: feld("harness"), model: feld("model"),
         effort: feld("effort"), bausteine: q.get("bausteine"), packs: q.get("packs"), parts: q.get("parts"),
-        anlass: q.get("anlass"), start: ag.tuer.agent ? ms.body : startVonAdresse(q), agent: ag.tuer.agent, agentMd: ag.tuer.agentMd });
+        anlass: q.get("anlass"), start: ag.tuer.agent ? ms.body : startVonAdresse(q), agent: ag.tuer.agent, agentMd: ag.tuer.agentMd, agentFremd: ag.tuer.fremd === true || await ausFremdemAgenten(q.get("ausAgent")), branch: q.get("branch"), ab: q.get("ab") });
       if (!answer.ok) return json({ error: answer.error }, answer.status);
       // mit einem Agenten: was der Ort über seine Wahlen hinaus gibt, aus der eben gerechneten Fassung (server/agenten.ts#ortZugaben)
       const vorschau = answer.body as { fassung?: Fassung; modus?: AgentOrtModus };

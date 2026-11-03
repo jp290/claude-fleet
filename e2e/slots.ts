@@ -11786,7 +11786,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // K9 S1 (owner 13.10.: „[Zitat entfernt]“): the block opens in place, without a column render and its /brief
   { name: "the handover block opens through the column render again", state: "uebergabe",
     claim: "the switch opens the „Handover“ block in place without reading the brief",
-    needle: "  if (!paintHandover(c)) void renderBoard();\n};", with: "  void renderBoard();\n};" },
+    needle: "  if (!paintHandover(c)) repaintBoard();\n};", with: "  void renderBoard();\n};" },
   // THE TEST INSTANCE AT THE PHONE (K19): the opened lane without its instance line
   // THE DEVICES (owner 2026-10-08): sentences for people, the silent ones taken back
   { name: "the machine row says the raw chain again", state: "lane", claim: "this machine's Live server says in one sentence how it runs",
@@ -11795,6 +11795,8 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
     needle: "const MACHINE_STILL_MS = 3 * 24 * 3600_000;", with: "const MACHINE_STILL_MS = 365 * 24 * 3600_000;" },
   // K16: the lane rows (.zr.zw) left Info, the git structure cuts a lane's name with … by the owner's word
   // (src/gitstruktur.ts#fit) — the lane's name in HTML is the session head's now
+  { name: "the Context line clips what a finger gets again", state: "lane", claim: "a finger gets 40 px on each target of the Context line", file: "public/index.html",
+    needle: "    #board .bkv.ctx, #board .bkv.ctx > .v { min-height: 40px; }\n", with: "" },
   { name: "a lane's name cut under an ellipsis", state: "lane", claim: "nothing in the top of Info is cut", file: "public/index.html",
     needle: "  #board .bheadname { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--chat-ink);\n    white-space: normal; overflow-wrap: anywhere; padding: calc((var(--b-hit) - 18px) / 2) 6px 0 0; }",
     with: "  #board .bheadname { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--chat-ink);\n    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40px; }" },
@@ -11834,7 +11836,7 @@ export const ARBEITSORTE_MUTANTS: { name: string; state: string; claim: string |
   // round 6: the check after a land on the board, a label that is only its branch, the live field's line
   // round 8: "Mehr zu dieser Session" above the notepad and History
   { name: "Mehr zu dieser Session stands last again", state: "lane", width: 1200, claim: "the sections stand in the owner's order",
-    needle: "    boardBody.replaceChildren(...nodes);", with: "    nodes.push(...nodes.splice(nodes.indexOf(msec), 1)); boardBody.replaceChildren(...nodes);" },
+    needle: "  boardBody.replaceChildren(...nodes);", with: "  nodes.push(...nodes.splice(nodes.indexOf(msec), 1)); boardBody.replaceChildren(...nodes);" },
   // round 8: the land form
   { name: "a land form is not kept", state: "lane", width: 1200, claim: "3A's menu carries On land",
     needle: "  prefSet(\"fleet.board.landform\", JSON.stringify(next));", with: "" },
@@ -13164,6 +13166,17 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
               raised: (() => { const t = document.createElement('span'); t.style.color = 'var(--chat-raised)'; body.append(t); const c = getComputedStyle(t).color; t.remove(); return c; })(),
               bodyText: [...body.querySelectorAll('.btabbody')].reduce((t, b) => t.replace(b.innerText, ''), body.innerText),
               small: targets.map((b) => ({ cls: String(b.className), what: (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 30), h: Math.round(b.getBoundingClientRect().height) })),
+              // WHAT A FINGER GETS, not what the box says (the Context switch's box said 40 and its line clipped it to 32): down the target's middle, how many pixels a touch there reaches it
+              finger: [...body.querySelectorAll('.bkv')].flatMap((row) => [...row.querySelectorAll('button, [role=button]')].map((t) => {
+                // only the sheet scrolls to it: scrollIntoView would also slide the line's own overflow and show what a finger can't reach
+                let sc = t.parentElement; while (sc && !/auto|scroll/.test(getComputedStyle(sc).overflowY)) sc = sc.parentElement;
+                const top = sc ? sc.scrollTop : 0;
+                if (sc) sc.scrollTop += t.getBoundingClientRect().top - innerHeight / 2;
+                const r = t.getBoundingClientRect(), x = r.left + r.width / 2; let got = 0;
+                for (let y = Math.floor(r.top); y < Math.ceil(r.bottom); y++) { const at = document.elementFromPoint(x, y + 0.5); if (at && (at === t || t.contains(at))) got++; }
+                if (sc) sc.scrollTop = top;
+                return { row: String(row.className), cls: String(t.className), box: Math.round(r.height), got };
+              })),
               vh: innerHeight, vw: innerWidth, boardBox: box(document.querySelector('#board')),
               headH: Math.round(ranke?.querySelector(':scope > .rk-git .gs > .gsh')?.getBoundingClientRect().height ?? 0), ownHead: !!ranke?.querySelector(':scope > h3'),
               // where the side stands against the name when the head is two lines: under it, whole, flush with the head's right edge
@@ -13193,7 +13206,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
             alarm: { card: { cls: string; t: string | null; d: string | null; btns: string[]; detail: string | null; place: string | null; holder: string | null; state: string | null;
               stateCls: string | null; at: number; afterRanke: boolean; bg: string } | null; errs: string | null }; live: string | null;
             cards: number; raised: string;
-            bodyText: string; small: { cls: string; what: string; h: number }[]; vh: number; vw: number; landBottom: number | null; landInInfo: number | null;
+            bodyText: string; small: { cls: string; what: string; h: number }[]; finger: { row: string; cls: string; box: number; got: number }[]; vh: number; vw: number; landBottom: number | null; landInInfo: number | null;
             boardBox: { x: number; y: number; r: number; b: number; w: number; h: number } | null; headH: number; ownHead: boolean; headFit: { room: number; parts: string[] } | null;
             headWrap: { foldB: number; sideT: number; sideH: number; sideR: number; headR: number } | null };
           const info = async (): Promise<Info> => {
@@ -13212,7 +13225,7 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           const ownLanded = st === "land";
           let n = await info();
           facts.headFit = n.headFit;
-          facts.info = { land: [n.landBottom, n.vh], zoom: n.zoom, kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.h, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)) };
+          facts.info = { land: [n.landBottom, n.vh], zoom: n.zoom, kids: n.kids, sess: n.sess, work: n.work, note: n.note, hist: n.hist, tabs: n.tabs.map((t) => [t.key, t.sum, t.h, t.body.slice(0, 160)]), meter: n.meter, small: n.small.filter((x) => x.h < (phone ? 40 : 0)), finger: n.finger };
           claims[`${it}the column's head says "Info"`] = phone ? n.shellInfo : n.title === "Info";
           // THE HEAD ON ONE LINE, OR ITS SIDE WHOLE UNDER THE NAME (owner 2026-10-08, src/gitstruktur.ts#GS_CSS): round 7's gear made
           // the busiest side (remote, „[Zitat entfernt]“, gear, +) wider than 1200's column beside the name — it wraps, never cut
@@ -13316,6 +13329,9 @@ export async function runArbeitsorteDom(sourceRoot: string, artifacts?: string,
           if (phone && hasSession) {
             const small = n.small.filter((x) => x.h < (x.cls.includes("lk") ? 32 : 40));
             claims[`${it}on the phone every target below the Arbeitsorte is at least 40 px high (a link 32)`] = small.length === 0;
+            const zeile = n.finger.filter((x) => x.row.split(" ").includes("ctx"));
+            // a box 40 high on a fractional y snaps to 39 hit pixels in some states, nothing clips it; the clipped line gave 32
+            claims[`${it}on the phone a finger gets 40 px on each target of the Context line, its switch and its mug, not only their boxes`] = zeile.every((x) => x.got >= 39);
           }
           // LAND LANE DOES NOT MOVE when the „Handover“ block opens (Bauleitung 16.10., relative since 17.10. b6353ee8: the
           // purpose was that the block never pushes Land lane down — no fixed screen height, the git structure may be tall)

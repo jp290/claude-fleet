@@ -62,8 +62,17 @@ const DOM_MUTANTS = process.env.FLEET_E2E_DOM_MUTANTS === "1";
 // neighbours down, but it reports into ONE line per run (the rig and its error in the detail) instead
 // of 21 lines that all said "Chromium did not run".
 let probeFailures: string[] = [];
+// ...and a needle that left its source is no failure of Chromium: the needle probe names it (mutantNeedlesStand), and here it read as a second and third red of
+// „Chromium starts and loads“, on a browser that had never been asked (audit of 3.11., dom mutants 2/4 and 3/4). Only THAT needle drops out: a rig that refuses a needle
+// the probe found standing (its file left the bundle, a second edit that needs the first) is a mutant that never ran, and no other line would say so (checker, 3.11.).
+const NADEL_WEG = /\bmutant: needle not in ([^:]+): ([\s\S]*)$/;
+type GoneNeedle = { file: string; needle: string };
+let namedGone: readonly GoneNeedle[] = [];
 const probeFailed = (rig: string, error: unknown): void => {
-  probeFailures.push(`${rig}: ${error instanceof Error ? error.message : String(error)}`);
+  const message = error instanceof Error ? error.message : String(error);
+  const refusal = message.match(NADEL_WEG);
+  if (refusal && namedGone.some((g) => g.file === refusal[1] && g.needle.startsWith(refusal[2]!))) return;
+  probeFailures.push(`${rig}: ${message}`);
 };
 
 // ONE VIEWPORT FOR WHAT READS THE SAME. Where a rig still has to run both widths, a claim both widths
@@ -98,8 +107,48 @@ export async function run(): Promise<void> {
   await leisteDom(sourceRoot);
   await k15StartDom(sourceRoot);
   mutantNeedlesStand(sourceRoot);
+  await goneNeedleStaysInItsProbe(sourceRoot);
   check(`dom — PROBE: Chromium starts and loads the client bundle in every rig${DOM_MUTANTS ? " and for the band's and the snapshot's mutant pages" : ""}`,
     probeFailures.length === 0, probeFailures.join(" · "));
+}
+
+// THE RIGS' OWN REFUSAL, as they word it: a mutant whose needle the needle probe named as gone refuses to run and leaves the Chromium probe's list as it was. A refusal of a
+// needle the probe found standing (the mutant's file is not in the bundle, the needle still in the file) enters that list, and so does any other error.
+export async function goneNeedleStaysInItsProbe(sourceRoot: string): Promise<void> {
+  const gone = "\u0000 this needle stands nowhere";
+  const before = probeFailures.length, refused: string[] = [], named = namedGone;
+  const rigs: [string, GoneNeedle, () => Promise<unknown>][] = [
+    ["arbeitsorte", { file: ARBEITSORTE_MUTANTS[0]!.file ?? "src/board.ts", needle: gone }, () => runArbeitsorteDom(sourceRoot, undefined, { states: [ARBEITSORTE_MUTANTS[0]!.state], widths: [390], mutate: { ...ARBEITSORTE_MUTANTS[0]!, needle: gone } })],
+    ["k15 start", { file: K15_START_MUTANTS[0]!.file, needle: gone }, () => runK15StartDom(sourceRoot, undefined, { widths: [1200], mutate: { ...K15_START_MUTANTS[0]!, needle: gone } })],
+  ];
+  // what the probe itself reads for this very input: both needles gone
+  namedGone = goneNeedles(sourceRoot, rigs.map(([rig, g]) => [rig, [{ name: "gone", ...g }], ""]));
+  const probeSaysGone = namedGone.length === rigs.length;
+  for (const [rig, , go] of rigs) {
+    try { await go(); } catch (error) { refused.push(rig); probeFailed(rig, error); }
+  }
+  const stille = probeFailures.length === before;
+  // the checker's input: the file left the bundle, the needle still stands in the file
+  const outside = { name: "outside the bundle", file: "ci/repair-proof.ts", needle: "export const REPAIR_NEEDLE_MIN" };
+  namedGone = goneNeedles(sourceRoot, [["k15 start", [outside], ""]]);
+  const probeSaysStands = namedGone.length === 0;
+  let outsideRefused = false;
+  try { await runK15StartDom(sourceRoot, undefined, { widths: [1200], mutate: { ...K15_START_MUTANTS[0]!, file: outside.file as typeof K15_START_MUTANTS[number]["file"], needle: outside.needle } }); }
+  catch (error) { outsideRefused = true; probeFailed("k15 start", error); }
+  const bleibtRot = probeFailures.length === before + 1 && probeFailures[before]!.includes(outside.needle);
+  // the same words gone from ANOTHER file are another needle
+  namedGone = [{ file: "src/board.ts", needle: outside.needle }];
+  probeFailed("k15 start", new Error(`k15 start mutant: needle not in ${outside.file}: ${outside.needle}`));
+  const andereDatei = probeFailures.length === before + 2;
+  probeFailures.length = before;
+  probeFailed("control", new Error("Chromium did not start"));
+  const zaehlt = probeFailures.length === before + 1;
+  probeFailures.length = before;
+  namedGone = named;
+  check("dom mutants — a mutant whose needle is gone reds the needle probe alone: the Chromium probe says only what it measures",
+    probeSaysGone && refused.length === rigs.length && stille && zaehlt, JSON.stringify({ probeSaysGone, refused, stille, zaehlt }));
+  check("dom mutants — a mutant whose file left the bundle, its needle still in the file, stays red in the Chromium probe: the needle probe did not name it, and it never ran",
+    probeSaysStands && outsideRefused && bleibtRot && andereDatei, JSON.stringify({ probeSaysStands, outsideRefused, bleibtRot, andereDatei }));
 }
 
 // A MUTANT WHOSE NEEDLE LEFT THE SOURCE IS DEAD, AND ONLY THE NIGHTLY SAID SO. The mutants run in the mutant mode alone, so a
@@ -107,15 +156,16 @@ export async function run(): Promise<void> {
 // (28.–30.10.) as a red PROBE line of its slice, and the day's audits, which carry no mutants, stayed green. Every run of this
 // unit now reads each needle (the leiste's: each edit) in the file its family swaps it in, without a browser. The files are the
 // ones the families read: the Arbeitsorte's mutants default to src/board.ts.
-function mutantNeedlesStand(sourceRoot: string): void {
-  type Swap = { name: string; file?: string; needle?: string; edits?: readonly (readonly [string, string])[] };
-  const families: [string, readonly Swap[], string][] = [
-    ["composer keep", KEEP_MUTANTS, ""], ["arbeitsorte", ARBEITSORTE_MUTANTS, "src/board.ts"], ["strip", STRIP_MUTANTS, ""],
-    ["timeline", TIMELINE_MUTANTS, ""], ["activity", ACTIVITY_MUTANTS, ""], ["konstellation", KONST_MUTANTS, ""], ["uebergabe", UEB_MUTANTS, ""],
-    ["leiste", LEISTE_MUTANTS, ""], ["k15 start", K15_START_MUTANTS, ""], ["k15 start live", K15_START_LIVE_MUTANTS, ""],
-  ];
+type NeedleSwap = { name: string; file?: string; needle?: string; edits?: readonly (readonly [string, string])[] };
+type NeedleFamily = readonly [string, readonly NeedleSwap[], string];
+const needleFamilies = (): NeedleFamily[] => [
+  ["composer keep", KEEP_MUTANTS, ""], ["arbeitsorte", ARBEITSORTE_MUTANTS, "src/board.ts"], ["strip", STRIP_MUTANTS, ""],
+  ["timeline", TIMELINE_MUTANTS, ""], ["activity", ACTIVITY_MUTANTS, ""], ["konstellation", KONST_MUTANTS, ""], ["uebergabe", UEB_MUTANTS, ""],
+  ["leiste", LEISTE_MUTANTS, ""], ["k15 start", K15_START_MUTANTS, ""], ["k15 start live", K15_START_LIVE_MUTANTS, ""],
+];
+function readNeedles(sourceRoot: string, families: readonly NeedleFamily[]): { needles: number; gone: (GoneNeedle & { line: string })[] } {
   const sources = new Map<string, string | Error>();
-  const gone: string[] = [];
+  const gone: (GoneNeedle & { line: string })[] = [];
   let needles = 0;
   for (const [family, mutants, fallback] of families) {
     for (const m of mutants) {
@@ -126,12 +176,18 @@ function mutantNeedlesStand(sourceRoot: string): void {
       const source = sources.get(file)!;
       for (const needle of m.needle !== undefined ? [m.needle] : (m.edits ?? []).map((e) => e[0])) {
         needles++;
-        if (source instanceof Error) gone.push(`${family} — ${m.name}: ${file} cannot be read (${source.message.slice(0, 80)})`);
-        else if (!source.includes(needle)) gone.push(`${family} — ${m.name} (${file}): ${needle.slice(0, 70)}`);
+        if (source instanceof Error) gone.push({ file, needle, line: `${family} — ${m.name}: ${file} cannot be read (${source.message.slice(0, 80)})` });
+        else if (!source.includes(needle)) gone.push({ file, needle, line: `${family} — ${m.name} (${file}): ${needle.slice(0, 70)}` });
       }
     }
   }
-  check(`dom mutants — PROBE: every mutant's needle still stands in its source file (${needles} needles, no browser)`, gone.length === 0, gone.join(" · "));
+  return { needles, gone };
+}
+const goneNeedles = (sourceRoot: string, families: readonly NeedleFamily[] = needleFamilies()): GoneNeedle[] => readNeedles(sourceRoot, families).gone;
+function mutantNeedlesStand(sourceRoot: string): void {
+  const { needles, gone } = readNeedles(sourceRoot, needleFamilies());
+  namedGone = gone;
+  check(`dom mutants — PROBE: every mutant's needle still stands in its source file (${needles} needles, no browser)`, gone.length === 0, gone.map((g) => g.line).join(" · "));
 }
 
 // --- from e2e/slots.ts: settings, composer, chat, terminal search, Arbeitsorte, the phone islands, the strip, the glass
@@ -500,6 +556,8 @@ export async function runMutants(k: number, n: number): Promise<void> {
   if (!DOM_MUTANTS) return;
   const sourceRoot = dirname(realpathSync(`${ROOT}/node_modules`));
   probeFailures = [];
+  // a slice can run without the unit that holds the needle probe: the same reading, the same tree
+  namedGone = goneNeedles(sourceRoot);
   const mine = <T>(family: readonly T[]): T[] => mutantSlice(family, k, n);
   for (const m of mine(KEEP_MUTANTS)) {
     try {

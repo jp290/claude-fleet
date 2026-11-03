@@ -36,6 +36,9 @@ export interface FassungAbschnittEingang {
   readonly grund?: string;
   /** die Dateien, die dieser Abschnitt als geladen zeigt (Pfad und Bytes), in Ladereihenfolge */
   readonly dateien?: readonly { readonly pfad: string; readonly bytes: number; readonly eigentum?: "owner" }[];
+  /** nur „projektregeln“ ohne eine Datei am Start: die Regeldateien mit `paths:`, die Claude Code erst mit einer passenden Datei liest. Anzeige wie `quelle`:
+   *  sie laden nicht am Start, also zählen sie nicht in den Hash (hashInhalt) */
+  readonly nachgeladen?: readonly { readonly pfad: string; readonly text: string; readonly eigentum?: "owner" }[];
   /** nur „gedaechtnis“: das Notizbuch des Setups, eigen, geteilt oder aus (server/notizbuch.ts) */
   readonly notizbuch?: Notizbuch;
   /** gehört dem Owner (seine eigenen Claude-Code-Dateien): zählt im Hash, ist aber nicht Teil des teilbaren Setups und reist nicht mit */
@@ -53,6 +56,7 @@ export interface FassungAbschnitt {
   readonly text: string | null;
   readonly grund?: string;
   readonly dateien?: readonly { readonly pfad: string; readonly bytes: number; readonly eigentum?: "owner" }[];
+  readonly nachgeladen?: readonly { readonly pfad: string; readonly text: string; readonly eigentum?: "owner" }[];
   readonly notizbuch?: Notizbuch;
   readonly eigentum?: "owner";
   readonly hashText?: string;
@@ -117,7 +121,7 @@ function normalisiere(a: FassungAbschnittEingang): FassungAbschnitt {
     return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes: "unknown", text: null,
       grund: a.grund?.trim() || "keine Quelle — der Grund wurde nicht genannt", ...(a.dateien?.length ? { dateien: a.dateien } : {}), ...notizbuch };
   return { id: a.id, quelle: a.quelle, aenderbar: a.aenderbar, bytes, text, ...(a.grund?.trim() ? { grund: a.grund } : {}),
-    ...(a.dateien?.length ? { dateien: a.dateien } : {}), ...notizbuch };
+    ...(a.dateien?.length ? { dateien: a.dateien } : {}), ...(a.nachgeladen?.length ? { nachgeladen: a.nachgeladen } : {}), ...notizbuch };
 }
 
 // kanonisch: Schlüssel sortiert, damit derselbe Inhalt denselben Hash ergibt, unabhängig von der

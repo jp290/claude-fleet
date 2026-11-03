@@ -3267,6 +3267,10 @@
     #board .bkv > .k { font-size: 12px; }
     #board .bkv .optsw { min-height: 40px; margin: -4px 0; }
     #board .bkv .bib { width: 40px; height: 40px; margin: -4px 0; }
+    /* the Context line carries two targets on the phone: the row is 40 high so nothing clips them, and the mug is a target of its own, which takes a line of its own on a phone too narrow for both */
+    #board .bkv.ctx, #board .bkv.ctx > .v { min-height: 40px; }
+    #board .bkv.ctx > .v { gap: 3px; flex-wrap: wrap; }
+    #board .kwmug { flex: none; min-height: 40px; padding: 0 7px; }
     #board .lk { min-height: 32px; }
     #board .bchangeacts .bib { width: 40px; height: 40px; }
     #board .bchangeacts .bbtn { min-height: 40px; }

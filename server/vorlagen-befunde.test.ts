@@ -58,7 +58,7 @@ describe("W3a, Befunde der Prüfung Runde 1", () => {
     expect(JSON.stringify(claude?.body)).toContain("PERSOENLICH-9182");
   }, LIFE_DEADLINE_MS * 4);
 
-  test("2 · eine Kennung, die kein Dateisystem trägt, nimmt der Start nicht; die übrigen Packs und Fleets Türen kommen, nichts bleibt liegen", async () => {
+  test("2 · eine Kennung, die kein Dateisystem trägt, nimmt der Start nicht; die übrigen Packs kommen, Fleets Türen erst wenn angeschaltet, nichts bleibt liegen", async () => {
     const f = fixture();
     const lang = "a".repeat(300);
     register(f, [{ id: lang, datei: "docs/lang.md", text: "# Lang\n\nLANG-3001\n", hardness: "guidance", useWhen: "When it is long." },
@@ -71,7 +71,7 @@ describe("W3a, Befunde der Prüfung Runde 1", () => {
     expect(ordnerListe.filter((n) => n.includes(".tmp"))).toEqual([]);
     const belegung = ordnerListe.find((n) => n.startsWith("1-"));
     expect(belegung && existsSync(join(skills, belegung, ".claude/skills/proj-gut/SKILL.md"))).toBe(true);
-    expect(belegung && existsSync(join(skills, belegung, ".claude/skills/fleet-doors/SKILL.md"))).toBe(true);
+    expect(belegung && existsSync(join(skills, belegung, ".claude/skills/fleet-doors/SKILL.md"))).toBe(false);
     const [fassung] = await life(f, [get("/api/slots/1/fassung?anlass=laufend")]);
     const text = JSON.stringify(liestVon(fassung));
     expect(text).not.toContain("When it is long.");

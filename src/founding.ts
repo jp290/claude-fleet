@@ -44,6 +44,8 @@ export interface Answer extends Plan {
   lieferung?: Lieferung; claudeCode?: ClaudeCode | null; startSumme?: StartSumme;
   // der Hash der Fassung, die ein Start jetzt trüge (nur mit anlass=neu); der Start schickt ihn als `fassung` zurück
   fassungsHash?: string;
+  // a preview of a branch start in its own setup: the mode it starts in with no choice, read from the branch (server.ts#modusImBranch)
+  modusImBranch?: string;
 }
 interface Lieferung { tuer: string; geliefert: { id: string; weg: string }[]; ausgelassen: { id: string; grund: string }[] }
 interface CcZeile { id: string; wort: string; satz: string; quelle: string; weg: string; bytes: number | "unknown"; wert: string; frage?: Frage; details?: unknown }

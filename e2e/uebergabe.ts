@@ -3,7 +3,7 @@
 // when it was nudged, a raised threshold told to the session (10:5x, Z50); the 5-point window stays (17:5x); „[Zitat entfernt]“
 //  (18:2x). Runde C (auftraege/uebergabe-c-zwei-arten.md, 19:3x/21:1x): „[Zitat entfernt]“, once; nothing typed into a cold
 // cache, where „New session from summary“ starts a fresh one with the agent, model and effort picked in the block. Done: one look answers what happens to this session next and when, and what can be changed — which line
-// stands in which state, the writes behind the controls, and that it all fits at 1200×900 and 390×844.
+// stands in which state, the writes behind the controls, and that it all fits at 1200×900 and 390×844; at 375 and 360 the coffee mug on the Context line.
 // The real client bundle behind a fixture origin (as e2e/konstellation.ts): one session in slot 4 whose brief carries the
 // succession facts of the state; PATCH …/handover, POST /send and the owner door recorded. Every claim has a MUTANT in
 // UEB_MUTANTS that swaps one needle in the bundle or the page and must turn exactly that claim red; a needle that left the
@@ -15,7 +15,7 @@ import { laterText, nowText } from "../src/handover-now";
 
 export interface UebDomResult { width: number; height: number; claims: Record<string, boolean>; facts: Record<string, unknown> }
 export interface UebMutant { name: string; claim: string; file: "src/handover.ts" | "src/handover-now.ts" | "src/board.ts" | "public/index.html";
-  needle: string; with: string; width?: 1200 | 390 }
+  needle: string; with: string; width?: 1200 | 390 | 375 | 360 }
 
 export const UEB_CLAIM = {
   unter: "below the threshold: „Succession at 40–45 %“ under the block title „Succession“ (Fleet's word, owner 16.10. 22:5x), Fleet nudges once at 40 and starts a new session at 45 — up to 45 only before the cache goes cold — and the cache in one line",
@@ -30,6 +30,7 @@ export const UEB_CLAIM = {
   still: "Mangel 76b: the nudge off with nothing at the cap reads as off — on the Context line and in the block",
   erklaert: "each line's explanation stays on its hover until ⓘ shows them all",
   fit: "the block stays inside Info, the values on one line, nothing runs over sideways, the Context switch is not cut",
+  becher: "on a phone 375 or 360 wide the coffee mug stands whole inside Info, 40 high, and a tap at its centre keeps the session warm",
 } as const;
 
 export const UEB_MUTANTS: readonly UebMutant[] = [
@@ -81,6 +82,8 @@ export const UEB_MUTANTS: readonly UebMutant[] = [
     needle: "\"Fleet nudges the session once to succeed.\"", with: "\"Fleet nudges the session once to hand over.\"" },
   { name: "„Succeed now“ reads „Hand over now“ again", claim: UEB_CLAIM.jetzt, file: "src/handover.ts",
     needle: "button(\"Succeed now\"", with: "button(\"Hand over now\"" },
+  { name: "the mug is pushed out of the Context line on a narrow phone", claim: UEB_CLAIM.becher, file: "public/index.html", width: 360,
+    needle: "    #board .bkv.ctx > .v { gap: 3px; flex-wrap: wrap; }\n    #board .kwmug { flex: none; min-height: 40px; padding: 0 7px; }\n", with: "    #board .kwmug { min-height: 40px; }\n" },
   { name: "the Context switch's words run long again", claim: UEB_CLAIM.fit, file: "src/board.ts", width: 390,
     needle: "`Succession at ${at.pct}", with: "`Succession from ${at.pct} % (the session may wait up to ${at.cap} while its cache is warm) at ${at.pct}" },
 ];
@@ -307,11 +310,8 @@ export async function runUebergabeDom(sourceRoot: string, artifacts?: string,
 
     const results: UebDomResult[] = [];
     let targetId = "";
-    for (const [width, height, phone] of ([[1200, 900, false], [390, 844, true]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
-      const claims: Record<string, boolean> = {};
-      const facts: Record<string, unknown> = {};
-      const fits: boolean[] = [];
-      for (const st of STATES.filter((s) => !only.states || only.states.includes(s))) {
+    // one page in one state at one width: Info open on the phone, the block drawn
+    const seite = async (width: number, height: number, phone: boolean, st: State) => {
         fx.st = st; fx.set = {}; fx.writes = []; fx.briefs = 0; now = Date.now();
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
         targetId = String((await send("Target.createTarget", { url: "about:blank" })).targetId);
@@ -335,6 +335,13 @@ export async function runUebergabeDom(sourceRoot: string, artifacts?: string,
         if (!await wait(`${UEB}?.querySelector('.st')`, 15000))
           throw new Error(`uebergabe DOM probe ${width} ${st}: no Handover block (not served: ${[...missed].join(" ")}): ` + await evaluate<string>("(document.querySelector('#board')?.outerHTML ?? 'no #board').slice(0, 600)"));
         await settle(200);
+    };
+    for (const [width, height, phone] of ([[1200, 900, false], [390, 844, true]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
+      const claims: Record<string, boolean> = {};
+      const facts: Record<string, unknown> = {};
+      const fits: boolean[] = [];
+      for (const st of STATES.filter((s) => !only.states || only.states.includes(s))) {
+        await seite(width, height, phone, st);
         const closed = await read();
         await shot(`uebergabe-${st}-${width}`);
         const briefs0 = fx.briefs, t0 = Date.now();
@@ -458,6 +465,33 @@ export async function runUebergabeDom(sourceRoot: string, artifacts?: string,
       }
       claims[UEB_CLAIM.fit] = fits.length > 0 && fits.every(Boolean);
       results.push({ width, height, claims, facts });
+    }
+    // PHONES NARROWER THAN THE ONE THE WALK ABOVE MEASURES (3.11.: at 390 the mug passed by a pixel, at 375 half of it was cut and at 360 it was gone, with no way to press it).
+    // Only the mug: the rest of the block isn't owed here. What it needs is what a finger needs: all of it visible past every clip, and the tap reaching it.
+    for (const [width, height] of ([[375, 812], [360, 780]] as const).filter(([w]) => !only.widths || only.widths.includes(w))) {
+      await seite(width, height, true, "unter");
+      // Info slides in: a tap measured while it moves lands beside the mug
+      for (let i = 0, vor = ""; i < 40; i++) { const x = await evaluate<string>(`String(document.querySelector('#boardbody .kwmug')?.getBoundingClientRect().x)`); if (x === vor) break; vor = x; await settle(100); }
+      const becher = await evaluate<{ w: number; h: number; whole: boolean; hit: boolean; x: number; y: number } | null>(`(() => {
+        const m = document.querySelector('#boardbody .bhead .bkv.ctx .kwmug');
+        if (!m) return null;
+        // no scrollIntoView: it would slide the line's own overflow and show what a finger can't reach
+        const r = m.getBoundingClientRect();
+        const clips = [{ left: 0, top: 0, right: innerWidth, bottom: innerHeight }];
+        for (let e = m.parentElement; e; e = e.parentElement) { const c = getComputedStyle(e); if (c.overflowX !== 'visible' || c.overflowY !== 'visible') clips.push(e.getBoundingClientRect()); }
+        const whole = clips.every((c) => r.left >= c.left - 0.5 && r.top >= c.top - 0.5 && r.right <= c.right + 0.5 && r.bottom <= c.bottom + 0.5);
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        return { w: r.width, h: r.height, whole, hit: document.elementFromPoint(x, y)?.closest('.kwmug') === m, x, y };
+      })()`);
+      let getippt = false;
+      if (becher?.hit) {
+        await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: becher.x, y: becher.y }] });
+        await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        for (let i = 0; i < 100 && !fx.writes.length; i++) await Bun.sleep(20);
+        getippt = fx.writes.some((w) => w.path === P && typeof (w.body as { keepCache?: unknown } | null)?.keepCache !== "undefined");
+      }
+      await shot(`uebergabe-becher-${width}`);
+      results.push({ width, height, claims: { [UEB_CLAIM.becher]: !!becher && becher.whole && becher.hit && becher.h >= 40 && getippt }, facts: { becher, getippt, writes: fx.writes.map((w) => [w.method, w.path, w.body]) } });
     }
     return results;
   } finally {

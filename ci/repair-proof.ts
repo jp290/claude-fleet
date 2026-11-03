@@ -20,6 +20,18 @@
 // NICHT und braucht das Urteil des Owners. Die Zuordnung ist also streng auf der Prüfseite und blind
 // auf der Produktseite — die sichere Richtung: sie lässt eher eine echte Reparatur warten als eine
 // falsche durch.
+//
+// WAS DER TESTLAUF SELBST BAUT (Auftrag 11 und 13, 3.11.): zwei Sorten Namen stehen in keinem Baum, kein Branch
+// könnte sie je belegen, und die Tür klemmte. Eine Mutanten-Zeile setzt der Lauf aus Name und Satz zusammen
+// (`… mutant: <Name> turns red: <Satz>`, `… MUTATION — <Name>: "<Satz>…" turns red`), eine Zählung schreibt er
+// in die Klammer am Ende (`(271 needles, no browser)`). Weggelassen wird genau das, und nur, wenn der wörtliche
+// Satz nirgends steht. Der Baum muss dann zeigen, dass der Lauf es baut: der Mutant steht als `name: "<Name>"` in
+// seiner Liste, die Zählung als `<Satz> (${` im Template. Es zählen dabei nur Dateien unter e2e/ (die 9 Reste aller
+// bisherigen Roten stehen alle dort), und was übrig bleibt, muss die Prüfung allein tragen: unter
+// REPAIR_NEEDLE_MIN wird nicht gesucht, mehr als REPAIR_FILES_MAX Dateien bleiben keine Zuordnung.
+//
+// NUR DER BAUM DES KANDIDATEN: Ein Satz, der nur noch in main steht, belegt nichts. Sonst wäre das Löschen einer
+// roten Prüfung ihre Reparatur, und nichts Späteres würde es merken (Prüfung 4, 3.11.).
 export const REPAIR_NEEDLE_MIN = 16;
 /** mehr Dateien als das nennen einen Namen — dann ist der Name keiner Datei zuzuordnen */
 export const REPAIR_FILES_MAX = 8;
@@ -64,6 +76,23 @@ export function repairNeedleOf(name: string): string {
   return (claim.length >= REPAIR_NEEDLE_MIN ? claim : name).trim();
 }
 
+// Der Name ohne das, was der Testlauf baut, und die Form, in der der Baum zeigen muss, dass der Lauf es baut —
+// null, wenn der Name nichts davon trägt. Bewusst ohne den Rückfall von repairNeedleOf auf den ganzen Namen:
+// bliebe zu wenig übrig, ist das ein Nein, keine breite Suche.
+const MUTANT_ZEILE = [/^.+? mutant: (.+?) turns red: .+$/s, /^.+? MUTATION — (.+?): ".+" turns? red$/s];
+const LAUF_ZAEHLUNG = / \(\d[^()]*\)$/;
+export function repairNeedleOhneLauf(name: string): { rest: string; suche: string } | null {
+  for (const form of MUTANT_ZEILE) {
+    const hit = name.match(form);
+    if (hit) { const rest = hit[1]!.trim(); return { rest, suche: `name: "${rest}"` }; }
+  }
+  const needle = repairNeedleOf(name);
+  const rest = needle.replace(LAUF_ZAEHLUNG, "").trim();
+  return rest === needle ? null : { rest, suche: `${rest} (\${` };
+}
+const unterE2e = (f: string): boolean => f.startsWith("e2e/");
+
+const ZU_KURZ = "der Name ist zu kurz, um eine Datei zu belegen";
 const short = (sha: string): string => sha.slice(0, 8);
 const list = (a: readonly string[], max = 4): string => (a.length <= max ? a.join(", ") : `${a.slice(0, max).join(", ")} …`);
 
@@ -77,11 +106,18 @@ export function repairProofOf(i: RepairInput): RepairProof {
     return none(`der rote Audit ${mainSha ? short(mainSha) : "(ohne Sha)"} nennt keine roten Prüfungen — nichts, woran ein Branch sich halten könnte`);
   const diff = new Set(i.diff);
   const checks: RepairCheck[] = names.map((name) => {
-    const needle = repairNeedleOf(name);
-    if (needle.length < REPAIR_NEEDLE_MIN) return { name, needle, files: [], touched: false, why: "der Name ist zu kurz, um eine Datei zu belegen" };
-    const files = [...new Set(i.namesIn(needle))];
-    if (!files.length) return { name, needle, files, touched: false, why: "kein Quelltext nennt diese Prüfung" };
+    let needle = repairNeedleOf(name);
+    if (needle.length < REPAIR_NEEDLE_MIN) return { name, needle, files: [], touched: false, why: ZU_KURZ };
+    let files = [...new Set(i.namesIn(needle))];
+    const ohneLauf = files.length ? null : repairNeedleOhneLauf(name);
+    if (ohneLauf) {
+      if (ohneLauf.rest.length < REPAIR_NEEDLE_MIN) return { name, needle: ohneLauf.rest, files: [], touched: false, why: `${ZU_KURZ}, sobald weg ist, was der Testlauf baut` };
+      needle = ohneLauf.suche;
+      files = [...new Set(i.namesIn(needle))];
+    }
     if (files.length > REPAIR_FILES_MAX) return { name, needle, files, touched: false, why: `${files.length} Dateien nennen diese Prüfung — keine Zuordnung` };
+    if (ohneLauf) files = files.filter(unterE2e);
+    if (!files.length) return { name, needle, files, touched: false, why: "kein Quelltext nennt diese Prüfung" };
     const touched = files.some((f) => diff.has(f));
     return { name, needle, files, touched, ...(touched ? {} : { why: `der Diff berührt keine dieser Dateien (${list(files)})` }) };
   });
@@ -89,7 +125,7 @@ export function repairProofOf(i: RepairInput): RepairProof {
   const open = checks.filter((c) => !c.touched);
   if (open.length)
     return { ok: false, red: names.length, checks, files,
-      why: `nicht als Reparatur belegt: ${open[0]!.why} — „${open[0]!.needle.slice(0, 120)}" (${open.length} von ${checks.length} roten Prüfungen ohne Beleg)` };
+      why: `nicht als Reparatur belegt: ${open.length} von ${checks.length} roten Prüfungen ohne Beleg: ${open.map((c) => `${c.why} — „${c.needle.slice(0, 120)}"`).join("; ")}` };
   return { ok: true, red: names.length, checks, files,
     why: `der Branch behebt den roten Audit ${short(mainSha)}: ${checks.length} rote Prüfungen, belegt in ${files.length} Datei(en), jede davon im Diff (${list(files)})` };
 }

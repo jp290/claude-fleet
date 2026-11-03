@@ -49,9 +49,7 @@
 
 /* MIDDLE IN STEP 1: the agents of this repo */
 .k15sitz .sfkarte { position: absolute; inset: 34px 0 0 0; background: var(--sf-surface); border: 1px solid var(--sf-line); border-radius: 14px; display: flex; flex-direction: column; }
-.k15sitz .sfah { padding: 18px 20px 4px; font-size: 18px; font-weight: 600; }
-.k15sitz .sfah span { color: var(--sf-ink3); font-weight: 400; }
-.k15sitz .sfaliste { padding: 6px 20px; display: flex; flex-direction: column; gap: 8px; overflow: auto; min-height: 0; }
+.k15sitz .sfaliste { padding: 16px 20px 6px; display: flex; flex-direction: column; gap: 8px; overflow: auto; min-height: 0; }
 .k15sitz .sfag { display: flex; gap: 13px; align-items: center; border: 1px solid var(--sf-line); background: var(--sf-raised); border-radius: 12px; padding: 12px 14px; text-align: left; cursor: pointer; }
 .k15sitz .sfag:hover { border-color: #3e3e44; }
 .k15sitz .sfav { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 600; background: #141c2e; color: var(--sf-fl); }
@@ -66,7 +64,6 @@
 .k15sitz .sfbtns button:hover, .k15sitz .sfbtns button[aria-pressed="true"] { background: var(--sf-raised); border-color: #3a3a40; }
 .k15sitz .sfbtns button { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 10px 12px; }
 .k15sitz .sfbtns button b { font-size: 14.5px; font-weight: 600; }
-.k15sitz .sfbtns button span { font-size: 12px; color: var(--sf-ink3); line-height: 1.35; }
 /* the ready agents: a row with a Start of its own; the row opens the agent's page for a look, so a click on it never starts by accident */
 .k15sitz .sfbereit { cursor: default; }
 .k15sitz .sfbereit.sfoffen { cursor: pointer; }
@@ -120,13 +117,9 @@
 .k15sitz .sfdchip { border: 1px solid #4a3a22; background: #1a140c; color: var(--sf-ink); border-radius: 8px; padding: 2px 9px 3px; font-size: 12.5px; cursor: pointer; }
 .k15sitz .sfdchip:hover { border-color: #6a5230; }
 .k15sitz .sfsym { display: inline-block; width: 11px; color: var(--sf-amber); font: 700 12.5px var(--chat-mono); margin-right: 4px; }
-.k15sitz .sfzone { border-radius: 16px; padding: 12px 16px 6px; margin-top: 6px; }
-.k15sitz .sfzone.cc { background: #0f1012; border: 1px solid var(--sf-line2); }
-.k15sitz .sfzone.fl { background: #0d1220; border: 1px solid #1e2a44; margin-top: 10px; padding-bottom: 12px; }
-.k15sitz .sfzh { display: flex; align-items: baseline; gap: 10px; padding: 2px 0 6px; }
-.k15sitz .sfzh h3 { margin: 0; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--sf-ink); }
-.k15sitz .sfzone.fl .sfzh h3 { color: var(--sf-fl2); }
-.k15sitz .sfzh > span { color: var(--sf-ink3); font-size: 13px; }
+.k15sitz .sfzone { border-radius: 16px; padding: 10px 16px 6px; margin-top: 6px; background: #0f1012; border: 1px solid var(--sf-line2); }
+.k15sitz .sfleg { display: flex; align-items: center; gap: 6px; justify-content: flex-end; font-size: 12px; color: var(--sf-ink3); padding: 0 0 4px; }
+.k15sitz .sfleg .sfmk { margin-left: 10px; }
 .k15sitz .sfmk { width: 12px; height: 12px; border-radius: 3px; flex: none; position: relative; top: 1px; }
 .k15sitz .sfmk.cc { background: var(--sf-cc); border-radius: 50%; }
 .k15sitz .sfmk.fl { background: var(--sf-fl); clip-path: polygon(50% 0, 100% 100%, 0 100%); border-radius: 0; }
@@ -142,10 +135,10 @@
 .k15sitz .sftile.chg { border-color: #5a4828; }
 .k15sitz .sftile.wide { grid-column: 1 / -1; }
 .k15sitz .sftile.muted { background: transparent; border-style: dashed; }
-.k15sitz .sfzone.fl .sftile { background: #111829; border-color: #22304d; }
-.k15sitz .sfzone.fl .sftile:hover { border-color: #31456c; }
-.k15sitz .sfzone.fl .sftile.open { border-color: #5b82c9; background: #131c30; }
-.k15sitz .sfzone.fl .sfic { color: var(--sf-fl); }
+.k15sitz .fl .sftile { background: #111829; border-color: #22304d; }
+.k15sitz .fl .sftile:hover { border-color: #31456c; }
+.k15sitz .fl .sftile.open { border-color: #5b82c9; background: #131c30; }
+.k15sitz .fl .sfic { color: var(--sf-fl); }
 .k15sitz .sftn { font-size: 12.5px; color: var(--sf-ink3); display: flex; align-items: center; gap: 7px; padding-right: 22px; }
 .k15sitz .sfheld { color: var(--sf-ink3); font-size: 11.5px; }
 .k15sitz .sftv { font-size: 15.5px; font-weight: 600; color: var(--sf-ink); letter-spacing: -.01em; }
@@ -155,7 +148,7 @@
 .k15sitz .sfpk:hover { border-color: #55555c; }
 .k15sitz .sfpk:focus-within { outline: 2px solid var(--sf-steel); outline-offset: 2px; }
 .k15sitz .sfpk svg { width: 12px; height: 12px; color: #9a9aa0; }
-.k15sitz .sfzone.fl .sfpk { background: #0e1424; border-color: #2b3b5e; }
+.k15sitz .fl .sfpk { background: #0e1424; border-color: #2b3b5e; }
 .k15sitz .sfpk select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; font-size: 14px; }
 .k15sitz .sfpk select option { background: #18181b; color: var(--sf-ink); }
 .k15sitz .sfts { font-size: 12.5px; color: var(--sf-ink3); line-height: 1.4; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -167,8 +160,8 @@
 .k15sitz .sfsw.on > span { transform: translateX(12px); background: #0d1220; }
 .k15sitz .sfsw:focus-visible { outline: 2px solid var(--sf-steel); outline-offset: 2px; }
 .k15sitz .sfsw:disabled { opacity: .45; cursor: default; }
-.k15sitz .sfzone.fl .sftile.chg { border-color: #5a4828; }
-.k15sitz .sfzone.fl .sftile.muted { background: transparent; }
+.k15sitz .fl .sftile.chg { border-color: #5a4828; }
+.k15sitz .fl .sftile.muted { background: transparent; }
 .k15sitz .sftile.sw .sftn { padding-right: 40px; }
 /* a pack's whole title, so two variants (… (gentle), … (hard)) differ where they differ */
 .k15sitz .sftile.sw .sftv { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
@@ -178,7 +171,7 @@
 .k15sitz .sftask { min-height: 56px; resize: vertical; }
 /* an open block: how it works, what you can set; its words are on the right */
 .k15sitz .sfdrawer { grid-column: 2; margin-top: 10px; background: #151619; border: 1px solid #2c3036; border-radius: 12px; padding: 12px 16px 14px; animation: sffade .2s ease; }
-.k15sitz .sfzone.fl .sfdrawer { background: #10172a; border-color: #2a3b60; }
+.k15sitz .sfdrawer.fl { background: #10172a; border-color: #2a3b60; }
 .k15sitz .sfdh { display: flex; align-items: baseline; gap: 10px; }
 .k15sitz .sfdh b { font-size: 14.5px; color: var(--sf-ink); }
 .k15sitz .sfdh span { color: var(--sf-ink3); font-size: 13px; flex: 1; }
@@ -334,7 +327,7 @@
   .k15sitz .sfkarte { position: static; }
   .k15sitz .sfbtns { flex-direction: column; }
   /* a way is open (Design, Import): on a phone it takes the place of the ready list, so it is not pushed below the fold */
-  .k15sitz .sfweg .sfbereit, .k15sitz .sfweg .sfmehr, .k15sitz .sfweg .sfsub1 { display: none; }
+  .k15sitz .sfweg .sfbereit, .k15sitz .sfweg .sfmehr { display: none; }
   .k15sitz .sfbereit { padding: 10px 12px; gap: 10px; }
   .k15sitz .sfbereit .sfav, .k15sitz .sfbereit .sfagher { display: none; }
   .k15sitz .sf.s2 .sfrepos { display: none; }
@@ -345,7 +338,10 @@
   .k15sitz .sfpart { grid-template-columns: 1fr; }
   .k15sitz .sfplabel { padding: 0 0 6px; }
   .k15sitz .sfdrawer { grid-column: 1; }
-  .k15sitz .sftiles { grid-template-columns: 1fr 1fr; }
+  .k15sitz .sftiles { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .k15sitz .sftile { min-width: 0; }
+  .k15sitz .sftile .sfpk { max-width: 100%; white-space: normal; text-align: left; }
+  .k15sitz .sfpk svg { flex: none; }
   .k15sitz .sfzone { padding: 10px 10px 4px; }
   .k15sitz .sfbanner { grid-template-columns: 30px minmax(0, 1fr); }
   .k15sitz .sfbb { grid-row: auto; grid-column: 2; justify-self: start; margin-top: 6px; }

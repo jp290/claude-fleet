@@ -131,6 +131,11 @@ describe("the pieces", () => {
       ["/Users/o/AGENTS.md", "# Home"], ["/Users/o/example-app/AGENTS.md", "# example-app"]]);
     expect(packDateien(fassung({ packs: ["a-b"] })).map((p) => [p.id, p.pfad, p.titel])).toEqual([["a-b", "docs/packs/a-b.md", "a-b"]]);
   });
+  test("a folder without rule files has none, and an empty rule file that is really there stays a file", () => {
+    expect(regelDateien({ id: "projektregeln", text: "(keine Projektregeln geladen)", bytes: 0 })).toEqual([]);
+    const leer = "--- 1/1 CLAUDE.md ---\n";
+    expect(regelDateien({ id: "projektregeln", text: leer, bytes: 0, dateien: [{ pfad: "/w/CLAUDE.md", bytes: 0 }] }).map((r) => [r.pfad, r.text])).toEqual([["/w/CLAUDE.md", ""]]);
+  });
   test("a file is named as the window shows it: the repo's by its path in the repo, yours under ~/.claude wherever home is", () => {
     expect(anzeige("/tmp/ti/home/.claude/CLAUDE.md", "/tmp/wf/example-app", "owner")).toBe("~/.claude/CLAUDE.md");
     expect(anzeige("/tmp/wf/example-app/AGENTS.md", "/tmp/wf/example-app")).toBe("AGENTS.md");

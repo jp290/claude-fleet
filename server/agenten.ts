@@ -347,7 +347,9 @@ export function katalog(dir: string, k15: unknown): AgentAnsicht[] {
 
 // DIE TÜR: `agent: "<id>"` an POST /api/slots/:id/open und /api/branches/open. Die Wahlen des Agenten kommen ganz in den Body; ein Body, der daneben
 // selbst eine Wahl setzt, wird abgelehnt — sonst startete etwas anderes, als die Fassung des Agenten zeigt. Was die Tür nicht liest, auch.
-export interface AgentAnDerTuer { body: Record<string, unknown>; agent: AgentBezug | null; agentMd: AgentMd | null }
+export interface AgentAnDerTuer { body: Record<string, unknown>; agent: AgentBezug | null; agentMd: AgentMd | null;
+  /** nichtVomOwner: er erbt kein bypass aus den Einstellungen des Nutzers (server.ts#modusDerOeffnung) */
+  fremd?: true }
 export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly AgentAnsicht[], tuerLiest: readonly WahlFeld[]):
   { ok: true; tuer: AgentAnDerTuer } | { ok: false; error: string } {
   const v = body.agent;
@@ -371,7 +373,7 @@ export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly Ag
   const agentMd: AgentMd | null = a.agentMd && wahlen.profil === undefined
     ? { profil: a.agentMd.profil, titel: a.agentMd.titel, text: a.agentMd.text, sha256: sha(a.agentMd.text), name: a.name } : null;
   const { agent: _a, ...rest } = body;
-  return { ok: true, tuer: { body: { ...rest, ...wahlen, ...(rolleLabel ? { label: rolleLabel } : {}) }, agent: bezugVon(a), agentMd } };
+  return { ok: true, tuer: { body: { ...rest, ...wahlen, ...(rolleLabel ? { label: rolleLabel } : {}) }, agent: bezugVon(a), agentMd, ...(nichtVomOwner(a) ? { fremd: true as const } : {}) } };
 }
 
 // EINEN LAUFENDEN SITZ SPEICHERN: die Wahlen, mit denen sein Slot gestartet ist, unter den Türnamen; `nichtGetragen` nennt, was der Slot trägt

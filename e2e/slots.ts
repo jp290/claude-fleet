@@ -10502,7 +10502,7 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
       await send("Fetch.enable", { patterns: [{ urlPattern: "http://fleet.fixture/*" }] });
       await send("Page.enable"); await send("Runtime.enable");
       // the pane socket never opens here; scenario 14 speaks through it (window.__ws) the way the server pushes
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `{ const every = window.setInterval; window.setInterval = (f, ms, ...a) => every(ms === 1000 ? () => { if (!window.__tickStop) f(); } : f, ms, ...a); } window.__ws = []; window.WebSocket = class { constructor(u) { this.url = String(u); this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `{ const every = window.setInterval; window.setInterval = (f, ms, ...a) => { if (ms === 1000) (window.__ticks ||= []).push(f); return every(ms === 1000 ? () => { if (!window.__tickStop) f(); } : f, ms, ...a); }; } window.__ws = []; window.WebSocket = class { constructor(u) { this.url = String(u); this.readyState = 0; window.__ws.push(this); } send() {} close() {} };` });
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       await navigate("http://fleet.fixture/blank");
       await evaluate(`(() => { localStorage.clear(); localStorage.setItem('fleet.view', JSON.stringify({ layout: 1, panes: [1], focused: 0, chats: [true] })); localStorage.setItem('fleet.board', '0'); })()`);
@@ -11556,6 +11556,116 @@ export async function runBundleChatDom(sourceRoot: string, artifacts?: string, w
         claims["the line: a returned seat whose socket doesn't come up goes red and says so, and opening heals it"] = hungRed && hungSays === "disconnected — connecting …"
           && !await evaluate<boolean>(isRed) && !await evaluate<boolean>(seatDown);
         fx.firstSeatOpenedAt = 1000;
+        // A SUCCESSION, on a healthy line, in both views. The server closes the seat's sockets with its own code at once, while the rows
+        // still name the old seat, and the row stands empty for about a second. Breaks if: the dot goes red with „disconnected“ every
+        // time a seat hands over (order 13, real seat: 11 of 11, 0.6 to 1.8 s)
+        const succession = async (openedAt: number) => {
+          await evaluate(`(() => { window.__seatSeen = []; const look = () => { if (${isRed}) window.__seatSeen.push('red'); if (${seatDown} && ${barSays} !== 'Slot empty') window.__seatSeen.push(${barSays}); };
+          const o = new MutationObserver(look); o.observe(document.querySelector('#mdot'), { attributes: true }); o.observe(document.querySelector('.pane'), { attributes: true }); o.observe(document.querySelector('.pane .downmsg'), { childList: true, characterData: true, subtree: true }); window.__seatObs = o; })()`);
+          const before = await evaluate<number>("window.__ws.length");
+          await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({ code: 4000 }); })()");
+          // the page hasn't read the row yet: it asks, and the server refuses while the slot stands empty
+          const asked = await wait(`window.__ws.length > ${before}`, 1500);
+          if (asked) { await openSocket(); await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({ code: 4001 }); })()"); }
+          await seatGoes();
+          await evaluate("(() => { const w = window.__ws.at(-1); if (w.readyState !== 3) { w.readyState = 3; w.onclose?.({ code: 4001 }); } })()");
+          const atSeat = await evaluate<number>("window.__ws.length");
+          fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = openedAt;
+          const socket = await wait(`window.__ws.length > ${atSeat}`, 3500);
+          await settle(1100); // a tick of the dot, the new socket still on its way
+          await openSocket(); await seatAnswers();
+          await settle(1300);
+          const seen = await evaluate<string[]>("(window.__seatObs.disconnect(), window.__seatSeen)");
+          return { asked, socket, seen, red: await evaluate<boolean>(isRed), down: await evaluate<boolean>(seatDown) };
+        };
+        const heard = (r: { asked: boolean; socket: boolean; seen: string[]; red: boolean; down: boolean }): boolean => r.asked && r.socket && r.seen.length === 0 && !r.red && !r.down;
+        const inTerminal = await succession(8000);
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        await settle(400);
+        const inChat = await succession(9000);
+        await evaluate("document.querySelector('.pane .viewtoggle').click()");
+        await settle(400);
+        await openSocket(); await seatAnswers();
+        facts.succession = { inTerminal, inChat };
+        claims["the line: a succession brings no red and no „disconnected“, in the terminal and in the conversation view"] = heard(inTerminal) && heard(inChat);
+        // ...and only the server's word does that. Breaks if: any closing socket counts as a seat on its way, and a line that drops stays green
+        await settle(200);
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({ code: 1006 }); })()");
+        const dropRed = await evaluate<boolean>(isRed);
+        const dropSays = await evaluate<string>(barSays);
+        facts.dropAfterSuccession = { dropRed, dropSays };
+        claims["the line: a socket that drops without the server's word goes red at once"] = dropRed && dropSays.startsWith("disconnected");
+        const socketsAtDrop = await evaluate<number>("window.__ws.length");
+        await wait(`window.__ws.length > ${socketsAtDrop}`, 3000);
+        await openSocket(); await seatAnswers();
+        await settle(1300);
+        // A seat ended and the row is already read empty: nothing can come up there, the next seat's read takes the socket. Breaks if: every
+        // seat ended from elsewhere costs a refused socket each half second
+        await seatGoes();
+        const socketsOverEmpty = await evaluate<number>("window.__ws.length");
+        await evaluate("(() => { const w = window.__ws.at(-1); w.readyState = 3; w.onclose?.({ code: 4000 }); })()");
+        await settle(1300);
+        const askedOverEmpty = await evaluate<number>("window.__ws.length") - socketsOverEmpty;
+        fx.firstSeatEmpty = false; fx.firstSeatOpenedAt = 11000;
+        const socketAfterEmpty = await wait(`window.__ws.length > ${socketsOverEmpty + askedOverEmpty}`, 3500);
+        await openSocket(); await seatAnswers();
+        await settle(1300);
+        facts.overEmpty = { askedOverEmpty, socketAfterEmpty };
+        claims["the line: a seat ended over a slot read empty asks for no socket until the next seat is read"] = askedOverEmpty === 0 && socketAfterEmpty;
+        // CLOSING. A real browser holds a socket in CLOSING from the close frame to the TCP close, one round trip, and on a line with latency
+        // the dot's tick falls into it. The stand-in goes from open to closed with nothing between, so these stand it in CLOSING and keep it
+        // there until the case lets go. Breaks if: the dot goes red on a healthy line in that window (order 14, 100 to 300 ms: 2 of 30, 3 of 30)
+        const closing = (code?: number) => evaluate(`(() => { window.WebSocket.CLOSING = 2; const w = window.__ws.at(-1); w.readyState = ${code === undefined ? 2 : 3}; ${code === undefined ? "" : `w.onclose?.({ code: ${code} });`} })()`);
+        const goesRed = async (ms: number) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await evaluate<boolean>(isRed)) return Date.now() - t0; await settle(100); } return -1; };
+        const reopen = async (code: number) => {
+          const had = await evaluate<number>("window.__ws.length");
+          await closing(code);
+          const asked = await wait(`window.__ws.length > ${had}`, 4000);
+          if (asked) await openSocket();
+          await seatAnswers();
+          await settle(1300);
+        };
+        // the server's close frame, the TCP close behind it not yet: two ticks of the dot inside CLOSING, green and no bar; then the close comes
+        await closing();
+        await settle(1500);
+        const closingHealthy = { red: await evaluate<boolean>(isRed), down: await evaluate<boolean>(seatDown) };
+        await closing(4000);
+        await settle(1300);
+        const closedAfter = { red: await evaluate<boolean>(isRed), down: await evaluate<boolean>(seatDown) };
+        facts.closingHealthy = { closingHealthy, closedAfter };
+        claims["the line: a socket the server is closing, its TCP close not yet there, keeps the dot green and shows no bar"] = !closingHealthy.red && !closingHealthy.down
+          && !closedAfter.red && !closedAfter.down;
+        await reopen(4001);
+        // THE 3 s, ON A FIXED CLOCK. The dot's tick is called by hand at exactly 0, 2.5 and 3.5 s of a CLOSING that is held, so no tick phase decides.
+        // Breaks if: SEAT_CLOSING_MS drops to 2 s (the flicker order 14 saw: red, then green on the server's 4000, then red) or is held longer than 3 s
+        const tickNow = () => evaluate("(window.__ticks || []).forEach((f) => f())");
+        await evaluate("(() => { window.WebSocket.CLOSING = 2; window.__ws.at(-1).readyState = 2; (window.__ticks || []).forEach((f) => f()); })()");
+        const atFirst = await evaluate<boolean>(isRed);
+        await settle(2500); await tickNow();
+        const at25 = await evaluate<boolean>(isRed);
+        await settle(1000); await tickNow();
+        const at35 = await evaluate<boolean>(isRed);
+        facts.closingClock = { atFirst, at25, at35 };
+        claims["the line: a socket the server is closing counts as up for 3 s from when it was first seen, and not longer"] = !atFirst && !at25 && at35;
+        await reopen(1006);
+        // the line dies after the frame: the TCP close never comes. Green for a moment, then red, and the browser's own close is not waited for
+        await closing();
+        const greenWhileClosing = !await evaluate<boolean>(isRed);
+        const redAfter = await goesRed(7000);
+        facts.closingDead = { greenWhileClosing, redAfter };
+        claims["the line: a line that dies while the server's socket stands in CLOSING ends red within 6 s"] = greenWhileClosing && redAfter > 1500 && redAfter <= 6000;
+        await reopen(1006);
+        // a close the PAGE began is no proof of a line: the reload button closes the socket and asks again, the new one never comes up
+        await evaluate("window.__ws.at(-1).close = function () { this.readyState = 2; }");
+        const hadBeforeReload = await evaluate<number>("window.__ws.length");
+        await evaluate("document.querySelector('.pane .panereload').click()");
+        const oldClosing = await evaluate<number>(`window.__ws[${hadBeforeReload - 1}].readyState`);
+        const pageRed = await goesRed(5000);
+        facts.pageClosing = { oldClosing, pageRed };
+        claims["the line: a close the page began, its new socket never coming up, goes red"] = oldClosing === 2 && pageRed >= 0 && pageRed <= 1500;
+        await openSocket(); await seatAnswers();
+        await settle(1300);
+        fx.firstSeatOpenedAt = 1000; // (kept at 11000 up to here, or the next poll reads a new seat and its time keeps the dot green by itself)
         // HE MOVED ON. The socket dropped and its retry is pending when he goes to another seat. Breaks if: that retry still
         // fires, and a socket that is fine is thrown away for a second one. Going there and back first resets the backoff, so the wait is the first one
         fx.secondSeat = true;

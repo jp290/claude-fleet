@@ -17,6 +17,10 @@ export const RECONNECT_SETTLED_MS = 30_000;
 // soon after a refusal to ask again. Its row is written before its pane exists, so the first socket can be refused
 export const SEAT_SOCKET_MS = 3_000;
 export const SEAT_ASK_AGAIN_MS = 500;
+// how long a socket the server began closing counts as up while the browser waits for the TCP close behind the frame (src/client.ts#serverClosing). A hung CLOSING lasts Chrome's 2.1 s (measured), so 3 s outlasts it; held by a claim on a fixed clock (e2e/slots.ts)
+export const SEAT_CLOSING_MS = 3_000;
+// the close code the server ends a seat's sockets with (server.ts#killSlot)
+export const SEAT_ENDED_CLOSE = 4000;
 
 // attempt 0 is the first retry after a drop: 1.5s, 3s, 6s, 12s, then 15s forever
 export const reconnectDelay = (attempt: number): number =>

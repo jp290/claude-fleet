@@ -12217,6 +12217,7 @@ async function teardownSlotOccupant(s: Slot, streamOccupant: SlotStreamOccupant,
   s.startCompact = null;
   s.laneStandNudged = null;
   s.plan = null;
+  // the page reads this code as the server's word that the line works and a seat may follow (src/backoff.ts#SEAT_ENDED_CLOSE)
   for (const ws of s.clients) ws.close(4000, "slot killed");
   s.clients.clear();
   s.inputChain = Promise.resolve();

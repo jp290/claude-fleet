@@ -30,7 +30,7 @@ import { closeEntityCard, entityCardOpen, hideEntityCard, showEntityCard } from 
 import { loadChatSizes, onChatSize, onTermSize, setTermDefault, sizePanel, stepChatSizes, stepTermSize, termFontSize } from "./chatsize";
 import { PREFS, prefBool, prefJSON, prefNumber, prefRaw, prefSet, prefSetBool, prefText, type PrefDef } from "./prefs";
 import { popover } from "./popover";
-import { RECONNECT_SETTLED_MS, SEAT_ASK_AGAIN_MS, SEAT_SOCKET_MS, reconnectDelay } from "./backoff";
+import { RECONNECT_SETTLED_MS, SEAT_ASK_AGAIN_MS, SEAT_CLOSING_MS, SEAT_ENDED_CLOSE, SEAT_SOCKET_MS, reconnectDelay } from "./backoff";
 import { pollPlan } from "./pollplan";
 import { Line, POLL_STALL_MS } from "./line";
 import { boxSendName, dropBoxSendName, newSendName, sendUntilAnswered } from "./send-once";
@@ -2927,7 +2927,21 @@ class Pane {
   // is this pane's way to the server up, as far as its socket can say; an empty pane has none to lose
   // An empty slot has no socket to lose, so it says nothing about the line. A dead line still goes red through the server's own read (line.silent)
   private slotEmpty(): boolean { const s = fleet[this.slot - 1]; return !!s && !s.cwd; }
-  socketUp(): boolean { return !this.slot || this.slotEmpty() || this.seatComing !== null || this.ws?.readyState === WebSocket.OPEN; }
+  socketUp(): boolean { return !this.slot || this.slotEmpty() || this.seatComing !== null || this.ws?.readyState === WebSocket.OPEN || this.serverClosing(); }
+  // The server's close frame came through (that frame is the proof of the line), and the TCP close can still be on its way. That counts
+  // as up, for SEAT_CLOSING_MS from when it was first seen. Measured: Chrome's longest CLOSING was under 140 ms at every round trip
+  // from 100 ms to 2 s, because the server's TCP close follows its frame at once; a CLOSING that hangs (the line died after the frame)
+  // lasts Chrome's own 2.1 s, so the limit is 3 s and a line that died ends red. WebKit 26.0 shows no CLOSING at all.
+  // A close the page starts never counts, and needn't be asked about: every one of them orphans the socket and sets the next
+  // in the same step (or leaves the pane without a slot), so a CLOSING socket held in this.ws is the server's
+  private closingWs: WebSocket | null = null;
+  private closingSince = 0;
+  private serverClosing(): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.CLOSING) return false;
+    if (this.closingWs !== ws) { this.closingWs = ws; this.closingSince = Date.now(); }
+    return Date.now() - this.closingSince < SEAT_CLOSING_MS;
+  }
   // A seat came to this slot and the socket is down: take one now, not when the wait from the drop runs out (up to 15 s), and
   // that socket isn't lost yet. Until the seat's first frame the dot stays, no bar stands and a refusal asks again, at most
   // SEAT_SOCKET_MS. After that a socket not up is called down. Every poll calls this
@@ -2939,10 +2953,13 @@ class Pane {
     if (was === undefined || seat === was || !row?.cwd || this.ws?.readyState === WebSocket.OPEN) return;
     this.retries = 0; // a new seat: the old one's backoff says nothing about it
     this.hideDown();
-    this.seatSettled();
     if ((this.ws?.readyState ?? 3) > 1) this.connect(); // a retry already on its way stays
-    this.seatComing = setTimeout(() => { this.seatComing = null; if (this.ws?.readyState !== WebSocket.OPEN) this.showDown(0); }, SEAT_SOCKET_MS);
+    this.startSeatTime();
     if (focused === this.index) setConn(this.socketUp());
+  }
+  private startSeatTime(): void {
+    this.seatSettled();
+    this.seatComing = setTimeout(() => { this.seatComing = null; if (this.ws?.readyState !== WebSocket.OPEN) this.showDown(0); }, SEAT_SOCKET_MS);
   }
   private seat: number | undefined;
   private seatComing: ReturnType<typeof setTimeout> | null = null;
@@ -3039,13 +3056,17 @@ class Pane {
       } : undefined);
       if (action.reset) this.flushHeld();
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (g !== this.gen) return;
       // no socket, no push: the running session's chat goes back to its chatMs chain until the next one
       this.pushLines = null;
       if (this.view === "chat" && this.pastN === null && plan().chatMs) void this.pollChat();
       perfFinish(this.perfSwitch, false); this.perfSwitch = null;
-      if (this.seatComing !== null) { setTimeout(() => { if (g === this.gen) this.connect(); }, SEAT_ASK_AGAIN_MS); return; }
+      // The server ended this seat and said so: its frame came through, so the line works, and a successor is seconds away
+      // while the rows still name the old seat. Only the server's word starts this, so a line that dies never does
+      if (e.code === SEAT_ENDED_CLOSE) this.startSeatTime();
+      // over a slot read empty no socket can come up; readSeat takes one when the next seat is read
+      if (this.seatComing !== null) { setTimeout(() => { if (g === this.gen && !this.slotEmpty()) this.connect(); }, SEAT_ASK_AGAIN_MS); return; }
       if (focused === this.index) setConn(this.socketUp());
       // every successful open costs a scrollback seed, so a socket that keeps opening and
       // dropping is as expensive as one that never opens — only a socket that STAYED up

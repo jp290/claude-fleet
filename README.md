@@ -35,7 +35,9 @@ bun server.ts            # binds 127.0.0.1:8790 unless FLEET_HOST/FLEET_PORT say
 
 On boot the server prints a one-click login URL carrying the access token, but only when stdout is a terminal; redirected to a log, it withholds the token, which then has to be read out of `fleet.json`. The token goes into a `SameSite=Strict` cookie, so you log in once per browser.
 
-Click a free place in the sidebar to open the start window. Pick the folder the agent works in, switch on what helps, read the start brief on the right if you like, and press **Start**.
+An empty board shows **Start your agent**; with a session already open, a free place in the sidebar does the same. In the window that opens, pick the folder your agent works in: **Choose a folder…** on an empty board, **Another folder…** once a row exists, both take a path you paste (a relative one reads from the folder shown above the field). Then press **Start** on the agent you want. To read the start brief first, press the agent's row for its setup screen and open **Start brief** there.
+
+Fleet writes its state, `fleet.json` with your token and the session streams, into the folder you cloned it to. A second Fleet on the same machine is a second clone, with its own `FLEET_PORT` and its own `FLEET_SOCK`: the default tmux socket is shared, and two Fleets on it would see each other's sessions.
 
 ## What Fleet does on your machine
 

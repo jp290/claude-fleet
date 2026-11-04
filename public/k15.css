@@ -112,6 +112,16 @@
 .k15 .k15ordnh:disabled { opacity: .35; cursor: default; }
 .k15 .k15ordnh svg { width: 15px; height: 15px; }
 .k15 .k15ordnp { flex: 1; min-width: 0; font: 11.5px/1.3 var(--chat-mono); color: var(--chat-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.k15 .k15ordnp bdi { direction: ltr; unicode-bidi: isolate; }
+.k15 .k15ordnfw { padding: 8px 8px 0; }
+.k15 .k15ordnf { display: flex; gap: 6px; }
+.k15 .k15ordni { flex: 1; min-width: 0; min-height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--chat-edge); background: transparent; color: var(--chat-ink); font: 12.5px/1.3 var(--chat-mono); }
+.k15 .k15ordni::placeholder { color: var(--chat-faint); }
+.k15 .k15ordni:focus-visible { outline: none; border-color: var(--chat-mute); }
+.k15 .k15ordng { flex: none; min-height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--chat-edge); font-size: 12.5px; color: var(--chat-mute); }
+.k15 .k15ordng:hover { color: var(--chat-ink); border-color: var(--chat-mute); }
+.k15 .k15ordnm { margin-top: 6px; font-size: 12px; color: #E5705F; }
+@media (max-width: 760px) { .k15 .k15ordni { font-size: 16px; } }
 .k15 .k15ordnhier { margin: 8px 8px 0; }
 .k15 .k15ordnl { display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; padding: 4px; }
 .k15 .k15ordnz { display: flex; align-items: center; }

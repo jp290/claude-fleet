@@ -14,7 +14,9 @@ import { echt } from "./start-brief";
 
 export type PlanStand = { a: Answer } | { fehler: string } | "laedt";
 export type InfoStand = DirInfoResp | { fehler: string } | "laedt";
-export interface Ordner { pfad: string; liste: { path: string; parent: string | null; dirs: string[]; repos: string[]; git: boolean } | null; fehler: string | null; seq: number }
+export interface Ordner { pfad: string; liste: { path: string; parent: string | null; dirs: string[]; repos: string[]; git: boolean } | null; fehler: string | null; seq: number;
+  // the path field of the picker: what stands in it, the one sentence under it, and whether focus went there once (a desktop only)
+  eingabe?: string; meldung?: string | null; fokus?: boolean }
 
 export interface St {
   shell: Shell;
@@ -24,6 +26,8 @@ export interface St {
   katalog: Katalog | null | undefined;
   // the pinned folders (null = being read), what /api/dirinfo says per repo, the open "New session in" menu and its folder picker
   pins: string[] | null; infos: Map<string, InfoStand>; repoMenu: boolean; ordner: Ordner | null;
+  // a folder was just chosen: the next draw brings its row into view (it goes to the top of a list that stays scrolled where the picker was)
+  wahlZeigen?: boolean;
   // when the window last warned about unsaved text (k15-repo.ts#menueZu); the timer of the toast
   warnAm: number; toastT: number;
   // where the window came from (a free place, the + of a repo, ⎇+ on a session; null = #k15) and the state of the start window
@@ -119,6 +123,7 @@ export async function pinne(s: St, pfad: string, an: boolean, zurueck?: string |
     s.ordner = null;
     s.repoMenu = false;
     s.repo = zurueck === undefined ? pfad : zurueck;
+    s.wahlZeigen = true;
     toast(zurueck === undefined
       ? `New sessions now start in ${baseName(pfad)}. It stays in the list, without a session too and on your other devices.${verdraengt}`
       : `${baseName(pfad)} is back in the list.${verdraengt}`);
@@ -129,17 +134,25 @@ export async function pinne(s: St, pfad: string, an: boolean, zurueck?: string |
   }
   render();
 }
+// what a refused folder reads as: plain words. The system's own message (EACCES …, not a directory: <path>) names a path, and a path names
+// the machine's account; so a refusal is one of two sentences, whatever the server wrote
+export function ordnerSatz(status: number | undefined, fehler: string | undefined): string {
+  if (status === undefined) return "Fleet is not reachable.";
+  return status === 400 && /^not a directory/.test(fehler ?? "") ? "That is not a folder." : "Fleet cannot read that folder.";
+}
 // die Ordnerwahl von „Repo hinzufügen“: eine Ebene je Schritt über /api/dirs; wählbar ist jeder Ordner
+// the count runs on across closings: an answer that comes after the picker was closed and opened again must never match the new picker
+let ordnerFolge = 0;
 export async function oeffneOrdner(s: St, pfad: string): Promise<void> {
-  const seq = (s.ordner?.seq ?? 0) + 1;
-  s.ordner = { pfad, liste: null, fehler: null, seq };
+  const seq = ++ordnerFolge;
+  s.ordner = { pfad, liste: null, fehler: null, seq, ...(s.ordner?.fokus ? { fokus: true } : {}) };
   render();
   const res = await api(`/api/dirs?path=${encodeURIComponent(pfad)}`).catch(() => null);
   const j = (res ? await res.json().catch(() => null) : null) as { path?: string; parent?: string | null; dirs?: string[]; repos?: string[]; git?: boolean; error?: string } | null;
   if (S !== s || s.ordner?.seq !== seq) return;
   s.ordner = res?.ok && j && typeof j.path === "string" && Array.isArray(j.dirs)
     ? { ...s.ordner, pfad: j.path, liste: { path: j.path, parent: j.parent ?? null, dirs: j.dirs, repos: j.repos ?? [], git: j.git === true } }
-    : { ...s.ordner, fehler: j?.error ?? `The server answered ${res?.status ?? "nothing"} for this folder.` };
+    : { ...s.ordner, fehler: ordnerSatz(res?.status, j?.error) };
   render();
 }
 

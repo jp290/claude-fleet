@@ -31,7 +31,7 @@ class K15VerdictIn extends Error {
 export interface K15StartMutant {
   name: string; claim: string;
   file: "src/k15-start.ts" | "src/start-tuer.ts" | "src/k15-zustand.ts" | "src/k15-repo.ts" | "src/client.ts" | "src/board.ts" | "src/k15-entwurf.ts"
-    | "src/start-fenster.ts" | "src/start-wahl.ts" | "src/start-brief.ts" | "src/dom-morph.ts";
+    | "src/start-fenster.ts" | "src/start-wahl.ts" | "src/start-brief.ts" | "src/dom-morph.ts" | "public/sitzung.css";
   needle: string; with: string; width?: 1200 | 390;
 }
 
@@ -62,6 +62,18 @@ export const K15_START_CLAIM = {
   plus: "the + of a repo opens the start window with that repo chosen; its own agent unchanged starts in the checkout with exactly { cwd, fassung } at /api/slots/<first free>/open, and never /api/lanes",
   unreadable: "a plan that cannot be read (500, network, malformed) blocks the start in the start window with a sentence that says so („The preview is not readable: …“), and nothing is sent",
   ordnerOhneGit: "„Another folder…“ takes a folder without git: Add on its row and Add <folder> in it each pin it (POST /api/pins), and the window then lists it as the chosen place with its badge „no git“, its agents beside it",
+  ordnerPfad: "in the folder picker a path typed with ~ and a trailing slash and sent with Enter pins and chooses that folder (POST /api/pins with the folder as the server names it), and the Add beside the field does the same; a path that is no folder says „That is not a folder.“ under the field, pins nothing and leaves the picker open; with a keyboard at hand the cursor is in the field when the picker opens, and a click on a row of the tree does not pull it back",
+  ordnerPfadLesen: "the picker's path line reads from the left: the first character of /fixture/notizen stands left of its last, whole and in order, the picker's own reading as well as the one after a step down the tree",
+  ordnerPfadPhone: "on the phone the picker has the same field: no cursor jumps into it on opening (no keyboard comes up), a path typed and pressed with Add pins and chooses the folder, and nothing is wider than the screen",
+  ordnerCursor: "the cursor stays in the picker's path field: after a refusal (Enter, or the Add beside it), and through a redraw of the window that comes while the person types (an answer of GET /api/dirinfo); what is typed next lands in the field, Enter sends the text that stands there, and Escape, Back and an Add on the tree still do what they did",
+  ordnerCursorPhone: "on the phone the cursor stays in the path field once the person has put it there: through a redraw while they type, and after a refusal from the Add beside it; what they type next lands, and Add sends it",
+  ordnerRelativ: "a relative path typed into the picker's field means the folder the line above the field shows, as the tree below it: a name in the home folder, a name read from a folder stepped into, `.` and `..`, `$HOME/…` and a space written as `\\ ` are pinned as that folder and never read from the folder Fleet itself runs in",
+  ordnerSatz: "a folder Fleet may not read says „Fleet cannot read that folder.“ in plain words, typed or opened in the tree, and neither the system's message (EACCES) nor a path with the machine's account name stands anywhere in the window",
+  ordnerFrueh: "no key is lost around the first listing of the picker: with the listing still being read, the cursor is in the field, what is typed lands there, and Enter pins the folder typed even when the listing arrives before the folder's own answer",
+  ordnerSicht: "the folder picker is never squashed: with 5, 8 and 20 folders in the list, at a window 720 and at one 900 px high, the path field is whole in view the moment the picker opens, the tree below it has its full height, and a refusal typed with Enter stands whole in view under the field",
+  ordnerSpaet: "an answer that comes late cannot reach a picker that was closed and opened again: a path sent, the picker closed with Escape and opened anew, the old folder is not pinned and the new picker keeps what the person types, and an old refusal does not show under it",
+  ordnerGewaehlt: "the folder the person chooses in the picker is in view in the list when the picker closes: with 8 and with 20 folders in the list, at a window 720 and at one 900 px high, a path typed and sent with Enter and the Add of a row in the tree each leave the chosen row whole in view, not above the list's fold",
+  ordnerGewaehltPhone: "on the phone (390 px wide, 600 px high) the folder the person chooses in the picker, typed and sent with Add or by the Add of a row in the tree, with 8 and with 20 folders in the list, stands whole in view when the picker closes",
   leereFlotte: "on a board with no open seat the pane offers „Start your agent“, on top of the terminal where a press reaches it, and a press opens the start window; with a seat open the pane does not",
   zu: "after a successful start from the start window the window closes and the started slot is the one shown",
   bereit: "the Start of a row in the menu starts at once, without opening the agent's page: plain Claude Code with { cwd, fassung } and no label, a saved agent with { cwd, fassung, agent, label: its name }, the Orchestratorin and a copy of her with { cwd, fassung, agent } and no label, as the door that refuses any other label takes them; the window closes and the started slot is the one shown",
@@ -74,7 +86,7 @@ export const K15_START_CLAIM = {
   regelnKachel: "the tile Rule files tells the folder's truth: rule files are counted and listed, none says „None“ with no list and no row in the start brief, and a folder whose only rule file has paths: says „1 file“, „read with a matching file“, with its row under „When it fits“",
 } as const;
 // the claims read on the phone; every other one at 1200
-const PHONE: ReadonlySet<string> = new Set([K15_START_CLAIM.openPhone]);
+const PHONE: ReadonlySet<string> = new Set([K15_START_CLAIM.openPhone, K15_START_CLAIM.ordnerPfadPhone, K15_START_CLAIM.ordnerCursorPhone, K15_START_CLAIM.ordnerGewaehltPhone]);
 
 const C = K15_START_CLAIM;
 export const K15_START_MUTANTS: readonly K15StartMutant[] = [
@@ -170,6 +182,70 @@ export const K15_START_MUTANTS: readonly K15StartMutant[] = [
     needle: "hier.disabled = schon.has(liste.path);", with: "hier.disabled = schon.has(liste.path) || !liste.git;" },
   { name: "a folder without git has no Add on its row", claim: C.ordnerOhneGit, file: "src/k15-repo.ts",
     needle: "    if (!schon.has(pfad)) {", with: "    if (git && !schon.has(pfad)) {" },
+  { name: "a typed path pins nothing", claim: C.ordnerPfad, file: "src/k15-repo.ts",
+    needle: "  await pinne(s, j.path, true);", with: "  return;" },
+  { name: "a path that is no folder is pinned anyway", claim: C.ordnerPfad, file: "src/k15-repo.ts",
+    needle: 'if (!res.ok || typeof j?.path !== "string") return sagt(', with: 'if (res.ok && typeof j?.path !== "string") return sagt(' },
+  { name: "Enter in the path field does nothing", claim: C.ordnerPfad, file: "src/k15-repo.ts",
+    needle: 'void nimmPfad(s, ((e.currentTarget as HTMLFormElement).querySelector(".k15ordni") as HTMLInputElement).value);', with: "" },
+  { name: "the Add beside the path field is dead", claim: C.ordnerPfad, file: "src/k15-repo.ts",
+    needle: 'go.type = "submit";', with: 'go.type = "button";' },
+  { name: "the cursor never goes into the path field", claim: C.ordnerPfad, file: "src/k15-repo.ts",
+    needle: "if (!s.repoMenu || !o || o.fokus) return;", with: "return;" },
+  { name: "a click in the tree pulls the cursor back into the path field", claim: C.ordnerPfad, file: "src/k15-zustand.ts",
+    needle: "seq, ...(s.ordner?.fokus ? { fokus: true } : {}) };", with: "seq };" },
+  { name: "the path line runs right to left", claim: C.ordnerPfadLesen, file: "src/k15-repo.ts",
+    needle: 'pfadTeil.append(el("bdi", "", ', with: 'pfadTeil.append(el("span", "", ' },
+  { name: "a keyboard comes up on the phone", claim: C.ordnerPfadPhone, file: "src/k15-repo.ts", width: 390,
+    needle: 'if (matchMedia("(hover: hover) and (pointer: fine)").matches)', with: "if (true)" },
+  { name: "the phone's path pins nothing", claim: C.ordnerPfadPhone, file: "src/k15-repo.ts", width: 390,
+    needle: "  await pinne(s, j.path, true);", with: "  return;" },
+  { name: "the draw removes the folder menu before it morphs", claim: C.ordnerCursor, file: "src/k15-entwurf.ts",
+    needle: "  // the folder menu is not removed here: it is part of the window's drawing and the morph keeps its path field, with the cursor in it",
+    with: '  s.shell.root.querySelector(".k15repomenu")?.remove();' },
+  { name: "the phone's draw removes the folder menu before it morphs", claim: C.ordnerCursorPhone, file: "src/k15-entwurf.ts", width: 390,
+    needle: "  // the folder menu is not removed here: it is part of the window's drawing and the morph keeps its path field, with the cursor in it",
+    with: '  s.shell.root.querySelector(".k15repomenu")?.remove();' },
+  { name: "a refusal leaves the cursor where the press put it", claim: C.ordnerCursor, file: "src/k15-repo.ts",
+    needle: "if (f && document.activeElement !== f) {", with: "if (false) {" },
+  { name: "a refusal leaves the cursor where the press put it, on the phone", claim: C.ordnerCursorPhone, file: "src/k15-repo.ts", width: 390,
+    needle: "if (f && document.activeElement !== f) {", with: "if (false) {" },
+  { name: "the field's input handler reads the element it was drawn into", claim: C.ordnerCursor, file: "src/k15-repo.ts",
+    needle: "const f = e.currentTarget as HTMLInputElement, a = s.ordner;", with: "const f = inp, a = s.ordner;" },
+  { name: "the form sends the element it was drawn into", claim: C.ordnerCursor, file: "src/k15-repo.ts",
+    needle: 'void nimmPfad(s, ((e.currentTarget as HTMLFormElement).querySelector(".k15ordni") as HTMLInputElement).value);', with: "void nimmPfad(s, inp.value);" },
+  { name: "Back does not close the folder picker", claim: C.ordnerCursor, file: "src/k15-repo.ts",
+    needle: 'zu.onclick = () => { s.ordner = null; render(); };', with: "zu.onclick = () => undefined;" },
+  { name: "a relative path is read from the folder Fleet runs in", claim: C.ordnerRelativ, file: "src/k15-repo.ts",
+    needle: 'return `${von.replace(/\\/+$/, "")}/${p}`;', with: "return p;" },
+  { name: "$HOME is not read as the home", claim: C.ordnerRelativ, file: "src/k15-repo.ts",
+    needle: '.replace(/^\\$\\{?HOME\\}?(?=\\/|$)/, "~")', with: "" },
+  { name: "a backslash before a space stays in the path", claim: C.ordnerRelativ, file: "src/k15-repo.ts",
+    needle: '.replace(/\\\\ /g, " ");', with: ";" },
+  { name: "a typed path is read from the home, not from the folder shown", claim: C.ordnerRelativ, file: "src/k15-repo.ts",
+    needle: "o.liste?.path ?? o.pfad", with: '"~"' },
+  { name: "an unreadable folder typed shows the system's message", claim: C.ordnerSatz, file: "src/k15-repo.ts",
+    needle: "return sagt(ordnerSatz(res.status, j?.error));", with: 'return sagt(j?.error ?? "");' },
+  { name: "an unreadable folder in the tree shows the system's message", claim: C.ordnerSatz, file: "src/k15-zustand.ts",
+    needle: "fehler: ordnerSatz(res?.status, j?.error) };", with: 'fehler: j?.error ?? "" };' },
+  { name: "Enter while the first listing is read is dropped when it arrives", claim: C.ordnerFrueh, file: "src/k15-repo.ts",
+    needle: "(S === s && s.ordner?.seq === seq ? s.ordner : null);", with: "(S === s && s.ordner === o ? s.ordner : null);" },
+  { name: "the cursor waits for the first listing", claim: C.ordnerFrueh, file: "src/k15-repo.ts",
+    needle: "if (!s.repoMenu || !o || o.fokus) return;", with: "if (!s.repoMenu || !o || !o.liste || o.fokus) return;" },
+  { name: "the picker's menu shrinks in the list again", claim: C.ordnerSicht, file: "public/sitzung.css",
+    needle: "box-shadow: none; flex: none; animation: none; }", with: "box-shadow: none; animation: none; }" },
+  { name: "the picker's menu comes in with its entry movement again", claim: C.ordnerSicht, file: "public/sitzung.css",
+    needle: "flex: none; animation: none; }", with: "flex: none; }" },
+  { name: "the field is not brought into view", claim: C.ordnerSicht, file: "src/k15-repo.ts",
+    needle: '.querySelector(".k15ordnfw")?.scrollIntoView({ block: "nearest" });', with: ".querySelector(\".k15ordnfw\");" },
+  { name: "a refusal is not brought into view", claim: C.ordnerSicht, file: "src/k15-repo.ts",
+    needle: "    render();\n    feldZeigen(s);\n", with: "    render();\n" },
+  { name: "a reopened picker counts from the closed one's seq", claim: C.ordnerSpaet, file: "src/k15-zustand.ts",
+    needle: "const seq = ++ordnerFolge;", with: "const seq = (s.ordner?.seq ?? 0) + 1;" },
+  { name: "a chosen folder's row is not brought into view", claim: C.ordnerGewaehlt, file: "src/start-fenster.ts",
+    needle: '.querySelector(".sfrepo.sel")?.scrollIntoView({ block: "nearest" }); }', with: '.querySelector(".sfrepo.sel"); }' },
+  { name: "a chosen folder's row is not brought into view, on the phone", claim: C.ordnerGewaehltPhone, file: "src/start-fenster.ts", width: 390,
+    needle: '.querySelector(".sfrepo.sel")?.scrollIntoView({ block: "nearest" }); }', with: '.querySelector(".sfrepo.sel"); }' },
   { name: "the empty board offers nothing", claim: C.leereFlotte, file: "src/client.ts",
     needle: `document.body.classList.toggle("noseats", fleet.length > 0 && !fleet.some(isActive));`, with: `document.body.classList.toggle("noseats", false);` },
   { name: "the Workplace block offers a branch without git", claim: C.ohneGit, file: "src/start-fenster.ts",
@@ -373,6 +449,8 @@ interface Fx {
   programs: "ok" | "fail"; bootstrap: "ok" | "existing" | "refuse" | "pending"; branchExists: boolean; board: boolean;
   // the answers of /api/dirinfo, or of /api/founding-plan, wait until the case lets them go (`haltend`)
   dirinfoHalt: boolean; planHalt: boolean;
+  // GET /api/dirs waits, for each path named here, until the case lets that path go (`dirsGehalten`); a folder in the home that Fleet may not read
+  dirsHalt: string[]; gesperrt: boolean;
   // the fixture repo is a git checkout; false: a plain folder. branches: the branch doors take it (a workplace repo)
   git: boolean; branches: boolean;
   // no session is open at all (a board fresh from the install); the folders the picker pinned
@@ -388,7 +466,7 @@ interface Fx {
   occupied: Map<number, Record<string, unknown>>;
 }
 const fx0 = (): Fx => ({ head: "fixture-head", plan: "ok", ordnerStartbar: false, orch: false, move: false, programs: "ok", bootstrap: "ok",
-  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, git: true, branches: true, leer: false, pins: [], zweig: "main", modus: null, imBranch: null, regeln: "voll", kopie: false, fremd: false, vonSitz: false, gesichert: false, occupied: new Map() });
+  branchExists: false, board: false, dirinfoHalt: false, planHalt: false, dirsHalt: [], gesperrt: false, git: true, branches: true, leer: false, pins: [], zweig: "main", modus: null, imBranch: null, regeln: "voll", kopie: false, fremd: false, vonSitz: false, gesichert: false, occupied: new Map() });
 
 export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   only: { widths?: readonly number[]; mutate?: K15StartMutant } = {}): Promise<K15StartDomResult[]> {
@@ -413,10 +491,12 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   };
   let appJs: string, k15Js: string;
   try { [appJs, k15Js] = await Promise.all([bundle("src/client.ts"), bundle("src/k15-entwurf.ts")]); } catch (e) { rmSync(scratch, { recursive: true, force: true }); throw e; }
-  if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`k15 start mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
   const indexHtml = readFileSync(resolve(sourceRoot, "public/index.html"), "utf8");
   const k15Css = readFileSync(resolve(sourceRoot, "public/k15.css"), "utf8");
-  const sitzungCss = readFileSync(resolve(sourceRoot, "public/sitzung.css"), "utf8");
+  let sitzungCss = readFileSync(resolve(sourceRoot, "public/sitzung.css"), "utf8");
+  // a mutant of the stylesheet swaps its needle here; the bundles take theirs in the plugin above
+  if (mutant?.file === "public/sitzung.css" && sitzungCss.includes(mutant.needle)) { applied = true; sitzungCss = sitzungCss.replace(mutant.needle, mutant.with); }
+  if (!applied) { rmSync(scratch, { recursive: true, force: true }); throw new Error(`k15 start mutant: needle not in ${mutant?.file}: ${mutant?.needle.slice(0, 80)}`); }
   // the constellation a case drags in: one session „Nur Ordner“ (the only way the window makes one is a drop or an import)
   const ordnerJson = resolve(scratch, "nur-ordner.fleet.json");
   writeFileSync(ordnerJson, JSON.stringify({ format: 1, fleet: "konstellation", name: "Nur Ordner", version: 1, satz: "eine Session ohne Rolle", autor: "Fleet",
@@ -427,6 +507,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
   const planReads: Record<string, string>[] = [];
   const deletes: string[] = [];
   const haltend: (() => void)[] = [];
+  const dirsGehalten: { pfad: string; los: () => void }[] = [];
   let programReads = 0, inflight = 0;
   const now = Date.now();
   const slots = (): Record<string, unknown>[] => Array.from({ length: 16 }, (_, i) => {
@@ -616,9 +697,15 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       if (p === "/api/k15/eigenes") return json(requestId, { eigenes: { fassungen: [], packs: [], profile: [] } });
       if (p === "/api/dirs") {
         // the folder the picker stands in: the home holds one folder, notizen, which has no git; every pinned folder is in the answer
-        const at = u.searchParams.get("path") ?? "~";
-        const home = at === "~" || at === "/fixture";
-        return json(requestId, { path: home ? "/fixture" : at, parent: home ? null : "/fixture", dirs: home ? ["notizen"] : [], repos: [], git: false, pins: fx.pins });
+        // the server's reading of a path (server.ts#listDirs): ~ is the home, a trailing slash does not count, `.` and `..` are resolved, and a path
+        // that is not absolute is read from the folder Fleet itself runs in; what is no folder is refused as listDirs refuses it
+        const roh = u.searchParams.get("path") ?? "~";
+        if (fx.dirsHalt.includes(roh)) return new Promise<void>((ok) => { dirsGehalten.push({ pfad: roh, los: () => { fx.dirsHalt = fx.dirsHalt.filter((x) => x !== roh); void serve(requestId, request).finally(() => ok()); } }); });
+        const at = resolve("/fleet-clone", roh.trim() === "" ? "/fixture" : roh === "~" || roh.startsWith("~/") ? "/fixture" + roh.slice(1) : roh);
+        if (at.includes("datei") || at.includes("nirgends")) return json(requestId, { error: `not a directory: ${at}` }, 400);
+        if (at.endsWith("/gesperrt")) return json(requestId, { error: `EACCES: permission denied, scandir '/Users/fixture-account${at.slice("/fixture".length)}'` }, 400);
+        const home = at === "/fixture";
+        return json(requestId, { path: at, parent: home ? null : resolve(at, ".."), dirs: home ? ["notizen", ...(fx.gesperrt ? ["gesperrt"] : [])] : [], repos: [], git: false, pins: fx.pins });
       }
       // the fixture repo has no ci/merge-check.ts, as none of the owner's own repos (server.ts#hasMergeCheck)
       if (p === "/api/dirinfo" && fx.dirinfoHalt) return new Promise<void>((ok) => { haltend.push(() => { fx.dirinfoHalt = false; void serve(requestId, request).finally(() => ok()); }); });
@@ -746,6 +833,7 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
       const fresh = async (set: Partial<Fx> = {}) => {
         // an answer a case held and never let go is answered now: left open, it would keep every later idle() waiting its full time
         for (const go of haltend.splice(0)) go();
+        for (const g of dirsGehalten.splice(0)) g.los();
         fx = { ...fx0(), ...set };
         posts.length = 0; planReads.length = 0; deletes.length = 0; programReads = 0; started = null;
         if (targetId) { const old = targetId; sessionId = undefined; await send("Target.closeTarget", { targetId: old }).catch(() => undefined); }
@@ -825,6 +913,21 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
         if (only.mutate && assigned.has(only.mutate.claim)) throw new K15VerdictIn([...results, { width, height, claims, facts }]);
       };
 
+      // the picker takes a path (3.11.): typed, with ~ and a trailing slash, Enter or the Add beside the field; a refusal in one sentence under it
+      const FELD = `${WIN}?.querySelector('.k15ordni')`;
+      const oeffne = async () => { await click(`${WIN}?.querySelector('.sfanders')`); await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000); };
+      const enter = async () => {
+        for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+        await settle(150);
+      };
+      const gewaehltIst = (repo: string) => wait(`${WIN}?.querySelector('.sfrepo.sel')?.dataset.repo === '${repo}'`, 5000);
+      // „In view“ is read from the element's own box against the viewport and every ancestor that clips
+      const SICHT = (expr: string) => `(() => { const e = ${expr}; if (!e) return { da: false, ganz: false };
+        const r = e.getBoundingClientRect(); let ganz = r.height > 0 && r.top >= -0.5 && r.bottom <= innerHeight + 0.5;
+        for (let a = e.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+          const o = getComputedStyle(a); if (o.overflowY === 'visible' && o.overflowX === 'visible') continue;
+          const b = a.getBoundingClientRect(); if (r.top < b.top - 0.5 || r.bottom > b.bottom + 0.5) ganz = false; }
+        return { da: true, ganz, oben: Math.round(r.top), unten: Math.round(r.bottom) }; })()`;
       if (phone) {
         // the Sessions sheet's „Neue Session“: the start window, the session of the repo's agent, the start brief below it, a start
         await caseOf("open-phone", async () => {
@@ -855,9 +958,320 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
             && s.length === 1 && /^\/api\/slots\/\d+\/open$/.test(s[0]!.url) && (s[0]!.body as { cwd?: unknown }).cwd === REPO
             && started !== null && !z.open && z.shown === String(started);
         });
+        await caseOf("ordner-pfad-phone", async () => {
+          await fresh({ git: false });
+          await tap("document.querySelector('#mpill')");
+          await tap("document.querySelector('#mslot')");
+          await wait("!!document.querySelector('#msheet .mshnew')", 3000);
+          await settle(250);
+          await tap("document.querySelector('#msheet .mshnew')");
+          await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
+          await idle();
+          await tap(`${WIN}?.querySelector('.sfanders')`);
+          await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000);
+          const fokus = await evaluate<boolean>(`document.activeElement === ${FELD}`);
+          const da = await evaluate<boolean>(`!!${FELD} && ${FELD}.getBoundingClientRect().width > 100`);
+          await tap(FELD);
+          await send("Input.insertText", { text: "~/notizen/" }); await settle(80);
+          await tap(`${WIN}?.querySelector('.k15ordng')`);
+          await gewaehltIst("/fixture/notizen");
+          const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+          const breit = await evaluate<{ breit: number; schirm: number }>(`({ breit: document.documentElement.scrollWidth, schirm: innerWidth })`);
+          facts.ordnerPfadPhone = { fokus, da, pins, ...breit };
+          verdicts[C.ordnerPfadPhone] = !fokus && da && canon(pins) === canon([{ path: "/fixture/notizen", on: true }]) && breit.breit <= breit.schirm;
+        });
+        // the cursor the person put into the field stays there: through a redraw that comes while they type, and after a refusal from Add
+        await caseOf("ordner-cursor-phone", async () => {
+          await fresh({ git: false, dirinfoHalt: true });
+          await tap("document.querySelector('#mpill')");
+          await tap("document.querySelector('#mslot')");
+          await wait("!!document.querySelector('#msheet .mshnew')", 3000);
+          await settle(250);
+          await tap("document.querySelector('#msheet .mshnew')");
+          await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
+          await tap(`${WIN}?.querySelector('.sfanders')`);
+          await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000);
+          const da = () => evaluate<boolean>(`document.activeElement === ${FELD}`);
+          const wert = () => evaluate<string>(`${FELD}?.value ?? ''`);
+          const vorGezeichnet = await evaluate<string>(`${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? ''`);
+          await tap(FELD);
+          await send("Input.insertText", { text: "~/nirg" }); await settle(80);
+          const gehalten = haltend.length;
+          for (const go of haltend.splice(0)) go();
+          await wait(`(${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? '') !== ${JSON.stringify(vorGezeichnet)}`, 4000);
+          const nachRedraw = { fokus: await da(), wert: await wert() };
+          await send("Input.insertText", { text: "ends" }); await settle(80);
+          const getippt = await wert();
+          // a refusal from Add: the cursor is in the field, and the next characters land there
+          await tap(`${WIN}?.querySelector('.k15ordng')`);
+          await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+          const nachAbsage = { fokus: await da(), satz: await evaluate<string>(`${WIN}?.querySelector('.k15ordnm')?.textContent ?? ''`) };
+          await evaluate(`${FELD}.select()`);
+          await send("Input.insertText", { text: "~/notizen/" }); await settle(80);
+          await tap(`${WIN}?.querySelector('.k15ordng')`);
+          await gewaehltIst("/fixture/notizen");
+          const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+          facts.ordnerCursorPhone = { gehalten, vorGezeichnet, nachRedraw, getippt, nachAbsage, pins };
+          verdicts[C.ordnerCursorPhone] = gehalten > 0 && nachRedraw.fokus && nachRedraw.wert === "~/nirg" && getippt === "~/nirgends"
+            && nachAbsage.fokus && nachAbsage.satz === "That is not a folder." && canon(pins) === canon([{ path: "/fixture/notizen", on: true }]);
+        });
+        // THE CHOSEN FOLDER'S ROW IS IN VIEW (check of 3.11.: the row goes to the top of a list that stays scrolled where the picker was)
+        await caseOf("ordner-gewaehlt-phone", async () => {
+          const faelle: Record<string, unknown> = {};
+          let alle = true;
+          for (const n of [8, 20]) for (const weg of ["tippen", "add"] as const) {
+            await fresh({ git: false, pins: Array.from({ length: n }, (_, i) => `/fixture/ordner-${String(i + 1).padStart(2, "0")}`) });
+            await send("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: true });
+            await tap("document.querySelector('#mpill')");
+            await tap("document.querySelector('#mslot')");
+            await wait("!!document.querySelector('#msheet .mshnew')", 3000);
+            await settle(250);
+            await tap("document.querySelector('#msheet .mshnew')");
+            await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
+            await idle();
+            // the folded list says „Change folder…“ first and „Another folder…“ after it
+            if (await evaluate<boolean>(`/^Change/.test(${WIN}?.querySelector('.sfanders')?.textContent ?? '')`)) await tap(`${WIN}?.querySelector('.sfanders')`);
+            await settle(150);
+            await tap(`${WIN}?.querySelector('.sfanders')`);
+            await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000);
+            if (weg === "tippen") { await tap(FELD); await send("Input.insertText", { text: "~/notizen/" }); await settle(80); await tap(`${WIN}?.querySelector('.k15ordng')`); }
+            else await tap(`${WIN}?.querySelector('.k15ordnz .k15ordnadd')`);
+            await gewaehltIst("/fixture/notizen");
+            await settle(250); await idle();
+            const zeile = await evaluate<{ da: boolean; ganz: boolean; oben?: number; unten?: number }>(SICHT(`${WIN}?.querySelector('.sfrepo.sel')`));
+            const gut = zeile.da && zeile.ganz;
+            faelle[`${n}-${weg}`] = { zeile, gut };
+            alle &&= gut;
+            if (artifacts) await shot(`k15-start-${width}-ordner-gewaehlt-${n}-${weg}`).catch(() => undefined);
+          }
+          facts.ordnerGewaehltPhone = faelle;
+          verdicts[C.ordnerGewaehltPhone] = alle;
+        });
         results.push({ width, height, claims, facts });
         continue;
       }
+
+      // THE PATH FIELD HOLDS THE CURSOR (check of 3.11.: after a refusal and after any redraw of the window the keys went nowhere). A late answer of
+      // GET /api/dirinfo is held until the case has typed part of a path, then let go: the redraw happens in every run.
+      const escape = async () => {
+        for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await settle(150);
+      };
+      await caseOf("ordner-cursor", async () => {
+        await fresh({ git: false, dirinfoHalt: true });
+        await click(`document.querySelector('#slots .slot.empty[data-slot="${FREE}"]')`);
+        await wait(`!!${WIN}?.querySelector('.sf .sfag.repoag')`, 10000);
+        await click(`${WIN}?.querySelector('.sfanders')`);
+        await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 5000);
+        const da = () => evaluate<boolean>(`document.activeElement === ${FELD}`);
+        const wert = () => evaluate<string>(`${FELD}?.value ?? ''`);
+        const satz = () => evaluate<string>(`${WIN}?.querySelector('.k15ordnm')?.textContent ?? ''`);
+        const vorGezeichnet = await evaluate<string>(`${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? ''`);
+        await send("Input.insertText", { text: "~/not" }); await settle(80);
+        const gehalten = haltend.length;
+        for (const go of haltend.splice(0)) go();
+        const gezeichnet = await wait(`(${WIN}?.querySelector('.sfrepo.sel')?.textContent ?? '') !== ${JSON.stringify(vorGezeichnet)}`, 4000);
+        const nachRedraw = { fokus: await da(), wert: await wert() };
+        await send("Input.insertText", { text: "izen/x" }); await settle(80);
+        const getippt = await wert();
+        // a path that is no folder: the cursor stays; the next characters land; a second Enter sends what stands there
+        await evaluate(`${FELD}.select()`);
+        await send("Input.insertText", { text: "/fixture/nirgends" }); await settle(80);
+        await enter();
+        await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+        const nachEnter = { fokus: await da(), satz: await satz() };
+        await send("Input.insertText", { text: "X" }); await settle(80);
+        const nachX = { wert: await wert(), satzWeg: (await satz()) === "" };
+        await enter();
+        await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+        const zweiteAbsage = { fokus: await da(), satz: await satz(), wert: await wert() };
+        // …and the same from the Add beside the field
+        await evaluate(`${FELD}.select()`);
+        await send("Input.insertText", { text: "/fixture/datei.txt" }); await settle(80);
+        await click(`${WIN}?.querySelector('.k15ordng')`);
+        await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+        const nachAdd = { fokus: await da(), satz: await satz() };
+        await send("Input.insertText", { text: "!" }); await settle(80);
+        const nachAddGetippt = await wert();
+        // a corrected path goes with Enter
+        await evaluate(`${FELD}.select()`);
+        await send("Input.insertText", { text: "~/notizen/" }); await settle(80);
+        await enter();
+        await gewaehltIst("/fixture/notizen");
+        // Add on the folder being read and Back: the menu is as it was
+        await oeffne();
+        await click(`${WIN}?.querySelector('.k15ordnhier')`);
+        await gewaehltIst("/fixture");
+        await oeffne();
+        await click(`${WIN}?.querySelector('.k15ordner .k15link')`);
+        const zurueck = await wait(`!${WIN}?.querySelector('.k15ordner') && !!${WIN}?.querySelector('.k15repomenu .k15repo')`, 4000);
+        // Escape closes the menu first, then the window
+        await oeffne();
+        await escape();
+        const menueZu = await wait(`!${WIN}?.querySelector('.k15repomenu')`, 3000) && await open();
+        await escape();
+        const fensterZu = await wait(`!${WIN}`, 3000);
+        const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+        facts.ordnerCursor = { gehalten, gezeichnet, vorGezeichnet, nachRedraw, getippt, nachEnter, nachX, zweiteAbsage, nachAdd, nachAddGetippt, zurueck, menueZu, fensterZu, pins };
+        verdicts[C.ordnerCursor] = gehalten > 0 && gezeichnet && nachRedraw.fokus && nachRedraw.wert === "~/not" && getippt === "~/notizen/x"
+          && nachEnter.fokus && nachEnter.satz === "That is not a folder." && nachX.wert === "/fixture/nirgendsX" && nachX.satzWeg
+          && zweiteAbsage.fokus && zweiteAbsage.satz === "That is not a folder." && zweiteAbsage.wert === "/fixture/nirgendsX"
+          && nachAdd.fokus && nachAdd.satz === "That is not a folder." && nachAddGetippt === "/fixture/datei.txt!"
+          && zurueck && menueZu && fensterZu
+          && canon(pins) === canon([{ path: "/fixture/notizen", on: true }, { path: "/fixture", on: true }]);
+      });
+
+      // A RELATIVE PATH means the folder the line above the field shows (check of 3.11.: it was read from the folder Fleet runs in)
+      await caseOf("ordner-relativ", async () => {
+        await fresh({ git: false });
+        await fenster();
+        const gesetzt = async (text: string, wohin: string) => {
+          await oeffne();
+          if (wohin === "unten") { await click(`${WIN}?.querySelector('.k15ordnb')`); await wait(`${WIN}?.querySelector('.k15ordnp')?.textContent === '/fixture/notizen'`, 5000); }
+          await type(FELD, text);
+          await enter();
+          await wait(`!${WIN}?.querySelector('.k15ordner')`, 4000);
+        };
+        await gesetzt("notizen", "home");           // a name in the folder shown
+        await gesetzt("..", "unten");               // one up from the folder stepped into
+        await gesetzt(".", "unten");                // the folder shown itself
+        await gesetzt("$HOME/notizen/", "home");    // as a terminal writes it
+        await gesetzt("~/mein\\ agent", "home");    // a space written for a shell
+        const pins = posts.filter((x) => x.url === "/api/pins").map((x) => (x.body as { path: string }).path);
+        facts.ordnerRelativ = { pins };
+        verdicts[C.ordnerRelativ] = canon(pins) === canon(["/fixture/notizen", "/fixture", "/fixture/notizen", "/fixture/notizen", "/fixture/mein agent"]);
+      });
+
+      // A FOLDER FLEET MAY NOT READ says so in plain words (check of 3.11.: the system message with a path that names the machine's account)
+      await caseOf("ordner-satz", async () => {
+        await fresh({ git: false, gesperrt: true });
+        await fenster();
+        await oeffne();
+        await type(FELD, "~/gesperrt");
+        await enter();
+        await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+        const getippt = await evaluate<string>(`${WIN}?.querySelector('.k15ordnm')?.textContent ?? ''`);
+        // …and the same folder opened in the tree
+        await click(`${WIN}?.querySelector('.k15ordnz:last-child .k15ordnb')`);
+        await wait(`!!${WIN}?.querySelector('.k15ordner > .k15leer')`, 4000);
+        const baum = await evaluate<string>(`${WIN}?.querySelector('.k15ordner > .k15leer')?.textContent ?? ''`);
+        const fenstertext = await evaluate<string>(`${WIN}?.innerText ?? ''`);
+        const pins = posts.filter((x) => x.url === "/api/pins").length;
+        facts.ordnerSatz = { getippt, baum, pins };
+        verdicts[C.ordnerSatz] = getippt === "Fleet cannot read that folder." && baum === getippt && pins === 0 && !/EACCES|permission|fixture-account|\/Users\//i.test(fenstertext);
+      });
+
+      // NO KEY IS LOST AROUND THE FIRST LISTING (check of 3.11.): the listing of ~ and the typed folder's own answer are both held; the cursor is
+      // in the field, the text lands, Enter is pressed, then the listing arrives first and the folder's answer after it
+      await caseOf("ordner-frueh", async () => {
+        await fresh({ git: false });
+        await fenster();
+        fx.dirsHalt = ["~", "~/notizen/"];   // after the window's own read of the pinned folders
+        await click(`${WIN}?.querySelector('.sfanders')`);
+        await wait(`!!${FELD}`, 3000);
+        const fokus = await evaluate<boolean>(`document.activeElement === ${FELD}`);
+        const ohneListe = await evaluate<boolean>(`!${WIN}?.querySelector('.k15ordnz')`);
+        await send("Input.insertText", { text: "~/notizen/" }); await settle(80);
+        const wert = await evaluate<string>(`${FELD}?.value ?? ''`);
+        await enter();
+        for (const bis = Date.now() + 3000; dirsGehalten.length < 2 && Date.now() < bis;) await Bun.sleep(20);
+        const gehalten = dirsGehalten.map((g) => g.pfad);
+        const los = (pfad: string) => dirsGehalten.find((g) => g.pfad === pfad)?.los();
+        los("~");
+        const listeDa = await wait(`!!${WIN}?.querySelector('.k15ordnz')`, 4000);
+        const nachListe = { fokus: await evaluate<boolean>(`document.activeElement === ${FELD}`), wert: await evaluate<string>(`${FELD}?.value ?? ''`) };
+        los("~/notizen/");
+        await gewaehltIst("/fixture/notizen");
+        const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+        facts.ordnerFrueh = { fokus, ohneListe, wert, gehalten, listeDa, nachListe, pins };
+        verdicts[C.ordnerFrueh] = fokus && ohneListe && wert === "~/notizen/" && canon(gehalten) === canon(["~", "~/notizen/"]) && listeDa
+          && nachListe.fokus && nachListe.wert === "~/notizen/" && canon(pins) === canon([{ path: "/fixture/notizen", on: true }]);
+      });
+
+      // THE PICKER IS NEVER SQUASHED (check of 3.11.: with five folders in the list at a laptop-height window the field was cut off and a refusal stood
+      // outside the visible list). Nothing here presses the field or the sentence: a press scrolls its target into view and would hide the fault.
+      // „In view“ is read from the element's own box against the viewport and every ancestor that clips.
+      await caseOf("ordner-sicht", async () => {
+        const faelle: Record<string, unknown> = {};
+        let alle = true;
+        for (const hoehe of [720, 900]) for (const n of [5, 8, 20]) {
+          const name = `${hoehe}-${n}`;
+          await fresh({ git: false, pins: Array.from({ length: n }, (_, i) => `/fixture/ordner-${String(i + 1).padStart(2, "0")}`) });
+          await send("Emulation.setDeviceMetricsOverride", { width, height: hoehe, deviceScaleFactor: 1, mobile: false });
+          await fenster();
+          await oeffne();
+          await settle(150);
+          const feld = await evaluate<{ da: boolean; ganz: boolean; oben?: number; unten?: number }>(SICHT(`${WIN}?.querySelector('.k15ordnfw')`));
+          const baum = await evaluate<{ hoch: number; inhalt: number }>(`(() => { const b = ${WIN}?.querySelector('.k15ordner'); return b ? { hoch: b.clientHeight, inhalt: b.scrollHeight } : { hoch: 0, inhalt: 1 }; })()`);
+          await send("Input.insertText", { text: "~/nirgends" }); await settle(80);
+          await enter();
+          await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 4000);
+          await settle(150);
+          const satz = await evaluate<{ da: boolean; ganz: boolean; oben?: number; unten?: number }>(SICHT(`${WIN}?.querySelector('.k15ordnm')`));
+          const feldNach = await evaluate<{ da: boolean; ganz: boolean }>(SICHT(`${WIN}?.querySelector('.k15ordni')`));
+          const gut = feld.da && feld.ganz && baum.hoch >= baum.inhalt - 1 && satz.da && satz.ganz && feldNach.ganz;
+          faelle[name] = { feld, baum, satz, feldNach, gut };
+          alle &&= gut;
+          if (artifacts) await shot(`k15-start-${width}-ordner-sicht-${name}`).catch(() => undefined);
+        }
+        facts.ordnerSicht = faelle;
+        verdicts[C.ordnerSicht] = alle;
+      });
+
+      // THE CHOSEN FOLDER'S ROW IS IN VIEW (check of 3.11.: the row goes to the top of a list that stays scrolled where the picker was, and only the
+      // toast names the folder). Typed with Enter, and by the Add of a row in the tree, which the press scrolls into the middle of the list first.
+      await caseOf("ordner-gewaehlt", async () => {
+        const faelle: Record<string, unknown> = {};
+        let alle = true;
+        for (const hoehe of [720, 900]) for (const n of [8, 20]) for (const weg of ["tippen", "add"] as const) {
+          await fresh({ git: false, pins: Array.from({ length: n }, (_, i) => `/fixture/ordner-${String(i + 1).padStart(2, "0")}`) });
+          await send("Emulation.setDeviceMetricsOverride", { width, height: hoehe, deviceScaleFactor: 1, mobile: false });
+          await fenster();
+          await oeffne();
+          await settle(150);
+          if (weg === "tippen") { await send("Input.insertText", { text: "~/notizen/" }); await settle(80); await enter(); }
+          else await click(`${WIN}?.querySelector('.k15ordnz .k15ordnadd')`);
+          await gewaehltIst("/fixture/notizen");
+          await settle(250); await idle();
+          const zeile = await evaluate<{ da: boolean; ganz: boolean; oben?: number; unten?: number }>(SICHT(`${WIN}?.querySelector('.sfrepo.sel')`));
+          const gut = zeile.da && zeile.ganz;
+          faelle[`${hoehe}-${n}-${weg}`] = { zeile, gut };
+          alle &&= gut;
+          if (artifacts) await shot(`k15-start-${width}-ordner-gewaehlt-${hoehe}-${n}-${weg}`).catch(() => undefined);
+        }
+        facts.ordnerGewaehlt = faelle;
+        verdicts[C.ordnerGewaehlt] = alle;
+      });
+
+      // A LATE ANSWER CANNOT REACH A REOPENED PICKER (check of 3.11.): the answer for the typed path is held, the picker closed with Escape and
+      // opened again; only then the answer is let go. Both runs of the held answer happen in every run.
+      await caseOf("ordner-spaet", async () => {
+        const lauf = async (alt: string, neu: string) => {
+          await fresh({ git: false });
+          await fenster();
+          fx.dirsHalt = [alt];
+          await oeffne();
+          await type(FELD, alt);
+          await enter();
+          for (const bis = Date.now() + 3000; !dirsGehalten.some((g) => g.pfad === alt) && Date.now() < bis;) await Bun.sleep(20);
+          const gehalten = dirsGehalten.some((g) => g.pfad === alt);
+          await escape();   // the menu first: the picker is gone, the window stays
+          const zu = await wait(`!${WIN}?.querySelector('.k15ordner')`, 3000);
+          await oeffne();
+          await type(FELD, neu);
+          dirsGehalten.find((g) => g.pfad === alt)?.los();
+          await settle(300); await idle(); await settle(100);
+          return { gehalten, zu,
+            pins: posts.filter((x) => x.url === "/api/pins").length,
+            offen: await evaluate<boolean>(`!!${WIN}?.querySelector('.k15ordner')`),
+            wert: await evaluate<string>(`${FELD}?.value ?? ''`),
+            satz: await evaluate<string>(`${WIN}?.querySelector('.k15ordnm')?.textContent ?? ''`) };
+        };
+        const gut = await lauf("~/notizen/", "~/anderes");     // the old path is a folder: it must not be pinned
+        const abgesagt = await lauf("~/nirgends", "~/anderes");   // the old path is no folder: its refusal must not show
+        facts.ordnerSpaet = { gut, abgesagt };
+        verdicts[C.ordnerSpaet] = [gut, abgesagt].every((l) => l.gehalten && l.zu && l.pins === 0 && l.offen && l.wert === "~/anderes" && l.satz === "");
+      });
 
       // THE START WINDOW (owner 24.10.): it opens from the free place; the repo's agent as it is, Rules „[Zitat entfernt]“ with the start
       // brief, back to normal, Rules only again, Start
@@ -1331,6 +1745,46 @@ export async function runK15StartDom(sourceRoot: string, artifacts?: string,
           && canon(pins) === canon([{ path: "/fixture/notizen", on: true }, { path: "/fixture", on: true }]);
       });
 
+      await caseOf("ordner-pfad", async () => {
+        await fresh({ git: false });
+        await fenster();
+        await oeffne();
+        await idle();
+        const fokusOffen = await evaluate<boolean>(`document.activeElement === ${FELD}`);
+        facts.ordnerPfadMedium = await evaluate<string>(`matchMedia('(hover: hover) and (pointer: fine)').matches + ' ' + (document.activeElement?.className ?? '') + ' ' + document.hasFocus()`);
+        // a step down the tree keeps the cursor where the person put it
+        await evaluate(`${FELD}.blur()`);
+        await click(`${WIN}?.querySelector('.k15ordnb')`);
+        await wait(`${WIN}?.querySelector('.k15ordnp')?.textContent === '/fixture/notizen'`, 5000);
+        const fokusNachBaum = await evaluate<boolean>(`document.activeElement === ${FELD}`);
+        // …and the path line is read in its order
+        const zeile = await evaluate<{ text: string; links: boolean }>(`(() => { const t = ${WIN}.querySelector('.k15ordnp bdi') ?? ${WIN}.querySelector('.k15ordnp'); const n = t.firstChild; const r = document.createRange();
+          r.setStart(n, 0); r.setEnd(n, 1); const a = r.getBoundingClientRect(); r.setStart(n, n.length - 1); r.setEnd(n, n.length); const b = r.getBoundingClientRect();
+          return { text: t.textContent, links: a.left < b.left }; })()`);
+        facts.ordnerPfadLesen = zeile;
+        verdicts[C.ordnerPfadLesen] = zeile.text === "/fixture/notizen" && zeile.links;
+        // a path that is no folder: one sentence, nothing pinned, the picker stays
+        await type(FELD, "/fixture/datei.txt");
+        await enter();
+        await wait(`!!${WIN}?.querySelector('.k15ordnm')`, 5000);
+        const nein = await evaluate<{ satz: string | null; offen: boolean; wert: string }>(`({ satz: ${WIN}?.querySelector('.k15ordnm')?.textContent ?? null, offen: !!${WIN}?.querySelector('.k15ordner'), wert: ${FELD}?.value ?? '' })`);
+        const pinsNein = posts.filter((x) => x.url === "/api/pins").length;
+        // typed with ~ and a trailing slash, sent with Enter
+        await evaluate(`(() => { const f = ${FELD}; f.focus(); f.select(); })()`);
+        await send("Input.insertText", { text: "~/notizen/" }); await settle(80);
+        const satzWeg = await evaluate<boolean>(`!${WIN}?.querySelector('.k15ordnm')`);
+        await enter();
+        await gewaehltIst("/fixture/notizen");
+        // and the Add beside the field does the same
+        await oeffne();
+        await type(FELD, "/fixture");
+        await click(`${WIN}?.querySelector('.k15ordng')`);
+        await gewaehltIst("/fixture");
+        const pins = posts.filter((x) => x.url === "/api/pins").map((x) => x.body);
+        facts.ordnerPfad = { fokusOffen, fokusNachBaum, nein, pinsNein, satzWeg, pins };
+        verdicts[C.ordnerPfad] = fokusOffen && !fokusNachBaum && nein.satz === "That is not a folder." && nein.offen && nein.wert === "/fixture/datei.txt" && pinsNein === 0 && satzWeg
+          && canon(pins) === canon([{ path: "/fixture/notizen", on: true }, { path: "/fixture", on: true }]);
+      });
       // a board fresh from the install: the pane offers one thing, on top of the terminal; with a seat open it does not
       await caseOf("leere-flotte", async () => {
         const knopf = `(() => { const b = document.querySelector('.panehint .hintgo'); if (!b) return { da: false, oben: false };

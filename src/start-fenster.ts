@@ -8,7 +8,7 @@ import { el, api, baseName, flotte, starte, zeigeSlot, meldung } from "./k15-hau
 import { icon, type IconName } from "./icons";
 import { S, antwort, hole, info, lies, oeffneOrdner, planUrl, render, repoZeilen, tilde, type St } from "./k15-zustand";
 import type { PlanRolle } from "./k15-entwurf-modell";
-import { repoMenue } from "./k15-repo";
+import { ordnerFokus, repoMenue } from "./k15-repo";
 import { agentVon, agentWort, effortVon, harnessOptionen, modelleVon, standardAgent } from "./k15-agent";
 import { modelLabel, modelName } from "./modelname";
 import type { Answer } from "./founding";
@@ -315,6 +315,9 @@ export function zeichneStart(s: St): void {
     wieder.focus({ preventScroll: true });
     if (fokus.von !== null && fokus.bis !== null) wieder.setSelectionRange(fokus.von, fokus.bis);
   }
+  ordnerFokus(s);
+  // a folder was just chosen in the picker: its row may stand above the list's view, only the toast would name it
+  if (s.wahlZeigen) { s.wahlZeigen = false; stage.querySelector(".sfrepo.sel")?.scrollIntoView({ block: "nearest" }); }
   // picking an agent: the repos shrink to a sliver and the session takes their place (and back)
   if (z.wechsel) {
     z.wechsel = false;

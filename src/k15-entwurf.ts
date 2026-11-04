@@ -79,6 +79,6 @@ function render(): void {
   // owner's „[Zitat entfernt]“ claim, e2e/k15-start-dom.ts#ruhig, saw it as a change beside the ones the click caused)
   if (!s.shell.root.classList.contains("k15sitz")) s.shell.root.classList.add("k15sitz");
   s.shell.root.querySelector(".k15menu")?.remove();
-  s.shell.root.querySelector(".k15repomenu")?.remove();
+  // the folder menu is not removed here: it is part of the window's drawing and the morph keeps its path field, with the cursor in it
   zeichneStart(s);
 }

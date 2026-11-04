@@ -57,6 +57,8 @@ export interface Agent {
   readonly derivedFromLine?: readonly string[];
   /** aus einer Datei gekommen und seither nicht vom Owner geändert: startet nie in bypass */
   readonly importiert?: true;
+  /** die Vorlage von Fleet, aus der dieser Server ihn an der Tür des Owners gebaut hat; setzt nie eine Datei oder ein Körper (SUPER_FLEETBOT unten) */
+  readonly vorlage?: string;
   /** DIE PACKS, DIE DIE DATEI NANNTE, MIT IHREM HASH ({ Kennung: sha256 des Textes }, nur die der Liste `wahlen.bibliothek`): ein Sitz aus diesem Agenten
    *  liest je Pack den Text mit diesem Hash — den des Registers, wenn er passt, sonst den vom Regal —, nicht den, den die Kennung im Ordner gerade
    *  hat (server.ts#packsNachHash). Ohne Eintrag gilt die Kennung allein. */
@@ -156,6 +158,9 @@ export type WahlenPruefung = (w: Wahlen) => string | null;
  *  Hand einer Session (`vonSitz`) ist kein Setup des Owners. An jeder Tür, die einen Agenten öffnet, gilt für beide Marken
  *  dasselbe: nie bypass, nie eine Rolle — und die Rechte liegen gedeckelt im Speicher, wie bei einem Import
  *  (src/sitz.ts#rechteGedeckelt). Die Marke geht erst weg, wenn der Owner den Agenten ändert. */
+/** WOHER DER EIGENE BOT KOMMT: Fleets eigene Vorlage, vom Server gebaut und an der Tür des Owners importiert (server/setup-datei.ts#setupRoute). Nur dieser Weg
+ *  schreibt `vorlage`; eine Datei, ein Körper und die Self-Tür können sie nicht setzen, und eine Kopie erbt sie nicht. Der Name zählt nie, den ändert der Owner. */
+export const SUPER_FLEETBOT = "super-fleetbot";
 export const nichtVomOwner = (a: { readonly importiert?: true; readonly vonSitz?: number }): boolean =>
   a.importiert === true || typeof a.vonSitz === "number";
 /** Der Satz, der die Marke an der Tür nennt: woher der Agent kam, als Fremdes in der Hand des Owners. */
@@ -190,7 +195,7 @@ function wahlenAus(v: unknown): Wahlen | string {
 
 /** Ein eigener Agent aus einem Eingang { id?, name, wahlen, agentMd? } — die Tür prüft die Wahlen, bevor er gespeichert wird. */
 export function eigenerAgent(eingang: unknown, pruefe: WahlenPruefung, vergeben: readonly string[], am = Date.now(),
-  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true; vonSitz?: number; sitzRechte?: ReadonlySet<RechtId>;
+  herkunft: { kopieVon?: KopieVon; abgeleitetVon?: string; setupHash?: string; derivedFromLine?: readonly string[]; importiert?: true; vonSitz?: number; vorlage?: string; sitzRechte?: ReadonlySet<RechtId>;
     packHashes?: Readonly<Record<string, string>> } = {}): Agent | string {
   const r = rec(eingang);
   if (!r) return "expected { name, wahlen, agentMd? }";
@@ -274,6 +279,7 @@ export function liesAgenten(dir: string): Agent[] {
       ...(Array.isArray(a.derivedFromLine) && a.derivedFromLine.every((x) => typeof x === "string" && /^[0-9a-f]{64}$/.test(x))
         ? { derivedFromLine: a.derivedFromLine as string[] } : {}),
       ...(a.importiert === true ? { importiert: true as const } : {}),
+      ...(typeof a.vorlage === "string" && ID_RE.test(a.vorlage) ? { vorlage: a.vorlage } : {}),
       ...(packHashesAus(a.packHashes) ? { packHashes: packHashesAus(a.packHashes)! } : {}),
       ...(typeof a.vonSitz === "number" && Number.isInteger(a.vonSitz) && a.vonSitz > 0 ? { vonSitz: a.vonSitz } : {}),
       am: a.am, hash: agentHash(wahlen, md) }];
@@ -349,7 +355,9 @@ export function katalog(dir: string, k15: unknown): AgentAnsicht[] {
 // selbst eine Wahl setzt, wird abgelehnt — sonst startete etwas anderes, als die Fassung des Agenten zeigt. Was die Tür nicht liest, auch.
 export interface AgentAnDerTuer { body: Record<string, unknown>; agent: AgentBezug | null; agentMd: AgentMd | null;
   /** nichtVomOwner: er erbt kein bypass aus den Einstellungen des Nutzers (server.ts#modusDerOeffnung) */
-  fremd?: true }
+  fremd?: true;
+  /** aus Fleets Vorlage des eigenen Bots: die Tür des Owners gibt dem Sitz nach dem Start die Marke (server.ts#eigenerBotNachStart) */
+  eigenerBot?: true }
 export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly AgentAnsicht[], tuerLiest: readonly WahlFeld[]):
   { ok: true; tuer: AgentAnDerTuer } | { ok: false; error: string } {
   const v = body.agent;
@@ -373,7 +381,7 @@ export function agentAnDerTuer(body: Record<string, unknown>, liste: readonly Ag
   const agentMd: AgentMd | null = a.agentMd && wahlen.profil === undefined
     ? { profil: a.agentMd.profil, titel: a.agentMd.titel, text: a.agentMd.text, sha256: sha(a.agentMd.text), name: a.name } : null;
   const { agent: _a, ...rest } = body;
-  return { ok: true, tuer: { body: { ...rest, ...wahlen, ...(rolleLabel ? { label: rolleLabel } : {}) }, agent: bezugVon(a), agentMd, ...(nichtVomOwner(a) ? { fremd: true as const } : {}) } };
+  return { ok: true, tuer: { body: { ...rest, ...wahlen, ...(rolleLabel ? { label: rolleLabel } : {}) }, agent: bezugVon(a), agentMd, ...(nichtVomOwner(a) ? { fremd: true as const } : {}), ...(a.vorlage === SUPER_FLEETBOT ? { eigenerBot: true as const } : {}) } };
 }
 
 // EINEN LAUFENDEN SITZ SPEICHERN: die Wahlen, mit denen sein Slot gestartet ist, unter den Türnamen; `nichtGetragen` nennt, was der Slot trägt
@@ -388,7 +396,7 @@ export interface SlotWahlen {
   readonly gebildeteRolle?: string | null;
 }
 export function wahlenAusSlot(s: SlotWahlen): { wahlen: Wahlen; agentMd: { titel: string; text: string; profil: string } | null; nichtGetragen: string[] } {
-  const wahlen = wahlenSauber({ harness: s.harness, model: s.model, effort: s.effort, permissionMode: s.permissionMode, rechte: s.rechte,
+  const wahlen = wahlenSauber({ harness: s.harness, model: s.model, effort: s.effort, permissionMode: s.permissionMode, rechte: (s.rechte as { nurMarke?: true } | null)?.nurMarke ? null : s.rechte,
     tools: s.tools, weglassen: s.weglassen, bibliothek: s.bibliothek, notizbuch: s.notizbuchWahl, remote: s.remote || null,
     autoModeEnvironment: s.autoModeEnvironment, schwelle: s.schwelle, sitz: s.sitz ? `${s.sitz.konst}/${s.sitz.pos}` : null, rolle: s.rolle });
   const agentMd = s.agentMd && !s.sitz ? { titel: s.agentMd.titel, text: s.agentMd.text, profil: s.agentMd.profil } : null;
@@ -568,7 +576,9 @@ export async function agentenRoute(req: Request, url: URL, q: AgentenServer, jet
     const neu = eigenerAgent({ name: body?.name ?? a.name, wahlen: body?.wahlen ?? a.wahlen, agentMd: body?.agentMd === undefined ? a.agentMd : body.agentMd, id: a.id },
       q.pruefe, vergeben.filter((x) => x !== a.id), a.am, { ...(a.kopieVon ? { kopieVon: a.kopieVon } : {}),
         ...(a.setupHash ? { setupHash: a.setupHash } : {}), ...(a.abgeleitetVon ? { abgeleitetVon: a.abgeleitetVon } : {}),
-        ...(a.derivedFromLine?.length ? { derivedFromLine: a.derivedFromLine } : {}), ...(a.packHashes ? { packHashes: a.packHashes } : {}) });
+        ...(a.derivedFromLine?.length ? { derivedFromLine: a.derivedFromLine } : {}), ...(a.packHashes ? { packHashes: a.packHashes } : {}),
+        // woher er kam, bleibt durch die Änderung des Owners; eine Session, die ihn ändert, nimmt es
+        ...(a.vorlage && q.vonSitz === undefined ? { vorlage: a.vorlage } : {}) });
     if (typeof neu === "string") return antwort({ error: neu }, 400);
     // ein Speichern ändert nur den Körper; die abgelegte Herkunft bleibt, bis ein Import oder eine Kopie sie ersetzt
     schreibAgenten(q.dir, eigene.map((x) => x.id === a.id ? neu : x));

@@ -29,14 +29,19 @@ export function rechteDerTuer(body: Record<string, unknown> | null, harness: str
 
 // was fleet.json für einen Slot hält: lesbare Rechte auf jedem Harness; die Schalter eines fremden Harness
 // bleiben gespeichert, aber neutralisiert, damit ein Harnesswechsel kein Recht verliert.
-export const rechteGeladen = (raw: unknown, harness: string): Rechte | null => rechteFuerHarness(rechteAus(raw), harness);
+// `nurMarke` liest nur dieser Weg, aus Fleets eigenem Zustand: rechteAus liest auch Körper und Dateien, und die dürften sich damit Regeln erlassen
+export const rechteGeladen = (raw: unknown, harness: string): Rechte | null => {
+  const r = rechteFuerHarness(rechteAus(raw), harness);
+  return r && (raw as { nurMarke?: unknown }).nurMarke === true && r.recht?.length === 1 && r.recht[0] === "owner.bot" ? { ...r, nurMarke: true } : r;
+};
 
 // der Teil des `--settings` der Startzeile; ohne Rechte nichts, damit eine Zeile ohne sie Byte für Byte bleibt
 export const rechteSettings = (r: Rechte | null): { permissions?: { allow: string[]; deny: string[] } } =>
-  r ? { permissions: rechteRegeln(r) } : {};
+  r && !r.nurMarke ? { permissions: rechteRegeln(r) } : {};
 
 // der Satz, den die Session im Systemprompt liest, damit sie weiß, was sie selbst erledigen darf
 export function rechteSatz(r: Rechte): string {
+  if (r.nurMarke) return ""; // die Marke „mein Bot“ ist keine Stufe: eine Zeile ohne sie bleibt Byte für Byte
   const stufe = STUFE_IM_SATZ[r.stufe] ?? r.stufe;
   const erlaubt = RECHTE_BEFEHLE.filter((b) => befehlAn(r, b.id)).map((b) => b.befehl);
   const gesperrt = RECHTE_BEFEHLE.filter((b) => !befehlAn(r, b.id)).map((b) => b.befehl);

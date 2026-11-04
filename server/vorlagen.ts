@@ -15,12 +15,13 @@
 import { RECHTE_STANDARD, type RechtId } from "../session-rechte";
 import { SETUP_FORMAT, mitSetupHash, packAusBibliothek, roleHash, type SetupDatei, type SetupPack, type SetupRole, type SetupSeat } from "./setup-datei";
 import type { SeatKnowledge } from "./sitz-wissen";
+import { SUPER_FLEETBOT } from "./agenten";
 
 /** `spitze`: der Sitz, den der Start öffnet (die Leitung; bei einem einzelnen Agenten er selbst). `sitze`: wie viele Sitze die Vorlage trägt. */
 export interface Vorlage { id: string; name: string; satz: string; spitze: string; sitze: number }
 
 export const LEAD_WITH_BUILDERS = "lead-with-builders";
-export const SUPER_FLEETBOT = "super-fleetbot";
+export { SUPER_FLEETBOT };
 export const VORLAGEN: readonly Vorlage[] = [
   { id: SUPER_FLEETBOT, name: "Super FleetBot", spitze: "fleetbot", sitze: 1,
     satz: "Keeps the overview, sends work on" },

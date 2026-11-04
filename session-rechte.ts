@@ -64,6 +64,8 @@ export interface Rechte {
   readonly aus: readonly string[];
   // Zusagen des Owners an genau diesen Sitz, additiv zu seinem Rollenbundel (server/tuer-rechte.ts)
   readonly recht?: readonly RechtId[];
+  // nur die Marke „mein Bot“ auf einem Sitz, der sonst keine Rechte hat (server/tuer-rechte.ts#mitZusage): keine Stufe, keine Regel, keine Zeile. Nur Fleet setzt das, rechteAus liest es nie
+  readonly nurMarke?: true;
   // beim Öffnen gewählt; ersetzt die Rollenbundel, Zusagen kommen weiter dazu
   readonly buendel?: RechteBuendel;
 }
@@ -124,5 +126,5 @@ export function rechteAus(v: unknown): Rechte | null {
 export function rechteFuerHarness(r: Rechte | null, harness: string): Rechte | null {
   if (!r || harness === "claude") return r;
   return { stufe: RECHTE_STANDARD, an: [], aus: [],
-    ...(r.recht?.length ? { recht: r.recht } : {}), ...(r.buendel ? { buendel: r.buendel } : {}) };
+    ...(r.recht?.length ? { recht: r.recht } : {}), ...(r.buendel ? { buendel: r.buendel } : {}), ...(r.nurMarke ? { nurMarke: true as const } : {}) };
 }

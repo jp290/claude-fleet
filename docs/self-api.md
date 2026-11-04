@@ -1163,7 +1163,8 @@ Was eine Session speichert, ist nicht die Hand des Owners: jeder Agent, den dies
 speicherte). Die Marke wirkt an jeder Öffnen-Tür, der des Owners eingeschlossen: ein so gespeicherter Agent startet nie in
 bypass und nie in einer Rolle, und seine Rechte liegen gedeckelt im Speicher wie die eines Imports
 (`src/sitz.ts#rechteGedeckelt`; `gedeckelt` in der Antwort nennt, was der Deckel zurückhielt). Der Deckel behält die Zusagen
-(`recht`), die die speichernde Session selbst wirksam hat — sie gibt weiter, was sie darf, nicht mehr —, und nennt die übrigen mit
+(`recht`), die die speichernde Session selbst wirksam hat — sie gibt weiter, was sie darf, nicht mehr —, außer denen, die nur der
+Owner gibt (`RECHTE_NUR_DURCH_OWNER`: `overview.fleet`, `owner.bot`), und nennt die übrigen mit
 ihrer Kennung in `gedeckelt`; die Stufe über „bauen“ und die Befehle darüber fallen wie bei einem Import. Erst die Änderung durch den
 Owner (`PUT /api/agenten/<id>` hinter seinem Tor) nimmt die Marke — dann öffnet seine Hand, was die der Session nicht gab.
 

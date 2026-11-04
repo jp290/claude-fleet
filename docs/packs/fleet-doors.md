@@ -46,7 +46,8 @@ What your seat saves is not the owner's hand. Every agent this door writes carri
 (`vonSitz` in the answer; the owner's list `GET /api/agenten` says who saved it), and that mark works at every open door,
 the owner's included: such an agent never starts in bypass or in a role, and its rights are stored capped like an
 import's (`src/sitz.ts#rechteGedeckelt` — `gedeckelt` in the answer names what the cap held back; the cap keeps the server
-rights your seat itself holds and drops the rest, each named by its id). Only the owner's own
+rights your seat itself holds, except those only the owner gives (`RECHTE_NUR_DURCH_OWNER`), and
+drops the rest, each named by its id in `gedeckelt`). Only the owner's own
 change of the agent (`PUT /api/agenten/<id>`, his door) takes the mark away.
 
 Opening a seat in any folder (`POST /api/self/seats/open`) and forming a role of your own (`POST /api/self/roles`) are the

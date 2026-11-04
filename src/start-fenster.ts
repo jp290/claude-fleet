@@ -24,7 +24,7 @@ import { anatomieVon } from "./k15-anatomie";
 export interface AgentZeile {
   id: string; name: string; wahlen: Record<string, unknown>; agentMd: { titel: string; text: string; profil: string } | null;
   art: string; aenderbar: boolean; quelle: string; hash: string; kopieVon?: { id: string; name: string; hash: string };
-  abgeleitetVon?: string; importiert?: true; vonSitz?: number; zuletzt?: number | null;
+  abgeleitetVon?: string; importiert?: true; vonSitz?: number; vorlage?: string; zuletzt?: number | null;
 }
 type Liste = AgentZeile[] | "laedt" | { fehler: string };
 export interface FensterStand {
@@ -396,11 +396,12 @@ function bereit(s: St, l: AgentZeile[]): Bereit[] {
   if (repoAg) out.push({ key: "repo", name: "Claude Code", satz: "As it is", her: "", agent: repoAg });
   const genommen = new Set<string>();
   for (const v of vorlagen(s)) {
-    // a template already imported once is that agent; starting it again starts the same one
-    const da = v.sitze === 1 ? l.find((a) => a.importiert && a.name === v.name) : undefined;
+    // a template already imported once is that agent, whatever it is called now; starting it again starts the same one. The server says which one it is:
+    // a file that only calls itself the same is another agent
+    const da = v.sitze === 1 ? l.find((a) => a.vorlage === v.id) : undefined;
     if (da) genommen.add(da.id);
     const spitze = v.sitze > 1 ? l.find((a) => a.id.startsWith("sitz:") && a.id.endsWith(`/${v.spitze}`) && a.name.startsWith(`${v.name} · `)) : undefined;
-    out.push({ key: `vorlage:${v.id}`, name: v.name, satz: v.satz, her: "ready-made", vorlage: v, ...(da ? { agent: da } : {}), ...(spitze ? { sitz: spitze.id.slice(5) } : {}) });
+    out.push({ key: `vorlage:${v.id}`, name: da?.name ?? v.name, satz: v.satz, her: "ready-made", vorlage: v, ...(da ? { agent: da } : {}), ...(spitze ? { sitz: spitze.id.slice(5) } : {}) });
   }
   // the seats and profiles of a constellation are its own: they show in the constellation view, not as agents to start
   const rest = l.filter((a) => a.id !== "repo" && !genommen.has(a.id) && !a.id.startsWith("sitz:") && !a.id.startsWith("profil:"));

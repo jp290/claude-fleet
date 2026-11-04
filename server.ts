@@ -34,7 +34,7 @@ import { andererSlot, beendeteKante, type Kante, kanteAbgelaufen, kanteBeruehrt,
 import { VORLAGEN, VORLAGE_STANDARD, erlaubtDurch, regelnSatz, gegenseiten, gegenseitenZeilen, istFremdeSessionHuelle, ringAnhaengen, ringFuerPlatte,
   droppedUnreadVonPlatte, geschichteLuecke, MESSAGES_DROPPED_UNREAD_KEY, type RegelArt, type Zeugen } from "./server/postfach-vertrag";
 import { istRechtId, rechteFuerHarness, RECHT_IDS, RECHTE_STANDARD, type RechtId, type Rechte } from "./session-rechte";
-import { RECHT_WAS, rechteAnsicht, rechteZeilen, wirksameRechte, type RechtRolle } from "./server/tuer-rechte";
+import { mitZusage, ohneMarke, RECHT_WAS, rechteAnsicht, rechteZeilen, weitergebbareRechte, wirksameRechte, type RechtRolle } from "./server/tuer-rechte";
 import { anatomieFuerRolle, claudeNamen, kandidatenAus, repoMcp, waehleQuelle } from "./server/claude-code-anatomie";
 import type { CcAnatomie } from "./src/k15-anatomie";
 import { startZahlVon, type StartZahlEingang } from "./src/k15-startzahl";
@@ -292,7 +292,7 @@ import { aufgabeAlsText, aufgabeAus, type Aufgabe } from "./src/aufgabe";
 import { ensureDropsIgnored } from "./server/drops";
 import { EIGENES_SETUP_MINIMUM, EIGENES_SETUP_SATZ, EIGENES_SETUP_TESTINSTANZ, MITGEGEBEN_NICHTS, permissionModeDerTuer, type PermissionModeWahl, werkzeugSchemaSatz, type WerkzeugSchemas, toolsDerTuer, umgebungDerTuer, eigenesSetup, eigenesSetupGewaehlt, readListCut, kopiereWorktreeInclude, worktreeIncludeFiles, type ListCutEntry, type SessionListFrom, type SessionListRole } from "./server/eigenes-setup";
 import { AGENTEN_ROUTE, ortZugaben as agentOrtZugaben, type OrtModus as AgentOrtModus, agentAnDerTuer, type AgentAnDerTuer, type AgentenServer, herkunftSatz as agentHerkunftSatz, agentBezugGeladen, agentenRoute, katalog as agentenKatalog, liesAgenten, type AgentBezug, type Wahlen as AgentWahlen,
-  nichtVomOwner, type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
+  nichtVomOwner, SUPER_FLEETBOT, type WahlFeld as AgentWahlFeld, type SlotWahlen, wahlenAusSlot } from "./server/agenten";
 import { RICHTUNG_PLATZ, SETUP_ROUTE, hashText, liesKonzept, liesShelf, roleStein, setupAusRolle, setupRoute, startBlockAusSteinen, steineFuerAgentWahl, tuerPackId, type SetupServer } from "./server/setup-datei";
 import { selfAgentenTuer, selfSetupTuer } from "./server/setup-tueren";
 import { konstellationDerTuer, type SitzBild } from "./server/konstellation-aus-sitzen";
@@ -9200,6 +9200,7 @@ async function openSeatInFolder(s: Slot, req: Request, opener: "owner" | "self",
     if (acc) s.plan = acc.request;
     s.openedBy = oeffnerVorab;
     if (s.openedBy) { saveState(); await merkeNachtrag(s.id, s.openedAt, { openedBy: s.openedBy }, STATE_DIR); }
+    await eigenerBotNachStart(s, opener, oeffnerVorab, ag.tuer, body.ausAgent);
     if (zi.ziel && !sitzAuftrag) await merkeNachtrag(s.id, s.openedAt, { goal: zi.ziel, ...(zi.aufgabe ? { aufgabe: zi.aufgabe } : {}) }, STATE_DIR);
   } catch (e) {
     // the Fassung held for this very start is not the one the preview showed: nothing runs; the slot the open had taken is given back
@@ -9306,9 +9307,9 @@ async function openSeatFromSelf(s: Slot, req: Request): Promise<Response> {
     const { role: _role, ...ohneRolle } = roh;
     const ag = await agentDerTuer({ ...ohneRolle, cwd: ordner.ordner }, AGENT_TUER_BRANCH);
     if (!ag.ok) return json({ error: ag.error }, 400);
-    const mitSitz = await mitSitzWerten(ag.tuer.body, STATE_DIR, s.sitz?.konst ?? null, true, s.rechte);
+    const mitSitz = await mitSitzWerten(ag.tuer.body, STATE_DIR, s.sitz?.konst ?? null, true, ohneMarke(s.rechte));
     if (!mitSitz.ok) return json({ error: mitSitz.error }, 400);
-    const kind = kindNieWeiter(oeffnerinOf(s), rolle ? mitRolleRechten(mitSitz.body, rolle.stein.role.rights, s.rechte) : mitSitz.body);
+    const kind = kindNieWeiter(oeffnerinOf(s), rolle ? mitRolleRechten(mitSitz.body, rolle.stein.role.rights, ohneMarke(s.rechte)) : mitSitz.body);
     if (!kind.ok) return json({ error: kind.error }, 409);
     const free = freeSessionSlot("main");
     if (!free) return json({ error: sessionLimitError() ?? "no free slot — open it again when a place is free" }, 409);
@@ -9439,12 +9440,12 @@ async function abnahmeTick(): Promise<void> {
 const sichtSlot = (x: Slot): SichtSlot => ({ slot: x.id, openedAt: x.openedAt, cwd: x.cwd, linie: x.linie, openedBy: x.openedBy, rolleStein: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name } : null,
   label: x.label, harness: x.harness, model: x.model, effort: x.effort, agentTitel: x.agentMd?.titel ?? null, sitz: x.sitz ? { konst: x.sitz.konst, pos: x.sitz.pos } : null });
 const sitzBild = (x: Slot): SitzBild => ({ slot: x.id, openedAt: x.openedAt, cwd: x.cwd!, label: x.label, harness: x.harness, model: x.model, effort: x.effort,
-  permissionMode: x.permissionMode, rechte: x.rechte, agentMd: x.agentMd ? { titel: x.agentMd.titel, text: x.agentMd.text } : null, bibliothek: x.bibliothek,
+  permissionMode: x.permissionMode, rechte: ohneMarke(x.rechte), agentMd: x.agentMd ? { titel: x.agentMd.titel, text: x.agentMd.text } : null, bibliothek: x.bibliothek,
   rolleStein: x.rolleStein ? { id: x.rolleStein.id, name: x.rolleStein.name, hash: x.rolleStein.hash } : null, openedBy: x.openedBy });
 async function selfKonstellationTuer(s: Slot, req: Request): Promise<Response> {
   const kinder = geoeffneteKinder(slots.map(sitzTatsache), { slot: s.id, cwd: s.cwd!, linie: s.linie }).map((k) => slots[k.slot - 1]!);
   const r = await konstellationDerTuer(await readJson(req), { oeffnerin: sitzBild(s), kinder: kinder.map(sitzBild), root: seatRoot(), dir: STATE_DIR,
-    behalten: wirksameRechte(s.rechte, rechteRollen(s)),
+    behalten: weitergebbareRechte(s.rechte, rechteRollen(s)),
     wissen: async () => (await seatKnowledgeFor(BIBLIOTHEK?.root ?? REPO_DIR, "claude")).knowledge, historie: () => liesHistorie(STATE_DIR, 5000) });
   return json(r.body, r.status);
 }
@@ -9593,6 +9594,16 @@ async function modusImBranch(repo: string, branch: string | null, ab: string | n
 }
 // EINE UNGESICHERTE ÄNDERUNG AN EINEM AGENTEN BLEIBT SEIN START (Orchestratorin, Auftrag 8, B6): das Fenster schickt dann seine Wahlen statt seiner Kennung und nennt in `ausAgent`, von welchem Agenten sie stammen.
 // Einer, der nicht vom Owner kommt, erbt auch so kein bypass (modusDerOeffnung). Nur der Modus hört darauf: das Feld gibt nichts und nimmt nur etwas, was der Start sonst erbte.
+// DER EIGENE BOT ERKANNT: ein Start aus Fleets Vorlage (server/agenten.ts#SUPER_FLEETBOT) an der Tür des Owners, und kein Sitz hat ihn geöffnet, ist derselbe Akt wie
+// „[Zitat entfernt]“ gleich danach. Nach dem Start: was der Sitz beim Start liest, bleibt, wie die Vorschau es zeigte. `ausAgent`: das Fenster hat ihn vor dem Start geändert.
+async function eigenerBotNachStart(s: Slot, opener: "owner" | "self", oeffner: unknown, tuer: AgentAnDerTuer, ausAgent: unknown): Promise<void> {
+  if (opener !== "owner" || oeffner) return;
+  const aus = typeof ausAgent === "string" ? agentenKatalog(STATE_DIR, await k15Gespeichert()).find((x) => x.id === ausAgent) : null;
+  if (!tuer.eigenerBot && aus?.vorlage !== SUPER_FLEETBOT) return;
+  s.rechte = mitZusage(rechteFuerHarness(s.rechte, harnessOf(s.harness).id), ["owner.bot"]);
+  audit("rechte_grant", s.id, "grant=owner.bot from=template");
+  await saveStateNow();
+}
 async function ausFremdemAgenten(id: unknown): Promise<boolean> {
   if (typeof id !== "string" || !id) return false;
   const a = agentenKatalog(STATE_DIR, await k15Gespeichert()).find((x) => x.id === id);
@@ -9609,7 +9620,7 @@ function oeffnerinOf(s: Slot): Oeffnerin {
   const eigenOhneModus = role === "generic" && s.spawn?.openedAt === s.openedAt && s.spawn.eigen === true && !s.permissionMode && !NO_BYPASS && !!s.cwd;
   return { harness, modus: harness === CLAUDE_HARNESS.id && role
       ? eigenOhneModus ? (s.spawn?.startModus ?? eigenerStartModus(s.cwd!, claudeConfigDir(), VERWALTETE_EINSTELLUNGEN, s.model ?? null)).modus : PERMISSION_MODE[role] : null,
-    permissions: pe.ok ? pe.permissions : null, rechte: s.rechte, rollen: rechteRollen(s) };
+    permissions: pe.ok ? pe.permissions : null, rechte: ohneMarke(s.rechte), rollen: rechteRollen(s) };
 }
 // a self filing's spawn choice, capped by its filer: the row-level pair, or each variant's (a group names none at row level)
 function selfSpawnCapped(o: Oeffnerin, body: Record<string, unknown>):
@@ -9934,6 +9945,7 @@ async function openBoardBranch(roh: Record<string, unknown> | null, by: Slot | n
       // door — is recorded, and the two may write each other in the postfach. Set before the first await below, so a
       // kill and reopen of this slot during a history write cannot stamp the opener on the next occupant.
       const oeffner = oeffnerVorab;
+      await eigenerBotNachStart(free, opener, oeffner, ag.tuer, body.ausAgent);
       if (oeffner) {
         branchBook = setOpener(branchBook, ro.repo, body.branch, { slot: oeffner.slot, cwd: oeffner.cwd, ...(oeffner.linie ? { linie: oeffner.linie } : {}), at: Date.now() }).book;
         free.openedBy = oeffner;
@@ -23035,7 +23047,8 @@ async function fassungWissen(s: Slot, rolle: FassungRolle, cwd: string, eigen = 
 // „[Zitat entfernt]“ called by its id (agent "repo") is that same plain start.
 const tuerenZeile = (s: Pick<Slot, "openedBy" | "sitz" | "agent" | "harness">): boolean => !!s.sitz || (!!s.agent && s.agent.id !== "repo") || s.openedBy !== null || harnessFamilie(s.harness ?? "claude") !== "claude";
 // A RIGHT SWITCHED ON AT THE DOOR ARRIVES WITH ITS LINE ("plus what you switch on"): a plain seat with nothing switched on has no line, one the owner gave a right to does
-const rechtAnDerTuer = (r: Rechte | null | undefined): boolean => (r?.recht?.length ?? 0) > 0;
+// ...the mark „[Zitat entfernt]“ is no right the seat uses (the line does not name it, server/tuer-rechte.ts#rechteZeilen), so it alone brings no line either
+const rechtAnDerTuer = (r: Rechte | null | undefined): boolean => (r?.recht ?? []).some((id) => id !== "owner.bot");
 // the hashes an own agent from a file keeps for its packs (server/agenten.ts#Agent.packHashes); null = the ids alone decide
 function packHashesDesAgenten(agent: AgentBezug | null | undefined): Readonly<Record<string, string>> | null {
   return agent ? liesAgenten(STATE_DIR).find((a) => a.id === agent.id)?.packHashes ?? null : null;
@@ -23533,7 +23546,7 @@ async function fassungFuerSlot(s: Slot, anlass: FassungAnlass, saat: import("./s
   const sitzRolleRef = !steine?.role && s.sitz?.rolle ? await sitzRolleDerDatei(STATE_DIR, s.sitz.konst, s.sitz.pos) : null;
   const fleet = fassungFleetStart(spawnRolle, s.rechte, { browserMcp: !s.worktree || s.browser, packMcp: s.packMcp }, bau, fleetBaum !== null,
     eigenesSetupGewaehlt({ model: spawnPick.model, effort: spawnPick.effort, permissionMode: NO_BYPASS ? null : s.permissionMode,
-      rechte: s.rechte?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
+      rechte: ohneMarke(s.rechte)?.stufe ?? null, profil: s.agentMd?.profil || null, purpose: s.agentMd?.getippt === true, bibliothek: s.bibliothek ?? false, notizbuch: s.notizbuchWahl,
       remote: !!s.remote, packMcp: s.packMcp.map((m) => m.name), autoModeEnvironment: s.autoModeEnvironment === true, tools: s.tools }), s.permissionMode,
     s.weglassen, s.autoModeEnvironment === true, s.tools, fassungImFleetCheckout(cwd, s.worktree), spawnPick.harness,
     isSeat(s) && (spawnRolle === "generic" && !pi || pi) && (!eigen || tuerenZeile(s) || rechtAnDerTuer(s.rechte)) ? serverRechteZeile(s.rechte, rechteRollen(s), spawnPick.harness) : null, cwd,
@@ -54470,7 +54483,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // DIE MARKE VON SITZ (server/agenten.ts#vonSitz): nur diese Tür schreibt mit der Marke des Sitzes, der speichert — das
       // Owner-Tor darunter ruft denselben agentenServer ohne sie, und alles bleibt dort, wie es war.
       if (url.pathname === "/api/self/konstellationen") return await selfKonstellationTuer(s, req);
-      return await (selfSetupDatei || url.pathname === "/api/self/setups/import" ? selfSetupTuer(req, url, setupServer) : selfAgentenTuer(req, url, { ...agentenServer, vonSitz: s.id, sitzRechte: wirksameRechte(s.rechte, rechteRollen(s)) }, s.id));
+      return await (selfSetupDatei || url.pathname === "/api/self/setups/import" ? selfSetupTuer(req, url, setupServer) : selfAgentenTuer(req, url, { ...agentenServer, vonSitz: s.id, sitzRechte: weitergebbareRechte(s.rechte, rechteRollen(s)) }, s.id));
     }
     // WHAT A SEAT GIVES ITS SUCCESSOR ON TOP (Slot.selbst, server/selbst-einrichten.ts; owner 24.10. über Slot 6: without his click, as long
     // as it shows afterwards): packs and a purpose, only text. Set for its own slot, in force with its succession; a restart keeps the
@@ -54538,7 +54551,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       // an agent's choices go into the body first, so the opener's bound below judges them as it judges a body's (server/agenten.ts)
       const ag = await agentDerTuer(asked.body, AGENT_TUER_BRANCH);
       if (!ag.ok) return json({ error: ag.error }, 400);
-      const mitSitz = await mitSitzWerten(ag.tuer.body, STATE_DIR, s.sitz?.konst ?? null, true, s.rechte);
+      const mitSitz = await mitSitzWerten(ag.tuer.body, STATE_DIR, s.sitz?.konst ?? null, true, ohneMarke(s.rechte));
       if (!mitSitz.ok) return json({ error: mitSitz.error }, 400);
       // the child is never wider than its opener (server/kind-weite.ts, Befund F4)
       const kind = kindNieWeiter(oeffnerinOf(s), mitSitz.body);
@@ -55347,7 +55360,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
     // DIE AGENTEN (server/agenten.ts): gespeicherte Setups mit Namen, die eine Tür mit `agent` öffnet
     if (url.pathname === AGENTEN_ROUTE || url.pathname.startsWith(`${AGENTEN_ROUTE}/`)) return await agentenRoute(req, url, agentenServer);
     // EIN SETUP, EINE DATEI (server/setup-datei.ts): Export und Import (Vorschau, dann Schreiben), Owner-Tor wie K15
-    if (url.pathname === `${SETUP_ROUTE}/import` || url.pathname.startsWith(`${SETUP_ROUTE}/`)) return await setupRoute(req, url, setupServer);
+    if (url.pathname === `${SETUP_ROUTE}/import` || url.pathname.startsWith(`${SETUP_ROUTE}/`)) return await setupRoute(req, url, setupServer, true);
 
     if (url.pathname === "/api/worktrees" && req.method === "GET") {
       if ([...url.searchParams.keys()].some((key) => key !== "token")) return json({ error: "worktrees accepts no selectors" }, 400);
@@ -58796,7 +58809,8 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
         const genommen = (vorher?.recht ?? []).filter((x) => nimm.has(x));
         if (vorher && genommen.length) {
           const recht = vorher.recht!.filter((x) => !nimm.has(x));
-          s.rechte = { stufe: vorher.stufe, an: vorher.an, aus: vorher.aus, ...(recht.length ? { recht } : {}), ...(vorher.buendel ? { buendel: vorher.buendel } : {}) };
+          // ohne die Marke steht der Sitz wieder, wie er vorher stand: ohne Rechte (tuer-rechte.ts#mitZusage)
+          s.rechte = vorher.nurMarke && !recht.length ? null : { stufe: vorher.stufe, an: vorher.an, aus: vorher.aus, ...(recht.length ? { recht } : {}), ...(vorher.buendel ? { buendel: vorher.buendel } : {}) };
           audit("rechte_revoke", s.id, `revoke=${genommen.join(",")} effective=${[...wirksameRechte(s.rechte, rollenR)].join(",")}`);
           await saveStateNow();
         }
@@ -58814,9 +58828,7 @@ const serveOptions: Bun.Serve.Options<WSData, never> = {
       if (rights.includes("fleet.deploy") && !rollen.includes("steward"))
         return json({ error: "fleet.deploy opens the steward's existing deploy door in this cut — there is no self deploy door, so the owner grants it only to a steward-labelled seat" }, 409);
       const before = rechteFuerHarness(s.rechte, harnessOf(s.harness).id);
-      const recht = [...new Set([...(before?.recht ?? []), ...rights])];
-      s.rechte = { stufe: before?.stufe ?? RECHTE_STANDARD, an: before?.an ?? [], aus: before?.aus ?? [],
-        recht, ...(before?.buendel ? { buendel: before.buendel } : {}) };
+      s.rechte = mitZusage(before, rights);
       audit("rechte_grant", s.id, `grant=${rights.join(",")} effective=${[...wirksameRechte(s.rechte, rollen)].join(",")}`);
       await saveStateNow();
       return json({ ok: true, slot: s.id, rechte: s.rechte, ...rechteAnsicht(s.rechte, rollen, harnessOf(s.harness).id) });

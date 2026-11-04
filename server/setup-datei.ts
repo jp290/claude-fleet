@@ -1033,7 +1033,7 @@ function schreibeAtomar(ziel: string, text: string): void {
   renameSync(tmp, ziel);
 }
 
-async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string, hinweise: string[]): Promise<Record<string, unknown>> {
+async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string, hinweise: string[], vorlage?: string): Promise<Record<string, unknown>> {
   const seat = d.seats[0]!;
   // EINE ROLLE REIST ALS BLOCK IN EINER KONSTELLATION, NIE ALS DER EINGEBAUTE ROLLENNAME EINES EIN-SITZ-AGENTEN.
   // importiereSetup schickt einen Rollensitz ohnehin durch schreibeMehrSitz; dieser Riegel hält den Weg auch für einen
@@ -1057,7 +1057,7 @@ async function schreibeEinSitz(d: SetupDatei, original: SetupDatei, dir: string,
   const herkunft = herkunftAusDatei(original);
   const a = eigenerAgent({ name: d.name, wahlen,
     ...(seat.start.purpose ? { agentMd: { titel: seat.start.purpose.titel, text: seat.start.purpose.text } } : {}) },
-    () => null, vergeben, Date.now(), { ...herkunft, importiert: true,
+    () => null, vergeben, Date.now(), { ...herkunft, importiert: true, ...(vorlage ? { vorlage } : {}),
       // der Agent behält je Pack die Kennung UND den Hash der Datei: sein Start liest den Text mit diesem Hash (server.ts#packsNachHash)
       packHashes: Object.fromEntries(seat.reads.flatMap((r) => r.kind === "pack" && r.hash ? [[tuerPackId(r.id), r.hash]] : [])) });
   if (typeof a === "string") throw new Error(a);
@@ -1162,7 +1162,7 @@ export async function schreibeMehrSitz(d: SetupDatei, original: Parameters<typeo
 }
 
 /** EIN IMPORT: erst die Vorschau (kein Schreiben), dann `schreiben: true`. */
-export async function importiereSetup(raw: unknown, q: SetupQuellen & { dir: string }, opts: { schreiben?: boolean; jetzt?: number } = {}): Promise<SetupImportAntwort> {
+export async function importiereSetup(raw: unknown, q: SetupQuellen & { dir: string }, opts: { schreiben?: boolean; jetzt?: number; vorlage?: string } = {}): Promise<SetupImportAntwort> {
   const gel = await setupAusDatei(raw, q);
   if (typeof gel === "string") return { status: 400, body: { error: gel } };
   const loes = await loeseBausteine(gel.datei, q, q.dir);
@@ -1180,7 +1180,7 @@ export async function importiereSetup(raw: unknown, q: SetupQuellen & { dir: str
     // POST /api/k15/freigabe on that position, and an imported role never starts in bypass.
     const mitRolle = loes.datei.seats.some((s) => !!s.start.role);
     const geschrieben = loes.datei.seats.length === 1 && !mitRolle
-      ? await schreibeEinSitz(loes.datei, gel.datei, q.dir, hinweise)
+      ? await schreibeEinSitz(loes.datei, gel.datei, q.dir, hinweise, opts.vorlage)
       : await schreibeMehrSitz(loes.datei, gel.datei, q.dir, opts.jetzt ?? Date.now());
     // `weggelassen`: die Packs, die der Sitz nicht liest, weil die Datei keinen Text für sie hat (die Bibliothek des Lesers kennt sie nicht, oder es ist ein
     // persönlicher Platz des Absenders, für den hier kein eigener Text steht): beim Namen, damit der Owner sie sieht
@@ -1205,7 +1205,8 @@ async function vorlageAusBibliothek(id: unknown, q: SetupServer): Promise<SetupD
   try { return vorlageDatei(id, await q.bibliothek()); } catch (e) { return `Fleet's library could not be read (${e instanceof Error ? e.message : String(e)})`; }
 }
 
-export async function setupRoute(req: Request, url: URL, q: SetupServer): Promise<Response> {
+// `ownerTuer`: nur der Aufruf von der Tür des Owners; die Self-Tür ruft ohne, ihr Import einer Vorlage trägt keine Herkunft (server/agenten.ts#SUPER_FLEETBOT)
+export async function setupRoute(req: Request, url: URL, q: SetupServer, ownerTuer = false): Promise<Response> {
   const rest = url.pathname.slice(SETUP_ROUTE.length).split("/").filter(Boolean).map(decodeURIComponent);
   if (rest.length === 2 && rest[1] === "datei" && req.method === "GET") {
     const id = rest[0]!;
@@ -1235,7 +1236,7 @@ export async function setupRoute(req: Request, url: URL, q: SetupServer): Promis
     const vorlage = "vorlage" in body ? await vorlageAusBibliothek(body.vorlage, q) : null;
     if (typeof vorlage === "string") return antwort({ error: vorlage }, 404);
     const datei = vorlage ?? body.datei;
-    const r = await importiereSetup(datei, q, { schreiben: body.schreiben === true });
+    const r = await importiereSetup(datei, q, { schreiben: body.schreiben === true, ...(ownerTuer && vorlage ? { vorlage: body.vorlage as string } : {}) });
     return antwort(r.body, r.status);
   }
   return antwort({ error: "not found" }, 404);

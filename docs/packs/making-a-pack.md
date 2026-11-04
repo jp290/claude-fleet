@@ -88,6 +88,8 @@ a pack of its own file, `testinstanz-abnahme` for a section with a variant) and 
   invalid; unknown keys and values are refused. The validator names the code, not the fix: read the code's name
   (`USE_WHEN_INVALID`, `SOURCE_ANCHOR_MISSING`, `SOURCE_PATH_MISSING`) and look up its rule in
   `context-pack-validator.ts`.
+- `server/pruefpraxis-pack.test.ts` reads the manifest and the pack at `HEAD`, so before the commit it stays green over
+  an edit that breaks it. Run it again after you commit.
 - Run before you commit: `bun e2e/pins.ts`, `bun e2e/context-plan.ts`, `bun e2e/context-packs.ts`, and
   `bun test server/fassung.test.ts server/pruefpraxis-pack.test.ts`. Then `bun ci/merge-check.ts <branch>`; the
   orchestrator lands. A red in a job your change can't have touched: run that test on your branch and on main

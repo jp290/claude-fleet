@@ -11,6 +11,7 @@ fleet.json.bak
 fleet.json.corrupt
 fleet.json.*.tmp
 k15-eigenes.json
+setup-bausteine.json
 k15-eigenes.json.*.tmp
 fleet.pid
 tmux-server

@@ -29,6 +29,9 @@ these acts has one door, and the door tells you when it refuses. Use the door, r
   commit on top. If the charge conflicts with main, merging main in does not help the check (it skips the merge):
   rebuild the charge as a merge of the landed tip with main, plus one commit on top that carries the finished tree.
   The land squashes anyway.
+- **Main moves under a long branch.** A brief for a branch that will take more than an hour says it: rebase before
+  the check, and renumber your rows in the defect list if main took those numbers. A brief's list of tests is what a builder
+  runs, so it names `server/*.test.ts` whole; a list of neighbours let a false red through to a check that cost 24 minutes.
 - **A red main lands only a proved repair.** While the last audit is red, the land door refuses every check that
   wasn't run as a repair, even a green one. The owner's door starts one as a repair:
   `POST /api/branches/check { repo, branch, repair: true }`. The check then has to prove it, and the proof is its
@@ -199,10 +202,13 @@ reads as his.
   needs a permission prompt runs in manual mode (`--permission-mode default`): there the prompt is the mode's,
   not a classifier's call.
 - **Set a test instance's TTL at `up`.** `./testinstanz.sh up --ttl <min>` is the only place the expiry is set;
-  `refresh` and `fixtures` leave it and nothing extends it. A re-up builds a new instance with new fixtures and a
+  `refresh` and `fixtures` leave it and no command extends it. A re-up builds a new instance with new fixtures and a
   new token (unless `FLEET_TI_TOKEN` carries the old one), and `./testinstanz.sh fixtures` replants only the standard
   fixtures; what was set by hand, only the session that did it knows. A branch that waits for the owner's look the next morning needs a TTL that covers the
   wait.
+- **A real test seat lives only as long as its instance.** It ends with the instance's expiry, and every claim made
+  after that reads red "seat idle", which looks like a defect in the work. Check the time left before a run that uses
+  one. The machine holds two real seats across all instances, so a checker's brief says which seats already stand.
 - **Stop a test instance through its door.** `./testinstanz.sh down` refuses while a connection is open, because
   an open connection is somebody looking, most likely the owner's tab. Never kill one by tmux socket or PID. Age and
   „[Zitat entfernt]“ don't prove nobody looks.

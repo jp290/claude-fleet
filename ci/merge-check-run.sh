@@ -38,6 +38,7 @@ HAND_BANDS="5 6"
 SMALL_S=200
 JOB_TIMEOUT_S="${MERGE_CHECK_JOB_TIMEOUT_S:-900}"
 BIG_JOB_TIMEOUT_S="${MERGE_CHECK_BIG_JOB_TIMEOUT_S:-1800}"
+LOCAL_JOB_TIMEOUT_S="${MERGE_CHECK_LOCAL_JOB_TIMEOUT_S:-2700}"
 KEEP_RUNS=20
 # die Instanzen der Teile liegen außerhalb von $HOME, wie die des Audits (/var/lib/fleet-helper/work): e2e/programs.ts
 # öffnet einen Slot in $HOME, und unter $HOME überlappte der jeden game-maker-Baum der Instanz („game-maker tree is
@@ -152,9 +153,10 @@ run() {
 # job: dasselbe im Hintergrund
 job() { run "$@" & }
 : > "$RUN/jobs"
-# local fährt pins, tsc, build und alle Unit-Tests nacheinander: am Workhorse 784–894 s (30./31.10.) und am
-# 31.10. bei Last über 900 s (rc=124, ohne einen FAIL). Darum das Limit der großen Jobs, nicht JOB_TIMEOUT_S.
-job local 9 "bun e2e/pins.ts && $TSC && bun run build && $TESTS" "$BIG_JOB_TIMEOUT_S"
+# local fährt pins, tsc, build und alle Unit-Tests nacheinander: am Workhorse 784–894 s (30./31.10.), allein die
+# Unit-Tests 1503 s am 3.11. und 1686 s am 5.11., dann rc=124 bei 1800 s ohne einen FAIL. Darum ein eigenes Limit;
+# die Audit-Shards brauchen etwa 900 s und behalten ihres, und ein Hänger in local kostet nur diese 15 Minuten mehr.
+job local 9 "bun e2e/pins.ts && $TSC && bun run build && $TESTS" "$LOCAL_JOB_TIMEOUT_S"
 job gate 9 "./e2e-claude-gate.sh"
 job review 9 "./e2e-clean-review.sh && ./e2e-security.sh"
 k=0

@@ -1657,6 +1657,55 @@ export async function run(ctx: Ctx): Promise<void> {
           && staleLog.length === 0 && !staleCap.out.includes(staleMarker),
         `${JSON.stringify(dropped)} log=${staleLog.length}`);
 
+      // --- THE LAST RUN WAITS (server.ts#autoLastRun). A chain re-arms itself in its last run, so a last
+      // run spent on a busy pane ends it with nobody told (Mein Agent's periodic check, 5.11.). Boot
+      // stamps lastOutput, so idleSec 3600 is the busy gate here; all three are overdue past the grace.
+      const lastMark = `last-run-waits-${Date.now()}`;
+      const armLast = async (name: string, extra: Record<string, unknown>): Promise<string | undefined> =>
+        ((await (await post(`/api/slots/${roleA}/autos`, { text: `${lastMark}-${name}`, inSec: 3600, idleSec: 3600, ...extra })).json()) as
+          { auto?: { id: string } }).auto?.id;
+      const oneShotId = await armLast("oneshot", {});
+      const lastOfCountedId = await armLast("last", { everySec: 3600, runs: 1 });
+      const countedId = await armLast("counted", { everySec: 3600, runs: 3 });
+      check("precondition: a one-shot, a counted auto's last run and a counted auto with runs left exist",
+        !!oneShotId && !!lastOfCountedId && !!countedId, `${oneShotId} ${lastOfCountedId} ${countedId}`);
+      const reseedAutos = async (edit: (row: AutoRow & { nextAt: number; idleSec: number; runsLeft: number }) => void): Promise<void> => {
+        await stopSrv();
+        const seeded = JSON.parse(readFileSync(stFile, "utf8")) as { autos?: (AutoRow & { nextAt: number; idleSec: number; runsLeft: number })[] };
+        for (const r of seeded.autos ?? []) if (r.id === oneShotId || r.id === lastOfCountedId || r.id === countedId) edit(r);
+        writeFileSync(stFile, JSON.stringify(seeded, null, 2), { mode: 0o600 });
+        await restartSrv({ FLEET_DELIVERY_BUNDLE_SEC: "2" });
+      };
+      await reseedAutos((r) => { r.nextAt = Date.now() - 11 * 60_000; });
+      type LastRow = AutoRow & { runsLeft: number };
+      const lastRow = async (id: string | undefined): Promise<LastRow | undefined> =>
+        (await sessions()).autos.find((a) => a.id === id) as LastRow | undefined;
+      // the counted auto is the control: it shows the grace was really past and the gate really busy
+      const countedSkip = await until(async () => {
+        const r = await lastRow(countedId);
+        return r?.lastResult ? r : null;
+      }, { timeoutMs: 15_000, what: "the counted auto's overdue run is skipped" }).catch(() => null);
+      check("control: a counted auto's overdue run with others behind it is skipped and counted",
+        countedSkip?.lastResult === "skipped — session stayed busy" && countedSkip.runsLeft === 2 && countedSkip.enabled === true,
+        JSON.stringify(countedSkip));
+      const heldOne = await lastRow(oneShotId), heldLast = await lastRow(lastOfCountedId);
+      check("a one-shot overdue past the grace stays armed behind a busy session",
+        heldOne?.enabled === true && heldOne.lastResult === null, JSON.stringify(heldOne));
+      check("a counted auto's last run overdue past the grace stays armed behind a busy session",
+        heldLast?.enabled === true && heldLast.lastResult === null && heldLast.runsLeft === 1, JSON.stringify(heldLast));
+      // the row is alive, not parked for ever: without the gate the two held runs arrive; each is typed once
+      await reseedAutos((r) => { r.idleSec = 0; if (r.id === countedId) r.nextAt = Date.now() + 3_600_000; });
+      const arrived = await until(async () => {
+        const [one, last] = [await lastRow(oneShotId), await lastRow(lastOfCountedId)];
+        return one?.lastResult === "sent" && last?.lastResult === "sent" ? [one, last] : null;
+      }, { timeoutMs: 15_000, what: "the held last runs are sent once the session is free" }).catch(() => null);
+      const lastLog = (await plogRead()).filter((p) => p.text.startsWith(lastMark));
+      check("a held last run is delivered once the session is free, once each, and is then spent",
+        !!arrived && arrived.every((r) => !r.enabled && r.runsLeft === 0)
+          && lastLog.map((p) => p.text).sort().join() === [`${lastMark}-last`, `${lastMark}-oneshot`].join(),
+        `${JSON.stringify(arrived)} log=${JSON.stringify(lastLog.map((p) => p.text))}`);
+      for (const id of [countedId]) if (id) await post(`/api/autos/${id}/delete`, {});
+
       // --- the ROLE address resolves over non-lane slots only. Measured 2026-10-02 (Report e67d865d):
       // a lane in Slot 22 labelled "⎇ task orchestratorinnen-karte-4dbe" matched the label, so
       // deliveryRecipient({kind:"orchestrator"}) saw two candidates and a bundle for the real

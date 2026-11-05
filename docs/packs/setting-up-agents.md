@@ -53,6 +53,7 @@ It never says how to do the work.
 
 - Run every command, path and wake-up in the brief yourself.
 - Say what the agent may decide on its own. Without that sentence, a good agent asks instead of building.
+- A clock time in a brief reads as the seat's limit. Say what the time is: when you look in, or a real limit.
 - Write for the model that gets it. A weaker or less familiar model needs more about the situation and more
   material, not more prohibitions.
 - Ask for a report that carries its evidence: file and line, a short excerpt, the command and its result. A claim

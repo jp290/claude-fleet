@@ -31,7 +31,8 @@ finished flow. A "done" without a seen effect goes back. The occasion, in the ow
 1. `./testinstanz.sh up` in your own worktree, once at the start of the visible work.
 2. After every commit, `./testinstanz.sh refresh`: port, token and fixtures stay, the link holds.
 3. Go through the flow like a user, at 390 px width and on the desktop. Judge it critically: what is missing, what
-   breaks, what is half done. Whatever you find there, you finish before you report.
+   breaks, what is half done. Whatever you find there, you finish before you report. A browser proof names its engine:
+   Chromium says nothing about Safari, so what someone meets on an iPhone also gets a WebKit run.
 4. Between the parts, only `refresh` and clicking through: no gate suite and no preview. The full proof (the proof
    set from `GET /api/self/gate`) runs once at the end, before the report.
 5. Into the report: the lines of "The check that ends visible work" in `made-with-love`, the result of the full proof

@@ -233,6 +233,10 @@ flushedBy:"sofort-Zustellung oder Cache-Kante"}`. `auto.nextAt` ist der Fälligk
 die Paste kann durch die Bündelung bis zu `delivery.maxDelaySec` Sekunden später kommen
 (Default 900, Bündelung d6d75307, `server.ts#deliveryClass`). Eine sofort-Zustellung an denselben
 Slot oder die Cache-Kante spült das Bündel früher; `idleSec:0` hebt dieses Bündelfenster nicht auf.
+A schedule's last run (a one-shot, or the last of a counted auto) waits while your session is busy or on a blocking
+screen, however long that takes, so a chain that re-arms itself there doesn't end unnoticed; an earlier run is counted
+as skipped once it is 10 minutes overdue. With no agent in the pane the run is spent, and `lastResult` says so.
+
 Bei einem One-Shot (`everySec:null`) setzt `tickAutos` jedoch `deliveryClass:"sofort"` statt der oben beschriebenen Standardklasse, sodass er bei Fälligkeit ohne Bündelfenster zugestellt wird; wiederkehrende Autos bleiben `buendelbar`, und Busy-, Quiet-Hours- und Harness-Gates gelten unverändert.
 
 Empfänger ist **dein Slot mit deinem Occupant**, nie eine Rolle: das Auto trägt `slotOpenedAt` (der

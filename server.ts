@@ -21853,6 +21853,17 @@ function advanceAuto(a: Auto, now: number): void {
   }
 }
 
+// THE LAST RUN WAITS. A chain re-arms itself in its last run, so a last run spent on a pane that is
+// only occupied ends the chain with nobody told (Mein Agent's periodic check, 5.11.: wake-up 5a0c8106
+// went "skipped — session stayed busy" and nothing was armed for the day). A one-shot or a counted
+// auto's last run therefore stays armed behind the busy gate and a blocking screen, both of which pass;
+// a run with others behind it is still counted, because the next one comes anyway. No agent in the
+// pane and the harness policy spend it as before: neither ends by waiting, and the row says why.
+function autoLastRun(a: Auto): boolean {
+  if (!a.everySec) return true;
+  return !a.perpetual && a.runsLeft <= 1;
+}
+
 function inQuietHours(ts: number): boolean {
   if (!quietHours) return false;
   const h = new Date(ts).getHours();
@@ -22001,6 +22012,7 @@ async function tickAutos(): Promise<void> {
           continue;
         }
         if (verdict.gate === "blocked-screen") {
+          if (autoLastRun(a)) continue; // the screen passes; THE LAST RUN WAITS
           // the screen-level twin of not-alive: a paste here is silently eaten (codex trust/sign-in,
           // measured 2026-08-12). Count the run and say which screen — the silent eat is the defect.
           a.lastResult = `skipped — pane is on a blocking screen (${verdict.detail ?? "declared block"})`;
@@ -22018,6 +22030,7 @@ async function tickAutos(): Promise<void> {
         }
         // gate === "busy": the idle gate
         if (now < a.nextAt + AUTO_GRACE_MS) continue; // wait within grace, no state change
+        if (autoLastRun(a)) continue; // THE LAST RUN WAITS, past the grace too
         a.lastResult = "skipped — session stayed busy";
         audit("auto_skip", a.slot, a.lastResult);
         advanceAuto(a, now);

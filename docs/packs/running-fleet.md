@@ -209,6 +209,12 @@ reads as his.
 - **A real test seat lives only as long as its instance.** It ends with the instance's expiry, and every claim made
   after that reads red "seat idle", which looks like a defect in the work. Check the time left before a run that uses
   one. The machine holds two real seats across all instances, so a checker's brief says which seats already stand.
+- **A real test seat writes the person's own settings.** Its `/model` and `/effort` go to `~/.claude/settings.json`,
+  and the instance doesn't fence that, so a plain `claude` started meanwhile gets the test's model. A brief with such
+  rows says so: read the value before the run and set it back after.
+- **A race is measured through the path the person's key really takes.** A driver that presses with `tmux send-keys`
+  skips the board's way in (`server.ts`, `s.inputChain`), so what it finds or misses says nothing about their key. Press
+  through the board's socket.
 - **Stop a test instance through its door.** `./testinstanz.sh down` refuses while a connection is open, because
   an open connection is somebody looking, most likely the owner's tab. Never kill one by tmux socket or PID. Age and
   „[Zitat entfernt]“ don't prove nobody looks.

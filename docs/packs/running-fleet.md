@@ -217,7 +217,7 @@ reads as his.
   through the board's socket.
 - **Stop a test instance through its door.** `./testinstanz.sh down` refuses while a connection is open, because
   an open connection is somebody looking, most likely the owner's tab. Never kill one by tmux socket or PID. Age and
-  „[Zitat entfernt]“ don't prove nobody looks.
+  "no lane needs it" don't prove nobody looks.
 
 ## Reading state without leaking
 

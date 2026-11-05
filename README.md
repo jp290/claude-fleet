@@ -1,6 +1,6 @@
 # Claude Fleet
 
-**Fleet is the harness where one agent becomes very capable, constellations of such agents solve hard tasks in the highest quality, and many people build on each other's setups.** It starts from the coding agent you already use. A session in Fleet is your own Claude Code with what Fleet adds on top: a few texts and settings, each one switchable, each one shown word for word before the session starts. Your own files stay as they are.
+**Fleet is built to be the harness where one agent becomes very capable, constellations of such agents solve hard tasks in the highest quality, and many people build on each other's setups.** It starts from the coding agent you already use. A session in Fleet is your own Claude Code with what Fleet adds on top: a few texts and settings, each one switchable, each one shown word for word before the session starts. Your own files stay as they are, with one exception named below.
 
 *Set up an agent well. See exactly what it gets. Share it.*
 
@@ -11,21 +11,21 @@
 - **Run your Claude Code as you know it**, in a dashboard that keeps every session alive in its own terminal, side by side, on your desktop and on your phone.
 - **Add what helps, one piece at a time.** Context packs are how-tos written for agents: how to work with you, how to check its own work, how to hand work to another agent. On top of those come a notebook its successor reads, rights that limit what it may change, its own branch that reaches `main` only through a merge check, and a handover to a fresh session before its context runs full. Each one says what the agent can do with it.
 - **See exactly what it gets.** Before a session starts, the start brief shows every text it will read, in the order it reads them, compared with a plain `claude` in the same folder. What you see is what starts.
-- **Share it.** An agent you set up travels as one file. Another Fleet imports it and starts the same setup, and the hash shows that it is the same. A changed setup says which one it was derived from.
+- **Share it.** An agent you set up travels as one file. Another Fleet imports it and starts the same setup, and the setup hash in the file shows that it is the same. A changed setup says which one it was derived from. For now a context pack you wrote yourself stays home: see Status.
 - **Let an agent build the next one.** A session can write a context pack for its successor and hand over to it. You judge the new version by working with it.
 - **Go further when the work needs it.** An orchestrator agent opens a session on its own branch for each piece of work and brings back the result. A second computer can run its own Fleet, steered from either one. A helper machine runs the checks. A test instance lets you try a change to Fleet itself before it lands.
 
 ## Status
 
-Fleet is young, and it is in the middle of a rebuild (October 2026).
+Fleet is young, and it is in the middle of a rebuild (November 2026).
 
 - **In use:** sessions and the dashboard, the start window and its start brief, context packs, branches with their own worktree, the merge check, land and post-land audit, deploy, sharing an agent as a file, the orchestrator, and the mailbox between sessions.
 - **On ice:** the task queue and its cards, the dispatcher, and Programs with their MAIN sessions. They worked. They rest while the new system takes shape, and their code is still here. [How it works inside](docs/how-it-works.md#where-the-parts-on-ice-live) shows where each part lives.
-- **Not yet:** tasks, runs and concepts don't travel in the shared file yet. Claude Code is the harness Fleet is built around; adapters for Codex and Pi exist. An orchestrator for your own projects is coming; the built-in one is set up to work on Fleet itself.
+- **Not yet:** a context pack you wrote yourself doesn't travel yet. The file holds an empty place for it that the receiver fills, and the hash covers the empty place, so the same hash doesn't mean the same pack. **Share…** downloads the file at once, without showing first what travels. An agent from someone else's file doesn't ask first yet: read what the file starts before you start it. The pack on Fleet's doors, which many agents read, is long and still describes the parts on ice. Tasks and runs don't travel in the shared file yet. A saved agent with a purpose, the Super FleetBot too, can't change its model or packs in the window yet, and a copy of it is held the same way. Fleet has been started from this copy under a new user on a second machine, but no one but its builders has walked this path yet, so expect the first steps to catch. Claude Code is the harness Fleet is built around; adapters for Codex and Pi exist. An orchestrator for your own projects is coming; the built-in one is set up to work on Fleet itself.
 
 ## Quick start
 
-**Requirements:** [Bun](https://bun.sh), tmux, at least one agent CLI, macOS or Linux.
+**Requirements:** [Bun](https://bun.sh), tmux, git, at least one agent CLI, macOS or Linux. Without tmux the server stops at boot with a raw error; without an agent CLI a session shows a bare shell error in its pane. Your first session shows Claude Code's own first run in its pane, its login included.
 
 ```sh
 bun install
@@ -37,11 +37,14 @@ On boot the server prints a one-click login URL carrying the access token, but o
 
 An empty board shows **Start your agent**; with a session already open, a free place in the sidebar does the same. In the window that opens, pick the folder your agent works in: **Choose a folder…** on an empty board, **Another folder…** once a row exists, both take a path you paste (a relative one reads from the folder shown above the field). Then press **Start** on the agent you want. To read the start brief first, press the agent's row for its setup screen and open **Start brief** there.
 
+**To update:** `git pull`, `bun install`, `bun run build`, then start it again.
+
 Fleet writes its state, `fleet.json` with your token and the session streams, into the folder you cloned it to. A second Fleet on the same machine is a second clone, with its own `FLEET_PORT` and its own `FLEET_SOCK`: the default tmux socket is shared, and two Fleets on it would see each other's sessions.
 
 ## What Fleet does on your machine
 
-- **Your files stay as they are.** Fleet changes none of your `CLAUDE.md`, settings, skills or hooks. It keeps its context packs as skills in a folder of its own state and adds them to a session's start when you switch them on.
+- **Your files stay as they are, with one exception.** Fleet changes none of your `CLAUDE.md`, settings, skills or hooks. The exception: so a session in a new folder doesn't stop at Claude Code's trust question, Fleet writes that folder's trust entry into your `~/.claude.json`, and it stays there; the start brief names it. It keeps its context packs as skills in a folder of its own state and adds them to a session's start when you switch them on.
+- **Agents in Fleet run as you:** they can read what you can read and reach what you can reach, unless a fence says otherwise. That includes your owner token in `fleet.json`, so rights steer an agent, they don't contain it. Fleet's fence exists only for models from other providers.
 - **A reachable Fleet is remote code execution as your user**, because every session is a shell. Read [Security and trust model](#security-and-trust-model) before you bind it to anything but loopback.
 
 ## Security and trust model
@@ -66,8 +69,9 @@ A reachable fleet is **remote code execution as your user** — every session is
 5. **Cross-site guards** — `SameSite=Strict` cookie plus Origin and Host checks
    (`server/auth.ts#guard`) block cross-site WebSocket hijacking, CSRF and DNS rebinding. Reaching
    the fleet by hostname needs that name in `FLEET_ALLOWED_HOSTS`.
-6. **Session command** — `FLEET_CMD` (default `claude`) is the base line. Every claude session Fleet
-   spawns outside a container runs in Claude Code's auto mode: Fleet sets `--permission-mode auto`
+6. **Session command** — `FLEET_CMD` (default `claude`) is the base line. A claude session Fleet
+   spawns outside a container runs in Claude Code's auto mode, except the orchestrator, which runs
+   in `bypassPermissions`, and a session you start with **No limits**: Fleet sets the mode
    per role and passes the classifier environment per launch in `--settings`
    (`server/session-start.ts#startAspects`), and it takes `--dangerously-skip-permissions` off the
    line, so the old bypass opt-in in `FLEET_CMD` no longer applies there

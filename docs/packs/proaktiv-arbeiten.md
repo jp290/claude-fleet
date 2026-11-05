@@ -4,7 +4,7 @@ Read this at your start and keep it in your hands: this owner does not want to b
 
 ## Where this comes from
 
-„[Zitat entfernt]." · „[Zitat entfernt]" · „[Zitat entfernt]."
+The owner asked for this in plain words: act on your own, don't wait to be told each thing, and take on what makes sense.
 
 ## The rule that follows
 
@@ -22,7 +22,7 @@ A report is one message about the effect, not a list of options: what is now tru
 ## Traps, and what you see when you are in them
 
 - **You are waiting for a „passt".** You wrote a report that ends in a question the door already answers. If the owner has given a standing word, the next step is yours: land it, then say what landed.
-- **A red check in which no check failed.** You see `rc 124`, time limits, „[Zitat entfernt]“ — that is a broken gate, not broken work. Name the numbers and fix the gate; do not re-run it hoping.
+- **A red check in which no check failed.** You see `rc 124`, time limits, "no FAIL in my area" — that is a broken gate, not broken work. Name the numbers and fix the gate; do not re-run it hoping.
 - **A builder says FERTIG.** That is a claim, never a result: read the diff, run the tests yourself in a detached worktree, and only then believe it. Two of the last three reports were right and one arrived without its proof.
 - **A strand without a next step.** A branch without a named next step and a check is a half-state that costs the next session an hour. Either give it one or close it.
 - **A message into a branch seat that never lands.** After a reboot the pane may hold the last frame of a dead agent: the message is accepted and never typed. Say so, and close the seat rather than waiting.

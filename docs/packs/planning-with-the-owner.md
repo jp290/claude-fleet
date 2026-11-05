@@ -24,7 +24,7 @@ reads code and live state, runs helpers, and hands the orchestrator a plan she c
 - **Fact finders (cheaper model) per symptom**, judges (stronger model) on top, then an independent counter-check of your
   own diagnosis with the owner's own texts in its brief, then a critic over every idea. Each brief names the files, what
   done looks like, the evidence form (`file:line`, command → result, live state through `./ctl.sh get`), a word limit and
-  a closing line "Not verified:". Statistics only for a size question; the owner's correction is „[Zitat entfernt]“.
+  a closing line "Not verified:". Statistics only for a size question; the owner's correction: understanding a system means reading its code.
 - **Write a digest file first for every later round** (target picture in the owner's words, what he said today, standing
   decisions, what exists, the plan so far, the rules for ideas) and make every agent read it first. It is what makes a
   round coherent: agents that start from the same digest give findings that fit together, agents that start from your
@@ -43,7 +43,7 @@ reads code and live state, runs helpers, and hands the orchestrator a plan she c
   he wants to see that his words landed.
 - **Ask only the question that is due**, at the end. A decision he must make later (a right, a version to publish) goes
   into the plan as "needs his word when …", not into today's question.
-- **When he says a package is "[Zitat entfernt]"**, keep it in the plan and stop explaining it. Put the ambition where
+- **When he says a package is basic and doesn't interest him**, keep it in the plan and stop explaining it. Put the ambition where
   he points: another round of ideas with the digest, a critic over them, a harvest with his answers written in.
 
 ## Use the system you are analysing

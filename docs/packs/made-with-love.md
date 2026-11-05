@@ -19,8 +19,8 @@ through: every part is correct, and the whole has no idea behind it.
   `who-it-is-for` says what to do.
 - **He names surfaces by what he does, not by component names,** and two panes of one window are one view to him.
   Find the detail in his words that fits only one surface (a noun, a spatial word like "rechts"), say it back, then
-  build. When his words fit two, build the one his symptom explains: "[Zitat entfernt]" speaks against the
-  surface where it would be unmissable. A vague report gets a question with symptom options. When he says "[Zitat entfernt]", list every door that starts X and fix the one he used.
+  build. When his words fit two, build the one his symptom explains: "I can't see your change" speaks against the
+  surface where it would be unmissable. A vague report gets a question with symptom options. When he says "I started X", list every door that starts X and fix the one he used.
 - **For spoken feedback on placement, answer with a two-line mock of the exact rows and wait for his yes.**
 
 ## Start from the idea, not the parts

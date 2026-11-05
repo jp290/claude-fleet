@@ -61,7 +61,7 @@ on the position that carries it; a role with no rights has nothing to confirm). 
 packs it reads on the receiver's shelf, also when the receiver's library has them already (so does every pack of an imported file: a seat from it reads them in any folder, with the hash the file carried); it stays with a seat through
 succession on every harness (a harness without Fleet's system prompt reads its start text in the brief). A seat the owner opens
 from a position of an imported constellation carries the role of that position once its rights are confirmed, so its address works;
-the owner's open door also takes `role: „[Zitat entfernt]“` for a role formed or confirmed here. The start text of a role names who formed it
+the owner's open door also takes `role: "<id>"` for a role formed or confirmed here. The start text of a role names who formed it
 (`FLEET ROLE (<id>, author: the session in slot N) — <name>`); at a position start the stone carries the text and the profile's purpose is left out when it is the
 same. `POST /api/self/roles` and `POST /api/self/seats/open` answer 400 for a key they do not read and name the keys they do, so `bundle` instead of `rights`
 is not silently dropped. The first message of a seat a session opened says which door opened it and by whom.
@@ -98,7 +98,7 @@ the reason, never a silent drop.
 | `POST /api/self/branches/land` | Land your own branch after "Looks good" on its tip (the person's, or your opener's with `branch.passt`) or the repo's standing word, and a green check. The land row says whose "Looks good" it was. | right `land.branch` (every role bundle); self token, own branch; both conditions are checked |
 | `POST /api/self/branches` · `POST /api/self/branches/open` | Open a board branch, or a session on one. | right `seat.open` (generic, bound MAIN, Orchestratorin); self token, non-lane, non-steward, in your own repo; the child is never wider than you |
 | `POST /api/self/seats/open` | Open a seat in a folder, not only a branch of your repo: `cwd`, and `harness`, `model`, `effort`, `purpose`, `bibliothek`, `goal`, `rechte`, `permissionMode`, `role` as at the owner's open door. It is that door's own path. | right `seat.open` (generic, bound MAIN, Orchestratorin); self token, non-lane, non-steward; the folder lies under `FLEET_SELF_SEAT_ROOT` (your home folder without it); at most `FLEET_SELF_SEAT_CAP` (3) live seats you opened; the child is never wider than you (harness, fence, permission mode, rights; a mode below yours in plan < manual < dontAsk < acceptEdits < auto < bypassPermissions is fine, so from bypass you open a seat in auto); a label that reads as a role is refused; `bibliothek` is a list of ids from Fleet's library, `false` for none (the two door lines below still come), and `true` or nothing for the folder's default (a private pack of the owner's is refused) |
-| `POST /api/self/seats/<slot>/passt` | Give „[Zitat entfernt]“ („passt“) on the current tip of the branch of a seat you opened, so that seat may land it through `POST /api/self/branches/land`; the body names `head`, the tip you looked at (it must be the current tip), and may name `openedAt`. A later commit makes it stale, like the person's. The land row and the audit line name you. | right `branch.passt` (no role bundle; the person grants it, or confirms it at a template position); self token; only a seat you or a predecessor in your line opened |
+| `POST /api/self/seats/<slot>/passt` | Give "Looks good" („passt“) on the current tip of the branch of a seat you opened, so that seat may land it through `POST /api/self/branches/land`; the body names `head`, the tip you looked at (it must be the current tip), and may name `openedAt`. A later commit makes it stale, like the person's. The land row and the audit line name you. | right `branch.passt` (no role bundle; the person grants it, or confirms it at a template position); self token; only a seat you or a predecessor in your line opened |
 | `POST /api/self/testinstanz` | Bring up (`{"action": "up"}`) or take down (`"down"`) a test instance to accept a visible change, built from your own worktree or with `slot` from a seat you opened or a sibling (the checker from the builder's). It ends by itself when "Looks good" comes on that branch or when your line ends; your successions keep it. | self token; yourself, a seat your line opened or a sibling |
 | `POST /api/self/seats/<slot>/end` | End a live seat you opened yourself, through the folder door or the branch door; the body may name `openedAt` (the answer of the open) so a place taken over since is refused. The pane gets the same end as `retire`, and the place no longer counts against the cap. | right `seat.open`; self token; never your own opener, a sibling, a stranger or a seat in one of Fleet's own roles (409 names the reason) |
 | `POST /api/self/roles` | Form a role of your own — a name, an address `{kind:"role", role:<id>}`, a bundle of rights and a start text with the packs it reads. | right `role.form` (no role bundle carries it; the owner grants it to your seat); self token; the bundle is never wider than your effective rights, and the refusal names the right; Fleet's own role names are refused; a role someone formed is formed anew only by the seat that formed it (slot and folder) |
@@ -151,7 +151,7 @@ with `bibliothek`: a list of ids from Fleet's library gives it exactly those pac
 the two door lines (`fleet-doors`, `setting-up-agents`) as skills where it did not choose them, `false` gives it no library but
 still the two door lines, and `true` or nothing is the folder's default (in a plain folder the two door lines as skills, in
 Fleet's repo the whole library). The door lines belong to the token the child holds, not to its library choice. A purpose you give reaches it as "written for you
-by the session in slot N", never as the owner's word. With `role: „[Zitat entfernt]“` it starts in a role you formed
+by the session in slot N", never as the owner's word. With `role: "<id>"` it starts in a role you formed
 (`POST /api/self/roles`) and gets its bundle and start text. It is never wider than you in harness, fence, permission
 mode or rights.
 
@@ -228,7 +228,7 @@ pack on adds no role and takes none away.
 - **401** means the token is not a live occupant's self token.
 - **403** means a hard owner/scope boundary outside the rights layer remains in the way.
 - **409** means the token is right but the act is not askable from where you stand; the sentence names what is missing
-  (a lane, a binding, the Orchestratorin, the owner's „[Zitat entfernt]“, a green check). A missing server right is a 409
+  (a lane, a binding, the Orchestratorin, the owner's "Looks good", a green check). A missing server right is a 409
   with `missingRight: "<id>"` (and `door`, `role`); the owner grants it at `POST /api/slots/<id>/rechte`. Do not
   retry the act unchanged.
 - **400** means the body asked for something the door does not read; the answer names the fields it does read.

@@ -238,7 +238,7 @@ import { createLiveReader, readTranscript } from "./server/live-state";
 import { expandPaneInboxText } from "./server/pane-inbox";
 import { safetyClassifierOwn, safetySystemNote } from "./src/safety-note";
 import { createTranscriptPush } from "./server/transcript-push";
-import { RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
+import { AUSWAHL_RE, RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type RueckfrageDialog, type WarteEpisode } from "./server/warte-hinweis";
 import { ladeNachbarn } from "./server/nachbarn";
 import { sendeAnNachbar, nimmNachbarAn, fehlversuchZaehler, type EinDeps } from "./server/nachbar-tuer";
 import { POSTFACH_OWNER_LABEL, isDirectPostfachTarget, planPostfachDelivery, postfachFleetNoteKey, postfachFromSeat, postfachReceiptIds,
@@ -1085,6 +1085,9 @@ const CLAUDE_TRUST_DIALOG: ScreenBlock = {
 // screen) and the file was written. The pattern and its measurement live in server/warte-hinweis.ts#RUECKFRAGE_RE, which
 // the waiting notice reads too; the person answers in the board terminal, whose raw keys are no sendText.
 const CLAUDE_PERMISSION_QUESTION: ScreenBlock = { re: RUECKFRAGE_RE, why: "claude permission question" };
+// EVERY OTHER CHOICE THAT STANDS IN FOR THE PROMPT (server/warte-hinweis.ts#AUSWAHL_RE): "Exit plan mode?" and WebFetch's question carry no key line, and an Enter takes their marked row just the same, so
+// it says the same thing to the person. A start that meets one withholds its brief and names why in the log; unlike at the trust question the brief does not follow the answer. It used to time out after READY_WAIT_MS, unless someone answered inside those 20 s.
+const CLAUDE_CHOICE: ScreenBlock = { re: AUSWAHL_RE, why: CLAUDE_PERMISSION_QUESTION.why };
 
 // THE COMPOSER GLYPH, and it is the only thing on a claude frame that says "input is kept now".
 // MEASURED 2026-09-21 on claude 2.1.278 in throwaway tmux sockets (own socket, --session-id, the
@@ -1166,7 +1169,7 @@ const CLAUDE_HARNESS: Harness = {
   // had not drawn anything yet. The pane ate it, the post-Enter composer read empty, the ledger
   // booked `observed`, and the predecessor was retired onto a successor that had never been told
   // what it was for. The marker below is what makes that wait a wait.
-  readiness: { accept: IS_CLAUDE ? CLAUDE_READY_FRAME : null, blocks: [CLAUDE_TRUST_DIALOG, CLAUDE_PERMISSION_QUESTION] },
+  readiness: { accept: IS_CLAUDE ? CLAUDE_READY_FRAME : null, blocks: [CLAUDE_TRUST_DIALOG, CLAUDE_PERMISSION_QUESTION, CLAUDE_CHOICE] },
   modelFooter: /^ {2}[^\n|]+ {2}\| {2}ctx \[[#-]+\] (?:\d+|--)% {2}\| {2}(.+?)(?: {3,}.*)?$/m,
   // Claude owns its repository metadata; Fleet has not fenced it out of commits.
   hostCommits: false,

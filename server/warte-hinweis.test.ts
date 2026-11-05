@@ -1,7 +1,7 @@
 // Der Warte-Hinweis ohne Server (server/warte-hinweis.ts): welche Pane an Claude Codes Rechte-Frage steht, was davon in den
 // Hinweis kommt, und wann je Frage genau einmal gemeldet wird.
 import { describe, expect, test } from "bun:test";
-import { FRAGE_MAX, RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type WarteEpisode } from "./warte-hinweis";
+import { AUSWAHL_RE, FRAGE_MAX, RUECKFRAGE_RE, rueckfrageAufSchirm, rueckfrageDialog, warteHinweisText, warteSchritt, type WarteEpisode } from "./warte-hinweis";
 import { BASH_FRAGE, LEERLAUF, SCHMAL_FRAGE, WRITE_FRAGE, ZITIERT } from "./warte-hinweis.fixtures";
 
 describe("rueckfrageAufSchirm", () => {
@@ -20,6 +20,18 @@ describe("rueckfrageAufSchirm", () => {
     expect(frame).toContain(`curl -H "Authorization: Bearer ${token}"`);
     expect(rueckfrageAufSchirm(frame)).toBe("Bash command · Do you want to proceed?");
     expect(RUECKFRAGE_RE.test(frame)).toBe(true);
+  });
+  // GEMESSEN 5.11. auf 2.1.318 (Prüfung 8): ein Sitz mit Titel (`/rename`, ein Gang in die Agentenansicht) zieht unter den Dialog eine Regel. Ohne diese
+  // Lesart sah die Sperre keine Frage, und ein POST /send wie das Postfach drückten mit ihrem Enter „1. Yes“: die Datei entstand, ein Bash lief.
+  test("die Rechte-Frage eines Sitzes mit Titel ist noch die Rechte-Frage: er trägt unter dem Dialog eine Regel", () => {
+    for (const frage of [WRITE_FRAGE, BASH_FRAGE]) {
+      for (const regel of ["─────────────── pruef acht ─", "──────────────────────────────", ` ${"t".repeat(56)}… ─`, "── t ─"]) {
+        expect(RUECKFRAGE_RE.test(`${frage.trimEnd()}\n${regel}\n`)).toBe(true);
+        expect(AUSWAHL_RE.test(`${frage.trimEnd()}\n${regel}\n`)).toBe(true);
+      }
+      expect(RUECKFRAGE_RE.test(`${frage.trimEnd()}\n⏺ Der Dialog steht nicht mehr\n`)).toBe(false);
+      expect(RUECKFRAGE_RE.test(`${frage.trimEnd()}\n──────────────\n⏺ Der Dialog steht nicht mehr\n`)).toBe(false);
+    }
   });
   test("eine leer laufende Pane, eine zitierte Frage, ein leerer Schirm: keine Frage", () => {
     for (const frame of [LEERLAUF, ZITIERT, "", "\n\n\n"]) {
@@ -111,6 +123,26 @@ test("warteHinweisText nennt Slot, Name, Frage und wie lange schon, und wie man 
 });
 
 // Abnahme 76c28e2a2: zwei Bash-Fragen haben dieselbe Frage; die Freigabe muss an den ganzen Dialog gebunden sein
+// GEMESSEN 5.11. auf 2.1.318 (Prüfung 8, k2-frame-Plan.txt, k2-frame-WebFetch.txt), ohne den Rand: beide tragen keine Tastenleiste und treffen RUECKFRAGE_RE nicht.
+const PLAN_DIALOG = `  79\n  80\n\n${"─".repeat(90)}\n Exit plan mode?\n\n  Claude wants to exit plan mode\n\n  ❯ 1. Yes, and switch to default (ask each time) for this session\n    2. No\n\n\n`;
+const WEBFETCH_DIALOG = ` prompt: title\n${"╌".repeat(90)}\n Do you want to allow Claude to fetch this content?\n ❯ 1. Yes\n   2. Yes, and don't ask again for example.com\n   3. No, and tell Claude what to do differently (esc)\n\n\n`;
+
+describe("jede Auswahl, die den Prompt ersetzt", () => {
+  test("Plan, WebFetch, die gemessenen Fragen, auch mit einem Titel darunter und auf einer anderen Zeile: Sperre", () => {
+    for (const frame of [PLAN_DIALOG, WEBFETCH_DIALOG, BASH_FRAGE, WRITE_FRAGE, SCHMAL_FRAGE, `${WRITE_FRAGE.trimEnd()}\n${"─".repeat(40)} ein titel ─\n`, PLAN_DIALOG.replace("  ❯ 1. Yes", "    1. Yes").replace("    2. No", "  ❯ 2. No")])
+      expect(AUSWAHL_RE.test(frame)).toBe(true);
+    expect(RUECKFRAGE_RE.test(PLAN_DIALOG)).toBe(false);
+    expect(RUECKFRAGE_RE.test(WEBFETCH_DIALOG)).toBe(false);
+  });
+  test("eine zitierte Auswahl über der Eingabezeile, eine Eingabe, die mit „1.“ beginnt, ein leerer Schirm: keine Sperre", () => {
+    for (const frame of [ZITIERT, LEERLAUF, "", "\n\n\n", `${PLAN_DIALOG}\n❯ \n${"─".repeat(40)}\n  ctx [#---] 5%\n`, `❯ 1. erst das\n${"─".repeat(40)}\n  ctx [#---] 5%\n`])
+      expect(AUSWAHL_RE.test(frame)).toBe(false);
+  });
+  test("die Marke einer Frage von AskUserQuestion steht ab Spalte 0 und bleibt ungesperrt", () => {
+    expect(AUSWAHL_RE.test(`Which one?\n❯ 1. Red\n  2. Blue\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n`)).toBe(false);
+  });
+});
+
 describe("rueckfrageDialog", () => {
   const RM = BASH_FRAGE.replace(/^ mkdir -p sub && touch sub\/x\.txt$/m, " rm -rf ~/claude-fleet");
   const ganz = (screen: string) => {

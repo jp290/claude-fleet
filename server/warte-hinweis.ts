@@ -40,7 +40,14 @@ const ERSTE_WAHL = "[ \\t]*\\n[ \\t]*(?:❯[ \\t]*)?1\\.[ \\t]";
 // server.ts#CLAUDE_PERMISSION_QUESTION macht daraus einen blockierenden Schirm (paneReadiness → canDeliver, sendText):
 // eine automatische Eingabe in diesen Dialog drückt mit Enter „1. Yes“. Gemessen 22.10.2026 auf der Testinstanz
 // :8997: eine Postfach-Zustellung an einen Sitz an „Do you want to create beweis2.txt?“ tippte, und die Datei entstand.
-export const RUECKFRAGE_RE = new RegExp(`^[ \\t]*${FRAGE}${ERSTE_WAHL}[^\\n]*\\n[\\s\\S]*^[ \\t]*Esc to cancel\\b[^\\n]*\\s*(?![\\s\\S])`, "m");
+// EIN SITZ MIT TITEL (`/rename`, ein Gang in die Agentenansicht) zieht unter die Tastenleiste noch eine Regel: dieselbe Frage, darum darf genau diese eine Zeile folgen. Ein Titel so breit wie die Pane hat links keine Regel mehr, nur „ titel… ─“ (Prüfung 8). Gemessen 5.11. auf 2.1.318:
+// ohne sie sah die Sperre keine Frage, und POST /send wie das Postfach bestätigten einen Write und ein Bash (Mängel 262).
+export const RUECKFRAGE_RE = new RegExp(`^[ \\t]*${FRAGE}${ERSTE_WAHL}[^\\n]*\\n[\\s\\S]*^[ \\t]*Esc to cancel\\b[^\\n]*\\s*(?:^(?:[ \\t]*─{3,}[^\\n]*|[^\\n]*[ \\t]─[ \\t]*)\\s*)?(?![\\s\\S])`, "m");
+// JEDE AUSWAHL, DIE DEN PROMPT ERSETZT. RUECKFRAGE_RE kennt nur „Do you want to …“ über „Esc to cancel“; ein Enter wählt aber in jeder Auswahl die markierte Zeile. Gemessen 5.11. auf 2.1.318 (Prüfung 8,
+// `k2-main.log`): „Exit plan mode?“ hat weder diese Frage noch eine Tastenleiste, POST /send und das Postfach holten einen Sitz ohne Prompt auf dem Schirm aus dem Plan-Modus; „Do you want to allow Claude
+// to fetch this content?“ endet ebenfalls ohne Tastenleiste. Darum zählt hier nur die Gestalt: eine eingerückte, markierte Zeile „❯ 1.“, und unter ihr keine Eingabezeile, denn Claude Code zeichnet die immer
+// ab Spalte 0 unter alles, was es nur zitiert. Die Frage von AskUserQuestion trägt ihre Marke ab Spalte 0 und bleibt, was sie war (ihr „❯“ liest die Eingabe-Prüfung als besetzt).
+export const AUSWAHL_RE = /^[ \t]+❯[ \t]*\d+\.[ \t][^\n]*(?:\n(?!❯)[^\n]*)*(?![\s\S])/m;
 // die Frage allein, um ihre letzte Stelle auf dem Schirm zu finden (ein zitierter Dialog weiter oben zählt nicht)
 const FRAGE_ALLEIN_RE = new RegExp(`^[ \\t]*(${FRAGE})${ERSTE_WAHL}`, "gm");
 // DIE LINIE DES DIALOGS steht ab Spalte 0; sein Inhalt (Kopf, Beschreibung, Befehl, Dateiinhalt) ist in allen gemessenen

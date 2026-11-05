@@ -162,6 +162,60 @@ describe("eine Pane an der Rechte-Frage bekommt nichts getippt", () => {
     expect(hinweis?.payload.text).toContain('"Create file · Do you want to create 2026-10-22-lang.md?"');
   }, LIFE_DEADLINE_MS * 3);
 
+  // Prüfung 8, 5.11.: dieser Schirm, ein Sitz mit Titel an der Rechte-Frage und kein Prompt in der Pane, wurde auf main getippt: Enter wählte „1. Yes“, die Datei entstand.
+  test("ein Sitz mit Titel trägt unter dem Dialog eine Regel: Owner-Tür und Postfach tippen trotzdem nichts", async () => {
+    const f = fixture();
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = opened(lead);
+    const [, seat] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sitz" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/sitz" }), self: tokenOf(f, L.slot) }]);
+    const S = opened(seat);
+    const getippt = `${S.frame}.getippt`;
+    const r = await life(f, [
+      zeige(S.frame, `${WRITE_FRAGE.trimEnd()}\n${"─".repeat(60)} pruef acht ─\n`),                            // 0
+      post("/send", { slot: S.slot, text: "vom Owner, während die Frage steht" }),                              // 1
+      { ...post("/api/self/messages", { to: { kind: "session", slot: S.slot },
+        payload: { kind: "text", text: "Frage von der Leitung an den Sitz mit Titel." }, idempotencyKey: "k-titel" }),
+        token: null, self: tokenOf(f, L.slot) },                                                               // 2
+      { ausgabe: S.slot, vorMs: 10_000 }, { postfach: true }, { until: getippt, ms: 5000 },                    // 3–5
+    ], { FLEET_POSTFACH_FENSTER_SEC: "0" });
+    expect(r[1]?.status).toBe(409);
+    expect(String(r[1]?.body.error)).toBe("gate=blocked-screen: claude permission question — nothing typed");
+    expect(r[2]?.status).toBe(200);
+    expect(r[5]?.status).toBe(408);
+    expect(existsSync(getippt)).toBe(false);
+  }, LIFE_DEADLINE_MS * 3);
+
+  // Prüfung 8, 5.11. (k2-main.log): „Exit plan mode?“ hat keine Tastenleiste; auf main holten Owner-Tür und Postfach den Sitz aus dem Plan-Modus.
+  test("„Exit plan mode?“ ohne Prompt auf dem Schirm: Owner-Tür und Postfach tippen nichts, danach kommt die Nachricht an", async () => {
+    const f = fixture();
+    const [, lead] = await life(f, [post("/api/branches", { repo: f.repo, name: "Leitung" }),
+      post("/api/branches/open", { repo: f.repo, branch: "branch/leitung" })]);
+    const L = opened(lead);
+    const [, seat] = await life(f, [post("/api/branches", { repo: f.repo, name: "Sitz" }),
+      { ...post("/api/branches/open", { repo: f.repo, branch: "branch/sitz" }), self: tokenOf(f, L.slot) }]);
+    const S = opened(seat);
+    const getippt = `${S.frame}.getippt`;
+    const r = await life(f, [
+      zeige(S.frame, `  80\n\n${"─".repeat(90)}\n Exit plan mode?\n\n  Claude wants to exit plan mode\n\n  ❯ 1. Yes, and switch to default (ask each time) for this session\n    2. No\n`), // 0
+      post("/send", { slot: S.slot, text: "vom Owner, während die Frage steht" }),                              // 1
+      { ...post("/api/self/messages", { to: { kind: "session", slot: S.slot },
+        payload: { kind: "text", text: "Frage von der Leitung an den Sitz im Plan-Modus." }, idempotencyKey: "k-plan" }),
+        token: null, self: tokenOf(f, L.slot) },                                                               // 2
+      { ausgabe: S.slot, vorMs: 10_000 }, { postfach: true }, { until: getippt, ms: 5000 },                    // 3–5
+      zeige(S.frame, FERTIG),                                                                                  // 6
+      { ausgabe: S.slot, vorMs: 10_000 }, { postfach: true }, { until: getippt, ms: 8000 },                    // 7–9
+    ], { FLEET_POSTFACH_FENSTER_SEC: "0" });
+    expect(r[1]?.status).toBe(409);
+    expect(String(r[1]?.body.error)).toBe("gate=blocked-screen: claude permission question — nothing typed");
+    expect(sendFailureMessage(409, r[1]?.body)).toBe("The session waits at a permission question — answer it in the terminal (1 or Esc); nothing was typed");
+    expect(r[2]?.status).toBe(200);
+    expect(r[5]?.status).toBe(408);
+    expect(r[9]?.status).toBe(200);
+    expect(readFileSync(getippt, "utf8")).toContain("Frage von der Leitung an den Sitz im Plan-Modus.");
+  }, LIFE_DEADLINE_MS * 3);
+
   // Owner 22.10. 08:30: der Öffner (oder die Orchestratorin) gibt eine wartende Frage BEWUSST frei oder lehnt ab. Bewusst
   // heißt (Abnahme 76c28e2a2): erst den ganzen Dialog lesen (GET, mit Befehl), dann mit dessen Kennung wählen; ein anderer
   // Dialog — dieselbe Frage mit anderem Befehl — bekommt nichts getippt. Die Orchestratorin auch bei Sitzen ohne Öffner (Owner 30.10.).
